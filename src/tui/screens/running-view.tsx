@@ -25,8 +25,12 @@ import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
 import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
+import { FlashBar } from "../components/flash-bar.js";
 import { ProgressBar } from "../components/progress-bar.js";
+import { Prompt } from "../components/prompt.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
+import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
+import { loadAliases } from "../data/aliases-loader.js";
 import { debugLog } from "../debug-log.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
@@ -43,6 +47,15 @@ import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
+import {
+  type CmdModeState,
+  appendChar as cmdAppend,
+  deleteChar as cmdDelete,
+  enterFilter,
+  enterGoto,
+  exitCmdMode,
+  initialCmdState,
+} from "./running-cmd-mode.js";
 import {
   collapsePanel,
   expandPanel as expandPanelTransition,
@@ -195,6 +208,33 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [promptMode, setPromptMode] = useState(false);
     const [promptText, setPromptText] = useState("");
     const [promptTarget, setPromptTarget] = useState(0);
+
+    // ─── C2 cmd-mode state (#302) ───
+    const [cmdState, setCmdState] = useState<CmdModeState>(initialCmdState);
+    const [aliases, setAliases] = useState<AliasMap>(DEFAULT_ALIASES);
+    const [flashError, setFlashError] = useState<string | null>(null);
+    const [filterQuery, setFilterQuery] = useState<string>("");
+
+    const flash = useCallback((msg: string, ms = 3000) => {
+      setFlashError(msg);
+      setTimeout(() => setFlashError((current) => (current === msg ? null : current)), ms);
+    }, []);
+
+    useEffect(() => {
+      if (!groveDir) return;
+      let cancelled = false;
+      void loadAliases(groveDir).then((r) => {
+        if (cancelled) return;
+        setAliases(r.aliases);
+        if (r.errors.length > 0) {
+          const first = r.errors[0];
+          if (first) flash(first);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [groveDir, flash]);
 
     // ─── Feed state ───
     const [cursor, setCursor] = useState(0);
@@ -552,11 +592,60 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         confirmQuit,
         promptMode,
         promptText,
-        cmdMode: "none" as const,
-        cmdText: "",
+        cmdMode: cmdState.mode,
+        cmdText: cmdState.text,
       }),
-      [expandedPanel, zoomLevel, showHelp, showVfs, confirmQuit, promptMode, promptText],
+      [
+        expandedPanel,
+        zoomLevel,
+        showHelp,
+        showVfs,
+        confirmQuit,
+        promptMode,
+        promptText,
+        cmdState.mode,
+        cmdState.text,
+      ],
     );
+
+    // ─── C2 goto dispatch table ───
+    const gotoDispatch = useMemo<Record<string, () => void>>(
+      () => ({
+        agents: () => {
+          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Agents);
+          setExpandedPanel(next.expandedPanel);
+          setZoomLevel(next.zoomLevel);
+        },
+        dag: () => {
+          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Dag);
+          setExpandedPanel(next.expandedPanel);
+          setZoomLevel(next.zoomLevel);
+        },
+        sessions: () => {
+          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Sessions);
+          setExpandedPanel(next.expandedPanel);
+          setZoomLevel(next.zoomLevel);
+        },
+        tasks: () => {
+          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Tasks);
+          setExpandedPanel(next.expandedPanel);
+          setZoomLevel(next.zoomLevel);
+        },
+        reviews: () => {
+          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Reviews);
+          setExpandedPanel(next.expandedPanel);
+          setZoomLevel(next.zoomLevel);
+        },
+        quit: () => onQuit(),
+      }),
+      [expandedPanel, zoomLevel, onQuit],
+    );
+
+    // Tab-complete suggestions for goto mode.
+    const gotoSuggestions = useMemo<readonly string[]>(() => {
+      if (cmdState.mode !== "goto") return [];
+      return matchAliases(aliases, cmdState.text);
+    }, [cmdState.mode, cmdState.text, aliases]);
 
     const keyboardActions: RunningKeyboardActions = useMemo(
       () => ({
@@ -684,15 +773,66 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         hasSendToAgent: !!onSendToAgent,
         feedLength: feed.length,
         hasAskUser: !!pendingAskUser,
-        // C2 cmd-mode stubs — Task 17 wires up real implementations
-        enterGotoMode: () => {},
-        enterFilterMode: () => {},
-        cmdAppendChar: () => {},
-        cmdDeleteChar: () => {},
-        cmdTabComplete: () => {},
-        cmdSubmit: () => {},
-        cmdClearText: () => {},
-        cmdExit: () => {},
+        // C2 cmd-mode (#302)
+        enterGotoMode: () => setCmdState(enterGoto),
+        enterFilterMode: () => {
+          setCmdState(enterFilter);
+          setFilterQuery("");
+        },
+        cmdAppendChar: (ch: string) =>
+          setCmdState((s) => {
+            const next = cmdAppend(s, ch);
+            if (next.mode === "filter") setFilterQuery(next.text);
+            return next;
+          }),
+        cmdDeleteChar: () =>
+          setCmdState((s) => {
+            const next = cmdDelete(s);
+            if (next.mode === "filter") setFilterQuery(next.text);
+            return next;
+          }),
+        cmdTabComplete: () =>
+          setCmdState((s) => {
+            if (s.mode !== "goto") return s;
+            const matches = matchAliases(aliases, s.text);
+            if (matches.length === 0) return s;
+            if (matches.length === 1) {
+              const only = matches[0];
+              if (!only) return s;
+              return { ...s, text: `${only} `, suggestionIndex: 0 };
+            }
+            return { ...s, suggestionIndex: (s.suggestionIndex + 1) % matches.length };
+          }),
+        cmdSubmit: () =>
+          setCmdState((s) => {
+            if (s.mode === "goto") {
+              const trimmed = s.text.trim();
+              if (!trimmed) return exitCmdMode(s);
+              const r = resolveAlias(aliases, trimmed);
+              if (r.kind === "ok") {
+                const dispatch = gotoDispatch[r.command];
+                if (dispatch) dispatch();
+                else flash(`:${trimmed}: unknown command "${r.command}"`);
+              } else if (r.kind === "miss") {
+                flash(`:${r.key}: unknown alias`);
+              } else if (r.kind === "cycle") {
+                flash(`alias cycle: ${r.chain.join(" → ")}`);
+              } else if (r.kind === "depth") {
+                flash(`alias chain too deep (>${r.chain.length}): ${r.chain.join(" → ")}`);
+              }
+              return exitCmdMode(s);
+            }
+            // filter mode: Enter exits prompt; filterQuery retained
+            return exitCmdMode(s);
+          }),
+        cmdClearText: () => setCmdState((s) => ({ ...s, text: "" })),
+        cmdExit: () => {
+          // Esc on already-empty filter prompt also clears any retained filter
+          if (cmdState.mode === "filter" && cmdState.text === "" && filterQuery !== "") {
+            setFilterQuery("");
+          }
+          setCmdState(exitCmdMode);
+        },
       }),
       [
         expandedPanel,
@@ -710,6 +850,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         pendingAskUser,
         topology,
         dialog,
+        aliases,
+        gotoDispatch,
+        flash,
+        cmdState.mode,
+        cmdState.text,
+        filterQuery,
       ],
     );
 
@@ -866,6 +1012,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             traceScrollOffset,
             sessionStartedAt,
             handoffs,
+            filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -948,6 +1095,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             promptText,
             promptTarget,
             activeRoles,
+            cmdState,
+            gotoSuggestions,
+            flashError,
           )}
           {renderStatusBar(
             expandedPanel,
@@ -999,6 +1149,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptText,
           promptTarget,
           activeRoles,
+          cmdState,
+          gotoSuggestions,
+          flashError,
         )}
 
         {/* Help overlay */}
@@ -1255,6 +1408,8 @@ interface PanelRenderContext {
   readonly traceScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
+  /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
+  readonly filterText?: string | undefined;
 }
 
 /** Render the content of an expanded panel. */
@@ -1279,6 +1434,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
+          filterText={ctx.filterText}
         />
       );
 
@@ -1289,6 +1445,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
+          filterText={ctx.filterText}
         />
       );
 
@@ -1369,6 +1526,9 @@ function renderBottomChrome(
   promptText: string,
   promptTarget: number,
   activeRoles: readonly string[] | undefined,
+  cmdState: CmdModeState,
+  gotoSuggestions: readonly string[],
+  flashError: string | null,
 ): React.ReactNode {
   return (
     <>
@@ -1431,7 +1591,7 @@ function renderBottomChrome(
         />
       ) : null}
 
-      {/* Prompt input */}
+      {/* Prompt input (legacy message-send mode) */}
       {promptMode ? (
         <box flexDirection="row" paddingX={2}>
           <text color={theme.focus}>
@@ -1444,6 +1604,15 @@ function renderBottomChrome(
           <text color={theme.secondary}> Tab:switch role Enter:send Esc:cancel</text>
         </box>
       ) : null}
+
+      {/* C2 cmd-mode (#302): goto/filter prompt + flash error */}
+      <Prompt
+        mode={cmdState.mode}
+        query={cmdState.text}
+        suggestions={gotoSuggestions}
+        suggestionIndex={cmdState.suggestionIndex}
+      />
+      <FlashBar message={flashError} />
     </>
   );
 }
@@ -1467,7 +1636,9 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> j/k Navigate (feed or trace agent list)</text>
       <text color={theme.text}> J/K Scroll trace output (when trace open)</text>
       <text color={theme.text}> G/g Jump to bottom/top of trace</text>
-      <text color={theme.text}> m / : Send message to agent</text>
+      <text color={theme.text}> m Send message to agent</text>
+      <text color={theme.text}> : Goto / command (alias chain)</text>
+      <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>
       <text color={theme.text}> Ctrl+A Advanced boardroom</text>
