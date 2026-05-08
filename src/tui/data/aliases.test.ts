@@ -87,3 +87,38 @@ describe("resolveAlias recursion + argv", () => {
     });
   });
 });
+
+describe("resolveAlias cycle + depth", () => {
+  test("self-cycle returns cycle result", () => {
+    const m = new Map(DEFAULT_ALIASES);
+    m.set("loop", { value: ":loop" });
+    const r = resolveAlias(m, "loop");
+    expect(r.kind).toBe("cycle");
+    if (r.kind === "cycle") expect(r.chain).toEqual(["loop", "loop"]);
+  });
+
+  test("two-step cycle returns cycle result", () => {
+    const m = new Map(DEFAULT_ALIASES);
+    m.set("x", { value: ":y" });
+    m.set("y", { value: ":x" });
+    const r = resolveAlias(m, "x");
+    expect(r.kind).toBe("cycle");
+    if (r.kind === "cycle") expect(r.chain).toEqual(["x", "y", "x"]);
+  });
+
+  test("8-hop chain succeeds", () => {
+    const m = new Map(DEFAULT_ALIASES);
+    // h0 → h1 → ... → h7 → "a" (8 hops total)
+    for (let i = 0; i < 8; i++) m.set(`h${i}`, { value: i === 7 ? ":a" : `:h${i + 1}` });
+    const r = resolveAlias(m, "h0");
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.command).toBe("agents");
+  });
+
+  test("9-hop chain returns depth error", () => {
+    const m = new Map(DEFAULT_ALIASES);
+    for (let i = 0; i < 9; i++) m.set(`h${i}`, { value: i === 8 ? ":a" : `:h${i + 1}` });
+    const r = resolveAlias(m, "h0");
+    expect(r.kind).toBe("depth");
+  });
+});
