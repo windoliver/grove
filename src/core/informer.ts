@@ -11,12 +11,12 @@
 
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
-import { WatchClient, type WatchClientOptions } from "./watch-client.js";
+import { WatchClient, type WatchClientOp, type WatchClientOptions } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import type { WatchHub } from "./watch-hub.js";
 import type { WatchClientEvent, WatchStream } from "./watch-stream.js";
 
-type EntityForKind<K extends WatchKind> = K extends "Contribution"
+export type EntityForKind<K extends WatchKind> = K extends "Contribution"
   ? ContributionEntity
   : K extends "Claim"
     ? ClaimEntity
@@ -29,12 +29,27 @@ export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 export type EventHandlerFn<K extends WatchKind = WatchKind> = (
   op: InformerOp,
   entity: EntityForKind<K>,
+  meta?: { readonly emittedAt?: string },
 ) => void | Promise<void>;
 
 export type SyncHandlerFn = () => void;
 
+export interface InformerOptions {
+  /** Max distinct entity ids buffered between drain cycles. Default 1000. */
+  readonly queueLimit?: number;
+  /** Fired exactly once per overflow event. Wired by InformerFactory to factory.relist(kind). */
+  readonly onOverflow?: (kind: WatchKind) => void;
+}
+
+function isControlEvent(op: WatchClientOp): boolean {
+  return op === "RELIST_BEGIN" || op === "RELIST" || op === "RELIST_END" || op === "RELIST_ABORTED";
+}
+
 export class Informer<K extends WatchKind = WatchKind> {
   private readonly stream: WatchStream;
+  private readonly kind: WatchKind;
+  private readonly queueLimit: number;
+  private readonly onOverflow: ((kind: WatchKind) => void) | null;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
   private readonly syncHandlers: Array<SyncHandlerFn> = [];
@@ -43,9 +58,15 @@ export class Informer<K extends WatchKind = WatchKind> {
   private _running = false;
   // Set during run() so dispatch can race handlers against the abort signal.
   private _signal: AbortSignal | null = null;
+  private queue = new Map<string, WatchClientEvent>();
+  private overflows = 0;
+  private flushScheduled = false;
 
-  constructor(stream: WatchStream) {
+  constructor(stream: WatchStream, kind: WatchKind, opts?: InformerOptions) {
     this.stream = stream;
+    this.kind = kind;
+    this.queueLimit = opts?.queueLimit ?? 1000;
+    this.onOverflow = opts?.onOverflow ?? null;
   }
 
   /**
@@ -111,14 +132,109 @@ export class Informer<K extends WatchKind = WatchKind> {
     this._running = true;
     this._signal = signal;
     try {
-      await this.stream.run({ onEvent: (e) => this.onEvent(e), signal });
+      await this.stream.run({ onEvent: (e) => this.enqueue(e), signal });
     } finally {
       this._signal = null;
       this._running = false;
     }
   }
 
-  private async onEvent(e: WatchClientEvent): Promise<void> {
+  /**
+   * Enqueue path used by `stream.run`'s `onEvent` callback.
+   *
+   * Return type is `void | Promise<void>` by design:
+   * - Delta events (ADDED/MODIFIED/DELETED): returns void synchronously.
+   *   Hot path under burst — avoiding async at this layer means a 100k/s
+   *   stream doesn't pay one microtask per event in the WatchClient's
+   *   `await onEvent(e)` loop.
+   * - Control events (RELIST_BEGIN/RELIST/RELIST_END/RELIST_ABORTED):
+   *   returns the Promise from `enqueueControl`, which drains pending
+   *   deltas BEFORE applying the control event so the staging-Map
+   *   invariant in `applyEvent` holds across snapshot boundaries.
+   *
+   * Caller MUST await the return. WatchClient/LocalWatchClient already
+   * `await onEvent(e)` per the `WatchStream.run` contract; the arrow
+   * `(e) => this.enqueue(e)` in `run()` propagates that promise.
+   * Skipping the await would let a delta arriving immediately after
+   * RELIST_END be applied before the snapshot replace, breaking the
+   * drain-then-apply barrier.
+   */
+  private enqueue(e: WatchClientEvent): void | Promise<void> {
+    if (isControlEvent(e.op)) return this.enqueueControl(e);
+    const id = e.entity?.id;
+    if (id === undefined) return;
+    if (this.queue.has(id)) {
+      this.queue.set(id, e);
+      return;
+    }
+    if (this.queue.size >= this.queueLimit) {
+      this.queue.clear();
+      this.overflows += 1;
+      if (this.onOverflow) {
+        try {
+          this.onOverflow(this.kind);
+        } catch (err) {
+          console.error(
+            `Informer[${this.kind}]: onOverflow callback threw, recovery skipped:`,
+            err,
+          );
+        }
+      }
+      return;
+    }
+    this.queue.set(id, e);
+    this.scheduleDrain();
+  }
+
+  private async enqueueControl(e: WatchClientEvent): Promise<void> {
+    if (this.queue.size > 0) {
+      // Swap-and-iterate (vs `clear()`) is intentional and mirrors `drain()`'s
+      // re-entry guard: a delta enqueued during `await applyEvent(ev)` lands
+      // in the new map and is picked up by the next iteration / next drain,
+      // not silently dropped.
+      const pending = this.queue;
+      this.queue = new Map();
+      for (const ev of pending.values()) await this.applyEvent(ev);
+    }
+    await this.applyEvent(e);
+  }
+
+  private scheduleDrain(): void {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => {
+      void this.drain();
+    });
+  }
+
+  private async drain(): Promise<void> {
+    // Keep flushScheduled=true for the duration of the drain so concurrent
+    // enqueues don't schedule a second microtask that races us; they instead
+    // accumulate in this.queue and we sweep them in the next loop iteration.
+    // This preserves serialized fanout: a slow handler in one batch blocks
+    // delivery of the next batch.
+    try {
+      while (this.queue.size > 0) {
+        const pending = this.queue;
+        this.queue = new Map();
+        for (const ev of pending.values()) {
+          await this.applyEvent(ev);
+        }
+      }
+    } finally {
+      this.flushScheduled = false;
+    }
+  }
+
+  getQueueStats(): {
+    readonly depth: number;
+    readonly limit: number;
+    readonly overflows: number;
+  } {
+    return { depth: this.queue.size, limit: this.queueLimit, overflows: this.overflows };
+  }
+
+  private async applyEvent(e: WatchClientEvent): Promise<void> {
     switch (e.op) {
       case "RELIST_BEGIN":
         this.staging = new Map();
@@ -146,7 +262,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          await this.dispatch("ADDED", entity);
+          await this.dispatch(
+            "ADDED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
 
@@ -154,7 +274,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          await this.dispatch("MODIFIED", entity);
+          await this.dispatch(
+            "MODIFIED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
 
@@ -162,7 +286,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.delete(entity.id);
-          await this.dispatch("DELETED", entity);
+          await this.dispatch(
+            "DELETED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
     }
@@ -191,9 +319,9 @@ export class Informer<K extends WatchKind = WatchKind> {
       this.store.set(id, entity);
     }
 
-    for (const e of deleted) await this.dispatch("DELETED", e);
-    for (const e of added) await this.dispatch("ADDED", e);
-    for (const e of modified) await this.dispatch("MODIFIED", e);
+    for (const e of deleted) await this.dispatch("DELETED", e, undefined);
+    for (const e of added) await this.dispatch("ADDED", e, undefined);
+    for (const e of modified) await this.dispatch("MODIFIED", e, undefined);
   }
 
   private fireSync(): void {
@@ -208,7 +336,11 @@ export class Informer<K extends WatchKind = WatchKind> {
     }
   }
 
-  private async dispatch(op: InformerOp, entity: EntityForKind<K>): Promise<void> {
+  private async dispatch(
+    op: InformerOp,
+    entity: EntityForKind<K>,
+    meta?: { readonly emittedAt?: string },
+  ): Promise<void> {
     // Snapshot before iterating so a handler that calls its own unsubscribe
     // (which splices the live array) does not cause the next handler to be
     // skipped by the iterator advancing past the shifted index.
@@ -223,7 +355,7 @@ export class Informer<K extends WatchKind = WatchKind> {
     const signal = this._signal;
     for (const handler of [...this.handlers]) {
       try {
-        await raceAbort(Promise.resolve(handler(op, entity)), signal);
+        await raceAbort(Promise.resolve(handler(op, entity, meta)), signal);
       } catch (err) {
         if (isAbortError(err)) return;
         console.error("Informer: event handler threw or rejected, continuing fanout:", err);
@@ -275,28 +407,40 @@ function isAbortError(err: unknown): boolean {
 
 export type Backoff = NonNullable<WatchClientOptions["backoff"]>;
 
-export type InformerFactoryOptions =
-  | {
-      readonly mode: "remote";
-      readonly baseUrl: string;
-      readonly authHeader: string;
-      readonly fetch?: typeof fetch;
-      readonly backoff?: Backoff;
-    }
-  | {
-      readonly mode: "local";
-      readonly hub: WatchHub;
-      readonly namespace: string;
-      /**
-       * Snapshot source per kind. Sync and async shapes both supported so
-       * Promise-returning local stores (`ContributionStore.listEntities`,
-       * `ClaimStore.listEntities`) can be wired without forcing callers to
-       * pre-await. LocalWatchClient awaits the result before iteration.
-       */
-      readonly listFn: (
-        kind: WatchKind,
-      ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
-    };
+interface InformerFactoryBaseOptions {
+  /**
+   * Per-kind override for `InformerOptions.queueLimit`. Kinds not present
+   * in the map fall back to the Informer default (1000). Wired into each
+   * factory-created Informer's constructor along with an `onOverflow`
+   * callback that triggers `factory.relist(kind)` to recover from drops.
+   */
+  readonly queueLimits?: Partial<Record<WatchKind, number>>;
+}
+
+export type InformerFactoryOptions = InformerFactoryBaseOptions &
+  (
+    | {
+        readonly mode: "remote";
+        readonly baseUrl: string;
+        readonly authHeader: string;
+        readonly fetch?: typeof fetch;
+        readonly backoff?: Backoff;
+      }
+    | {
+        readonly mode: "local";
+        readonly hub: WatchHub;
+        readonly namespace: string;
+        /**
+         * Snapshot source per kind. Sync and async shapes both supported so
+         * Promise-returning local stores (`ContributionStore.listEntities`,
+         * `ClaimStore.listEntities`) can be wired without forcing callers to
+         * pre-await. LocalWatchClient awaits the result before iteration.
+         */
+        readonly listFn: (
+          kind: WatchKind,
+        ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
+      }
+  );
 
 export type FactoryErrorListener = (kind: WatchKind, err: Error | null) => void;
 
@@ -418,7 +562,12 @@ export class InformerFactory {
     const existing = this.running.get(kind);
     if (existing) return existing.informer as Informer<K>;
     const stream = this.makeStream(kind);
-    const informer = new Informer<K>(stream);
+    const informer = new Informer<K>(stream, kind, {
+      queueLimit: this.opts.queueLimits?.[kind] ?? 1000,
+      onOverflow: (k) => {
+        void this.relist(k);
+      },
+    });
     this.running.set(kind, {
       informer: informer as Informer,
       controller: new AbortController(),

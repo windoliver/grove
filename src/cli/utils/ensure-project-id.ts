@@ -122,7 +122,7 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
 async function commitMissOrAdopt(
   opts: EnsureOpts,
   origin: string,
-  registryPath: string,
+  _registryPath: string,
   _now: () => Date,
 ): Promise<EnsureResult> {
   // Miss path: generate a local id and write the local file. We do NOT

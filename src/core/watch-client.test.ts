@@ -1098,6 +1098,65 @@ describe("WatchClient transport errors", () => {
   });
 });
 
+describe("WatchClient emittedAt propagation", () => {
+  test("propagates emittedAt from SSE frame data into WatchClientEvent", async () => {
+    const isoNow = new Date().toISOString();
+    const entityFixture = {
+      envelope: { kind: "Contribution", id: "cid-test" },
+      data: { cid: "cid-test", summary: "test" },
+    };
+    const sseBody =
+      `id: 1\nevent: ADDED\n` +
+      `data: ${JSON.stringify({
+        rv: "1",
+        kind: "Contribution",
+        entity: entityFixture,
+        emittedAt: isoNow,
+      })}\n\n`;
+
+    const fetchStub = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("/api/list")) {
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(sseBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://test",
+      kind: "Contribution",
+      authHeader: "Bearer test",
+      fetch: fetchStub,
+    });
+
+    void client
+      .run({
+        onEvent: (e) => {
+          seen.push(e);
+          if (e.op === "ADDED") ac.abort();
+        },
+        signal: ac.signal,
+      })
+      .catch(() => undefined);
+
+    for (let i = 0; i < 50 && !seen.some((e) => e.op === "ADDED"); i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    const added = seen.find((e) => e.op === "ADDED");
+    expect(added).toBeDefined();
+    expect(added?.emittedAt).toBe(isoNow);
+  });
+});
+
 describe("WatchClient onEvent semantics", () => {
   test("awaits each onEvent before processing the next", async () => {
     const order: string[] = [];

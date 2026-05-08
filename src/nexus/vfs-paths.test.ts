@@ -23,6 +23,7 @@ import {
   ftsIndexPath,
   outcomePath,
   outcomeStatusIndexPath,
+  relationIndexDir,
   relationIndexPath,
   tagIndexPath,
   targetLockPath,
@@ -218,6 +219,18 @@ describe("path construction correctness", () => {
   test("relationIndexPath returns /zones/{zone}/indexes/relations/{target}/{source}.json", () => {
     expect(relationIndexPath(zone, targetCid, sourceCid)).toBe(
       `/zones/${zone}/indexes/relations/${targetCid}/${sourceCid}.json`,
+    );
+  });
+
+  test("relationIndexPath scopes to session path when sessionId is provided", () => {
+    expect(relationIndexPath(zone, targetCid, sourceCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}/${sourceCid}.json`,
+    );
+  });
+
+  test("relationIndexDir scopes to session path when sessionId is provided", () => {
+    expect(relationIndexDir(zone, targetCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}`,
     );
   });
 

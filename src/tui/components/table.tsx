@@ -17,7 +17,7 @@ export interface TableColumn {
 }
 
 /** Maximum items rendered to guard against scroll-box not virtualizing. */
-const MAX_RENDER_ITEMS = 200;
+const MAX_RENDER_ITEMS = 500;
 
 /** Props for the Table component. */
 export interface TableProps {
