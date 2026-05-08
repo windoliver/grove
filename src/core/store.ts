@@ -6,6 +6,7 @@
  */
 
 import type { ClaimEntity, ContributionEntity } from "./entity.js";
+import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
   Claim,
   ClaimStatus,
@@ -254,6 +255,7 @@ export interface ClaimQuery {
   readonly status?: ClaimStatus | readonly ClaimStatus[] | undefined;
   readonly agentId?: string | undefined;
   readonly targetRef?: string | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
 }
 
 /** Store for mutable claims (coordination objects). */
@@ -298,8 +300,12 @@ export interface ClaimStore {
   /** Release a claim (agent gives up). Returns the updated claim snapshot. */
   release(claimId: string): Promise<Claim>;
 
+  releaseOwnedBy(ownerRef: OwnerRef): Promise<number>;
+
   /** Mark a claim as completed. Returns the updated claim snapshot. */
   complete(claimId: string): Promise<Claim>;
+
+  deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number>;
 
   /**
    * Expire stale claims. Returns expired claims with reasons.

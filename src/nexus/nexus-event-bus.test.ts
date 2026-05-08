@@ -170,6 +170,21 @@ describe("NexusEventBus", () => {
     bus.close();
   });
 
+  test("publishLocal delivers to handlers without sending IPC", async () => {
+    const ipc = makeMockIpcClient({ ok: true, messageId: "msg-789" });
+    const bus = new NexusEventBus(ipc);
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const result = await bus.publishLocal(makeEvent());
+
+    expect(result.ok).toBe(true);
+    expect(result.messageId).toBeUndefined();
+    expect(ipc.calls).toHaveLength(0);
+    expect(received).toHaveLength(1);
+    bus.close();
+  });
+
   test("publish sends IPC before notifying local handlers", async () => {
     const order: string[] = [];
     const ipc = {

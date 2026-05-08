@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ClaimEntity } from "./entity.js";
 import { claimToEntity } from "./entity.js";
+import { ownerRefsEqual } from "./lifecycle-metadata.js";
 import { ClaimStatus } from "./models.js";
 import { DefaultReconciler } from "./reconciler.js";
 import type { ClaimQuery, ClaimStore, ExpiredClaim } from "./store.js";
@@ -41,12 +42,34 @@ function makeClaimStore(overrides?: {
         claimsById.set(claimId, released);
         return released;
       }),
+    releaseOwnedBy: async (ownerRef) => {
+      let count = 0;
+      for (const claim of claimsById.values()) {
+        if (claim.status !== ClaimStatus.Active || !ownerRefsEqual(claim.ownerRef, ownerRef)) {
+          continue;
+        }
+        claimsById.set(claim.claimId, { ...claim, status: ClaimStatus.Released });
+        count++;
+      }
+      return count;
+    },
     complete: async (claimId) => {
       const claim = claimsById.get(claimId);
       if (!claim) throw new Error("missing claim");
       const completed = { ...claim, status: ClaimStatus.Completed };
       claimsById.set(claimId, completed);
       return completed;
+    },
+    deleteTerminalOwnedBy: async (ownerRef) => {
+      let count = 0;
+      for (const claim of claimsById.values()) {
+        if (claim.status === ClaimStatus.Active || !ownerRefsEqual(claim.ownerRef, ownerRef)) {
+          continue;
+        }
+        claimsById.delete(claim.claimId);
+        count++;
+      }
+      return count;
     },
     expireStale: overrides?.expireStale ?? (async () => []),
     activeClaims: overrides?.activeClaims ?? (async () => []),

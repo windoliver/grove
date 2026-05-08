@@ -17,7 +17,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { JsonValue } from "../../core/models.js";
+import type { AgentOverrides } from "../../core/operations/agent.js";
 import { contributeOperation } from "../../core/operations/index.js";
+import { bindAgentIdentity } from "../agent-binding.js";
 import type { McpDeps } from "../deps.js";
 import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
@@ -58,10 +60,7 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
             reason: args.summary,
             ephemeral: true,
           } as Readonly<Record<string, JsonValue>>,
-          agent: {
-            ...(args.agent as import("../../core/operations/agent.js").AgentOverrides),
-            ...(process.env.GROVE_AGENT_ROLE ? { role: process.env.GROVE_AGENT_ROLE } : {}),
-          },
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
         },
         opDeps,
       );

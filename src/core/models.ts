@@ -8,6 +8,8 @@
  * See spec/schemas/contribution.json for the canonical wire format.
  */
 
+import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
+
 /** Contribution kinds — the type of work being contributed. */
 export const ContributionKind = {
   Work: "work",
@@ -175,6 +177,9 @@ export interface Claim {
   readonly heartbeatAt: string;
   readonly leaseExpiresAt: string;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
   /** Number of times this claim has been attempted (for retry/backoff). Defaults to 0. */
   readonly attemptCount?: number | undefined;
   /**
