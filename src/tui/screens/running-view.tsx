@@ -552,6 +552,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         confirmQuit,
         promptMode,
         promptText,
+        cmdMode: "none" as const,
+        cmdText: "",
       }),
       [expandedPanel, zoomLevel, showHelp, showVfs, confirmQuit, promptMode, promptText],
     );
@@ -682,6 +684,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         hasSendToAgent: !!onSendToAgent,
         feedLength: feed.length,
         hasAskUser: !!pendingAskUser,
+        // C2 cmd-mode stubs — Task 17 wires up real implementations
+        enterGotoMode: () => {},
+        enterFilterMode: () => {},
+        cmdAppendChar: () => {},
+        cmdDeleteChar: () => {},
+        cmdTabComplete: () => {},
+        cmdSubmit: () => {},
+        cmdClearText: () => {},
+        cmdExit: () => {},
       }),
       [
         expandedPanel,

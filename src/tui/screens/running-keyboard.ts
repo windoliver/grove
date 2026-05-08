@@ -56,6 +56,10 @@ export interface RunningKeyboardState {
   readonly promptMode: boolean;
   /** Current prompt text. */
   readonly promptText: string;
+  /** C2 cmd-mode (goto/filter) — separate from legacy message mode. */
+  readonly cmdMode: import("../components/prompt.js").PromptMode;
+  /** Current C2 cmd text. */
+  readonly cmdText: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +86,15 @@ export interface RunningKeyboardActions {
   readonly deletePromptChar: () => void;
   readonly cyclePromptTarget: () => void;
   readonly submitPrompt: () => void;
+  // Cmd-mode (C2): goto + filter prompt
+  readonly enterGotoMode: () => void;
+  readonly enterFilterMode: () => void;
+  readonly cmdAppendChar: (char: string) => void;
+  readonly cmdDeleteChar: () => void;
+  readonly cmdTabComplete: () => void;
+  readonly cmdSubmit: () => void;
+  readonly cmdClearText: () => void;
+  readonly cmdExit: () => void;
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
@@ -211,8 +224,20 @@ export function routeRunningKey(
     return true;
   }
 
-  // ':' or 'm': enter prompt mode to send message to agent
-  if ((key.sequence === ":" || input === "m") && actions.hasSendToAgent && actions.hasActiveRoles) {
+  // ':' enters C2 goto/command mode
+  if (key.sequence === ":") {
+    actions.enterGotoMode();
+    return true;
+  }
+
+  // '/' enters C2 filter mode
+  if (key.sequence === "/") {
+    actions.enterFilterMode();
+    return true;
+  }
+
+  // 'm' enters message-send mode (legacy prompt flow)
+  if (input === "m" && actions.hasSendToAgent && actions.hasActiveRoles) {
     actions.enterPromptMode();
     return true;
   }

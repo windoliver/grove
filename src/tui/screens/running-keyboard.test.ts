@@ -65,6 +65,8 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     confirmQuit: false,
     promptMode: false,
     promptText: "",
+    cmdMode: "none",
+    cmdText: "",
     ...overrides,
   };
 }
@@ -98,6 +100,14 @@ function mockActions(overrides?: {
     deletePromptChar: () => record("deletePromptChar"),
     cyclePromptTarget: () => record("cyclePromptTarget"),
     submitPrompt: () => record("submitPrompt"),
+    enterGotoMode: () => record("enterGotoMode"),
+    enterFilterMode: () => record("enterFilterMode"),
+    cmdAppendChar: (c: string) => record("cmdAppendChar", c),
+    cmdDeleteChar: () => record("cmdDeleteChar"),
+    cmdTabComplete: () => record("cmdTabComplete"),
+    cmdSubmit: () => record("cmdSubmit"),
+    cmdClearText: () => record("cmdClearText"),
+    cmdExit: () => record("cmdExit"),
     feedCursorDown: () => record("feedCursorDown"),
     feedCursorUp: () => record("feedCursorUp"),
     feedScrollToBottom: () => record("feedScrollToBottom"),
@@ -466,10 +476,11 @@ describe("routeRunningKey — prompt entry", () => {
     expect(log.calls).toContain("enterPromptMode");
   });
 
-  test(": enters prompt mode when agent messaging available", () => {
+  test(": enters goto mode (C2)", () => {
     const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
     routeRunningKey(keyEvent(":", { sequence: ":" }), defaultState(), actions);
-    expect(log.calls).toContain("enterPromptMode");
+    expect(log.calls).toContain("enterGotoMode");
+    expect(log.calls).not.toContain("enterPromptMode");
   });
 
   test("m does NOT enter prompt when no sendToAgent", () => {
@@ -796,6 +807,31 @@ describe("Trace panel mode", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("a", { ctrl: true }), traceState(), actions);
     expect(log.calls).toContain("toggleAdvanced");
+  });
+});
+
+// ===========================================================================
+// C2 keyboard routing (Task 11)
+// ===========================================================================
+
+describe("C2 keyboard routing", () => {
+  test("':' enters goto mode (NOT message mode)", () => {
+    const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
+    routeRunningKey(keyEvent(":", { sequence: ":" }), defaultState(), actions);
+    expect(log.calls).toContain("enterGotoMode");
+    expect(log.calls).not.toContain("enterPromptMode");
+  });
+
+  test("'m' still enters message mode", () => {
+    const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
+    routeRunningKey(keyEvent("m"), defaultState(), actions);
+    expect(log.calls).toContain("enterPromptMode");
+  });
+
+  test("'/' enters filter mode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("/", { sequence: "/" }), defaultState(), actions);
+    expect(log.calls).toContain("enterFilterMode");
   });
 });
 
