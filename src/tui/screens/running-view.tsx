@@ -1333,6 +1333,18 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           handoffs={ctx.handoffs}
         />
       );
+
+    case RunningPanel.Sessions:
+      // Task 16: stub Sessions panel
+      return null;
+
+    case RunningPanel.Tasks:
+      // Task 16: stub Tasks panel
+      return null;
+
+    case RunningPanel.Reviews:
+      // Task 16: stub Reviews panel
+      return null;
   }
 }
 

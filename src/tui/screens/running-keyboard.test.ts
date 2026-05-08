@@ -17,6 +17,7 @@ import type { KeyEvent } from "@opentui/core";
 import {
   collapsePanel,
   expandPanel,
+  RUNNING_PANEL_LABELS,
   type RunningKeyboardActions,
   type RunningKeyboardState,
   RunningPanel,
@@ -911,5 +912,23 @@ describe("stripAnsi", () => {
   test("handles plain text", async () => {
     const { stripAnsi } = await import("../../shared/format.js");
     expect(stripAnsi("plain text")).toBe("plain text");
+  });
+});
+
+// ===========================================================================
+// RunningPanel new entries
+// ===========================================================================
+
+describe("RunningPanel new entries", () => {
+  test("Sessions/Tasks/Reviews panels are defined", () => {
+    expect(RunningPanel.Sessions).toBe(6);
+    expect(RunningPanel.Tasks).toBe(7);
+    expect(RunningPanel.Reviews).toBe(8);
+  });
+
+  test("RUNNING_PANEL_LABELS includes new panels", () => {
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Sessions]).toBe("Sessions");
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Tasks]).toBe("Tasks");
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Reviews]).toBe("Reviews");
   });
 });
