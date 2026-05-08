@@ -6,6 +6,21 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import type { InMemoryCreditsService } from "../in-memory-credits.js";
 import {
+  type Claim,
+  type ClaimSpecRecord,
+  type ClaimView,
+  claimToSpecRecord,
+  claimToStatusRecord,
+  claimViewToClaim,
+} from "../models.js";
+import type {
+  ActiveClaimFilter,
+  ClaimQuery,
+  ClaimStatusPatch,
+  ClaimStore,
+  ExpiredClaim,
+} from "../store.js";
+import {
   claimBountyOperation,
   createBountyOperation,
   listBountiesOperation,
@@ -15,6 +30,187 @@ import { contributeOperation } from "./contribute.js";
 import type { OperationDeps } from "./deps.js";
 import type { TestOperationDeps } from "./test-helpers.js";
 import { createTestOperationDeps } from "./test-helpers.js";
+
+class OwnerAwareClaimStore implements ClaimStore {
+  private readonly claims = new Map<string, Claim>();
+
+  private viewFromClaim(claim: Claim): ClaimView {
+    return {
+      spec: claimToSpecRecord(claim),
+      status: claimToStatusRecord(claim),
+    };
+  }
+
+  private putView(view: ClaimView): void {
+    this.claims.set(view.spec.id, claimViewToClaim(view));
+  }
+
+  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+    const existing = await this.getClaimView(spec.id);
+    const now = new Date().toISOString();
+    const createdAtMs = Date.parse(spec.createdAt);
+    const leaseBaseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+    const view: ClaimView =
+      existing === undefined
+        ? {
+            spec: {
+              ...spec,
+              generation: 1,
+            },
+            status: {
+              id: spec.id,
+              phase: "active",
+              observedGeneration: 0,
+              lastHeartbeatAt: now,
+              leaseExpiresAt: new Date(
+                leaseBaseMs + (spec.leaseDeadlineSec ?? 300) * 1000,
+              ).toISOString(),
+              conditions: [],
+              lastTransitionAt: now,
+              attemptCount: 0,
+              revision: 1,
+            },
+          }
+        : {
+            spec: {
+              ...spec,
+              createdAt: existing.spec.createdAt,
+              generation: existing.spec.generation + 1,
+            },
+            status: existing.status,
+          };
+    this.putView(view);
+    return view;
+  }
+
+  async getClaimView(claimId: string): Promise<ClaimView | undefined> {
+    const claim = this.claims.get(claimId);
+    return claim === undefined ? undefined : this.viewFromClaim(claim);
+  }
+
+  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+    const view = await this.getClaimView(claimId);
+    if (view === undefined) throw new Error(`Claim ${claimId} does not exist`);
+    const updated: ClaimView = {
+      spec: view.spec,
+      status: {
+        ...view.status,
+        phase: patch.phase ?? view.status.phase,
+        observedGeneration: patch.observedGeneration ?? view.status.observedGeneration,
+        agentSessionId: patch.agentSessionId ?? view.status.agentSessionId,
+        lastHeartbeatAt: patch.lastHeartbeatAt ?? view.status.lastHeartbeatAt,
+        leaseExpiresAt: patch.leaseExpiresAt ?? view.status.leaseExpiresAt,
+        currentContributionCid: patch.currentContributionCid ?? view.status.currentContributionCid,
+        conditions: patch.conditions ?? view.status.conditions,
+        lastTransitionAt: patch.lastTransitionAt ?? view.status.lastTransitionAt,
+        revision: view.status.revision + 1,
+      },
+    };
+    this.putView(updated);
+    return updated;
+  }
+
+  async createClaim(claim: Claim): Promise<Claim> {
+    this.claims.set(claim.claimId, claim);
+    return claim;
+  }
+
+  async claimOrRenew(claim: Claim): Promise<Claim> {
+    for (const existing of this.claims.values()) {
+      if (existing.targetRef === claim.targetRef && existing.status === "active") {
+        if (existing.agent.agentId !== claim.agent.agentId) {
+          throw new Error("target already has an active claim");
+        }
+        const renewed: Claim = {
+          ...existing,
+          heartbeatAt: claim.heartbeatAt,
+          leaseExpiresAt: claim.leaseExpiresAt,
+          intentSummary: claim.intentSummary,
+          revision: (existing.revision ?? 1) + 1,
+          ...(claim.ownerRef !== undefined ? { ownerRef: claim.ownerRef } : {}),
+        };
+        this.claims.set(existing.claimId, renewed);
+        return renewed;
+      }
+    }
+
+    const created: Claim = { ...claim, revision: 1 };
+    this.claims.set(claim.claimId, created);
+    return created;
+  }
+
+  async getClaim(claimId: string): Promise<Claim | undefined> {
+    return this.claims.get(claimId);
+  }
+
+  async heartbeat(claimId: string): Promise<Claim> {
+    const claim = this.claims.get(claimId);
+    if (claim === undefined) throw new Error(`Claim ${claimId} does not exist`);
+    return claim;
+  }
+
+  async release(claimId: string): Promise<Claim> {
+    const claim = this.claims.get(claimId);
+    if (claim === undefined) throw new Error(`Claim ${claimId} does not exist`);
+    const released: Claim = { ...claim, status: "released" };
+    this.claims.set(claimId, released);
+    return released;
+  }
+
+  async releaseOwnedBy(): Promise<number> {
+    return 0;
+  }
+
+  async complete(claimId: string): Promise<Claim> {
+    const claim = this.claims.get(claimId);
+    if (claim === undefined) throw new Error(`Claim ${claimId} does not exist`);
+    const completed: Claim = { ...claim, status: "completed" };
+    this.claims.set(claimId, completed);
+    return completed;
+  }
+
+  async deleteTerminalOwnedBy(): Promise<number> {
+    return 0;
+  }
+
+  async expireStale(): Promise<readonly ExpiredClaim[]> {
+    return [];
+  }
+
+  async activeClaims(targetRef?: string): Promise<readonly Claim[]> {
+    const active = [...this.claims.values()].filter((claim) => claim.status === "active");
+    return targetRef !== undefined
+      ? active.filter((claim) => claim.targetRef === targetRef)
+      : active;
+  }
+
+  async listClaims(_query?: ClaimQuery): Promise<readonly Claim[]> {
+    return [...this.claims.values()];
+  }
+
+  async cleanCompleted(): Promise<number> {
+    return 0;
+  }
+
+  async countActiveClaims(filter?: ActiveClaimFilter): Promise<number> {
+    const active = await this.activeClaims(filter?.targetRef);
+    return filter?.agentId !== undefined
+      ? active.filter((claim) => claim.agent.agentId === filter.agentId).length
+      : active.length;
+  }
+
+  async detectStalled(): Promise<readonly Claim[]> {
+    return [];
+  }
+
+  async listEntities(): Promise<readonly []> {
+    return [];
+  }
+
+  close(): void {
+    /* no-op */
+  }
+}
 
 describe("createBountyOperation", () => {
   let testDeps: TestOperationDeps;
@@ -281,6 +477,37 @@ describe("claimBountyOperation", () => {
     expect(result.value.status).toBe("claimed");
     expect(result.value.claimId).toBeTruthy();
     expect(result.value.claimedBy).toBe("claimer");
+  });
+
+  test("claims an open bounty with session ownerRef", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+    const claimStore = new OwnerAwareClaimStore();
+    const ownerRef = { kind: "session" as const, id: "s1", uid: "u1" };
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Owned bounty claim",
+        amount: 100,
+        criteria: { description: "Do owned work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    const result = await claimBountyOperation(
+      {
+        bountyId: bounty.value.bountyId,
+        agent: { agentId: "claimer" },
+      },
+      { ...deps, claimStore, sessionOwnerRef: ownerRef },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stored = await claimStore.getClaim(result.value.claimId);
+    expect(stored?.ownerRef).toEqual(ownerRef);
   });
 
   test("returns NOT_FOUND for nonexistent bounty", async () => {
@@ -625,6 +852,46 @@ describe("claimBountyOperation status checks", () => {
     expect(renewal.value.status).toBe("claimed");
     expect(renewal.value.claimedBy).toBe("worker");
     expect(renewal.value.claimId).toBe(firstClaim.value.claimId);
+  });
+
+  test("same agent renewal stamps session ownerRef", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+    const claimStore = new OwnerAwareClaimStore();
+    const ownerRef = { kind: "session" as const, id: "s1", uid: "u1" };
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Owned renewal",
+        amount: 100,
+        criteria: { description: "work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    const firstClaim = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "worker" } },
+      { ...deps, claimStore },
+    );
+    expect(firstClaim.ok).toBe(true);
+    if (!firstClaim.ok) return;
+
+    const renewal = await claimBountyOperation(
+      {
+        bountyId: bounty.value.bountyId,
+        agent: { agentId: "worker" },
+        leaseDurationMs: 3_600_000,
+      },
+      { ...deps, claimStore, sessionOwnerRef: ownerRef },
+    );
+
+    expect(renewal.ok).toBe(true);
+    if (!renewal.ok) return;
+    expect(renewal.value.claimId).toBe(firstClaim.value.claimId);
+    const stored = await claimStore.getClaim(renewal.value.claimId);
+    expect(stored?.ownerRef).toEqual(ownerRef);
   });
 
   test("different agent cannot renew another agent's claim", async () => {

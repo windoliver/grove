@@ -27,6 +27,7 @@ import {
   reproduceOperation,
   reviewOperation,
 } from "../../core/operations/index.js";
+import { bindAgentIdentity } from "../agent-binding.js";
 import type { McpDeps } from "../deps.js";
 import { toMcpResult, toOperationDeps, toolValidationError } from "../operation-adapter.js";
 import {
@@ -179,23 +180,6 @@ const adoptInputSchema = z.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Inject GROVE_AGENT_ROLE into agent overrides if not already set.
- * Falls back to extracting role from agentId pattern "role-timestamp".
- */
-function withDefaultRole(agent: AgentOverrides | undefined): AgentOverrides {
-  if (agent?.role) return agent;
-  const envRole = process.env.GROVE_AGENT_ROLE;
-  if (envRole) return { ...agent, role: envRole } as AgentOverrides;
-  // Fallback: extract role from agentId if it matches "role-xxx" pattern
-  const agentId = agent?.agentId;
-  if (agentId?.includes("-")) {
-    const role = agentId.replace(/-[a-z0-9]+$/i, "");
-    if (role && role !== agentId) return { ...agent, role } as AgentOverrides;
-  }
-  return agent ?? {};
-}
-
 function scopeIdempotencyKey(
   key: string | undefined,
   scope: string | undefined,
@@ -250,7 +234,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
             : {}),
           relations: args.relations as unknown as readonly Relation[],
           tags: args.tags,
-          agent: withDefaultRole(args.agent as AgentOverrides),
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
           ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
             ? {
                 idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
@@ -292,7 +276,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           summary: args.summary,
           scores,
           tags: args.tags,
-          agent: withDefaultRole(args.agent as AgentOverrides),
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
           ...(args.description !== undefined ? { description: args.description } : {}),
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
@@ -331,7 +315,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           summary: args.summary,
           artifacts: args.artifacts,
           tags: args.tags,
-          agent: withDefaultRole(args.agent as AgentOverrides),
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
           ...(args.description !== undefined ? { description: args.description } : {}),
           ...(args.result !== undefined
             ? { result: args.result as "confirmed" | "challenged" | "partial" }
@@ -372,7 +356,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
         {
           summary: args.summary,
           tags: args.tags,
-          agent: withDefaultRole(args.agent as AgentOverrides),
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
           ...(args.targetCid !== undefined ? { targetCid: args.targetCid } : {}),
           ...(args.description !== undefined ? { description: args.description } : {}),
           ...(args.context !== undefined
@@ -407,7 +391,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           targetCid: args.targetCid,
           summary: args.summary,
           tags: args.tags,
-          agent: withDefaultRole(args.agent as AgentOverrides),
+          agent: bindAgentIdentity(args.agent as AgentOverrides),
           ...(args.description !== undefined ? { description: args.description } : {}),
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }

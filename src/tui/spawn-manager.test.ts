@@ -785,6 +785,71 @@ describe("SpawnManager — per-role skill injection", () => {
     );
   });
 
+  test("spawn writes Codex home MCP config when opt-in flag is set", async () => {
+    const { execSync } = await import("node:child_process");
+    const { mkdirSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousCodexWriteMcpConfig = process.env.GROVE_CODEX_WRITE_MCP_CONFIG;
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    const previousNexusApiKey = process.env.NEXUS_API_KEY;
+
+    try {
+      const projectRoot = mkdtempSync(join(tmpdir(), "grove-codex-home-e2e-"));
+      execSync("git init -q", { cwd: projectRoot });
+      execSync("git config user.email test@grove.test", { cwd: projectRoot });
+      execSync("git config user.name Grove-Test", { cwd: projectRoot });
+      execSync("git commit --allow-empty -q -m init", { cwd: projectRoot });
+
+      const groveDir = join(projectRoot, ".grove");
+      mkdirSync(groveDir, { recursive: true });
+
+      const codexHome = mkdtempSync(join(tmpdir(), "grove-codex-home-"));
+      writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.4-mini"\n', "utf-8");
+      process.env.CODEX_HOME = codexHome;
+      process.env.GROVE_CODEX_WRITE_MCP_CONFIG = "1";
+      process.env.GROVE_NEXUS_URL = "http://localhost:4515";
+      process.env.NEXUS_API_KEY = "grv_test_key";
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        () => {
+          /* ignore */
+        },
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("strict");
+
+      await manager.spawn("coder", "bash");
+
+      const config = readFileSync(join(codexHome, "config.toml"), "utf-8");
+      expect(config).toContain('model = "gpt-5.4-mini"');
+      expect(config).toContain("# BEGIN GROVE GENERATED MCP");
+      expect(config).toContain("[mcp_servers.grove]");
+      expect(config).toContain('NEXUS_API_KEY = "grv_test_key"');
+      expect(config).toContain('GROVE_NEXUS_URL = "http://localhost:4515"');
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousCodexWriteMcpConfig === undefined) {
+        delete process.env.GROVE_CODEX_WRITE_MCP_CONFIG;
+      } else {
+        process.env.GROVE_CODEX_WRITE_MCP_CONFIG = previousCodexWriteMcpConfig;
+      }
+      if (previousNexusUrl === undefined) delete process.env.GROVE_NEXUS_URL;
+      else process.env.GROVE_NEXUS_URL = previousNexusUrl;
+      if (previousNexusApiKey === undefined) delete process.env.NEXUS_API_KEY;
+      else process.env.NEXUS_API_KEY = previousNexusApiKey;
+    }
+  });
+
   test("two roles in the same session each get their own skill-injected workspace", async () => {
     const { execSync } = await import("node:child_process");
     const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");

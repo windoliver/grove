@@ -12,6 +12,7 @@ import { pickDefined } from "../../shared/pick-defined.js";
 import { computeContributionContentHash } from "../content-dedup.js";
 import { contributionToEntity } from "../entity.js";
 import { PolicyViolationError } from "../errors.js";
+import type { EventBus, GroveEvent, PublishResult } from "../event-bus.js";
 import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
@@ -827,6 +828,16 @@ async function writeContributionWithHandoffs(
   );
 }
 
+async function publishLocalContributionEvent(
+  eventBus: EventBus,
+  event: GroveEvent,
+): Promise<PublishResult> {
+  if (eventBus.publishLocal !== undefined) {
+    return eventBus.publishLocal(event);
+  }
+  return eventBus.publish(event);
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -1108,21 +1119,17 @@ export async function contributeOperation(
     // context.done) is background noise that should be invisible to the
     // routing layer entirely.
     //
-    //   kind                   | handoffs | route event | stop conditions
-    //   plan                   |    no    |     yes     |       no
-    //   discussion (done)      |    no    |     yes     |       no
-    //   discussion (chat)      |    no    |     no      |       no
-    //   discussion (plain)     |    yes   |     yes     |       yes
-    //   work / review / etc    |    yes   |     yes     |       yes
+    //   kind                   | handoffs | agent route | local observer | stop conditions
+    //   plan                   |    no    |     yes     |       no       |       no
+    //   discussion (done)      |    no    |     no      |       yes      |       no
+    //   discussion (chat)      |    no    |     no      |       no       |       no
+    //   discussion (plain)     |    yes   |     yes     |       no       |       yes
+    //   work / review / etc    |    yes   |     yes     |       no       |       yes
     //
-    // Earlier versions of this branch collapsed done markers into the
-    // "ephemeral discussion" row, which suppressed the route event too.
-    // That turned out to strand event-driven done detection: when an
-    // EventBus is present, useDoneDetection disables polling and waits
-    // exclusively for contribution events on the bus. Without a route
-    // event for the done marker, the UI never advanced out of "running"
-    // after all roles signaled done. The two discussion rows must remain
-    // distinct.
+    // Done markers need an in-process observer event so event-driven done
+    // detection can advance. They must not use the topology route, because
+    // Nexus-backed routing also sends an IPC message to peer agents and can
+    // wake them into an "already approved" response loop.
     const isPlan = contribution.kind === CK.Plan;
     const isDoneMarker = contribution.kind === CK.Discussion && contribution.context?.done === true;
     const isEphemeralChat =
@@ -1133,9 +1140,9 @@ export async function contributeOperation(
     // A done marker is "session over — no work to pick up"; a chat message
     // is noise; a plan is coordination metadata.
     const skipHandoffs = isPlan || isDoneMarker || isEphemeralChat;
-    // ONLY ephemeral chat skips the route event. Plans and done markers
-    // still publish so downstream UIs / observers can react.
-    const skipRouteEvent = isEphemeralChat;
+    // Done markers and ephemeral chat skip agent routing. Done markers still
+    // publish a local-only observer event after commit.
+    const skipRouteEvent = isDoneMarker || isEphemeralChat;
     // None of these three count toward budget / quorum / deliberation
     // stop conditions.
     const skipStopConditions = isPlan || isDoneMarker || isEphemeralChat;
@@ -1406,6 +1413,24 @@ export async function contributeOperation(
           callbackErr instanceof Error ? callbackErr.message : String(callbackErr)
         }\n`,
       );
+    }
+
+    if (isDoneMarker && deps.eventBus !== undefined && agentRole !== undefined) {
+      const eventBus = deps.eventBus;
+      const event: GroveEvent = {
+        type: "contribution",
+        sourceRole: agentRole,
+        targetRole: agentRole,
+        payload: {
+          cid: contribution.cid,
+          kind: contribution.kind,
+          summary: contribution.summary,
+          agentId: contribution.agent.agentId,
+          ...(contribution.context !== undefined ? { context: contribution.context } : {}),
+        },
+        timestamp: new Date().toISOString(),
+      };
+      fireAndForget("done observer event", () => publishLocalContributionEvent(eventBus, event));
     }
 
     // --- Post-write: register deadline timers for new handoffs ---

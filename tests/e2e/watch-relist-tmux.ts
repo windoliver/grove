@@ -299,13 +299,13 @@ async function main() {
       // GROVE_WATCH_MAX_EVENTS=2 matches the unit test sizing:
       // after 2 events in the ring, a write evicts the oldest.
       // Writing 5 events while paused guarantees oldestRv > lastSeenRv.
-      [
+      `${[
         `GROVE_DIR=${groveDir}`,
         `PORT=${SERVER_PORT}`,
         `GROVE_WATCH_RETENTION_MS=60000`,
         `GROVE_WATCH_MAX_EVENTS=2`,
         `bun run ${join(PROJECT_ROOT, "src/server/serve.ts")} 2>&1 | tee ${serverLogFile}`,
-      ].join(" ") + "; cat",
+      ].join(" ")}; cat`,
     ],
     { stdio: "inherit" },
   );
@@ -333,12 +333,12 @@ async function main() {
       "-h",
       "sh",
       "-c",
-      [
+      `${[
         `GROVE_BASE_URL=${baseUrl}`,
         `GROVE_TOKEN=${token}`,
         `GROVE_PID_FILE=${pidFile}`,
         `bun run ${watcherScriptPath}`,
-      ].join(" ") + "; cat",
+      ].join(" ")}; cat`,
     ],
     { stdio: "inherit" },
   );

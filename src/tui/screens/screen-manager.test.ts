@@ -208,10 +208,12 @@ const PRESETS: readonly TuiPresetEntry[] = [{ name: "review-loop", description: 
 
 const ACTIVE_SESSION: SessionRecord = {
   id: "session-active",
+  uid: "session-active",
   goal: "Resume existing work",
   presetName: "review-loop",
   status: "active",
   createdAt: "2026-03-29T00:00:00.000Z",
+  finalizers: [],
   contributionCount: 0,
   topology: TEST_TOPOLOGY,
 };
@@ -266,10 +268,12 @@ function makeDashboard(): DashboardData {
 function makeSession(input: SessionInput, id: string): SessionRecord {
   return {
     id,
+    uid: id,
     goal: input.goal,
     presetName: input.presetName,
     status: "active",
     createdAt: "2026-03-29T00:00:00.000Z",
+    finalizers: [],
     topology: input.topology,
     config: input.config,
     contributionCount: 0,
