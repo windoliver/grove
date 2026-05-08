@@ -66,6 +66,8 @@ export interface RunningKeyboardState {
   readonly cmdMode: import("../components/prompt.js").PromptMode;
   /** Current C2 cmd text. */
   readonly cmdText: string;
+  /** C2 (#302): retained filter query after Enter exits filter mode. Esc-from-normal clears it. */
+  readonly filterQuery: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,8 @@ export interface RunningKeyboardActions {
   readonly cmdSubmit: () => void;
   readonly cmdClearText: () => void;
   readonly cmdExit: () => void;
+  /** C2 (#302): clear retained filter query (Esc from normal mode when filter is active). */
+  readonly clearFilterQuery: () => void;
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
@@ -290,7 +294,7 @@ export function routeRunningKey(
     return true;
   }
 
-  // Escape: layered dismissal — overlay → panel collapse
+  // Escape: layered dismissal — overlay → filter clear → panel collapse
   if (input === "escape") {
     if (state.showVfs) {
       actions.dismissVfs();
@@ -298,6 +302,14 @@ export function routeRunningKey(
     }
     if (state.confirmQuit) {
       actions.setConfirmQuit(false);
+      return true;
+    }
+    // C2 (#302): clear retained filter query before collapsing the panel.
+    // Mirrors k9s "Esc-Esc clears filter" — first Esc exits filter prompt
+    // (handled in cmdMode block); second Esc (now in normal mode) clears
+    // the retained query.
+    if (state.filterQuery !== "") {
+      actions.clearFilterQuery();
       return true;
     }
     if (state.expandedPanel !== null) {

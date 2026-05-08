@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_ALIASES, MAX_ALIAS_DEPTH, matchAliases, resolveAlias } from "./aliases.js";
+import {
+  type AliasMap,
+  DEFAULT_ALIASES,
+  MAX_ALIAS_DEPTH,
+  matchAliases,
+  resolveAlias,
+} from "./aliases.js";
 
 describe("DEFAULT_ALIASES", () => {
   test("contains six built-in keys", () => {

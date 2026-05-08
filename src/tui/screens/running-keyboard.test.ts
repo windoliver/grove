@@ -68,6 +68,7 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     promptText: "",
     cmdMode: "none",
     cmdText: "",
+    filterQuery: "",
     ...overrides,
   };
 }
@@ -109,6 +110,7 @@ function mockActions(overrides?: {
     cmdSubmit: () => record("cmdSubmit"),
     cmdClearText: () => record("cmdClearText"),
     cmdExit: () => record("cmdExit"),
+    clearFilterQuery: () => record("clearFilterQuery"),
     feedCursorDown: () => record("feedCursorDown"),
     feedCursorUp: () => record("feedCursorUp"),
     feedScrollToBottom: () => record("feedScrollToBottom"),
@@ -520,6 +522,18 @@ describe("routeRunningKey — Escape layered dismissal", () => {
     });
     routeRunningKey(keyEvent("escape"), state, actions);
     expect(log.args.setConfirmQuit).toEqual([false]);
+    expect(log.calls).not.toContain("collapsePanel");
+  });
+
+  test("Escape clears retained filterQuery before collapsing panel", () => {
+    const { actions, log } = mockActions();
+    const state = defaultState({
+      filterQuery: "foo",
+      expandedPanel: RunningPanel.Agents,
+      zoomLevel: "half",
+    });
+    routeRunningKey(keyEvent("escape"), state, actions);
+    expect(log.calls).toContain("clearFilterQuery");
     expect(log.calls).not.toContain("collapsePanel");
   });
 

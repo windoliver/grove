@@ -51,6 +51,7 @@ import {
   type CmdModeState,
   appendChar as cmdAppend,
   deleteChar as cmdDelete,
+  cycleSuggestion,
   enterFilter,
   enterGoto,
   exitCmdMode,
@@ -594,6 +595,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         promptText,
         cmdMode: cmdState.mode,
         cmdText: cmdState.text,
+        filterQuery,
       }),
       [
         expandedPanel,
@@ -605,6 +607,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         promptText,
         cmdState.mode,
         cmdState.text,
+        filterQuery,
       ],
     );
 
@@ -801,7 +804,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               if (!only) return s;
               return { ...s, text: `${only} `, suggestionIndex: 0 };
             }
-            return { ...s, suggestionIndex: (s.suggestionIndex + 1) % matches.length };
+            return cycleSuggestion(s, matches.length);
           }),
         cmdSubmit: () =>
           setCmdState((s) => {
@@ -833,6 +836,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           }
           setCmdState(exitCmdMode);
         },
+        clearFilterQuery: () => setFilterQuery(""),
       }),
       [
         expandedPanel,
@@ -1083,6 +1087,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 traceScrollOffset,
                 sessionStartedAt,
                 handoffs,
+                filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
               })}
             </box>
           </box>
