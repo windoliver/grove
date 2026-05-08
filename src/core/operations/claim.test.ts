@@ -42,6 +42,27 @@ describe("claimOperation", () => {
     expect(result.value.renewed).toBe(false);
   });
 
+  test("stores claimOperation output as split claim spec and active status", async () => {
+    const result = await claimOperation(
+      {
+        targetRef: "target-operation-split",
+        agent: { agentId: "agent-operation-split", role: "coder", platform: "codex" },
+        intentSummary: "operation split",
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const claimId = result.value.claimId;
+    const view = await deps.claimStore?.getClaimView(claimId);
+
+    expect(view?.spec.targetRef).toBe("target-operation-split");
+    expect(view?.spec.roleName).toBe("coder");
+    expect(view?.status.phase).toBe("active");
+  });
+
   test("renews an existing claim by the same agent", async () => {
     // First claim
     const first = await claimOperation(

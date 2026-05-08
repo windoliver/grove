@@ -8,6 +8,7 @@
  * See spec/schemas/contribution.json for the canonical wire format.
  */
 
+import type { Condition } from "./entity.js";
 import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 
 /** Contribution kinds — the type of work being contributed. */
@@ -190,4 +191,114 @@ export interface Claim {
    * operations. Local stores may track it but are not required to.
    */
   readonly revision?: number | undefined;
+}
+
+/** User-owned desired state for a claim. */
+export interface ClaimSpecRecord {
+  readonly id: string;
+  readonly roleName?: string | undefined;
+  readonly platform?: string | undefined;
+  readonly blueprint?: string | undefined;
+  readonly assignee?: AgentIdentity | undefined;
+  readonly leaseDeadlineSec?: number | undefined;
+  readonly priority?: number | undefined;
+  readonly maxIterations?: number | undefined;
+  readonly generation: number;
+  readonly targetRef: string;
+  readonly agent: AgentIdentity;
+  readonly intentSummary: string;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
+  readonly createdAt: string;
+}
+
+/** Controller-owned observed state for a claim. */
+export interface ClaimStatusRecord {
+  readonly id: string;
+  readonly phase: ClaimStatus;
+  readonly observedGeneration: number;
+  readonly agentSessionId?: string | undefined;
+  readonly lastHeartbeatAt: string;
+  readonly leaseExpiresAt: string;
+  readonly currentContributionCid?: string | undefined;
+  readonly conditions: readonly Condition[];
+  readonly lastTransitionAt: string;
+  readonly attemptCount: number;
+  readonly revision: number;
+}
+
+/** Merged split claim view. */
+export interface ClaimView {
+  readonly spec: ClaimSpecRecord;
+  readonly status: ClaimStatusRecord;
+}
+
+export function claimToSpecRecord(claim: Claim): ClaimSpecRecord {
+  const createdAtMs = Date.parse(claim.createdAt);
+  const leaseExpiresAtMs = Date.parse(claim.leaseExpiresAt);
+  const leaseDeadlineSec =
+    Number.isFinite(createdAtMs) &&
+    Number.isFinite(leaseExpiresAtMs) &&
+    leaseExpiresAtMs > createdAtMs
+      ? Math.floor((leaseExpiresAtMs - createdAtMs) / 1000)
+      : undefined;
+
+  return {
+    id: claim.claimId,
+    roleName: claim.agent.role,
+    platform: claim.agent.platform,
+    assignee: claim.agent,
+    leaseDeadlineSec,
+    generation: claim.revision ?? 1,
+    targetRef: claim.targetRef,
+    agent: claim.agent,
+    intentSummary: claim.intentSummary,
+    context: claim.context,
+    ...(claim.ownerRef === undefined ? {} : { ownerRef: claim.ownerRef }),
+    ...(claim.finalizers === undefined ? {} : { finalizers: claim.finalizers }),
+    ...(claim.deletionTimestamp === undefined
+      ? {}
+      : { deletionTimestamp: claim.deletionTimestamp }),
+    createdAt: claim.createdAt,
+  };
+}
+
+export function claimToStatusRecord(
+  claim: Claim,
+  conditions: readonly Condition[] = [],
+): ClaimStatusRecord {
+  return {
+    id: claim.claimId,
+    phase: claim.status,
+    observedGeneration: claim.revision ?? 1,
+    lastHeartbeatAt: claim.heartbeatAt,
+    leaseExpiresAt: claim.leaseExpiresAt,
+    conditions,
+    lastTransitionAt: claim.heartbeatAt,
+    attemptCount: claim.attemptCount ?? 0,
+    revision: claim.revision ?? 1,
+  };
+}
+
+export function claimViewToClaim(view: ClaimView): Claim {
+  return {
+    claimId: view.spec.id,
+    targetRef: view.spec.targetRef,
+    agent: view.spec.agent,
+    status: view.status.phase,
+    intentSummary: view.spec.intentSummary,
+    createdAt: view.spec.createdAt,
+    heartbeatAt: view.status.lastHeartbeatAt,
+    leaseExpiresAt: view.status.leaseExpiresAt,
+    revision: view.status.revision,
+    ...(view.spec.context === undefined ? {} : { context: view.spec.context }),
+    ...(view.spec.ownerRef === undefined ? {} : { ownerRef: view.spec.ownerRef }),
+    ...(view.spec.finalizers === undefined ? {} : { finalizers: view.spec.finalizers }),
+    ...(view.spec.deletionTimestamp === undefined
+      ? {}
+      : { deletionTimestamp: view.spec.deletionTimestamp }),
+    ...(view.status.attemptCount > 0 ? { attemptCount: view.status.attemptCount } : {}),
+  };
 }

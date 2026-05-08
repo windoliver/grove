@@ -5,8 +5,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import type { InMemoryCreditsService } from "../in-memory-credits.js";
-import type { Claim } from "../models.js";
-import type { ActiveClaimFilter, ClaimQuery, ClaimStore, ExpiredClaim } from "../store.js";
+import {
+  type Claim,
+  type ClaimSpecRecord,
+  type ClaimView,
+  claimToSpecRecord,
+  claimToStatusRecord,
+  claimViewToClaim,
+} from "../models.js";
+import type {
+  ActiveClaimFilter,
+  ClaimQuery,
+  ClaimStatusPatch,
+  ClaimStore,
+  ExpiredClaim,
+} from "../store.js";
 import {
   claimBountyOperation,
   createBountyOperation,
@@ -20,6 +33,82 @@ import { createTestOperationDeps } from "./test-helpers.js";
 
 class OwnerAwareClaimStore implements ClaimStore {
   private readonly claims = new Map<string, Claim>();
+
+  private viewFromClaim(claim: Claim): ClaimView {
+    return {
+      spec: claimToSpecRecord(claim),
+      status: claimToStatusRecord(claim),
+    };
+  }
+
+  private putView(view: ClaimView): void {
+    this.claims.set(view.spec.id, claimViewToClaim(view));
+  }
+
+  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+    const existing = await this.getClaimView(spec.id);
+    const now = new Date().toISOString();
+    const createdAtMs = Date.parse(spec.createdAt);
+    const leaseBaseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+    const view: ClaimView =
+      existing === undefined
+        ? {
+            spec: {
+              ...spec,
+              generation: 1,
+            },
+            status: {
+              id: spec.id,
+              phase: "active",
+              observedGeneration: 0,
+              lastHeartbeatAt: now,
+              leaseExpiresAt: new Date(
+                leaseBaseMs + (spec.leaseDeadlineSec ?? 300) * 1000,
+              ).toISOString(),
+              conditions: [],
+              lastTransitionAt: now,
+              attemptCount: 0,
+              revision: 1,
+            },
+          }
+        : {
+            spec: {
+              ...spec,
+              createdAt: existing.spec.createdAt,
+              generation: existing.spec.generation + 1,
+            },
+            status: existing.status,
+          };
+    this.putView(view);
+    return view;
+  }
+
+  async getClaimView(claimId: string): Promise<ClaimView | undefined> {
+    const claim = this.claims.get(claimId);
+    return claim === undefined ? undefined : this.viewFromClaim(claim);
+  }
+
+  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+    const view = await this.getClaimView(claimId);
+    if (view === undefined) throw new Error(`Claim ${claimId} does not exist`);
+    const updated: ClaimView = {
+      spec: view.spec,
+      status: {
+        ...view.status,
+        phase: patch.phase ?? view.status.phase,
+        observedGeneration: patch.observedGeneration ?? view.status.observedGeneration,
+        agentSessionId: patch.agentSessionId ?? view.status.agentSessionId,
+        lastHeartbeatAt: patch.lastHeartbeatAt ?? view.status.lastHeartbeatAt,
+        leaseExpiresAt: patch.leaseExpiresAt ?? view.status.leaseExpiresAt,
+        currentContributionCid: patch.currentContributionCid ?? view.status.currentContributionCid,
+        conditions: patch.conditions ?? view.status.conditions,
+        lastTransitionAt: patch.lastTransitionAt ?? view.status.lastTransitionAt,
+        revision: view.status.revision + 1,
+      },
+    };
+    this.putView(updated);
+    return updated;
+  }
 
   async createClaim(claim: Claim): Promise<Claim> {
     this.claims.set(claim.claimId, claim);

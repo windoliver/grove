@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { ClaimEntity } from "./entity.js";
 import { claimToEntity } from "./entity.js";
+import { NotFoundError } from "./errors.js";
 import { ownerRefsEqual } from "./lifecycle-metadata.js";
-import { ClaimStatus } from "./models.js";
+import {
+  type ClaimSpecRecord,
+  ClaimStatus,
+  type ClaimStatusRecord,
+  type ClaimView,
+  claimToSpecRecord,
+  claimToStatusRecord,
+  claimViewToClaim,
+} from "./models.js";
 import { DefaultReconciler } from "./reconciler.js";
-import type { ClaimQuery, ClaimStore, ExpiredClaim } from "./store.js";
+import type { ClaimQuery, ClaimStatusPatch, ClaimStore, ExpiredClaim } from "./store.js";
 import { ExpiryReason } from "./store.js";
 import type {
   CheckoutOptions,
@@ -21,9 +30,94 @@ function makeClaimStore(overrides?: {
   cleanCompleted?: () => Promise<number>;
 }): ClaimStore {
   const claimsById = new Map<string, import("./models.js").Claim>();
+  const viewsById = new Map<string, ClaimView>();
+  const viewFromClaim = (claim: import("./models.js").Claim): ClaimView => ({
+    spec: claimToSpecRecord(claim),
+    status: claimToStatusRecord(claim),
+  });
+  const viewFor = (claimId: string): ClaimView | undefined => {
+    const view = viewsById.get(claimId);
+    if (view !== undefined) return view;
+    const claim = claimsById.get(claimId);
+    return claim === undefined ? undefined : viewFromClaim(claim);
+  };
+  const putView = (view: ClaimView): void => {
+    viewsById.set(view.spec.id, view);
+    claimsById.set(view.spec.id, claimViewToClaim(view));
+  };
+  const putClaim = (claim: import("./models.js").Claim): void => {
+    claimsById.set(claim.claimId, claim);
+    viewsById.set(claim.claimId, viewFromClaim(claim));
+  };
+
   return {
+    putClaimSpec: async (spec: ClaimSpecRecord) => {
+      const existing = viewFor(spec.id);
+      const now = new Date().toISOString();
+      const createdAtMs = Date.parse(spec.createdAt);
+      const leaseBaseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+      const view: ClaimView =
+        existing === undefined
+          ? {
+              spec: {
+                ...spec,
+                generation: 1,
+              },
+              status: {
+                id: spec.id,
+                phase: ClaimStatus.Active,
+                observedGeneration: 0,
+                lastHeartbeatAt: now,
+                leaseExpiresAt: new Date(
+                  leaseBaseMs + (spec.leaseDeadlineSec ?? 300) * 1000,
+                ).toISOString(),
+                conditions: [],
+                lastTransitionAt: now,
+                attemptCount: 0,
+                revision: 1,
+              },
+            }
+          : {
+              spec: {
+                ...spec,
+                createdAt: existing.spec.createdAt,
+                generation: existing.spec.generation + 1,
+              },
+              status: existing.status,
+            };
+      putView(view);
+      return view;
+    },
+    getClaimView: async (claimId) => {
+      return viewFor(claimId);
+    },
+    patchClaimStatus: async (claimId, patch: ClaimStatusPatch) => {
+      const view = viewFor(claimId);
+      if (view === undefined) {
+        throw new NotFoundError({
+          resource: "Claim",
+          identifier: claimId,
+          message: `Claim ${claimId} does not exist`,
+        });
+      }
+      const updatedStatus: ClaimStatusRecord = {
+        ...view.status,
+        phase: patch.phase ?? view.status.phase,
+        observedGeneration: patch.observedGeneration ?? view.status.observedGeneration,
+        agentSessionId: patch.agentSessionId ?? view.status.agentSessionId,
+        lastHeartbeatAt: patch.lastHeartbeatAt ?? view.status.lastHeartbeatAt,
+        leaseExpiresAt: patch.leaseExpiresAt ?? view.status.leaseExpiresAt,
+        currentContributionCid: patch.currentContributionCid ?? view.status.currentContributionCid,
+        conditions: patch.conditions ?? view.status.conditions,
+        lastTransitionAt: patch.lastTransitionAt ?? view.status.lastTransitionAt,
+        revision: view.status.revision + 1,
+      };
+      const updated = { spec: view.spec, status: updatedStatus };
+      putView(updated);
+      return updated;
+    },
     createClaim: async (claim) => {
-      claimsById.set(claim.claimId, claim);
+      putClaim(claim);
       return claim;
     },
     claimOrRenew: async (claim) => claim,
@@ -39,7 +133,7 @@ function makeClaimStore(overrides?: {
         const claim = claimsById.get(claimId);
         if (!claim) throw new Error("missing claim");
         const released = { ...claim, status: ClaimStatus.Released };
-        claimsById.set(claimId, released);
+        putClaim(released);
         return released;
       }),
     releaseOwnedBy: async (ownerRef) => {
@@ -48,7 +142,7 @@ function makeClaimStore(overrides?: {
         if (claim.status !== ClaimStatus.Active || !ownerRefsEqual(claim.ownerRef, ownerRef)) {
           continue;
         }
-        claimsById.set(claim.claimId, { ...claim, status: ClaimStatus.Released });
+        putClaim({ ...claim, status: ClaimStatus.Released });
         count++;
       }
       return count;
@@ -57,7 +151,7 @@ function makeClaimStore(overrides?: {
       const claim = claimsById.get(claimId);
       if (!claim) throw new Error("missing claim");
       const completed = { ...claim, status: ClaimStatus.Completed };
-      claimsById.set(claimId, completed);
+      putClaim(completed);
       return completed;
     },
     deleteTerminalOwnedBy: async (ownerRef) => {
@@ -67,6 +161,7 @@ function makeClaimStore(overrides?: {
           continue;
         }
         claimsById.delete(claim.claimId);
+        viewsById.delete(claim.claimId);
         count++;
       }
       return count;
@@ -90,7 +185,6 @@ function makeClaimStore(overrides?: {
     close: () => undefined,
   };
 }
-
 function makeWorkspaceManager(overrides?: {
   listWorkspaces?: (query?: WorkspaceQuery) => Promise<readonly WorkspaceInfo[]>;
   markWorkspaceStale?: (cid: string, agentId: string) => Promise<WorkspaceInfo>;
@@ -127,6 +221,108 @@ function makeWorkspaceManager(overrides?: {
     close: () => undefined,
   };
 }
+
+describe("makeClaimStore split claim adapters", () => {
+  test("putClaimSpec derives default status lease from createdAt and lease deadline", async () => {
+    const claimStore = makeClaimStore();
+
+    const view = await claimStore.putClaimSpec({
+      id: "split-created",
+      targetRef: "target-split",
+      agent: { agentId: "agent-split" },
+      intentSummary: "create split claim",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      leaseDeadlineSec: 120,
+      generation: 99,
+    });
+
+    expect(view.spec.generation).toBe(1);
+    expect(view.status.leaseExpiresAt).toBe("2026-01-01T00:02:00.000Z");
+  });
+
+  test("putClaimSpec updates preserve original createdAt and status", async () => {
+    const claimStore = makeClaimStore();
+
+    const created = await claimStore.putClaimSpec({
+      id: "split-updated",
+      targetRef: "target-split",
+      agent: { agentId: "agent-split" },
+      intentSummary: "first intent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      generation: 1,
+    });
+    const patched = await claimStore.patchClaimStatus("split-updated", {
+      phase: ClaimStatus.Completed,
+      observedGeneration: created.spec.generation,
+      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+      leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+      lastTransitionAt: "2026-01-01T00:05:00.000Z",
+    });
+
+    const updated = await claimStore.putClaimSpec({
+      ...created.spec,
+      intentSummary: "second intent",
+      createdAt: "2026-02-01T00:00:00.000Z",
+      generation: 99,
+    });
+
+    expect(updated.spec.createdAt).toBe(created.spec.createdAt);
+    expect(updated.spec.generation).toBe(created.spec.generation + 1);
+    expect(updated.spec.intentSummary).toBe("second intent");
+    expect(updated.status).toEqual(patched.status);
+  });
+
+  test("patchClaimStatus preserves split-only status fields in later views", async () => {
+    const claimStore = makeClaimStore();
+    await claimStore.putClaimSpec({
+      id: "split-status",
+      targetRef: "target-split",
+      agent: { agentId: "agent-split" },
+      intentSummary: "status patch",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      generation: 1,
+    });
+
+    const patched = await claimStore.patchClaimStatus("split-status", {
+      phase: ClaimStatus.Active,
+      observedGeneration: 7,
+      agentSessionId: "session-1",
+      lastHeartbeatAt: "2026-01-01T00:03:00.000Z",
+      leaseExpiresAt: "2026-01-01T00:08:00.000Z",
+      currentContributionCid:
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      conditions: [
+        {
+          type: "Ready",
+          status: "True",
+          observedGeneration: 7,
+          lastTransitionTime: "2026-01-01T00:03:00.000Z",
+          reason: "Heartbeat",
+          message: "claim heartbeat observed",
+        },
+      ],
+      lastTransitionAt: "2026-01-01T00:03:00.000Z",
+    });
+
+    const current = await claimStore.getClaimView("split-status");
+
+    expect(patched.status.revision).toBe(2);
+    expect(patched.status.observedGeneration).toBe(7);
+    expect(patched.status.agentSessionId).toBe("session-1");
+    expect(patched.status.currentContributionCid).toBe(
+      "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(patched.status.conditions).toHaveLength(1);
+    expect(patched.status.lastTransitionAt).toBe("2026-01-01T00:03:00.000Z");
+    expect(current?.status).toEqual(patched.status);
+  });
+
+  test("patchClaimStatus throws NotFoundError for missing claims", async () => {
+    const claimStore = makeClaimStore();
+
+    await expect(claimStore.patchClaimStatus("missing", {})).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
 
 describe("DefaultReconciler", () => {
   test("deduplicateActiveClaims keeps newest by actual timestamp, not lexical string", async () => {

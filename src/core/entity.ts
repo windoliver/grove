@@ -12,6 +12,9 @@ import type {
   AgentIdentity,
   Claim,
   ClaimStatus as ClaimPhase,
+  ClaimSpecRecord,
+  ClaimStatusRecord,
+  ClaimView,
   Contribution,
   ContributionKind,
   ContributionMode,
@@ -113,6 +116,13 @@ export interface ClaimSpec {
   readonly agent: AgentIdentity;
   readonly intentSummary: string;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly roleName?: string | undefined;
+  readonly platform?: string | undefined;
+  readonly blueprint?: string | undefined;
+  readonly assignee?: AgentIdentity | undefined;
+  readonly leaseDeadlineSec?: number | undefined;
+  readonly priority?: number | undefined;
+  readonly maxIterations?: number | undefined;
 }
 
 export interface ClaimStatusBody {
@@ -133,7 +143,11 @@ export interface ClaimStatusBody {
    */
   readonly persistedPhase: ClaimPhase;
   readonly heartbeatAt: string;
+  readonly lastHeartbeatAt: string;
   readonly leaseExpiresAt: string;
+  readonly observedGeneration: number;
+  readonly currentContributionCid?: string | undefined;
+  readonly agentSessionId?: string | undefined;
   readonly attemptCount: number;
 }
 
@@ -156,13 +170,47 @@ export function claimToEntity(
   now: () => number = () => Date.now(),
   namespace = "default",
 ): ClaimEntity {
-  const rev = c.revision ?? 0;
-  const metaGen = c.revision ?? 1;
-  const persistedPhase = c.status;
+  const leaseDeadlineSec = computeLeaseDeadlineSec(c.createdAt, c.leaseExpiresAt);
+  const spec: ClaimSpecRecord = {
+    id: c.claimId,
+    roleName: c.agent.role,
+    platform: c.agent.platform,
+    assignee: c.agent,
+    ...(leaseDeadlineSec === undefined ? {} : { leaseDeadlineSec }),
+    generation: c.revision ?? 1,
+    targetRef: c.targetRef,
+    agent: c.agent,
+    intentSummary: c.intentSummary,
+    context: c.context,
+    ...(c.ownerRef === undefined ? {} : { ownerRef: c.ownerRef }),
+    ...(c.finalizers === undefined ? {} : { finalizers: c.finalizers }),
+    ...(c.deletionTimestamp === undefined ? {} : { deletionTimestamp: c.deletionTimestamp }),
+    createdAt: c.createdAt,
+  };
+  const status: ClaimStatusRecord = {
+    id: c.claimId,
+    phase: c.status,
+    observedGeneration: c.revision ?? 0,
+    lastHeartbeatAt: c.heartbeatAt,
+    leaseExpiresAt: c.leaseExpiresAt,
+    conditions: [],
+    lastTransitionAt: c.heartbeatAt,
+    attemptCount: c.attemptCount ?? 0,
+    revision: c.revision ?? 0,
+  };
+  return claimViewToEntity({ spec, status }, now, namespace);
+}
 
-  const leaseExpiredAt = Date.parse(c.leaseExpiresAt);
+export function claimViewToEntity(
+  view: ClaimView,
+  now: () => number = () => Date.now(),
+  namespace = "default",
+): ClaimEntity {
+  const persistedPhase = view.status.phase;
+  const leaseExpiresAtMs = Date.parse(view.status.leaseExpiresAt);
+
   const leaseIsExpired =
-    Number.isFinite(leaseExpiredAt) && leaseExpiredAt <= now() && persistedPhase === "active";
+    Number.isFinite(leaseExpiresAtMs) && leaseExpiresAtMs <= now() && persistedPhase === "active";
 
   // Effective view: if persisted phase is `active` but lease is past,
   // act as if phase transitioned to `expired` for Entity consumers.
@@ -176,7 +224,7 @@ export function claimToEntity(
   ): Condition => ({
     type,
     status: active ? "True" : "False",
-    observedGeneration: rev,
+    observedGeneration: view.status.observedGeneration,
     lastTransitionTime,
     reason,
     message: "",
@@ -185,43 +233,48 @@ export function claimToEntity(
   const activeCondition: Condition = mkCond(
     "Active",
     effectivePhase === "active",
-    c.heartbeatAt,
+    view.status.lastHeartbeatAt,
     leaseIsExpired ? "lease-expired" : effectivePhase,
   );
   const expiredCondition: Condition = mkCond(
     "Expired",
     effectivePhase === "expired",
-    c.leaseExpiresAt,
+    view.status.leaseExpiresAt,
     leaseIsExpired ? "lease-expired" : effectivePhase,
   );
   const completedCondition: Condition = mkCond(
     "Completed",
     effectivePhase === "completed",
-    c.heartbeatAt,
+    view.status.lastTransitionAt,
   );
   const terminatingCondition: Condition = mkCond(
     "Terminating",
-    c.deletionTimestamp !== undefined,
-    c.deletionTimestamp ?? c.heartbeatAt,
-    c.deletionTimestamp !== undefined ? "deletion-requested" : effectivePhase,
+    view.spec.deletionTimestamp !== undefined,
+    view.spec.deletionTimestamp ?? view.status.lastTransitionAt,
+    view.spec.deletionTimestamp !== undefined ? "deletion-requested" : effectivePhase,
   );
 
-  const conditions: readonly Condition[] = [
-    activeCondition,
-    expiredCondition,
-    completedCondition,
-    terminatingCondition,
-  ];
+  const conditions: readonly Condition[] =
+    view.status.conditions.length > 0
+      ? view.status.conditions
+      : [activeCondition, expiredCondition, completedCondition, terminatingCondition];
 
   return {
     kind: "Claim",
     namespace,
-    id: c.claimId,
+    id: view.spec.id,
     spec: {
-      targetRef: c.targetRef,
-      agent: c.agent,
-      intentSummary: c.intentSummary,
-      context: c.context,
+      targetRef: view.spec.targetRef,
+      agent: view.spec.agent,
+      intentSummary: view.spec.intentSummary,
+      context: view.spec.context,
+      roleName: view.spec.roleName,
+      platform: view.spec.platform,
+      blueprint: view.spec.blueprint,
+      assignee: view.spec.assignee,
+      leaseDeadlineSec: view.spec.leaseDeadlineSec,
+      priority: view.spec.priority,
+      maxIterations: view.spec.maxIterations,
     },
     status: {
       // phase = effective, lease-aware view so consumers that filter
@@ -230,26 +283,42 @@ export function claimToEntity(
       // callers that need to decide whether expireStale should run.
       phase: effectivePhase,
       persistedPhase,
-      heartbeatAt: c.heartbeatAt,
-      leaseExpiresAt: c.leaseExpiresAt,
-      attemptCount: c.attemptCount ?? 0,
+      heartbeatAt: view.status.lastHeartbeatAt,
+      lastHeartbeatAt: view.status.lastHeartbeatAt,
+      leaseExpiresAt: view.status.leaseExpiresAt,
+      observedGeneration: view.status.observedGeneration,
+      agentSessionId: view.status.agentSessionId,
+      currentContributionCid: view.status.currentContributionCid,
+      attemptCount: view.status.attemptCount,
     },
     conditions,
-    observedGeneration: rev,
+    observedGeneration: view.status.observedGeneration,
     // When lease expiry is derived from wall-clock (not yet persisted by
     // expireStale), the logical Entity state has changed even though
     // `revision` has not. Encode the lease-crossed boundary in the
     // resourceVersion so caches/informers see a version change at the
     // boundary and do not conflate the two snapshots.
-    resourceVersion: leaseIsExpired ? `${rev}-lease-expired` : String(rev),
+    resourceVersion: leaseIsExpired
+      ? `${view.status.revision}-lease-expired`
+      : String(view.status.revision),
     metadata: {
-      generation: metaGen,
-      creationTimestamp: c.createdAt,
-      ownerRefs: c.ownerRef !== undefined ? [c.ownerRef] : undefined,
-      finalizers: c.finalizers,
-      deletionTimestamp: c.deletionTimestamp,
+      generation: view.spec.generation,
+      creationTimestamp: view.spec.createdAt,
+      ownerRefs: view.spec.ownerRef !== undefined ? [view.spec.ownerRef] : undefined,
+      finalizers: view.spec.finalizers,
+      deletionTimestamp: view.spec.deletionTimestamp,
     },
   };
+}
+
+function computeLeaseDeadlineSec(createdAt: string, leaseExpiresAt: string): number | undefined {
+  const createdAtMs = Date.parse(createdAt);
+  const leaseExpiresAtMs = Date.parse(leaseExpiresAt);
+  return Number.isFinite(createdAtMs) &&
+    Number.isFinite(leaseExpiresAtMs) &&
+    leaseExpiresAtMs > createdAtMs
+    ? Math.floor((leaseExpiresAtMs - createdAtMs) / 1000)
+    : undefined;
 }
 
 export interface AgentSessionSpec {

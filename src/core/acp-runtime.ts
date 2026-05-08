@@ -375,7 +375,9 @@ export function buildAcpLaunchArgs(
   if (allowAll) {
     args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"');
   }
-  appendCodexMcpServerOverrides(args, opts.mcpServers, env);
+  if (env.GROVE_CODEX_WRITE_MCP_CONFIG !== "1") {
+    appendCodexMcpServerOverrides(args, opts.mcpServers, env);
+  }
   return args;
 }
 
