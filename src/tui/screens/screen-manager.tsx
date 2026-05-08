@@ -13,6 +13,10 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
+import {
+  applySessionSkillOverrides,
+  type SessionSkillOverrideClause,
+} from "../../core/session-skill-overrides.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
@@ -415,6 +419,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
      */
     const spawnAgents = useCallback(
       async (goal: string, roleMapping: Map<string, string>) => {
+        const resolvedTopology = sessionTopologyRef.current ?? topology;
         debugLog(
           "spawnAgents",
           `goal="${goal}" roles=[${[...roleMapping.entries()].map(([k, v]) => `${k}→${v}`).join(",")}]`,
@@ -439,7 +444,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // edited topology to createSession.
         if (isSessionProvider(provider)) {
           try {
-            const sessionTopology = sessionTopologyRef.current ?? topology;
+            const sessionTopology = resolvedTopology;
             const sessionConfig =
               contract && sessionTopology ? { ...contract, topology: sessionTopology } : contract;
             const session = await provider.createSession({
@@ -511,8 +516,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }
 
         // Transition to spawning screen with per-agent tracking
-        if (topology && topology.roles.length > 0) {
-          const initialStates: AgentSpawnState[] = topology.roles.map((role) => ({
+        if (resolvedTopology && resolvedTopology.roles.length > 0) {
+          const initialStates: AgentSpawnState[] = resolvedTopology.roles.map((role) => ({
             role: role.name,
             command: roleMapping.get(role.name) ?? role.command ?? "codex",
             status: "waiting" as const,
@@ -528,12 +533,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           spawnManager.setSessionGoal(goal);
           // Give SpawnManager the topology so it can resolve edge-type-aware
           // base branches (delegates/feeds/escalates → branch off source).
-          spawnManager.setTopology(topology);
+          spawnManager.setTopology(resolvedTopology);
           // Ensure log buffers exist for all topology roles BEFORE seekToEnd.
           // startLogPolling(seekToEnd=true) iterates logBuffers to record file
           // offsets; if buffers don't exist yet, the loop has nothing to iterate
           // and no positions are recorded — leaving pollLogFile() reading from 0.
-          for (const role of topology.roles) {
+          for (const role of resolvedTopology.roles) {
             spawnManager.ensureLogBuffer(role.name);
           }
           // New session — record current end-of-file for ALL existing role log
@@ -546,7 +551,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           // dependent roles try to base their worktrees on them (delegates/feeds/escalates).
           // Sequential spawning is required because provisionWorkspace happens inside spawn().
           void (async () => {
-            const orderedRoles = topologicalSortRoles(topology);
+            const orderedRoles = topologicalSortRoles(resolvedTopology);
             for (const role of orderedRoles) {
               const userOverrideCmd = roleMapping.get(role.name);
               const command = userOverrideCmd ?? role.command ?? "codex";
@@ -561,7 +566,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               // resolveAgent(). Let resolveAgent fall back to command parsing instead.
               if (!userOverrideCmd && role.platform) context.platform = role.platform;
               if (role.model) context.model = role.model;
-              if (topology) context.topology = topology;
+              context.topology = resolvedTopology;
 
               // Mark as spawning
               setState((s) => ({
@@ -608,6 +613,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
         edgeTimeouts: Map<string, number>,
+        roleSkills: Map<string, readonly string[]>,
       ) => {
         // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
         // hasSpawnedRef is set to true here and only reset in handleNewSession.
@@ -631,7 +637,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // spawnAgents picks it up bypassing React's async state update. Also
         // call setTopology so the UI reflects the current session's config.
         if (topology) {
-          const sessionTopology = structuredClone(topology);
+          let sessionTopology = structuredClone(topology);
           for (const role of sessionTopology.roles) {
             if (role.edges) {
               for (const edge of role.edges) {
@@ -645,6 +651,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               }
             }
           }
+          const skillClauses: SessionSkillOverrideClause[] = [...roleSkills.entries()].map(
+            ([target, skills]) => ({
+              target,
+              op: "replace",
+              skills: [...skills],
+            }),
+          );
+          sessionTopology = applySessionSkillOverrides(sessionTopology, skillClauses);
           sessionTopologyRef.current = sessionTopology;
           setTopology(sessionTopology);
         }

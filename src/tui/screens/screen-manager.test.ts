@@ -127,6 +127,10 @@ mock.module("@opentui/react", () => ({
   }),
 }));
 
+mock.module("../app.js", () => ({
+  App: (): null => null,
+}));
+
 mock.module("../hooks/use-permission-detection.js", () => ({
   usePermissionDetection: (): readonly unknown[] => [],
 }));
@@ -586,6 +590,10 @@ describe("ScreenManager transition flow", () => {
           ["builder", "Build carefully"],
         ]),
         new Map([["planner:builder", 120]]),
+        new Map([
+          ["planner", []],
+          ["builder", []],
+        ]),
       );
       await flushAsync();
       await flushAsync();
@@ -599,6 +607,68 @@ describe("ScreenManager transition flow", () => {
     ]);
     expect(spawnManager.sessionGoals).toEqual(["Launch agents"]);
     expect(spawnManager.spawnCalls.map((call) => call.roleId)).toEqual(["planner", "builder"]);
+  });
+
+  test("launch-preview -> spawning stores edited role skills in the session topology snapshot", async () => {
+    const topologyWithSkills: AgentTopology = {
+      ...TEST_TOPOLOGY,
+      roles: [
+        {
+          name: "planner",
+          description: "Plans the work",
+          command: "codex",
+          platform: "codex",
+          edges: [{ target: "builder", edgeType: "delegates" }],
+          skills: ["grove"],
+        },
+        {
+          name: "builder",
+          description: "Builds the work",
+          command: "claude",
+          platform: "claude-code",
+          skills: ["review"],
+        },
+      ],
+    };
+    const providerBundle = makeProvider();
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: topologyWithSkills,
+    });
+    await submitGoal("Launch with skill overrides");
+
+    await act(async () => {
+      requireLaunchPreview().onContinue(
+        new Map([
+          ["codex", true],
+          ["claude", true],
+        ]),
+        new Map([
+          ["planner", "codex"],
+          ["builder", "claude"],
+        ]),
+        new Map(),
+        new Map(),
+        new Map<string, readonly string[]>([
+          ["planner", ["grove", "review"]],
+          ["builder", []],
+        ]),
+      );
+      await flushAsync();
+      await flushAsync();
+    });
+
+    const createdSession = providerBundle.calls.createSession[0];
+    if (!createdSession?.topology) {
+      throw new Error("Expected createSession to receive a topology");
+    }
+
+    expect(createdSession.topology.roles).toEqual([
+      expect.objectContaining({ name: "planner", skills: ["grove", "review"] }),
+      expect.objectContaining({ name: "builder", skills: [] }),
+    ]);
+    expect(spawnManager.spawnCalls[0]?.context?.skills).toEqual(["grove", "review"]);
+    expect(spawnManager.spawnCalls[1]?.context?.skills).toBeUndefined();
   });
 
   test("spawning -> running when spawn progress resolves", async () => {
@@ -705,7 +775,7 @@ describe("ScreenManager navigation and edge cases", () => {
     await submitGoal("Run without topology");
 
     await act(async () => {
-      requireLaunchPreview().onContinue(new Map(), new Map(), new Map(), new Map());
+      requireLaunchPreview().onContinue(new Map(), new Map(), new Map(), new Map(), new Map());
       await flushAsync();
       await flushAsync();
     });
