@@ -144,6 +144,71 @@ describe("bootstrapWorkspace", () => {
     rmSync(bundledRoot, { recursive: true, force: true });
   });
 
+  test("injects skills from resolver-provided catalog root before local fallback", async () => {
+    const remoteRoot = mkdtempSync(join(tmpdir(), "grove-remote-skills-"));
+    const skillDir = join(remoteRoot, "grove");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "remote-grove", "utf-8");
+
+    const bundledRoot = mkdtempSync(join(tmpdir(), "grove-bundled-"));
+    const bundledSkillDir = join(bundledRoot, "grove");
+    mkdirSync(bundledSkillDir, { recursive: true });
+    writeFileSync(join(bundledSkillDir, "SKILL.md"), "bundled-grove", "utf-8");
+
+    const overrideRoot = mkdtempSync(join(tmpdir(), "grove-override-"));
+    const overrideSkillDir = join(overrideRoot, "grove");
+    mkdirSync(overrideSkillDir, { recursive: true });
+    writeFileSync(join(overrideSkillDir, "SKILL.md"), "override-grove", "utf-8");
+
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+      skills: ["grove"],
+      bundledSkillsRoot: bundledRoot,
+      workspaceOverrideRoot: overrideRoot,
+      skillCatalogResolver: async (skills) => ({
+        root: remoteRoot,
+        warnings: skills.map((skillName) => ({
+          skillName,
+          attemptedSource: "nexus",
+          fallbackSource: undefined,
+          reason: "verified",
+        })),
+      }),
+    });
+
+    expect(readFileSync(join(workspaceDir, ".claude/skills/grove/SKILL.md"), "utf-8")).toBe(
+      "remote-grove",
+    );
+
+    rmSync(remoteRoot, { recursive: true, force: true });
+    rmSync(bundledRoot, { recursive: true, force: true });
+    rmSync(overrideRoot, { recursive: true, force: true });
+  });
+
+  test("falls back to local injection when resolver returns undefined", async () => {
+    const bundledRoot = mkdtempSync(join(tmpdir(), "grove-bundled-"));
+    const skillDir = join(bundledRoot, "grove");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "bundled-grove", "utf-8");
+
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+      skills: ["grove"],
+      bundledSkillsRoot: bundledRoot,
+      skillCatalogResolver: async () => undefined,
+    });
+
+    expect(readFileSync(join(workspaceDir, ".claude/skills/grove/SKILL.md"), "utf-8")).toBe(
+      "bundled-grove",
+    );
+
+    rmSync(bundledRoot, { recursive: true, force: true });
+  });
+
   test("does not create .claude/.codex dirs when role has no skills", async () => {
     await bootstrapWorkspace({
       workspacePath: workspaceDir,

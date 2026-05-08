@@ -53,7 +53,7 @@ describe("MCP server integration", () => {
     await testDeps.cleanup();
   });
 
-  test("lists all 39 tools", async () => {
+  test("lists all 41 tools", async () => {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
@@ -69,6 +69,7 @@ describe("MCP server integration", () => {
       "grove_claim",
       "grove_create_plan",
       "grove_create_session",
+      "grove_delete_session",
       "grove_discuss",
       "grove_done",
       "grove_eval",
@@ -88,6 +89,7 @@ describe("MCP server integration", () => {
       "grove_reproduce",
       "grove_search",
       "grove_send_message",
+      "grove_session_delete_blockers",
       "grove_set_goal",
       "grove_set_outcome",
       "grove_submit_review",

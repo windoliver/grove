@@ -5,10 +5,14 @@
  * The local SQLite adapter and the Nexus adapter both satisfy these protocols.
  */
 
-import type { ClaimEntity, ContributionEntity } from "./entity.js";
+import type { ClaimEntity, Condition, ContributionEntity } from "./entity.js";
+import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
   Claim,
+  ClaimSpecRecord,
   ClaimStatus,
+  ClaimStatusRecord,
+  ClaimView,
   Contribution,
   ContributionKind,
   ContributionMode,
@@ -261,12 +265,34 @@ export interface ClaimQuery {
   readonly status?: ClaimStatus | readonly ClaimStatus[] | undefined;
   readonly agentId?: string | undefined;
   readonly targetRef?: string | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
+}
+
+/** Status-only patch accepted by controller-owned claim status writes. */
+export interface ClaimStatusPatch {
+  readonly phase?: ClaimStatus | undefined;
+  readonly observedGeneration?: number | undefined;
+  readonly agentSessionId?: string | undefined;
+  readonly lastHeartbeatAt?: string | undefined;
+  readonly leaseExpiresAt?: string | undefined;
+  readonly currentContributionCid?: string | undefined;
+  readonly conditions?: (readonly Condition[] & ClaimStatusRecord["conditions"]) | undefined;
+  readonly lastTransitionAt?: string | undefined;
 }
 
 /** Store for mutable claims (coordination objects). */
 export interface ClaimStore {
   /** Optional persistent-state identity string. See ContributionStore.storeIdentity. */
   readonly storeIdentity?: string | undefined;
+
+  /** Create or update user-owned claim spec. Store controls generation. */
+  putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView>;
+
+  /** Get the merged split claim view by ID. */
+  getClaimView(claimId: string): Promise<ClaimView | undefined>;
+
+  /** Patch controller-owned claim status fields only. */
+  patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView>;
 
   /** Create a new claim. Throws if claimId already exists. */
   createClaim(claim: Claim): Promise<Claim>;
@@ -305,8 +331,12 @@ export interface ClaimStore {
   /** Release a claim (agent gives up). Returns the updated claim snapshot. */
   release(claimId: string): Promise<Claim>;
 
+  releaseOwnedBy(ownerRef: OwnerRef): Promise<number>;
+
   /** Mark a claim as completed. Returns the updated claim snapshot. */
   complete(claimId: string): Promise<Claim>;
+
+  deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number>;
 
   /**
    * Expire stale claims. Returns expired claims with reasons.

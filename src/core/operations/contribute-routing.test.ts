@@ -713,7 +713,7 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
   });
 
   // -------------------------------------------------------------------------
-  // grove_done discussion: session terminator, not new work
+  // grove_done discussion: session terminator, not new agent work
   // -------------------------------------------------------------------------
   //
   // grove_done writes a kind=discussion contribution with context.done=true
@@ -721,24 +721,27 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
   //
   //   - SKIP handoff creation: session is ending, downstream has no new
   //     work to pick up.
-  //   - KEEP the routing event: event-driven clients like
+  //   - KEEP a local observer event: event-driven clients like
   //     useDoneDetection() subscribe to contribution events on the bus;
-  //     without the route event firing, they would never observe
-  //     completion and the session would be stranded in "running".
+  //     without an in-process event, they would never observe completion
+  //     and the session would be stranded in "running".
+  //   - SKIP agent routing: a done marker is not work for downstream roles
+  //     to pick up, and routing it through Nexus IPC can wake agents into
+  //     an infinite "already approved" exchange.
   //
-  // An earlier version of this branch suppressed both handoff AND route
-  // event for done markers (via isEphemeralMessageContext). Codex round 3
-  // caught the regression: event-bus mode disables polling in
-  // useDoneDetection, so losing the route event meant the UI never
-  // advanced after grove_done. This test pins the correct asymmetry in
-  // place so that collapse cannot happen again.
-  test("grove_done discussion (done=true) skips handoff but fires route event", async () => {
+  // An earlier version of this branch used the normal topology route event
+  // for done markers. That kept the UI alive, but in Nexus mode it also
+  // delivered "[DONE]" as an agent message. This test pins the intended
+  // split: local observers see done, peer agents do not receive new work.
+  test("grove_done discussion (done=true) skips handoff and agent routing but fires local observer event", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
     const store = makeInMemoryContributionStore();
 
-    const received: GroveEvent[] = [];
-    bus.subscribe("coder", (e) => received.push(e));
+    const coderEvents: GroveEvent[] = [];
+    const reviewerEvents: GroveEvent[] = [];
+    bus.subscribe("coder", (e) => coderEvents.push(e));
+    bus.subscribe("reviewer", (e) => reviewerEvents.push(e));
 
     const handoffCreates: unknown[] = [];
     const handoffStore = createMockHandoffStore({
@@ -784,12 +787,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     // No handoff created for the done marker — session is ending.
     expect(handoffCreates).toHaveLength(0);
 
-    // Route event DID fire — event-driven done detection depends on this.
+    // Local observer event DID fire for the done source role.
     await new Promise((r) => setTimeout(r, 5));
-    expect(received).toHaveLength(1);
-    expect(received[0]!.type).toBe("contribution");
-    expect(received[0]!.payload.kind).toBe("discussion");
-    expect(received[0]!.payload.summary).toMatch(/\[DONE\]/);
+    expect(reviewerEvents).toHaveLength(1);
+    expect(reviewerEvents[0]?.type).toBe("contribution");
+    expect(reviewerEvents[0]?.payload.kind).toBe("discussion");
+    expect(reviewerEvents[0]?.payload.summary).toMatch(/\[DONE\]/);
+
+    // Downstream agent routing must not fire.
+    expect(coderEvents).toHaveLength(0);
 
     bus.close();
   });
@@ -800,7 +806,7 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
   //
   // Ephemeral chat (context.ephemeral=true WITHOUT context.done) skips
   // BOTH handoffs AND the route event — chat is background noise. Done
-  // markers (context.done=true) skip handoffs but KEEP the route event.
+  // markers (context.done=true) skip handoffs but KEEP a local observer event.
   // This test asserts both legs explicitly so future refactors of the
   // classification logic can't collapse them back together.
   test("ephemeral chat (no done flag) skips both handoff AND route event", async () => {

@@ -211,10 +211,12 @@ const PRESETS: readonly TuiPresetEntry[] = [{ name: "review-loop", description: 
 
 const ACTIVE_SESSION: SessionRecord = {
   id: "session-active",
+  uid: "session-active",
   goal: "Resume existing work",
   presetName: "review-loop",
   status: "active",
   createdAt: "2026-03-29T00:00:00.000Z",
+  finalizers: [],
   contributionCount: 0,
   topology: TEST_TOPOLOGY,
 };
@@ -285,10 +287,12 @@ function makeDashboard(): DashboardData {
 function makeSession(input: SessionInput, id: string): SessionRecord {
   return {
     id,
+    uid: id,
     goal: input.goal,
     presetName: input.presetName,
     status: "active",
     createdAt: "2026-03-29T00:00:00.000Z",
+    finalizers: [],
     topology: input.topology,
     config: input.config,
     contributionCount: 0,
@@ -734,34 +738,37 @@ describe("ScreenManager transition flow", () => {
     const providerBundle = makeProvider({
       contributions: [makeDoneContribution("builder", "done-builder-event")],
     });
-    const { spawnManager } = renderScreenManager({
-      provider: providerBundle.provider,
-      topology: TEST_TOPOLOGY,
-      appProps: { ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY), eventBus },
-      initialState: {
-        screen: "running",
-        goal: "Complete from event",
-        sessionId: "session-event-done",
-        sessionStartedAt: "2026-03-29T00:00:00.000Z",
-      },
-    });
-
-    await act(async () => {
-      await eventBus.publish({
-        type: "contribution",
-        sourceRole: "builder",
-        targetRole: "planner",
-        payload: { summary: "[DONE] Approved", context: { done: true } },
-        timestamp: "2026-03-29T00:00:00.000Z",
+    try {
+      const { spawnManager } = renderScreenManager({
+        provider: providerBundle.provider,
+        topology: TEST_TOPOLOGY,
+        appProps: { ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY), eventBus },
+        initialState: {
+          screen: "running",
+          goal: "Complete from event",
+          sessionId: "session-event-done",
+          sessionStartedAt: "2026-03-29T00:00:00.000Z",
+        },
       });
-      await flushAsync();
-      await flushAsync();
-    });
 
-    expect(captured.screen).toBe("complete");
-    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
-    expect(providerBundle.calls.archiveSession).toEqual(["session-event-done"]);
-    eventBus.close();
+      await act(async () => {
+        await eventBus.publish({
+          type: "contribution",
+          sourceRole: "builder",
+          targetRole: "planner",
+          payload: { summary: "[DONE] Approved", context: { done: true } },
+          timestamp: "2026-03-29T00:00:00.000Z",
+        });
+        await flushAsync();
+        await flushAsync();
+      });
+
+      expect(captured.screen).toBe("complete");
+      expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-event-done"]);
+    } finally {
+      eventBus.close();
+    }
   });
 
   test("complete -> preset-select starts a fresh session when no preset state is reusable", () => {

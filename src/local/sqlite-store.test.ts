@@ -14,9 +14,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
-import { ContributionKind, RelationType } from "../core/models.js";
+import type { OwnerRef } from "../core/lifecycle-metadata.js";
+import type { Claim } from "../core/models.js";
+import { ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
-import { makeClaim, makeContribution } from "../core/test-helpers.js";
+import { makeAgent, makeClaim, makeContribution } from "../core/test-helpers.js";
 import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
 
 function sqliteBindLimit(db: Database): number {
@@ -108,6 +110,310 @@ runClaimStoreTests(async () => {
   };
 });
 
+describe("SqliteClaimStore split API", () => {
+  test("putClaimSpec creates default status and rejects duplicate active target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-target-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const first = await claimStore.putClaimSpec({
+        id: "split-target-first",
+        targetRef: "split-target",
+        agent: makeAgent({ agentId: "agent-first" }),
+        intentSummary: "first active spec",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      });
+
+      expect(first.status.phase).toBe(ClaimStatus.Active);
+      expect(first.status.revision).toBe(1);
+
+      await expect(
+        claimStore.putClaimSpec({
+          id: "split-target-second",
+          targetRef: "split-target",
+          agent: makeAgent({ agentId: "agent-second" }),
+          intentSummary: "second active spec",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      ).rejects.toThrow(/active claim/);
+
+      const movable = await claimStore.putClaimSpec({
+        id: "split-target-move",
+        targetRef: "other-target",
+        agent: makeAgent({ agentId: "agent-move" }),
+        intentSummary: "move candidate",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      });
+      await expect(
+        claimStore.putClaimSpec({
+          ...movable.spec,
+          targetRef: "split-target",
+          intentSummary: "invalid move",
+        }),
+      ).rejects.toThrow(/active claim/);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("putClaimSpec update preserves createdAt and status while incrementing generation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-update-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const created = await claimStore.putClaimSpec({
+        id: "split-update",
+        targetRef: "split-update-target",
+        agent: makeAgent({ agentId: "agent-update" }),
+        intentSummary: "initial spec",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 99,
+      });
+      const patched = await claimStore.patchClaimStatus("split-update", {
+        phase: ClaimStatus.Completed,
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      });
+
+      const updated = await claimStore.putClaimSpec({
+        ...patched.spec,
+        intentSummary: "updated spec",
+        createdAt: "2030-01-01T00:00:00.000Z",
+      });
+
+      expect(updated.spec.generation).toBe(created.spec.generation + 1);
+      expect(updated.spec.createdAt).toBe(created.spec.createdAt);
+      expect(updated.spec.intentSummary).toBe("updated spec");
+      expect(updated.status.phase).toBe(patched.status.phase);
+      expect(updated.status.revision).toBe(patched.status.revision);
+      expect(updated.status.lastHeartbeatAt).toBe(patched.status.lastHeartbeatAt);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("putClaimSpec allows terminal and expired claim spec edits despite an active claim on the same target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-terminal-edit-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const now = new Date();
+      const activeLeaseExpiresAt = new Date(now.getTime() + 600_000).toISOString();
+
+      const terminal = await claimStore.putClaimSpec({
+        id: "terminal-edit",
+        targetRef: "shared-terminal-target",
+        agent: makeAgent({ agentId: "agent-terminal" }),
+        intentSummary: "terminal before edit",
+        createdAt: now.toISOString(),
+        generation: 1,
+      });
+      await claimStore.patchClaimStatus("terminal-edit", {
+        phase: ClaimStatus.Completed,
+        lastHeartbeatAt: new Date(now.getTime() + 1_000).toISOString(),
+        leaseExpiresAt: activeLeaseExpiresAt,
+        lastTransitionAt: new Date(now.getTime() + 1_000).toISOString(),
+      });
+      await claimStore.putClaimSpec({
+        id: "terminal-active-holder",
+        targetRef: "shared-terminal-target",
+        agent: makeAgent({ agentId: "agent-terminal-holder" }),
+        intentSummary: "active holder",
+        createdAt: new Date(now.getTime() + 2_000).toISOString(),
+        generation: 1,
+      });
+
+      const terminalEdited = await claimStore.putClaimSpec({
+        ...terminal.spec,
+        intentSummary: "terminal after edit",
+      });
+
+      expect(terminalEdited.spec.generation).toBe(terminal.spec.generation + 1);
+      expect(terminalEdited.spec.intentSummary).toBe("terminal after edit");
+      expect(terminalEdited.status.phase).toBe(ClaimStatus.Completed);
+
+      const expired = await claimStore.putClaimSpec({
+        id: "expired-edit",
+        targetRef: "shared-expired-target",
+        agent: makeAgent({ agentId: "agent-expired" }),
+        intentSummary: "expired before edit",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+        leaseDeadlineSec: 60,
+      });
+      await claimStore.putClaimSpec({
+        id: "expired-active-holder",
+        targetRef: "shared-expired-target",
+        agent: makeAgent({ agentId: "agent-expired-holder" }),
+        intentSummary: "active holder",
+        createdAt: now.toISOString(),
+        generation: 1,
+      });
+
+      const expiredEdited = await claimStore.putClaimSpec({
+        ...expired.spec,
+        intentSummary: "expired after edit",
+      });
+
+      expect(expiredEdited.spec.generation).toBe(expired.spec.generation + 1);
+      expect(expiredEdited.spec.intentSummary).toBe("expired after edit");
+      expect(expiredEdited.status.phase).toBe(ClaimStatus.Active);
+      expect(new Date(expiredEdited.status.leaseExpiresAt).getTime()).toBeLessThan(Date.now());
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("patchClaimStatus merges split-only fields and getClaimView reflects the patch", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-patch-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const created = await claimStore.putClaimSpec({
+        id: "split-patch",
+        targetRef: "split-patch-target",
+        agent: makeAgent({ agentId: "agent-patch" }),
+        intentSummary: "patch spec",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+      });
+
+      const firstPatch = await claimStore.patchClaimStatus("split-patch", {
+        observedGeneration: created.spec.generation,
+        agentSessionId: "session-1",
+        currentContributionCid:
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      });
+      const secondPatch = await claimStore.patchClaimStatus("split-patch", {
+        phase: ClaimStatus.Completed,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        conditions: [
+          {
+            type: "Completed",
+            status: "True",
+            observedGeneration: created.spec.generation,
+            lastTransitionTime: "2026-01-01T00:05:00.000Z",
+            reason: "controller",
+            message: "done",
+          },
+        ],
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      });
+      const readBack = await claimStore.getClaimView("split-patch");
+
+      expect(secondPatch.spec).toEqual(created.spec);
+      expect(secondPatch.status.revision).toBe(firstPatch.status.revision + 1);
+      expect(secondPatch.status.agentSessionId).toBe("session-1");
+      expect(secondPatch.status.currentContributionCid).toBe(
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      );
+      expect(secondPatch.status.phase).toBe(ClaimStatus.Completed);
+      expect(secondPatch.status.conditions[0]?.type).toBe("Completed");
+      expect(readBack).toEqual(secondPatch);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("patchClaimStatus rejects activation when target already has an active claim", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-activate-conflict-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const now = Date.now();
+      const oldCreatedAt = new Date(now).toISOString();
+      const oldReleasedAt = new Date(now + 1_000).toISOString();
+      const newCreatedAt = new Date(now + 2_000).toISOString();
+      const oldReactivatedAt = new Date(now + 3_000).toISOString();
+      const activeLeaseExpiresAt = new Date(now + 600_000).toISOString();
+
+      await claimStore.putClaimSpec({
+        id: "activation-old",
+        targetRef: "activation-target",
+        agent: makeAgent({ agentId: "agent-old" }),
+        intentSummary: "old claim",
+        createdAt: oldCreatedAt,
+        generation: 1,
+      });
+      await claimStore.patchClaimStatus("activation-old", {
+        phase: ClaimStatus.Released,
+        lastHeartbeatAt: oldReleasedAt,
+        lastTransitionAt: oldReleasedAt,
+      });
+
+      await claimStore.putClaimSpec({
+        id: "activation-new",
+        targetRef: "activation-target",
+        agent: makeAgent({ agentId: "agent-new" }),
+        intentSummary: "new claim",
+        createdAt: newCreatedAt,
+        generation: 1,
+      });
+
+      await expect(
+        claimStore.patchClaimStatus("activation-old", {
+          phase: ClaimStatus.Active,
+          lastHeartbeatAt: oldReactivatedAt,
+          leaseExpiresAt: activeLeaseExpiresAt,
+          lastTransitionAt: oldReactivatedAt,
+        }),
+      ).rejects.toThrow(/active claim/);
+
+      const active = await claimStore.activeClaims("activation-target");
+      expect(active.map((claim) => claim.claimId)).toEqual(["activation-new"]);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("claimOrRenew same-agent renewal bumps spec generation when intent changes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-renew-generation-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const first = await claimStore.claimOrRenew(
+        makeClaim({
+          claimId: "renew-generation-first",
+          targetRef: "renew-generation-target",
+          agent: makeAgent({ agentId: "agent-renew-generation" }),
+          intentSummary: "first intent",
+        }),
+      );
+      const firstView = await claimStore.getClaimView(first.claimId);
+      expect(firstView?.spec.generation).toBe(1);
+
+      const renewed = await claimStore.claimOrRenew(
+        makeClaim({
+          claimId: "renew-generation-second",
+          targetRef: "renew-generation-target",
+          agent: makeAgent({ agentId: "agent-renew-generation" }),
+          intentSummary: "renewed intent",
+        }),
+      );
+      const renewedView = await claimStore.getClaimView(renewed.claimId);
+
+      expect(renewed.claimId).toBe(first.claimId);
+      expect(renewedView?.spec.intentSummary).toBe("renewed intent");
+      expect(renewedView?.spec.generation).toBe((firstView?.spec.generation ?? 0) + 1);
+      expect(renewedView?.status.revision).toBe((firstView?.status.revision ?? 0) + 1);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SqliteIdempotencyStore", () => {
   test("reserve returns false when a peer already owns the same pending key", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-idempotency-reserve-"));
@@ -178,6 +484,114 @@ describe("SqliteStore session filtering", () => {
       expect(await store.count({ sessionId: "missing-session" })).toBe(0);
     } finally {
       store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SqliteClaimStore ownerRef persistence", () => {
+  test("claimOrRenew persists ownerRef when creating a claim", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-owner-create-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const ownerRef: OwnerRef = { kind: "session", id: "session-1", uid: "uid-1" };
+      const claim = makeClaim({
+        claimId: "owner-create",
+        targetRef: "owner-create-target",
+        ownerRef,
+      });
+
+      const created = await claimStore.claimOrRenew(claim);
+      const fetched = await claimStore.getClaim(created.claimId);
+
+      expect(created.ownerRef).toEqual(ownerRef);
+      expect(fetched?.ownerRef).toEqual(ownerRef);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("claimOrRenew same-agent renewal updates stored ownerRef", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-owner-renew-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const initialOwner: OwnerRef = { kind: "session", id: "session-1", uid: "uid-1" };
+      const renewedOwner: OwnerRef = { kind: "session", id: "session-1", uid: "uid-2" };
+      const original = makeClaim({
+        claimId: "owner-renew-original",
+        targetRef: "owner-renew-target",
+        ownerRef: initialOwner,
+      });
+      await claimStore.claimOrRenew(original);
+
+      const renewal = makeClaim({
+        claimId: "owner-renew-next",
+        targetRef: original.targetRef,
+        agent: original.agent,
+        ownerRef: renewedOwner,
+      });
+      const renewed = await claimStore.claimOrRenew(renewal);
+      const fetched = await claimStore.getClaim(original.claimId);
+
+      expect(renewed.claimId).toBe(original.claimId);
+      expect(renewed.ownerRef).toEqual(renewedOwner);
+      expect(fetched?.ownerRef).toEqual(renewedOwner);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ownerRef filters and cleanup match stored JSON with different key order", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-owner-key-order-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close, db } = createSqliteStores(dbPath);
+    try {
+      const ownerRef: OwnerRef = { kind: "session", id: "session-1", uid: "uid-1" };
+      const active = makeClaim({
+        claimId: "owner-order-active",
+        targetRef: "owner-order-target-active",
+        ownerRef,
+      });
+      const terminal = makeClaim({
+        claimId: "owner-order-terminal",
+        targetRef: "owner-order-target-terminal",
+        ownerRef,
+      });
+      await claimStore.createClaim(active);
+      await claimStore.createClaim(terminal);
+      await claimStore.release(terminal.claimId);
+
+      const reorderedJson = JSON.stringify({
+        uid: ownerRef.uid,
+        id: ownerRef.id,
+        kind: ownerRef.kind,
+      });
+      db.prepare("UPDATE claims SET owner_ref_json = ? WHERE claim_id IN (?, ?)").run(
+        reorderedJson,
+        active.claimId,
+        terminal.claimId,
+      );
+
+      const listed = await claimStore.listClaims({ ownerRef });
+      expect(listed.map((claim) => claim.claimId).sort()).toEqual([
+        active.claimId,
+        terminal.claimId,
+      ]);
+
+      const released = await claimStore.releaseOwnedBy(ownerRef);
+      expect(released).toBe(1);
+      expect((await claimStore.getClaim(active.claimId))?.status).toBe(ClaimStatus.Released);
+
+      const deleted = await claimStore.deleteTerminalOwnedBy(ownerRef);
+      expect(deleted).toBe(2);
+      expect(await claimStore.getClaim(active.claimId)).toBeUndefined();
+      expect(await claimStore.getClaim(terminal.claimId)).toBeUndefined();
+    } finally {
+      close();
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -680,6 +1094,31 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     const claim = makeClaim({ targetRef: "watch-create" });
     await claimStore.createClaim(claim);
     expect(events).toEqual([{ op: "ADDED", id: claim.claimId }]);
+  });
+
+  test("split spec and status writes preserve spec ownership in watch snapshots", async () => {
+    const events: Array<{ op: string; claim: Claim }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, claim: c });
+
+    const created = await claimStore.putClaimSpec({
+      id: "watch-split",
+      targetRef: "target-watch-split",
+      agent: { agentId: "agent-watch-split" },
+      intentSummary: "initial split spec",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      generation: 1,
+    });
+    const patched = await claimStore.patchClaimStatus("watch-split", {
+      phase: ClaimStatus.Completed,
+      observedGeneration: created.spec.generation,
+      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+    });
+
+    expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED"]);
+    expect(events[0]?.claim.intentSummary).toBe("initial split spec");
+    expect(events[1]?.claim.intentSummary).toBe("initial split spec");
+    expect(events[1]?.claim.status).toBe(ClaimStatus.Completed);
+    expect(patched.spec.intentSummary).toBe("initial split spec");
   });
 
   test("heartbeat fires MODIFIED so cached lease fields stay fresh", async () => {
