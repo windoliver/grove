@@ -113,6 +113,7 @@ export class SpawnManager {
         readonly name: string;
         readonly command: string;
         readonly args: readonly string[];
+        readonly startupTimeoutSec?: number | undefined;
         readonly env: Readonly<Record<string, string>>;
       }
     | undefined;
@@ -913,6 +914,39 @@ export class SpawnManager {
     }
   }
 
+  /**
+   * Stop all active agents for the current session while keeping the manager
+   * reusable for a subsequent TUI session.
+   */
+  async stopActiveSession(): Promise<void> {
+    this.stopLogPolling();
+    this.routableSessions.clear();
+
+    const sessions = [...this.agentSessions.entries()];
+    for (const [spawnId, session] of sessions) {
+      const record = this.spawnRecords.get(spawnId);
+      const roleKey = record?.role ?? session.role ?? spawnId;
+      this.wsBridge?.unregisterSession(roleKey, session.id);
+      this.unregisterAcpSession(session.id);
+      this.sessionStore?.remove(spawnId);
+    }
+
+    if (this.agentRuntime) {
+      await Promise.allSettled(
+        sessions.map(([, session]) =>
+          this.agentRuntime?.close(session).catch(() => {
+            /* best-effort — session may already be gone */
+          }),
+        ),
+      );
+    } else if (this.tmux) {
+      await Promise.allSettled(sessions.map(([spawnId]) => this.tmux?.kill(`grove-${spawnId}`)));
+    }
+
+    this.agentSessions.clear();
+    this.spawnRecords.clear();
+  }
+
   /** Get the spawn record for an agentId (for testing). */
   getSpawnRecord(agentId: string): SpawnRecord | undefined {
     return this.spawnRecords.get(agentId);
@@ -1493,6 +1527,7 @@ export class SpawnManager {
       name: "grove",
       command: mcpCommand,
       args: ["run", mcpServePath],
+      startupTimeoutSec: 30,
       env: { ...mcpEnv },
     };
 
