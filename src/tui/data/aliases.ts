@@ -73,6 +73,12 @@ function resolveInternal(
   return resolveInternal(map, next, depth + 1, visited, [...chain, key]);
 }
 
-export function matchAliases(_map: AliasMap, _prefix: string): readonly string[] {
-  throw new Error("not implemented");
+export function matchAliases(map: AliasMap, prefix: string): readonly string[] {
+  const p = prefix.toLowerCase();
+  const matches: string[] = [];
+  for (const key of map.keys()) {
+    if (key.toLowerCase().startsWith(p)) matches.push(key);
+  }
+  matches.sort();
+  return matches;
 }

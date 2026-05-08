@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_ALIASES, MAX_ALIAS_DEPTH, resolveAlias } from "./aliases.js";
+import { DEFAULT_ALIASES, MAX_ALIAS_DEPTH, matchAliases, resolveAlias } from "./aliases.js";
 
 describe("DEFAULT_ALIASES", () => {
   test("contains six built-in keys", () => {
@@ -120,5 +120,26 @@ describe("resolveAlias cycle + depth", () => {
     for (let i = 0; i < 9; i++) m.set(`h${i}`, { value: i === 8 ? ":a" : `:h${i + 1}` });
     const r = resolveAlias(m, "h0");
     expect(r.kind).toBe("depth");
+  });
+});
+
+describe("matchAliases", () => {
+  test("empty prefix returns all keys sorted", () => {
+    expect(matchAliases(DEFAULT_ALIASES, "")).toEqual(["a", "d", "q", "r", "s", "t"]);
+  });
+
+  test("single-char prefix narrows to matches", () => {
+    const m = new Map(DEFAULT_ALIASES);
+    m.set("agents-only", { value: "agents" });
+    m.set("admin", { value: ":a" });
+    expect(matchAliases(m, "a")).toEqual(["a", "admin", "agents-only"]);
+  });
+
+  test("no matches returns empty array", () => {
+    expect(matchAliases(DEFAULT_ALIASES, "zz")).toEqual([]);
+  });
+
+  test("case-insensitive match", () => {
+    expect(matchAliases(DEFAULT_ALIASES, "A")).toEqual(["a"]);
   });
 });
