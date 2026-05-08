@@ -178,6 +178,36 @@ export function routeRunningKey(
   const input = key.name;
   const isCtrl = key.ctrl;
 
+  // ─── C2 cmd-mode (goto/filter): swallows all keys ───
+  if (state.cmdMode !== "none") {
+    if (input === "escape") {
+      if (state.cmdText.length > 0) actions.cmdClearText();
+      else actions.cmdExit();
+      return true;
+    }
+    if (input === "return") {
+      actions.cmdSubmit();
+      return true;
+    }
+    if (input === "tab" && state.cmdMode === "goto") {
+      actions.cmdTabComplete();
+      return true;
+    }
+    if (input === "backspace") {
+      actions.cmdDeleteChar();
+      return true;
+    }
+    if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+      actions.cmdAppendChar(key.sequence);
+      return true;
+    }
+    if (input === "space") {
+      actions.cmdAppendChar(" ");
+      return true;
+    }
+    return true; // swallow unhandled keys in cmd-mode
+  }
+
   // ─── Prompt input mode (swallows all keys) ───
   if (state.promptMode) {
     if (input === "escape") {

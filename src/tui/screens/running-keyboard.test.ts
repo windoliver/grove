@@ -836,6 +836,64 @@ describe("C2 keyboard routing", () => {
 });
 
 // ===========================================================================
+// C2 prompt-mode key routing (Task 12)
+// ===========================================================================
+
+describe("C2 prompt-mode key routing", () => {
+  test("typing in cmdMode appends char", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(
+      keyEvent("a", { sequence: "a" }),
+      defaultState({ cmdMode: "goto", cmdText: "" }),
+      actions,
+    );
+    expect(log.calls).toContain("cmdAppendChar");
+  });
+
+  test("Tab in goto mode triggers cmdTabComplete", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("tab"), defaultState({ cmdMode: "goto", cmdText: "a" }), actions);
+    expect(log.calls).toContain("cmdTabComplete");
+  });
+
+  test("Enter in cmdMode triggers cmdSubmit", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("return"), defaultState({ cmdMode: "goto", cmdText: "a" }), actions);
+    expect(log.calls).toContain("cmdSubmit");
+  });
+
+  test("Esc with non-empty text clears text", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("escape"), defaultState({ cmdMode: "goto", cmdText: "abc" }), actions);
+    expect(log.calls).toContain("cmdClearText");
+    expect(log.calls).not.toContain("cmdExit");
+  });
+
+  test("Esc with empty text exits cmdMode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("escape"), defaultState({ cmdMode: "goto", cmdText: "" }), actions);
+    expect(log.calls).toContain("cmdExit");
+    expect(log.calls).not.toContain("cmdClearText");
+  });
+
+  test("backspace in cmdMode triggers cmdDeleteChar", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(
+      keyEvent("backspace"),
+      defaultState({ cmdMode: "goto", cmdText: "ab" }),
+      actions,
+    );
+    expect(log.calls).toContain("cmdDeleteChar");
+  });
+
+  test("Tab does NOT trigger cmdTabComplete in filter mode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("tab"), defaultState({ cmdMode: "filter", cmdText: "" }), actions);
+    expect(log.calls).not.toContain("cmdTabComplete");
+  });
+});
+
+// ===========================================================================
 // stripAnsi (shared utility)
 // ===========================================================================
 
