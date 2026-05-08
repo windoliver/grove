@@ -16,7 +16,7 @@ import type { WatchEntity, WatchKind } from "./watch-events.js";
 import type { WatchHub } from "./watch-hub.js";
 import type { WatchClientEvent, WatchStream } from "./watch-stream.js";
 
-type EntityForKind<K extends WatchKind> = K extends "Contribution"
+export type EntityForKind<K extends WatchKind> = K extends "Contribution"
   ? ContributionEntity
   : K extends "Claim"
     ? ClaimEntity

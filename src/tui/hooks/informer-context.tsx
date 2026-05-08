@@ -316,7 +316,7 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
   const [factory, setFactory] = useState<InformerFactory | null>(() => holder.current());
   const [provider, setProvider] = useState<unknown>(() => holder.currentProvider());
   const resolvedProvider = scopeAwareProvider ?? provider;
-  const [scoped, setScoped] = useState<boolean>(() => readScopeFlag(resolvedProvider));
+  const [_scoped, setScoped] = useState<boolean>(() => readScopeFlag(resolvedProvider));
   const lastFactory = useRef(factory);
   const lastProvider = useRef<unknown>(provider);
   lastFactory.current = factory;

@@ -8,10 +8,10 @@
  * responses via Server-Sent Events (SSE).
  *
  * Usage:
- *   grove-mcp-http                          # listen on 127.0.0.1:4015
+ *   grove-mcp-http                          # listen on localhost:4015
  *   PORT=8080 grove-mcp-http                # custom port
- *   HOST=0.0.0.0 GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *   GROVE_DIR=/path grove-mcp-http          # explicit grove directory
+ *   MCP_HOST=0.0.0.0 GROVE_MCP_ALLOW_REMOTE=true GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *
  * Endpoints:
  *   POST /mcp   — JSON-RPC requests (initialize, tool calls, etc.)
@@ -37,7 +37,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import type { McpDeps } from "./deps.js";
-import { resolveMcpHttpListenOptions } from "./http-listen.js";
+import { resolveMcpHttpBindPolicy } from "./http-bind-policy.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -50,24 +50,28 @@ const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
  * When set, every request must include `Authorization: Bearer <token>`.
  * When unset, auth is skipped (backward compatible for local-only use).
  */
-const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
+const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN?.trim() || undefined;
 
 // --- Initialization ---------------------------------------------------------
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
 const port = parsePort(process.env.PORT, 4015);
-let listenHost: string;
+const bindPolicy = resolveMcpHttpBindPolicy({
+  host: process.env.MCP_HOST,
+  authToken: AUTH_TOKEN,
+  allowRemote: process.env.GROVE_MCP_ALLOW_REMOTE,
+});
 
-try {
-  listenHost = resolveMcpHttpListenOptions({
-    host: process.env.GROVE_MCP_HOST ?? process.env.HOST,
-    authToken: AUTH_TOKEN,
-  }).host;
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`grove-mcp-http: FATAL: ${message}\n`);
+if (!bindPolicy.allowed) {
+  process.stderr.write(`grove-mcp-http: FATAL: ${bindPolicy.reason}\n`);
   process.exit(1);
+}
+
+if (bindPolicy.remote) {
+  process.stderr.write(
+    "grove-mcp-http: WARN: binding MCP HTTP to a non-localhost address with bearer auth enabled\n",
+  );
 }
 
 let groveDir!: string;
@@ -1443,8 +1447,8 @@ const httpServer = createServer((req, res) => {
   });
 });
 
-httpServer.listen(port, listenHost, () => {
-  process.stderr.write(`grove-mcp-http: listening on http://${listenHost}:${port}/mcp\n`);
+httpServer.listen(port, bindPolicy.host, () => {
+  process.stderr.write(`grove-mcp-http: listening on http://${bindPolicy.host}:${port}/mcp\n`);
 });
 
 // Graceful shutdown
