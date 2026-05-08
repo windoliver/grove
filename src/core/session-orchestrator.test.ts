@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hash } from "blake3";
+import { MockNexusClient } from "../nexus/mock-client.js";
+import { writeSkillCatalogToNexusForTest } from "../nexus/nexus-skill-catalog.js";
+import { createStoredZip } from "../shared/zip.js";
 import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { LoopStopStatus } from "./loop-runner.js";
@@ -12,8 +17,11 @@ import {
   ROUTING_SIGNATURE_CONTEXT_KEY,
 } from "./routing-provenance.js";
 import { SessionOrchestrator } from "./session-orchestrator.js";
+import { canonicalJson } from "./skill-catalog.js";
 import { makeContribution } from "./test-helpers.js";
 import type { AgentTopology } from "./topology.js";
+
+const encoder = new TextEncoder();
 
 /**
  * Create a temporary bare clone with a seeded initial commit.
@@ -29,6 +37,15 @@ function makeFixtureBareRepo(): string {
   execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
   execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
   rmSync(scratch, { recursive: true, force: true });
+  return dir;
+}
+
+function makeFixtureLocalRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "grove-so-local-"));
+  execSync("git -c init.defaultBranch=main init", { cwd: dir, stdio: "pipe" });
+  execSync('git config user.email "t@t"', { cwd: dir, stdio: "pipe" });
+  execSync('git config user.name "t"', { cwd: dir, stdio: "pipe" });
+  execSync("git commit --allow-empty -m init", { cwd: dir, stdio: "pipe" });
   return dir;
 }
 
@@ -59,7 +76,15 @@ function makeContract(overrides?: Partial<GroveContract>): GroveContract {
 
 function writeNexusGroveConfig(
   groveDir: string,
-  opts: { readonly policy: "required" | "warn-and-fallback"; readonly nexusUrl: string },
+  opts: {
+    readonly policy: "required" | "warn-and-fallback";
+    readonly nexusUrl?: string | undefined;
+    readonly nexusManaged?: boolean | undefined;
+    readonly trustedKey?: {
+      readonly id: string;
+      readonly publicKeySpkiDer: string;
+    };
+  },
 ): void {
   mkdirSync(groveDir, { recursive: true });
   writeFileSync(
@@ -68,14 +93,15 @@ function writeNexusGroveConfig(
       {
         name: "test",
         mode: "nexus",
-        nexusUrl: opts.nexusUrl,
+        ...(opts.nexusUrl !== undefined ? { nexusUrl: opts.nexusUrl } : {}),
+        ...(opts.nexusManaged === true ? { nexusManaged: true } : {}),
         skillCatalog: {
           policy: opts.policy,
           trustedKeys: [
             {
-              id: "test-key",
+              id: opts.trustedKey?.id ?? "test-key",
               algorithm: "ed25519",
-              publicKeySpkiDer: "AA==",
+              publicKeySpkiDer: opts.trustedKey?.publicKeySpkiDer ?? "AA==",
             },
           ],
         },
@@ -85,6 +111,85 @@ function writeNexusGroveConfig(
     )}\n`,
     "utf-8",
   );
+}
+
+function signingFixture(): {
+  readonly keyId: string;
+  readonly publicKeySpkiDer: string;
+  readonly privateKey: KeyObject;
+} {
+  const pair = generateKeyPairSync("ed25519");
+  return {
+    keyId: "root-key",
+    publicKeySpkiDer: Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).toString(
+      "base64",
+    ),
+    privateKey: pair.privateKey,
+  };
+}
+
+async function seedNexusSkill(opts: {
+  readonly client: MockNexusClient;
+  readonly zoneId: string;
+  readonly privateKey: KeyObject;
+  readonly keyId: string;
+}): Promise<void> {
+  const bundle = createStoredZip([
+    {
+      path: "SKILL.md",
+      bytes: encoder.encode("nexus-skill"),
+    },
+  ]);
+  const bundleHash = `blake3:${hash(bundle).toString("hex")}`;
+  const indexBytes = encoder.encode(
+    canonicalJson({
+      schemaVersion: 1,
+      generatedAt: "2026-05-07T00:00:00Z",
+      skills: {
+        grove: { version: "1", bundleHash, sizeBytes: bundle.byteLength },
+      },
+    }),
+  );
+  const signature = {
+    schemaVersion: 1,
+    keyId: opts.keyId,
+    algorithm: "ed25519" as const,
+    signature: sign(null, indexBytes, opts.privateKey).toString("base64"),
+  };
+  await writeSkillCatalogToNexusForTest({
+    client: opts.client,
+    zoneId: opts.zoneId,
+    indexBytes,
+    signatureBytes: encoder.encode(JSON.stringify(signature)),
+    bundleHash,
+    bundleBytes: bundle,
+  });
+}
+
+function serveMockNexusReadApi(client: MockNexusClient): ReturnType<typeof Bun.serve> {
+  return Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname !== "/api/v2/files/read") {
+        return new Response("not found", { status: 404 });
+      }
+      const path = url.searchParams.get("path");
+      if (path === null) {
+        return new Response("missing path", { status: 400 });
+      }
+      const content = await client.read(path);
+      if (content === undefined) {
+        return new Response("not found", { status: 404 });
+      }
+      return Response.json({
+        content: Buffer.from(content).toString("base64"),
+        content_id: "test-etag",
+        version: 1,
+        size: content.byteLength,
+      });
+    },
+  });
 }
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -1405,6 +1510,79 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       bus.close();
       restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
       rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("required Nexus skill catalog uses managed nexus.yaml URL", async () => {
+    const repo = makeFixtureLocalRepo();
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    const client = new MockNexusClient();
+    const keys = signingFixture();
+    const server = serveMockNexusReadApi(client);
+    try {
+      await seedNexusSkill({
+        client,
+        zoneId: "default",
+        privateKey: keys.privateKey,
+        keyId: keys.keyId,
+      });
+      writeNexusGroveConfig(join(repo, ".grove"), {
+        policy: "required",
+        nexusManaged: true,
+        trustedKey: {
+          id: keys.keyId,
+          publicKeySpkiDer: keys.publicKeySpkiDer,
+        },
+      });
+      writeFileSync(join(repo, "nexus.yaml"), `ports:\n  http: ${server.port}\n`, "utf-8");
+
+      const runtime = new MockRuntime();
+      const bus = new LocalEventBus();
+      const contract = makeContract({
+        topology: {
+          structure: "flat",
+          roles: [
+            {
+              name: "worker",
+              description: "Do the work",
+              command: "echo worker",
+              skills: ["grove"],
+            },
+          ],
+        },
+      });
+      const topology = contract.topology;
+      if (!topology) {
+        throw new Error("test contract must include topology");
+      }
+
+      const orchestrator = new SessionOrchestrator({
+        goal: "Test managed Nexus skill catalog",
+        contract,
+        topology,
+        runtime,
+        eventBus: bus,
+        projectRoot: repo,
+        repos: [{ kind: "local", path: repo }],
+        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+        workspaceIsolationPolicy: "strict",
+        sessionId: "managedskillcatalog1",
+      });
+
+      const status = await orchestrator.start();
+
+      expect(status.agents).toHaveLength(1);
+      expect(runtime.spawnCalls).toHaveLength(1);
+      expect(runtime.spawnCalls[0]?.config.mcpServers?.[0]?.env?.GROVE_NEXUS_URL).toBe(
+        `http://localhost:${server.port}`,
+      );
+      bus.close();
+    } finally {
+      server.stop(true);
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 

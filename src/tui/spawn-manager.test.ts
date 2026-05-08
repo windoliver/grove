@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -213,7 +213,11 @@ function makeTempGitProject(prefix: string): {
 
 function writeNexusGroveConfig(
   groveDir: string,
-  opts: { readonly policy: "required" | "warn-and-fallback"; readonly nexusUrl: string },
+  opts: {
+    readonly policy: "required" | "warn-and-fallback";
+    readonly nexusUrl?: string | undefined;
+    readonly nexusManaged?: boolean | undefined;
+  },
 ): void {
   writeFileSync(
     join(groveDir, "grove.json"),
@@ -221,7 +225,8 @@ function writeNexusGroveConfig(
       {
         name: "test",
         mode: "nexus",
-        nexusUrl: opts.nexusUrl,
+        ...(opts.nexusUrl !== undefined ? { nexusUrl: opts.nexusUrl } : {}),
+        ...(opts.nexusManaged === true ? { nexusManaged: true } : {}),
         skillCatalog: {
           policy: opts.policy,
           trustedKeys: [
@@ -593,6 +598,81 @@ describe("SpawnManager — per-role skill injection", () => {
       ).rejects.toThrow("http://127.0.0.1:1");
       expect(tmux.spawnedSessions).toHaveLength(0);
       expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("empty GROVE_NEXUS_URL falls back to managed nexus.yaml for required skill catalogs", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-managed-env-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "required",
+        nexusManaged: true,
+      });
+      writeFileSync(join(projectRoot, "nexus.yaml"), "ports:\n  http: 1\n", "utf-8");
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      const errors: string[] = [];
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        (msg) => errors.push(msg),
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("allow-fallback");
+
+      await expect(
+        manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] }),
+      ).rejects.toThrow("http://localhost:1");
+      expect(tmux.spawnedSessions).toHaveLength(0);
+      expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("managed nexus.yaml URL is written to MCP config", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-managed-mcp-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "warn-and-fallback",
+        nexusManaged: true,
+      });
+      writeFileSync(join(projectRoot, "nexus.yaml"), "ports:\n  http: 23456\n", "utf-8");
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        () => undefined,
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+
+      const result = await manager.spawn("coder", "bash");
+      const mcpConfig = JSON.parse(
+        readFileSync(join(result.workspacePath, ".mcp.json"), "utf-8"),
+      ) as {
+        readonly mcpServers?: {
+          readonly grove?: { readonly env?: { readonly GROVE_NEXUS_URL?: string | undefined } };
+        };
+      };
+
+      expect(mcpConfig.mcpServers?.grove?.env?.GROVE_NEXUS_URL).toBe("http://localhost:23456");
     } finally {
       restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
       rmSync(projectRoot, { recursive: true, force: true });

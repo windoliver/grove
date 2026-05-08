@@ -15,6 +15,7 @@ import {
   resolveNexusSkillCatalogRoot,
   type SkillResolutionWarning,
 } from "../nexus/nexus-skill-catalog.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { type GroveConfig, parseGroveConfig } from "./config.js";
@@ -174,6 +175,7 @@ export class SessionOrchestrator {
   private readonly doneRoles = new Set<string>();
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
+  private resolvedNexusUrl: string | undefined;
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
   private contributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
   private resolvedRepos: readonly ResolvedRepo[] = [];
@@ -207,7 +209,13 @@ export class SessionOrchestrator {
   }
 
   private resolveNexusUrl(config: GroveConfig | undefined): string | undefined {
-    return process.env.GROVE_NEXUS_URL || config?.nexusUrl;
+    const nexusUrl = resolveConfiguredNexusUrl({
+      projectRoot: this.config.projectRoot,
+      config,
+      env: process.env,
+    });
+    this.resolvedNexusUrl = nexusUrl;
+    return nexusUrl;
   }
 
   private reportSkillCatalogWarnings(warnings: readonly SkillResolutionWarning[]): void {
@@ -613,7 +621,8 @@ export class SessionOrchestrator {
       GROVE_AGENT_ROLE: roleName,
       GROVE_SESSION_ID: this.sessionId,
     };
-    if (process.env.GROVE_NEXUS_URL) env.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    const nexusUrl = process.env.GROVE_NEXUS_URL || this.resolvedNexusUrl;
+    if (nexusUrl) env.GROVE_NEXUS_URL = nexusUrl;
     if (process.env.NEXUS_API_KEY) env.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
     return {
       name: "grove",

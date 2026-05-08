@@ -33,6 +33,7 @@ import {
   resolveNexusSkillCatalogRoot,
   type SkillResolutionWarning,
 } from "../nexus/nexus-skill-catalog.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -455,7 +456,12 @@ export class SpawnManager {
     const config = parseGroveConfig(raw);
     if (config.mode !== "nexus" || config.skillCatalog === undefined) return undefined;
 
-    const nexusUrl = process.env.GROVE_NEXUS_URL || config.nexusUrl;
+    const projectRoot = dirname(this.groveDir);
+    const nexusUrl = resolveConfiguredNexusUrl({
+      projectRoot,
+      config,
+      env: process.env,
+    });
     if (!nexusUrl) {
       if (config.skillCatalog.policy !== "required") return undefined;
       throw new RequiredSkillCatalogResolutionError(
@@ -467,7 +473,6 @@ export class SpawnManager {
       url: nexusUrl,
       apiKey: process.env.NEXUS_API_KEY || undefined,
     });
-    const projectRoot = dirname(this.groveDir);
     try {
       const result = await resolveNexusSkillCatalogRoot({
         client,
@@ -1469,8 +1474,8 @@ export class SpawnManager {
     const projectRoot = join(groveDir, "..");
 
     // Resolve Nexus URL: env var takes precedence (explicit override), then
-    // fall back to the nexusUrl stored in the *session*'s .grove/grove.json
-    // (set by `grove init --nexus-url` and refreshed by startServices).
+    // fall back to managed nexus.yaml or the nexusUrl stored in the session's
+    // .grove/grove.json.
     //
     // Note: `groveDir` here is the SHARED nexus-workspaces dir (parent of all
     // workspace folders), not the per-session .grove dir — so we can't read
@@ -1485,9 +1490,26 @@ export class SpawnManager {
       try {
         const configPath = join(this.groveDir, "grove.json");
         if (existsSync(configPath)) {
-          const raw = await (await import("node:fs/promises")).readFile(configPath, "utf-8");
-          const cfg = JSON.parse(raw) as { nexusUrl?: string };
-          if (cfg.nexusUrl) resolvedNexusUrl = cfg.nexusUrl;
+          const raw = await readFile(configPath, "utf-8");
+          try {
+            const config = parseGroveConfig(raw);
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          } catch {
+            const config = JSON.parse(raw) as {
+              readonly mode?: string | undefined;
+              readonly nexusManaged?: boolean | undefined;
+              readonly nexusUrl?: string | undefined;
+            };
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          }
         }
       } catch {
         /* best-effort */

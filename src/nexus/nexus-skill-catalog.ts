@@ -577,16 +577,16 @@ export async function resolveNexusSkillCatalogRoot(
   try {
     return await resolveFromNexus(opts);
   } catch (error) {
-    if (opts.policy === "required") {
-      throw safeSurfaceError(error);
-    }
-
     const cached = await tryVerifiedCache(opts);
     if (cached !== undefined) {
       return {
         ...cached,
         warnings: fallbackWarnings(opts.skills, "cache", error),
       };
+    }
+
+    if (opts.policy === "required") {
+      throw safeSurfaceError(error);
     }
 
     const local = await tryLocalFallback(opts);

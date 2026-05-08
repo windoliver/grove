@@ -361,6 +361,44 @@ describe("resolveNexusSkillCatalogRoot", () => {
     }
   });
 
+  test("required policy uses verified cache when Nexus becomes unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "grove-nexus-skills-"));
+    const client = new MockNexusClient();
+    const keys = signingFixture();
+    try {
+      await seedNexus({
+        client,
+        zoneId: "zone1",
+        privateKey: keys.privateKey,
+        keyId: keys.keyId,
+      });
+      const base = {
+        client,
+        zoneId: "zone1",
+        cacheRoot: join(root, ".grove", "cache", "skills"),
+        skills: ["grove"],
+        policy: "required" as const,
+        trustedKeys: [
+          {
+            id: keys.keyId,
+            algorithm: "ed25519" as const,
+            publicKeySpkiDer: keys.publicKeySpkiDer,
+          },
+        ],
+        localFallbackRoots: [],
+      };
+      await resolveNexusSkillCatalogRoot(base);
+      client.setFailureMode({ failNext: 10, failWith: "connection" });
+
+      const result = await resolveNexusSkillCatalogRoot(base);
+
+      expect(result.source).toBe("cache");
+      expect(readFileSync(join(result.root, "grove", "SKILL.md"), "utf-8")).toBe("nexus-skill");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("cache fallback restores missing marker from verified bundle", async () => {
     const root = mkdtempSync(join(tmpdir(), "grove-nexus-skills-"));
     const client = new MockNexusClient();
