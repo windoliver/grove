@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { LocalEventBus } from "../../core/local-event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import { ContributionKind, ContributionMode } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -649,6 +650,52 @@ describe("ScreenManager transition flow", () => {
     expect(requireCompleteView().reason).toBe("All roles signaled done");
     expect(requireCompleteView().contributionCount).toBe(2);
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
+  });
+
+  test("running -> complete when one agent signals done through the event bus", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeContribution("c1")],
+    });
+    const eventBus = new LocalEventBus();
+    try {
+      renderScreenManager({
+        provider: providerBundle.provider,
+        topology: TEST_TOPOLOGY,
+        appProps: {
+          ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY),
+          eventBus,
+        },
+        initialState: {
+          screen: "running",
+          goal: "Complete the session",
+          sessionId: "session-done-event",
+          sessionStartedAt: "2026-03-29T00:00:00.000Z",
+        },
+      });
+
+      await act(async () => {
+        await flushAsync();
+        await eventBus.publish({
+          type: "contribution",
+          sourceRole: "builder",
+          targetRole: "builder",
+          payload: {
+            summary: "[DONE] Approved",
+            context: { done: true },
+          },
+          timestamp: "2026-05-07T00:00:00.000Z",
+        });
+        await flushAsync();
+        await flushAsync();
+      });
+
+      expect(captured.screen).toBe("complete");
+      expect(requireCompleteView().reason).toBe("Agent signaled done");
+      expect(requireCompleteView().contributionCount).toBe(1);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-done-event"]);
+    } finally {
+      eventBus.close();
+    }
   });
 
   test("complete -> preset-select starts a fresh session when no preset state is reusable", () => {

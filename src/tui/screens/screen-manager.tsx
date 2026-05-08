@@ -320,7 +320,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [provider, spawnManager],
     );
     const handleDone = useCallback(() => {
-      void snapshotAndComplete("All roles signaled done");
+      void snapshotAndComplete("Agent signaled done");
     }, [snapshotAndComplete]);
     useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
 
