@@ -46,6 +46,8 @@ export interface AgentListProps {
   readonly active: boolean;
   readonly cursor: number;
   readonly onSelectSession?: ((sessionName: string | undefined) => void) | undefined;
+  /** C2 (#302): substring filter on rendered row text. Empty / undefined = no filter. */
+  readonly filterText?: string | undefined;
 }
 
 const COLUMNS = [
@@ -154,6 +156,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     active,
     cursor,
     onSelectSession,
+    filterText,
   }: AgentListProps): React.ReactNode {
     // Animated spinner for running agents — uses timing.spinner (80ms) for consistency
     const [spinnerFrame, setSpinnerFrame] = useState(0);
@@ -233,12 +236,24 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     const combinedStale = isStale || tmuxStale;
     const combinedError = error ?? tmuxError;
 
-    const agentRows = buildAgentRows(
+    const allAgentRows = buildAgentRows(
       claims ?? [],
       sessions ?? [],
       agentCosts ?? undefined,
       spinnerFrame,
     );
+
+    const agentRows = useMemo(() => {
+      const q = filterText?.trim().toLowerCase();
+      if (!q) return allAgentRows;
+      return allAgentRows.filter((row) =>
+        COLUMNS.some((c) =>
+          String(row[c.key] ?? "")
+            .toLowerCase()
+            .includes(q),
+        ),
+      );
+    }, [allAgentRows, filterText]);
 
     // Track rows for session selection and notify parent when cursor moves
     const rowsRef = useRef(agentRows);
