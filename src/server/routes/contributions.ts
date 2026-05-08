@@ -160,28 +160,6 @@ function hasContributionFilters(raw: {
   );
 }
 
-function matchesContributionFilters(contribution: Contribution, query: ContributionQuery): boolean {
-  if (query.kind !== undefined && contribution.kind !== query.kind) return false;
-  if (query.mode !== undefined && contribution.mode !== query.mode) return false;
-  if (query.agentId !== undefined && contribution.agent.agentId !== query.agentId) return false;
-  if (query.agentName !== undefined && contribution.agent.agentName !== query.agentName) {
-    return false;
-  }
-  if (
-    query.tags !== undefined &&
-    query.tags.length > 0 &&
-    !query.tags.every((tag) => contribution.tags.includes(tag))
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function compareByRecencyDesc(a: Contribution, b: Contribution): number {
-  const byDate = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-  return byDate !== 0 ? byDate : b.cid.localeCompare(a.cid);
-}
-
 function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): number {
   switch (status) {
     case "accepted":
@@ -202,43 +180,43 @@ async function listOutcomeFilteredContributions(
   filterQuery: ContributionQuery,
   limit: number,
   offset: number,
-): Promise<{ readonly page: readonly Contribution[]; readonly total: number }> {
-  const keep = offset + limit;
-  const top: Contribution[] = [];
-  const seen = new Set<string>();
-  let total = 0;
-  let outcomeOffset = 0;
+): Promise<{
+  readonly page: readonly Contribution[];
+  readonly total: number | undefined;
+}> {
+  const page: Contribution[] = [];
+  let matched = 0;
+  let contributionOffset = 0;
 
   while (true) {
-    const outcomes = await outcomeStore.list({
-      status: targetStatus,
+    const contributions = await listStore.list({
+      ...filterQuery,
+      order: "created_at_desc",
       limit: OUTCOME_FILTER_SCAN_PAGE_SIZE,
-      offset: outcomeOffset,
+      offset: contributionOffset,
     });
-    if (outcomes.length === 0) break;
+    if (contributions.length === 0) return { page, total: matched };
 
-    outcomeOffset += outcomes.length;
-    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
+    contributionOffset += contributions.length;
+    const outcomes = await outcomeStore.getBatch(
+      contributions.map((contribution) => contribution.cid),
+    );
 
-    for (const outcome of outcomes) {
-      if (seen.has(outcome.cid)) continue;
-      seen.add(outcome.cid);
+    for (const contribution of contributions) {
+      const outcome = outcomes.get(contribution.cid);
+      if (outcome?.status !== targetStatus) continue;
 
-      const contribution = contributions.get(outcome.cid);
-      if (contribution === undefined || !matchesContributionFilters(contribution, filterQuery)) {
-        continue;
+      if (matched >= offset && page.length < limit) {
+        page.push(contribution);
       }
-
-      total += 1;
-      top.push(contribution);
-      top.sort(compareByRecencyDesc);
-      if (top.length > keep) top.length = keep;
+      matched += 1;
     }
 
-    if (outcomes.length < OUTCOME_FILTER_SCAN_PAGE_SIZE) break;
+    if (contributions.length < OUTCOME_FILTER_SCAN_PAGE_SIZE) {
+      return { page, total: matched };
+    }
+    if (page.length >= limit) return { page, total: undefined };
   }
-
-  return { page: top.slice(offset, offset + limit), total };
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +467,7 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
       offset,
     );
 
-    c.header("X-Total-Count", String(total));
+    if (total !== undefined) c.header("X-Total-Count", String(total));
     return c.json(page);
   }
 
