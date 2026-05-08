@@ -29,8 +29,48 @@ export type ResolveResult =
   | { kind: "cycle"; chain: readonly string[] }
   | { kind: "depth"; chain: readonly string[] };
 
-export function resolveAlias(_map: AliasMap, _input: string): ResolveResult {
-  throw new Error("not implemented");
+export function resolveAlias(map: AliasMap, input: string): ResolveResult {
+  return resolveInternal(map, input, 0, new Set<string>(), []);
+}
+
+function resolveInternal(
+  map: AliasMap,
+  input: string,
+  depth: number,
+  visited: Set<string>,
+  chain: readonly string[],
+): ResolveResult {
+  const trimmed = input.trim();
+  if (!trimmed) return { kind: "miss", key: "" };
+  const tokens = trimmed.split(/\s+/);
+  const key = tokens[0] ?? "";
+  const rest = tokens.slice(1);
+
+  if (visited.has(key)) return { kind: "cycle", chain: [...chain, key] };
+  if (depth > MAX_ALIAS_DEPTH) return { kind: "depth", chain };
+
+  const entry = map.get(key);
+  if (!entry) {
+    return depth === 0 ? { kind: "miss", key } : { kind: "ok", command: key, argv: rest, chain };
+  }
+
+  // Terminal alias: value does not start with ":"
+  if (!entry.value.startsWith(":")) {
+    const valueTokens = entry.value.split(/\s+/);
+    const cmd = valueTokens[0] ?? "";
+    const valueArgs = valueTokens.slice(1);
+    return {
+      kind: "ok",
+      command: cmd,
+      argv: [...valueArgs, ...rest],
+      chain: [...chain, key],
+    };
+  }
+
+  // Recursive alias: value starts with ":"
+  visited.add(key);
+  const next = entry.value.slice(1) + (rest.length ? ` ${rest.join(" ")}` : "");
+  return resolveInternal(map, next, depth + 1, visited, [...chain, key]);
 }
 
 export function matchAliases(_map: AliasMap, _prefix: string): readonly string[] {

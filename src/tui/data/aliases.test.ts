@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_ALIASES, MAX_ALIAS_DEPTH } from "./aliases.js";
+import { DEFAULT_ALIASES, MAX_ALIAS_DEPTH, resolveAlias } from "./aliases.js";
 
 describe("DEFAULT_ALIASES", () => {
   test("contains six built-in keys", () => {
@@ -17,5 +17,27 @@ describe("DEFAULT_ALIASES", () => {
 
   test("MAX_ALIAS_DEPTH is 8", () => {
     expect(MAX_ALIAS_DEPTH).toBe(8);
+  });
+});
+
+describe("resolveAlias direct + miss", () => {
+  test("direct match returns ok with command and empty argv", () => {
+    const r = resolveAlias(DEFAULT_ALIASES, "a");
+    expect(r).toEqual({ kind: "ok", command: "agents", argv: [], chain: ["a"] });
+  });
+
+  test("unknown key at depth 0 returns miss", () => {
+    const r = resolveAlias(DEFAULT_ALIASES, "zzz");
+    expect(r).toEqual({ kind: "miss", key: "zzz" });
+  });
+
+  test("empty input returns miss with empty key", () => {
+    const r = resolveAlias(DEFAULT_ALIASES, "");
+    expect(r).toEqual({ kind: "miss", key: "" });
+  });
+
+  test("whitespace-only input returns miss", () => {
+    const r = resolveAlias(DEFAULT_ALIASES, "   ");
+    expect(r).toEqual({ kind: "miss", key: "" });
   });
 });
