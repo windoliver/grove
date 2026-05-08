@@ -12,6 +12,7 @@ import type { Contribution, ContributionKind, Relation, RelationType } from "./m
 import type {
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   HotThreadsOptions,
   ThreadNode,
   ThreadSummary,
@@ -94,13 +95,16 @@ export class InMemoryContributionStore implements ContributionStore {
     return results.length;
   };
 
-  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
+  countSince = async (query: CountSinceQuery): Promise<number> => {
     const sinceTime = new Date(query.since).getTime();
     let results = [...this.contributions.values()].filter(
       (c) => new Date(c.createdAt).getTime() >= sinceTime,
     );
     if (query.agentId !== undefined) {
       results = results.filter((c) => c.agent.agentId === query.agentId);
+    }
+    if (query.sessionId !== undefined) {
+      results = results.filter((c) => c.context?.sessionId === query.sessionId);
     }
     return results.length;
   };

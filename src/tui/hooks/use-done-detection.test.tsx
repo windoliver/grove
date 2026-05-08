@@ -17,7 +17,6 @@ const REVIEW_LOOP_TOPOLOGY: AgentTopology = {
     },
     {
       name: "reviewer",
-      edges: [{ target: "coder", edgeType: "feedback" }],
     },
   ],
 };

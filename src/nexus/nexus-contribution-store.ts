@@ -26,6 +26,7 @@ import type {
   ContributionPutResult,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   HotThreadsOptions,
   ThreadNode,
   ThreadSummary,
@@ -751,6 +752,9 @@ export class NexusContributionStore implements ContributionStore {
       const requiredTags = query.tags;
       contributions = contributions.filter((c) => requiredTags.every((t) => c.tags.includes(t)));
     }
+    if (query?.order === "created_at_desc") {
+      contributions = [...contributions].reverse();
+    }
 
     // Apply limit/offset
     const offset = query?.offset ?? 0;
@@ -991,7 +995,22 @@ export class NexusContributionStore implements ContributionStore {
     return all.length;
   }
 
-  async countSince(query: { agentId?: string; since: string }): Promise<number> {
+  async countSince(query: CountSinceQuery): Promise<number> {
+    if (query.sessionId !== undefined && query.sessionId !== this.sessionId) {
+      const scopedStore = new NexusContributionStore({
+        ...this.config,
+        sessionId: query.sessionId,
+      });
+      try {
+        return await scopedStore.countSince({
+          ...(query.agentId !== undefined ? { agentId: query.agentId } : {}),
+          since: query.since,
+        });
+      } finally {
+        scopedStore.close();
+      }
+    }
+
     const indexedCount = await this.countSinceFromCreatedAtIndex(query);
     if (indexedCount !== undefined) return indexedCount;
     await this.ensureCreatedAtIndex();
@@ -1000,7 +1019,7 @@ export class NexusContributionStore implements ContributionStore {
     return this.countSinceByList(query);
   }
 
-  private async countSinceByList(query: { agentId?: string; since: string }): Promise<number> {
+  private async countSinceByList(query: CountSinceQuery): Promise<number> {
     const all = await this.list(
       query.agentId !== undefined ? { agentId: query.agentId } : undefined,
     );
@@ -1008,10 +1027,7 @@ export class NexusContributionStore implements ContributionStore {
     return all.filter((c) => new Date(c.createdAt).getTime() >= sinceTime).length;
   }
 
-  private async countSinceFromCreatedAtIndex(query: {
-    agentId?: string;
-    since: string;
-  }): Promise<number | undefined> {
+  private async countSinceFromCreatedAtIndex(query: CountSinceQuery): Promise<number | undefined> {
     const sinceTime = Date.parse(query.since);
     if (!Number.isFinite(sinceTime)) return 0;
 

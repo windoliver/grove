@@ -86,11 +86,14 @@ interface TestSpawnManager {
   readonly reconcileCalls: string[];
   readonly saveTraceCalls: string[];
   readonly stopLogPollingCalls: string[];
+  readonly stopActiveSessionCalls: string[];
+  readonly lifecycleCalls: string[];
   reconcile(): Promise<void>;
   ensureLogBuffer(roleName: string): void;
   getLogBuffers(): Map<string, unknown>;
   startLogPolling(intervalMs?: number, seekToEnd?: boolean): void;
   stopLogPolling(): void;
+  stopActiveSession(): Promise<void>;
   setSessionId(sessionId: string): void;
   loadTraces(sessionId: string): Promise<void>;
   saveTraces(): Promise<void>;
@@ -250,6 +253,22 @@ function makeContribution(cid: string): Contribution {
   };
 }
 
+function makeDoneContribution(role: string, cid: string): Contribution {
+  return {
+    cid,
+    manifestVersion: 1,
+    kind: ContributionKind.Discussion,
+    mode: ContributionMode.Exploration,
+    summary: "[DONE] Approved",
+    artifacts: {},
+    relations: [],
+    tags: [],
+    context: { done: true },
+    agent: { agentId: `${role}-agent`, role },
+    createdAt: "2026-03-29T00:00:00.000Z",
+  };
+}
+
 function makeDashboard(): DashboardData {
   return {
     metadata: {
@@ -356,6 +375,8 @@ function makeSpawnManager(): TestSpawnManager {
     reconcileCalls: [],
     saveTraceCalls: [],
     stopLogPollingCalls: [],
+    stopActiveSessionCalls: [],
+    lifecycleCalls: [],
     reconcile: async () => {
       manager.reconcileCalls.push("reconcile");
     },
@@ -368,12 +389,18 @@ function makeSpawnManager(): TestSpawnManager {
     stopLogPolling: () => {
       manager.stopLogPollingCalls.push("stop");
     },
+    stopActiveSession: async () => {
+      manager.stopActiveSessionCalls.push("stop-active");
+      manager.lifecycleCalls.push("stop-active");
+      manager.stopLogPolling();
+    },
     setSessionId: (sessionId: string) => {
       manager.sessionIds.push(sessionId);
     },
     loadTraces: async () => undefined,
     saveTraces: async () => {
       manager.saveTraceCalls.push("save");
+      manager.lifecycleCalls.push("save");
     },
     setSessionGoal: (goal: string) => {
       manager.sessionGoals.push(goal);
@@ -629,7 +656,7 @@ describe("ScreenManager transition flow", () => {
     const providerBundle = makeProvider({
       contributions: [makeContribution("c1"), makeContribution("c2")],
     });
-    renderScreenManager({
+    const { spawnManager } = renderScreenManager({
       provider: providerBundle.provider,
       topology: TEST_TOPOLOGY,
       initialState: {
@@ -649,50 +676,96 @@ describe("ScreenManager transition flow", () => {
     expect(captured.screen).toBe("complete");
     expect(requireCompleteView().reason).toBe("All roles signaled done");
     expect(requireCompleteView().contributionCount).toBe(2);
+    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+    expect(spawnManager.lifecycleCalls).toEqual(["stop-active", "save"]);
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
   });
 
-  test("running -> complete when one agent signals done through the event bus", async () => {
+  test("running completes when a terminal role done contribution reaches the feed", async () => {
     const providerBundle = makeProvider({
-      contributions: [makeContribution("c1")],
+      contributions: [makeDoneContribution("builder", "done-builder")],
     });
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Complete from feed",
+        sessionId: "session-feed-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      requireRunningView().onNewContribution?.(makeDoneContribution("builder", "done-builder"));
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("All roles signaled done");
+    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-feed-done"]);
+  });
+
+  test("running ignores non-terminal role done until a terminal role is done", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeDoneContribution("planner", "done-planner")],
+    });
+    renderScreenManager({
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Wait for terminal done",
+        sessionId: "session-wait-terminal",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      requireRunningView().onNewContribution?.(makeDoneContribution("planner", "done-planner"));
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("running");
+    expect(providerBundle.calls.archiveSession).toEqual([]);
+  });
+
+  test("event-driven done detection uses the source role, not the subscribed channel", async () => {
     const eventBus = new LocalEventBus();
+    const providerBundle = makeProvider({
+      contributions: [makeDoneContribution("builder", "done-builder-event")],
+    });
     try {
-      renderScreenManager({
+      const { spawnManager } = renderScreenManager({
         provider: providerBundle.provider,
         topology: TEST_TOPOLOGY,
-        appProps: {
-          ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY),
-          eventBus,
-        },
+        appProps: { ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY), eventBus },
         initialState: {
           screen: "running",
-          goal: "Complete the session",
-          sessionId: "session-done-event",
+          goal: "Complete from event",
+          sessionId: "session-event-done",
           sessionStartedAt: "2026-03-29T00:00:00.000Z",
         },
       });
 
       await act(async () => {
-        await flushAsync();
         await eventBus.publish({
           type: "contribution",
           sourceRole: "builder",
-          targetRole: "builder",
-          payload: {
-            summary: "[DONE] Approved",
-            context: { done: true },
-          },
-          timestamp: "2026-05-07T00:00:00.000Z",
+          targetRole: "planner",
+          payload: { summary: "[DONE] Approved", context: { done: true } },
+          timestamp: "2026-03-29T00:00:00.000Z",
         });
         await flushAsync();
         await flushAsync();
       });
 
       expect(captured.screen).toBe("complete");
-      expect(requireCompleteView().reason).toBe("Agent signaled done");
-      expect(requireCompleteView().contributionCount).toBe(1);
-      expect(providerBundle.calls.archiveSession).toEqual(["session-done-event"]);
+      expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-event-done"]);
     } finally {
       eventBus.close();
     }

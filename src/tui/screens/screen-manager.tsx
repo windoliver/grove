@@ -18,7 +18,7 @@ import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { debugLog } from "../debug-log.js";
-import { useDoneDetection } from "../hooks/use-done-detection.js";
+import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import type { SessionRecord } from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
@@ -284,17 +284,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const sessionStartRef = useRef<number>(Date.now());
     // Track if grove_done was signaled — stops IPC routing to prevent ping-pong
     const doneSignaledRef = useRef(false);
+    const completionStartedRef = useRef(false);
 
     // ---------------------------------------------------------------------------
     // Done detection — extracted to custom hook (supports event-driven + polling)
     // ---------------------------------------------------------------------------
     const snapshotAndComplete = useCallback(
       async (reason: string) => {
-        // Save trace history before completing
+        // Stop active agents before any slower completion work so in-flight
+        // handoffs cannot keep the review loop producing contributions.
+        await spawnManager.stopActiveSession().catch(() => {
+          /* best-effort */
+        });
         await spawnManager.saveTraces().catch(() => {
           /* best-effort */
         });
-        spawnManager.stopLogPolling();
 
         let contributionCount = 0;
         try {
@@ -320,9 +324,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [provider, spawnManager],
     );
     const handleDone = useCallback(() => {
-      void snapshotAndComplete("Agent signaled done");
+      if (completionStartedRef.current) return;
+      completionStartedRef.current = true;
+      void snapshotAndComplete("All roles signaled done");
     }, [snapshotAndComplete]);
-    useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
+    const observeDoneContribution = useDoneDetection(
+      topology,
+      state.screen,
+      appProps.eventBus,
+      handleDone,
+    );
 
     // ---------------------------------------------------------------------------
     // Permission prompt detection — extracted to custom hook
@@ -692,6 +703,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
+      completionStartedRef.current = false;
       hasSpawnedRef.current = false; // Reset spawn guard for new session
       setState((s) => {
         // If we have preset + role mapping from a prior run, skip to goal input
@@ -822,17 +834,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 "contribution",
                 `NEW cid=${c.cid.slice(0, 12)} kind=${c.kind} role=${c.agent?.role} summary="${c.summary.slice(0, 50)}"`,
               );
-              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
-              if (doneSignaledRef.current) return;
-              const isDone =
-                c.summary.startsWith("[DONE]") ||
-                (c.context &&
-                  typeof c.context === "object" &&
-                  (c.context as Record<string, unknown>).done === true);
+              const isDone = isDoneContribution({ summary: c.summary, context: c.context });
               if (isDone) {
                 doneSignaledRef.current = true;
+                observeDoneContribution(c);
                 return;
               }
+              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
+              if (doneSignaledRef.current) return;
               // Routing is handled by the SSE push bridge — don't re-deliver here.
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
