@@ -212,10 +212,27 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [promptTarget, setPromptTarget] = useState(0);
 
     // ─── C2 cmd-mode state (#302) ───
-    const [cmdState, setCmdState] = useState<CmdModeState>(initialCmdState);
+    // React state drives rendering; refs mirror the latest values so the
+    // keyboard router reads them synchronously inside a single tick. Without
+    // refs, fast keystroke bursts (paste, scripted input) race React's
+    // re-render: the second key sees stale `cmdMode='none'` and falls through
+    // to the normal-mode handler.
+    const [cmdState, setCmdStateRaw] = useState<CmdModeState>(initialCmdState);
+    const cmdStateRef = useRef<CmdModeState>(initialCmdState);
+    const setCmdState = useCallback((next: CmdModeState | ((s: CmdModeState) => CmdModeState)) => {
+      cmdStateRef.current = typeof next === "function" ? next(cmdStateRef.current) : next;
+      setCmdStateRaw(cmdStateRef.current);
+    }, []);
+
     const [aliases, setAliases] = useState<AliasMap>(DEFAULT_ALIASES);
     const [flashError, setFlashError] = useState<string | null>(null);
-    const [filterQuery, setFilterQuery] = useState<string>("");
+
+    const [filterQuery, setFilterQueryRaw] = useState<string>("");
+    const filterQueryRef = useRef<string>("");
+    const setFilterQuery = useCallback((next: string) => {
+      filterQueryRef.current = next;
+      setFilterQueryRaw(next);
+    }, []);
 
     const flash = useCallback((msg: string, ms = 3000) => {
       setFlashError(msg);
@@ -864,6 +881,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.mode,
         cmdState.text,
         filterQuery,
+        setCmdState,
+        setFilterQuery,
       ],
     );
 
@@ -890,7 +909,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               return;
             }
           }
-          routeRunningKey(key, keyboardState, keyboardActions);
+          // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
+          // because keyboardState's useMemo only re-runs after React commits,
+          // and a burst of keys arriving in a single tick would otherwise see
+          // stale state. See cmdState refs above for the race rationale.
+          const liveState: RunningKeyboardState = {
+            ...keyboardState,
+            cmdMode: cmdStateRef.current.mode,
+            cmdText: cmdStateRef.current.text,
+            filterQuery: filterQueryRef.current,
+          };
+          routeRunningKey(key, liveState, keyboardActions);
         },
         [showVfs, keyboardState, keyboardActions],
       ),

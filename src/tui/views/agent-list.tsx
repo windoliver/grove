@@ -97,6 +97,28 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * Apply C2 (#302) filter to agent rows: case-insensitive substring match
+ * against any rendered column. Empty/whitespace filter returns rows unchanged.
+ *
+ * Exported for unit testing — the filter logic is the actual surface that
+ * narrows what the user sees when typing `/foo` in the running view.
+ */
+export function applyAgentFilter(
+  rows: readonly Record<string, string>[],
+  filterText: string | undefined,
+): readonly Record<string, string>[] {
+  const q = filterText?.trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter((row) =>
+    COLUMNS.some((c) =>
+      String(row[c.key] ?? "")
+        .toLowerCase()
+        .includes(q),
+    ),
+  );
+}
+
 /** Build agent rows by correlating claims with tmux sessions, grouped by role. */
 function buildAgentRows(
   claims: readonly Claim[],
@@ -244,15 +266,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     );
 
     const agentRows = useMemo(() => {
-      const q = filterText?.trim().toLowerCase();
-      if (!q) return allAgentRows;
-      return allAgentRows.filter((row) =>
-        COLUMNS.some((c) =>
-          String(row[c.key] ?? "")
-            .toLowerCase()
-            .includes(q),
-        ),
-      );
+      return applyAgentFilter(allAgentRows, filterText);
     }, [allAgentRows, filterText]);
 
     // Track rows for session selection and notify parent when cursor moves
