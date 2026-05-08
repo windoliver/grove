@@ -1,0 +1,3 @@
+{"event":"AGENT_START","spanId":"proc-1","message":"started","timestamp":"2026-05-05T00:00:00Z"}
+plain stdout line
+{"stream":"stderr","message":"warning: denied","event":"PERMISSION_DENIED"}

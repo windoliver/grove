@@ -534,6 +534,125 @@ try {
     }
   }
 
+  // Cross-process WatchHub bridge: when grove-server is reachable on its
+  // standard service port and we hold a namespace key, fire entity-changed
+  // events as POSTs to /api/watch/notify. Without this, agent-driven
+  // contributions land in Nexus VFS but the TUI's grove-server-mediated
+  // EntityStore feed never sees them — handoff still routes through
+  // Nexus IPC, but the TUI-side feed stays empty.
+  let onEntityWrite:
+    | ((event: import("../core/watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  try {
+    const { resolveServicePort } = await import("../shared/service-lifecycle.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    const groveDir = process.env.GROVE_DIR ?? groveOverride;
+    const apiKey = groveDir ? readClientKey(groveDir) : undefined;
+    if (apiKey) {
+      // resolveServicePort("server") reads PORT which inside this MCP
+      // process is 4015 (MCP's own port), so the bridge URL would point
+      // at MCP itself. Strip PORT so resolveServicePort returns the
+      // grove-server default (4515).
+      const port = process.env.GROVE_SERVER_PORT
+        ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
+        : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
+      const url = `http://localhost:${port}/api/watch/notify`;
+      // Per-(kind, entityId) ordering: each entity's events serialize
+      // through their own promise chain, but unrelated entities are
+      // independent. Without this, one retrying notify (up to ~5s under
+      // backoff) would head-of-line-block every other bridge event from
+      // this process — including unrelated contributions and claims for
+      // a different agent. Tails are removed once they settle so the
+      // map doesn't accumulate state for one-shot entities.
+      const bridgeTails: Map<string, Promise<unknown>> = new Map();
+      // GROVE_SESSION_ID is set by the parent (TUI / acpx) when the agent
+      // is bound to a Grove session — its writes land in the session-
+      // scoped VFS tree. The watch route needs this id to hydrate from the
+      // matching scoped store; without it the unscoped listEntities scan
+      // returns [] and the route emits DELETED for a brand-new row.
+      const bridgeSessionId = process.env.GROVE_SESSION_ID;
+      // Bounded retry with backoff: a single timeout/5xx leaves
+      // informer-backed Nexus views stale (those views disable their
+      // poller while the watch path is enabled), so deliver-once-best-
+      // effort is not enough for UI correctness. We retry transient
+      // failures (network errors, 5xx) up to RETRIES times with
+      // exponential backoff. Permanent failures (4xx that aren't 408,
+      // 429) and final exhaustion log and surrender — at that point
+      // the next contribute → notify either repairs the gap, or the
+      // user-visible relist on reconnect does.
+      const RETRIES = 3;
+      const BACKOFF_MS = [200, 600, 1500];
+      const isTransient = (status: number): boolean =>
+        status >= 500 || status === 408 || status === 429;
+      onEntityWrite = (event) => {
+        const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
+        const eid = ent?.id;
+        if (!eid) {
+          process.stderr.write(`[mcp.bridge] missing entity.id, skipping\n`);
+          return;
+        }
+        const generation = ent?.metadata?.generation;
+        const body = JSON.stringify({
+          kind: event.kind,
+          op: event.op,
+          entityId: eid,
+          ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+          ...(generation !== undefined ? { generation } : {}),
+        });
+        const tryPost = async (): Promise<{ ok: boolean; status?: number; err?: string }> => {
+          try {
+            const r = await fetch(url, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body,
+              signal: AbortSignal.timeout(2_000),
+            });
+            return { ok: r.ok, status: r.status };
+          } catch (e) {
+            return { ok: false, err: e instanceof Error ? e.message : String(e) };
+          }
+        };
+        const tailKey = `${event.kind}:${eid}`;
+        const prior = bridgeTails.get(tailKey) ?? Promise.resolve();
+        const next = prior
+          .catch(() => undefined)
+          .then(async () => {
+            for (let attempt = 0; attempt <= RETRIES; attempt++) {
+              const res = await tryPost();
+              if (res.ok) return;
+              if (res.status !== undefined && !isTransient(res.status)) {
+                process.stderr.write(
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → permanent HTTP ${res.status}; not retrying\n`,
+                );
+                return;
+              }
+              if (attempt === RETRIES) {
+                const reason = res.err ?? `transient HTTP ${res.status}`;
+                process.stderr.write(
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts. ` +
+                    `WARN: subscribers may be stale until next ${event.kind} write or relist.\n`,
+                );
+                return;
+              }
+              await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
+            }
+          });
+        bridgeTails.set(tailKey, next);
+        // Drop the tail once settled so one-shot entities don't pin map state.
+        void next.finally(() => {
+          if (bridgeTails.get(tailKey) === next) bridgeTails.delete(tailKey);
+        });
+      };
+    }
+  } catch {
+    // Best-effort: when groveDir/apiKey/port can't be resolved, the cross-
+    // process bridge stays disabled. Agents still write to Nexus, but the
+    // TUI feed will only update via polling.
+  }
+
   deps = {
     contributionStore,
     claimStore,
@@ -547,6 +666,7 @@ try {
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
+    ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,

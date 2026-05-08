@@ -47,6 +47,18 @@ export interface McpDeps extends ServerDeps {
   readonly onContributionWrite?: (() => void) | undefined;
   /** Called after a contribution is written, receiving its CID (for session tagging). */
   readonly onContributionWritten?: ((cid: string) => void) | undefined;
+  /**
+   * Called after any Entity (#287) write — drives the watch protocol (#292).
+   * MCP wires this to POST /api/watch/notify on the locally-managed
+   * grove-server when one is reachable, so cross-process Nexus writes
+   * (i.e. agent contributions) propagate to the TUI's WatchHub /
+   * EntityStore feed without polling.
+   */
+  readonly onEntityWrite?:
+    | ((event: import("../core/watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  /** Namespace under which the MCP process serves; required to fire onEntityWrite. */
+  readonly namespace?: string | undefined;
   readonly bountyStore?: BountyStore;
   readonly creditsService?: CreditsService;
   /** Optional event bus for agent notifications. */

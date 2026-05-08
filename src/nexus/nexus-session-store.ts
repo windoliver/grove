@@ -2,7 +2,8 @@
  * Nexus VFS-backed session store.
  *
  * Stores sessions as JSON files at /zones/{zoneId}/sessions/{id}.json.
- * Contributions are stored at /zones/{zoneId}/sessions/{id}.contributions.json.
+ * Legacy contribution links are stored at /zones/{zoneId}/sessions/{id}.contributions.json.
+ * New links are marker files under /zones/{zoneId}/sessions/{id}.contributions/.
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,6 +29,7 @@ import type { ClaimStore } from "../core/store.js";
 import type { NexusClient } from "./client.js";
 import { NexusConflictError } from "./errors.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
+import { decodeSegment, encodeSegment } from "./vfs-paths.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -39,6 +41,12 @@ interface SessionContributionLink {
   readonly cid: string;
   readonly ownerRef: OwnerRef;
   readonly addedAt: string;
+}
+
+interface ContributionMarker {
+  readonly cid: string;
+  readonly ownerRef?: OwnerRef | undefined;
+  readonly addedAt?: string | undefined;
 }
 
 interface ContributionSidecarV2 {
@@ -145,6 +153,14 @@ export class NexusSessionStore implements SessionStore {
 
   private contributionsPath(id: string): string {
     return `/zones/${this.zoneId}/sessions/${id}.contributions.json`;
+  }
+
+  private contributionMarkersDir(id: string): string {
+    return `/zones/${this.zoneId}/sessions/${id}.contributions`;
+  }
+
+  private contributionMarkerPath(id: string, cid: string): string {
+    return `${this.contributionMarkersDir(id)}/${encodeSegment(cid)}`;
   }
 
   private normalizeSessionRecord(session: PersistedSessionRecord): {
@@ -260,30 +276,71 @@ export class NexusSessionStore implements SessionStore {
     sessionId: string,
     session?: Pick<Session, "id" | "uid" | "createdAt">,
   ): Promise<LoadedContributionLinks> {
-    const data = await this.client.read(this.contributionsPath(sessionId));
-    if (data === undefined) return { items: [], isLegacy: false };
+    const fallbackOwnerRef = ownerRefForSession({
+      id: sessionId,
+      uid: session?.uid ?? sessionId,
+    });
+    const defaultOwnerRef = session !== undefined ? ownerRefForSession(session) : fallbackOwnerRef;
+    const defaultAddedAt = session?.createdAt ?? new Date().toISOString();
+    const items: SessionContributionLink[] = [];
+    const seen = new Set<string>();
+    let isLegacy = false;
 
-    const parsed = JSON.parse(decoder.decode(data)) as unknown;
-    if (Array.isArray(parsed)) {
-      const fallbackOwnerRef = ownerRefForSession({
-        id: sessionId,
-        uid: session?.uid ?? sessionId,
-      });
-      return {
-        isLegacy: true,
-        items: parsed.map((cid) => ({
-          cid,
-          ownerRef: session !== undefined ? ownerRefForSession(session) : fallbackOwnerRef,
-          addedAt: session?.createdAt ?? new Date().toISOString(),
-        })),
-      };
+    const addItem = (item: SessionContributionLink): void => {
+      if (seen.has(item.cid)) return;
+      seen.add(item.cid);
+      items.push(item);
+    };
+
+    try {
+      const data = await this.client.read(this.contributionsPath(sessionId));
+      if (data !== undefined) {
+        const parsed = JSON.parse(decoder.decode(data)) as unknown;
+        if (Array.isArray(parsed)) {
+          isLegacy = true;
+          for (const cid of parsed) {
+            if (typeof cid !== "string") continue;
+            addItem({ cid, ownerRef: defaultOwnerRef, addedAt: defaultAddedAt });
+          }
+        } else if (isContributionSidecarV2(parsed)) {
+          for (const item of parsed.items) addItem(item);
+        }
+      }
+    } catch {
+      // Ignore malformed or missing legacy sidecar.
     }
 
-    if (isContributionSidecarV2(parsed)) {
-      return { items: parsed.items, isLegacy: false };
+    try {
+      const markers = await this.client.list(this.contributionMarkersDir(sessionId));
+      for (const entry of markers.files) {
+        if (entry.isDirectory) continue;
+        try {
+          const data = await this.client.read(entry.path);
+          if (data !== undefined) {
+            const marker = JSON.parse(decoder.decode(data)) as Partial<ContributionMarker>;
+            if (typeof marker.cid === "string") {
+              addItem({
+                cid: marker.cid,
+                ownerRef: marker.ownerRef ?? defaultOwnerRef,
+                addedAt: marker.addedAt ?? defaultAddedAt,
+              });
+              continue;
+            }
+          }
+        } catch {
+          // Fall through to filename-derived CID for older/partial markers.
+        }
+        addItem({
+          cid: decodeSegment(entry.name),
+          ownerRef: defaultOwnerRef,
+          addedAt: defaultAddedAt,
+        });
+      }
+    } catch {
+      // Marker directory may not exist on legacy sessions.
     }
 
-    return { items: [], isLegacy: false };
+    return { items, isLegacy };
   }
 
   private async writeContributionLinks(
@@ -295,6 +352,19 @@ export class NexusSessionStore implements SessionStore {
       this.contributionsPath(sessionId),
       encoder.encode(JSON.stringify(sidecar)),
     );
+  }
+
+  private async deleteContributionLinks(sessionId: string): Promise<void> {
+    await this.client.delete(this.contributionsPath(sessionId));
+    try {
+      const markers = await this.client.list(this.contributionMarkersDir(sessionId));
+      for (const entry of markers.files) {
+        if (!entry.isDirectory) await this.client.delete(entry.path);
+      }
+      await this.client.delete(this.contributionMarkersDir(sessionId));
+    } catch {
+      // Marker directory may not exist on legacy sessions.
+    }
   }
 
   private async getClaimStore(): Promise<ClaimStore> {
@@ -477,7 +547,7 @@ export class NexusSessionStore implements SessionStore {
         cleanupErrors.push(error instanceof Error ? error.message : String(error));
       }
       try {
-        await this.client.delete(this.contributionsPath(id));
+        await this.deleteContributionLinks(id);
       } catch (error) {
         cleanupErrors.push(error instanceof Error ? error.message : String(error));
       }
@@ -520,7 +590,7 @@ export class NexusSessionStore implements SessionStore {
           await claimStore.releaseOwnedBy(ownerRef);
           await claimStore.deleteTerminalOwnedBy(ownerRef);
         } else if (finalizer === Finalizer.DrainContribs) {
-          await this.client.delete(this.contributionsPath(id));
+          await this.deleteContributionLinks(id);
         } else if (finalizer === Finalizer.CloseRuntime && this.closeRuntime !== undefined) {
           await this.closeRuntime(current);
         }
@@ -635,17 +705,29 @@ export class NexusSessionStore implements SessionStore {
     const session = await this.getSessionRecord(sessionId);
     const loaded = await this.readContributionLinks(sessionId, session ?? undefined);
     const items = [...loaded.items];
+    const ownerRef =
+      session !== undefined
+        ? ownerRefForSession(session)
+        : { kind: "session" as const, id: sessionId, uid: sessionId };
     if (!items.some((item) => item.cid === cid)) {
-      items.push({
+      const item: SessionContributionLink = {
         cid,
-        ownerRef:
-          session !== undefined
-            ? ownerRefForSession(session)
-            : { kind: "session", id: sessionId, uid: sessionId },
+        ownerRef,
         addedAt: new Date().toISOString(),
-      });
+      };
+      items.push(item);
+      try {
+        const marker: ContributionMarker = item;
+        await this.client.write(
+          this.contributionMarkerPath(sessionId, cid),
+          encoder.encode(JSON.stringify(marker)),
+          { ifNoneMatch: "*" },
+        );
+      } catch (error) {
+        if (!(error instanceof NexusConflictError)) throw error;
+      }
     }
-    if (loaded.isLegacy || items.length !== loaded.items.length) {
+    if (loaded.isLegacy) {
       await this.writeContributionLinks(sessionId, items);
     }
   }

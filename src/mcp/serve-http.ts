@@ -8,9 +8,10 @@
  * responses via Server-Sent Events (SSE).
  *
  * Usage:
- *   grove-mcp-http                          # listen on 0.0.0.0:4015
+ *   grove-mcp-http                          # listen on localhost:4015
  *   PORT=8080 grove-mcp-http                # custom port
  *   GROVE_DIR=/path grove-mcp-http          # explicit grove directory
+ *   MCP_HOST=0.0.0.0 GROVE_MCP_ALLOW_REMOTE=true GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *
  * Endpoints:
  *   POST /mcp   — JSON-RPC requests (initialize, tool calls, etc.)
@@ -36,6 +37,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { resolveMcpHttpBindPolicy } from "./http-bind-policy.js";
 import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
 import { createMcpServer } from "./server.js";
 
@@ -49,13 +51,29 @@ const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
  * When set, every request must include `Authorization: Bearer <token>`.
  * When unset, auth is skipped (backward compatible for local-only use).
  */
-const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
+const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN?.trim() || undefined;
 
 // --- Initialization ---------------------------------------------------------
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
 const port = parsePort(process.env.PORT, 4015);
+const bindPolicy = resolveMcpHttpBindPolicy({
+  host: process.env.MCP_HOST,
+  authToken: AUTH_TOKEN,
+  allowRemote: process.env.GROVE_MCP_ALLOW_REMOTE,
+});
+
+if (!bindPolicy.allowed) {
+  process.stderr.write(`grove-mcp-http: FATAL: ${bindPolicy.reason}\n`);
+  process.exit(1);
+}
+
+if (bindPolicy.remote) {
+  process.stderr.write(
+    "grove-mcp-http: WARN: binding MCP HTTP to a non-localhost address with bearer auth enabled\n",
+  );
+}
 
 let groveDir!: string;
 let runtime!: ReturnType<typeof createLocalRuntime>;
@@ -681,6 +699,116 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ]);
   }
 
+  // Cross-process WatchHub bridge: when grove-server is reachable and
+  // we hold a namespace key, fire entity-changed events as POSTs to
+  // /api/watch/notify. Mirrors src/mcp/serve.ts (stdio MCP).
+  let onEntityWrite:
+    | ((event: import("../core/watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  try {
+    const { resolveServicePort } = await import("../shared/service-lifecycle.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    const apiKey = readClientKey(groveDir);
+    if (apiKey) {
+      // Use GROVE_SERVER_PORT env when set, else fall back to default 4515.
+      // resolveServicePort("server") reads PORT which would echo this MCP
+      // process's own port (4015), pointing the bridge at MCP itself.
+      // resolveServicePort("server") reads PORT which inside this MCP
+      // process is 4015 (MCP's own port), so the bridge URL would point
+      // at MCP itself. Strip PORT so resolveServicePort returns the
+      // grove-server default (4515).
+      const port = process.env.GROVE_SERVER_PORT
+        ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
+        : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
+      const url = `http://localhost:${port}/api/watch/notify`;
+      // Per-(kind, entityId) ordering: same-entity events serialize via
+      // their own promise chain, unrelated entities don't block each
+      // other. Without this, one retrying notify (~5s under backoff)
+      // would head-of-line-block every other bridge event from this
+      // process — including unrelated contributions and claims.
+      const bridgeTails: Map<string, Promise<unknown>> = new Map();
+      // sessionId here is the scope of this McpDeps instance — agent
+      // contributions/claims land under /zones/{zone}/sessions/{sessionId}/.
+      // Forward it so /api/watch/notify can hydrate from the matching
+      // session-scoped store; without it the unscoped lookup returns []
+      // and the route emits DELETED for a brand-new row.
+      const bridgeSessionId = sessionId;
+      // Bounded retry with backoff (mirrors src/mcp/serve.ts). Best-
+      // effort delivery is not enough — informer-backed Nexus views
+      // disable polling while the watch path is on, so a single
+      // 5xx/timeout would leave the UI stale.
+      const RETRIES = 3;
+      const BACKOFF_MS = [200, 600, 1500];
+      const isTransient = (status: number): boolean =>
+        status >= 500 || status === 408 || status === 429;
+      onEntityWrite = (event) => {
+        const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
+        const eid = ent?.id;
+        if (!eid) {
+          process.stderr.write(`[mcp-http.bridge] missing entity.id, skipping\n`);
+          return;
+        }
+        const generation = ent?.metadata?.generation;
+        const body = JSON.stringify({
+          kind: event.kind,
+          op: event.op,
+          entityId: eid,
+          ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+          ...(generation !== undefined ? { generation } : {}),
+        });
+        const tryPost = async (): Promise<{ ok: boolean; status?: number; err?: string }> => {
+          try {
+            const r = await fetch(url, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body,
+              signal: AbortSignal.timeout(2_000),
+            });
+            return { ok: r.ok, status: r.status };
+          } catch (e) {
+            return { ok: false, err: e instanceof Error ? e.message : String(e) };
+          }
+        };
+        const tailKey = `${event.kind}:${eid}`;
+        const prior = bridgeTails.get(tailKey) ?? Promise.resolve();
+        const next = prior
+          .catch(() => undefined)
+          .then(async () => {
+            for (let attempt = 0; attempt <= RETRIES; attempt++) {
+              const res = await tryPost();
+              if (res.ok) return;
+              if (res.status !== undefined && !isTransient(res.status)) {
+                process.stderr.write(
+                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → permanent HTTP ${res.status}; not retrying\n`,
+                );
+                return;
+              }
+              if (attempt === RETRIES) {
+                const reason = res.err ?? `transient HTTP ${res.status}`;
+                process.stderr.write(
+                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts. ` +
+                    `WARN: subscribers may be stale until next ${event.kind} write or relist.\n`,
+                );
+                return;
+              }
+              await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
+            }
+          });
+        bridgeTails.set(tailKey, next);
+        void next.finally(() => {
+          if (bridgeTails.get(tailKey) === next) bridgeTails.delete(tailKey);
+        });
+      };
+    }
+  } catch {
+    // Best-effort: when grove-server port or api-key can't be resolved,
+    // the cross-process bridge stays disabled. The TUI feed will fall
+    // back to its polling refresh interval.
+  }
+
   const deps: McpDeps = {
     contributionStore,
     claimStore,
@@ -704,6 +832,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     watchHub: new WatchHub(),
   };
   const deactivate = () => {
@@ -1327,8 +1456,8 @@ const httpServer = createServer((req, res) => {
   });
 });
 
-httpServer.listen(port, () => {
-  process.stderr.write(`grove-mcp-http: listening on http://0.0.0.0:${port}/mcp\n`);
+httpServer.listen(port, bindPolicy.host, () => {
+  process.stderr.write(`grove-mcp-http: listening on http://${bindPolicy.host}:${port}/mcp\n`);
 });
 
 // Graceful shutdown

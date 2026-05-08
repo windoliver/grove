@@ -37,6 +37,8 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
     ...(deps.onContributionWritten !== undefined
       ? { onContributionWritten: deps.onContributionWritten }
       : {}),
+    ...(deps.onEntityWrite !== undefined ? { onEntityWrite: deps.onEntityWrite } : {}),
+    ...(deps.namespace !== undefined ? { namespace: deps.namespace } : {}),
     ...(deps.eventBus !== undefined ? { eventBus: deps.eventBus } : {}),
     ...(deps.topologyRouter !== undefined ? { topologyRouter: deps.topologyRouter } : {}),
     ...(deps.handoffStore !== undefined ? { handoffStore: deps.handoffStore } : {}),

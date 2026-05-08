@@ -571,7 +571,8 @@ export class EnforcingClaimStore implements ClaimStore {
   };
 
   // Read/mutation operations — direct delegation
-  getClaim = (claimId: string): Promise<Claim | undefined> => this.inner.getClaim(claimId);
+  getClaim = (claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined> =>
+    this.inner.getClaim(claimId, opts);
   release = (claimId: string): Promise<Claim> => this.inner.release(claimId);
   releaseOwnedBy = (ownerRef: OwnerRef): Promise<number> => this.inner.releaseOwnedBy(ownerRef);
   complete = (claimId: string): Promise<Claim> => this.inner.complete(claimId);

@@ -268,7 +268,15 @@ export class NexusClaimStore implements ClaimStore {
     return createdClaim;
   }
 
-  async getClaim(claimId: string): Promise<Claim | undefined> {
+  async getClaim(claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined> {
+    if (opts?.bypassCache) {
+      // Evict the per-id cache and re-read from VFS. Required when a peer
+      // process may have updated the claim and our cached snapshot would
+      // otherwise mask the new state (e.g. the /api/watch/notify bridge
+      // hydrating a release/complete after a previous read populated the
+      // cache with the old `active` snapshot).
+      this.claimCache.delete(claimId);
+    }
     return this.readClaim(claimId);
   }
 

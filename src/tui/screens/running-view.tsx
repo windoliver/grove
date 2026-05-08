@@ -259,6 +259,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // lease-aware expiry, frontierSummary) remains polled — claim activity
     // expires on wall-clock and frontier needs server compute, neither of
     // which the watch protocol covers.
+    //
+    // Honor the session scope gate: in scoped sessions we keep the polled
+    // path because /api/list and /api/watch are still namespace-global —
+    // the EntityStore would seed with all sessions' rows on init and admit
+    // foreign-session writes via the watch fan-out. The session-time
+    // creationTimestamp filter is not equivalent to real session membership
+    // (it drops pre-existing rows from the same session and lets in
+    // parallel-session rows committed after start). Revisit when the watch
+    // protocol carries sessionId end-to-end.
     const useContribInformer = useEntityWatchEnabled(provider, "Contribution");
     const contribEntities = useEntities("Contribution");
 
@@ -336,6 +345,23 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = useMemo<readonly Contribution[] | undefined>(() => {
       if (!contribInformerReady) return contributionsPoll.data ?? undefined;
+      // Time-based session scope. The watch protocol does not yet filter
+      // by sessionId server-side, so the EntityStore cache may contain
+      // contributions from prior/parallel sessions in the same namespace.
+      // Filter to entries created at-or-after the current session start to
+      // match the polled provider.getContributions() semantics, which the
+      // TUI provider scopes server-side via setSessionScope. Without this
+      // filter, switching to the EntityStore path in a scoped session
+      // would surface other-session contributions in the feed.
+      const all = contribEntities.data;
+      const cutoffMs = sessionStartedAt ? new Date(sessionStartedAt).getTime() : 0;
+      const scoped =
+        cutoffMs > 0
+          ? all.filter((c) => {
+              const t = Date.parse(c.metadata.creationTimestamp ?? "");
+              return Number.isFinite(t) && t >= cutoffMs;
+            })
+          : all;
       // Cap the projection BEFORE sort/map. A large informer cache (e.g.
       // after a relist on a long-running Grove) would otherwise sort + map
       // every entity on each recompute, freezing the TUI even though the
@@ -346,10 +372,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       // DESC chronological for the cap (invalid-last so bad timestamps
       // don't displace real recent contributions); ASC for the final feed
       // order so auto-follow lands on the newest tail.
-      const all = contribEntities.data;
-      let pool: readonly ContributionEntity[] = all;
-      if (all.length > FEED_PROJECTION_CAP) {
-        pool = [...all]
+      let pool: readonly ContributionEntity[] = scoped;
+      if (scoped.length > FEED_PROJECTION_CAP) {
+        pool = [...scoped]
           .sort((a, b) =>
             compareTimestampsDesc(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
           )
@@ -361,7 +386,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         compareTimestampsAscNewestLast(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
       );
       return sorted.map(entityToContribution);
-    }, [contribInformerReady, contribEntities.data, contributionsPoll.data]);
+    }, [contribInformerReady, contribEntities.data, contributionsPoll.data, sessionStartedAt]);
     // Session scoping is handled server-side (provider.setSessionScope).
     // The feed already contains only this session's contributions.
     const feed = contributions ?? [];

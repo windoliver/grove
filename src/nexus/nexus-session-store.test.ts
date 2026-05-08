@@ -220,6 +220,37 @@ describe("NexusSessionStore", () => {
       expect(item.ownerRef).toEqual({ kind: "session", id: session.id, uid: session.uid });
       expect(item.addedAt).toBeTruthy();
     }
+    expect(
+      await readJson(client, `/zones/test-zone/sessions/${session.id}.contributions/blake3:three`),
+    ).toMatchObject({
+      cid: "blake3:three",
+      ownerRef: { kind: "session", id: session.id, uid: session.uid },
+    });
+  });
+
+  test("addContribution preserves concurrent session links", async () => {
+    const store = new NexusSessionStore(client, "test-zone");
+    const session = await store.createSession({ goal: "Concurrent links" });
+
+    await Promise.all([
+      store.addContribution(session.id, "blake3:first"),
+      store.addContribution(session.id, "blake3:second"),
+    ]);
+
+    const cids = await store.getContributions(session.id);
+    expect(new Set(cids)).toEqual(new Set(["blake3:first", "blake3:second"]));
+    expect(cids.length).toBe(2);
+  });
+
+  test("addContribution preserves bursty concurrent session links", async () => {
+    const store = new NexusSessionStore(client, "test-zone");
+    const session = await store.createSession({ goal: "Bursty links" });
+    const cids = Array.from({ length: 30 }, (_, i) => `blake3:${String(i).padStart(2, "0")}`);
+
+    await Promise.all(cids.map((cid) => store.addContribution(session.id, cid)));
+
+    expect(new Set(await store.getContributions(session.id))).toEqual(new Set(cids));
+    expect((await store.getSession(session.id))?.contributionCount).toBe(30);
   });
 
   test("deleteSession removes an unblocked session record and sidecar but leaves immutable contribution files", async () => {
@@ -247,6 +278,11 @@ describe("NexusSessionStore", () => {
     expect(await claimStore.getClaim("owned-claim")).toBeUndefined();
     expect(
       await client.read(`/zones/test-zone/sessions/${session.id}.contributions.json`),
+    ).toBeUndefined();
+    expect(
+      await client.read(
+        `/zones/test-zone/sessions/${session.id}.contributions/blake3:session-link`,
+      ),
     ).toBeUndefined();
     expect(
       await client.read("/zones/test-zone/contributions/blake3:session-link.json"),
