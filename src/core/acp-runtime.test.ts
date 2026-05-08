@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AcpLaunch } from "./acp-launch.js";
-import { AcpRuntime, buildAcpLaunchArgs } from "./acp-runtime.js";
+import { AcpRuntime, buildAcpLaunchArgs, buildAcpLaunchEnv } from "./acp-runtime.js";
 import { DENY_ALL_RESOLVER } from "./permission-resolver.js";
 
 describe("AcpRuntime construction", () => {
@@ -90,10 +90,60 @@ describe("buildAcpLaunchArgs", () => {
     ]);
   });
 
-  test("passes process-local MCP config to codex-acp without secret env values", () => {
+  test("passes only non-secret Grove MCP env through codex config args", () => {
     expect(
-      buildAcpLaunchArgs(codexLaunch, {
-        mcpServers: [
+      buildAcpLaunchArgs(
+        codexLaunch,
+        {
+          mcpServers: [
+            {
+              name: "grove",
+              command: "/Users/example/.bun/bin/bun",
+              args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+              env: {
+                GROVE_DIR: "/tmp/grove/.grove",
+                GROVE_NEXUS_URL: "http://localhost:10120",
+                NEXUS_API_KEY: "example-secret",
+                GROVE_SESSION_ID: "session-1",
+              },
+            },
+          ],
+        },
+        {
+          GROVE_AGENT_ID: "grove-coder-0--abc",
+          GROVE_AGENT_ROLE: "coder",
+          GROVE_ROUTING_TOKEN: "routing-secret",
+        },
+      ),
+    ).toEqual([
+      "codex-acp.js",
+      "-c",
+      'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
+      "-c",
+      'mcp_servers.grove.args=["run", "/tmp/grove/dist/mcp/serve.js"]',
+      "-c",
+      'mcp_servers.grove.env.GROVE_AGENT_ID="grove-coder-0--abc"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_AGENT_ROLE="coder"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_DIR="/tmp/grove/.grove"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
+    ]);
+  });
+
+  test("puts Grove MCP env in the codex adapter process env without leaking it into argv", () => {
+    expect(
+      buildAcpLaunchEnv(
+        "codex",
+        {
+          PATH: "/bin",
+          GROVE_AGENT_ID: "grove-coder-0--abc",
+          GROVE_AGENT_ROLE: "coder",
+        },
+        [
           {
             name: "grove",
             command: "/Users/example/.bun/bin/bun",
@@ -106,20 +156,16 @@ describe("buildAcpLaunchArgs", () => {
             },
           },
         ],
-      }),
-    ).toEqual([
-      "codex-acp.js",
-      "-c",
-      'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
-      "-c",
-      'mcp_servers.grove.args=["run", "/tmp/grove/dist/mcp/serve.js"]',
-      "-c",
-      'mcp_servers.grove.env.GROVE_DIR="/tmp/grove/.grove"',
-      "-c",
-      'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
-      "-c",
-      'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
-    ]);
+      ),
+    ).toEqual({
+      PATH: "/bin",
+      GROVE_AGENT_ID: "grove-coder-0--abc",
+      GROVE_AGENT_ROLE: "coder",
+      GROVE_DIR: "/tmp/grove/.grove",
+      GROVE_NEXUS_URL: "http://localhost:10120",
+      NEXUS_API_KEY: "example-secret",
+      GROVE_SESSION_ID: "session-1",
+    });
   });
 
   test("skips codex MCP argv overrides when CODEX_HOME config is authoritative", () => {

@@ -56,10 +56,14 @@ import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
 import { claimViewToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
+import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
 export const CURRENT_SCHEMA_VERSION = 14;
 const SQLITE_BIND_LIMIT = 900;
+const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
+  CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
+`;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -140,6 +144,9 @@ const SCHEMA_DDL = `
     heartbeat_at TEXT NOT NULL,
     lease_expires_at TEXT NOT NULL,
     context_json TEXT,
+    owner_ref_json TEXT,
+    finalizers_json TEXT NOT NULL DEFAULT '[]',
+    deletion_timestamp TEXT,
     agent_json TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     revision INTEGER NOT NULL DEFAULT 1
@@ -165,6 +172,9 @@ const SCHEMA_DDL = `
     agent_json TEXT NOT NULL,
     intent_summary TEXT NOT NULL,
     context_json TEXT,
+    owner_ref_json TEXT,
+    finalizers_json TEXT NOT NULL DEFAULT '[]',
+    deletion_timestamp TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -337,6 +347,15 @@ export function initSqliteDb(dbPath: string): Database {
       if (!columnNames.has("context_json")) {
         db.run("ALTER TABLE claims ADD COLUMN context_json TEXT");
       }
+      if (!columnNames.has("owner_ref_json")) {
+        db.run("ALTER TABLE claims ADD COLUMN owner_ref_json TEXT");
+      }
+      if (!columnNames.has("finalizers_json")) {
+        db.run("ALTER TABLE claims ADD COLUMN finalizers_json TEXT NOT NULL DEFAULT '[]'");
+      }
+      if (!columnNames.has("deletion_timestamp")) {
+        db.run("ALTER TABLE claims ADD COLUMN deletion_timestamp TEXT");
+      }
 
       // From v4→v5: add attempt_count to claims
       if (!columnNames.has("attempt_count")) {
@@ -353,11 +372,29 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    {
+      const columns = db.prepare("PRAGMA table_info(claim_spec)").all() as readonly {
+        name: string;
+      }[];
+      const columnNames = new Set(columns.map((c) => c.name));
+
+      if (!columnNames.has("owner_ref_json")) {
+        db.run("ALTER TABLE claim_spec ADD COLUMN owner_ref_json TEXT");
+      }
+      if (!columnNames.has("finalizers_json")) {
+        db.run("ALTER TABLE claim_spec ADD COLUMN finalizers_json TEXT NOT NULL DEFAULT '[]'");
+      }
+      if (!columnNames.has("deletion_timestamp")) {
+        db.run("ALTER TABLE claim_spec ADD COLUMN deletion_timestamp TEXT");
+      }
+    }
+
     // Migration -> v14: split legacy claims into claim_spec and claim_status.
     db.run(`
       INSERT OR IGNORE INTO claim_spec (
         id, role_name, platform, assignee_json, lease_deadline_sec, generation,
-        target_ref, agent_id, agent_json, intent_summary, context_json, created_at
+        target_ref, agent_id, agent_json, intent_summary, context_json,
+        owner_ref_json, finalizers_json, deletion_timestamp, created_at
       )
       SELECT
         claim_id,
@@ -375,6 +412,9 @@ export function initSqliteDb(dbPath: string): Database {
         agent_json,
         intent_summary,
         context_json,
+        owner_ref_json,
+        COALESCE(finalizers_json, '[]'),
+        deletion_timestamp,
         created_at
       FROM claims
       WHERE NOT EXISTS (
@@ -645,6 +685,69 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v14: persist session/claim deletion lifecycle metadata.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("uid")) {
+          db.run("ALTER TABLE sessions ADD COLUMN uid TEXT");
+        }
+        const rows = db
+          .prepare("SELECT session_id FROM sessions WHERE uid IS NULL OR uid = ''")
+          .all() as readonly { session_id: string }[];
+        const update = db.prepare("UPDATE sessions SET uid = ? WHERE session_id = ?");
+        for (const row of rows) update.run(crypto.randomUUID(), row.session_id);
+        if (!sessionColNames.has("finalizers_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN finalizers_json TEXT NOT NULL DEFAULT '[]'");
+        }
+        if (!sessionColNames.has("deletion_timestamp")) {
+          db.run("ALTER TABLE sessions ADD COLUMN deletion_timestamp TEXT");
+        }
+        if (!sessionColNames.has("deletion_audit_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN deletion_audit_json TEXT NOT NULL DEFAULT '[]'");
+        }
+        db.exec(SESSIONS_DELETION_TIMESTAMP_INDEX_DDL);
+      }
+    }
+
+    {
+      const scCols = db.prepare("PRAGMA table_info(session_contributions)").all() as readonly {
+        name: string;
+      }[];
+      if (scCols.length > 0 && !new Set(scCols.map((c) => c.name)).has("owner_ref_json")) {
+        db.run("ALTER TABLE session_contributions ADD COLUMN owner_ref_json TEXT");
+      }
+      if (scCols.length > 0) {
+        db.run(`
+          UPDATE session_contributions
+          SET owner_ref_json = json_object(
+            'kind', 'session',
+            'id', session_id,
+            'uid', (
+              SELECT sessions.uid
+              FROM sessions
+              WHERE sessions.session_id = session_contributions.session_id
+            )
+          )
+          WHERE (owner_ref_json IS NULL OR owner_ref_json = '')
+            AND EXISTS (
+              SELECT 1
+              FROM sessions
+              WHERE sessions.session_id = session_contributions.session_id
+                AND sessions.uid IS NOT NULL
+                AND sessions.uid <> ''
+            )
+        `);
+      }
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -811,13 +914,15 @@ export function createSqliteStores(
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
+  const contributionStore = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   return {
     db,
-    contributionStore: new SqliteContributionStore(db),
-    claimStore: new SqliteClaimStore(db),
+    contributionStore,
+    claimStore,
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
-    goalSessionStore: new SqliteGoalSessionStore(db),
+    goalSessionStore: new SqliteGoalSessionStore(db, { claimStore }),
     handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
     idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
@@ -949,6 +1054,9 @@ interface ClaimSpecRow {
   readonly generation: number;
   readonly target_ref: string;
   readonly agent_id: string;
+  readonly owner_ref_json: string | null;
+  readonly finalizers_json: string;
+  readonly deletion_timestamp: string | null;
   readonly agent_json: string;
   readonly intent_summary: string;
   readonly context_json: string | null;
@@ -990,6 +1098,11 @@ function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
     ...(row.context_json === null
       ? {}
       : { context: JSON.parse(row.context_json) as Readonly<Record<string, JsonValue>> }),
+    ...(row.owner_ref_json === null
+      ? {}
+      : { ownerRef: JSON.parse(row.owner_ref_json) as OwnerRef }),
+    finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
+    ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
   };
 }
@@ -1610,6 +1723,9 @@ const CLAIM_VIEW_SELECT_COLS = `
   s.agent_json AS agent_json,
   s.intent_summary AS intent_summary,
   s.context_json AS context_json,
+  s.owner_ref_json AS owner_ref_json,
+  s.finalizers_json AS finalizers_json,
+  s.deletion_timestamp AS deletion_timestamp,
   s.created_at AS created_at,
   st.phase AS phase,
   st.observed_generation AS observed_generation,
@@ -1622,6 +1738,13 @@ const CLAIM_VIEW_SELECT_COLS = `
   st.attempt_count AS attempt_count,
   st.revision AS revision
 `;
+const CLAIM_SPEC_OWNER_REF_PREDICATE = `json_extract(s.owner_ref_json, '$.kind') = ?
+  AND json_extract(s.owner_ref_json, '$.id') = ?
+  AND json_extract(s.owner_ref_json, '$.uid') = ?`;
+
+function ownerRefBindings(ownerRef: OwnerRef): readonly [string, string, string] {
+  return [ownerRef.kind, ownerRef.id, ownerRef.uid];
+}
 
 /**
  * SQLite-backed ClaimStore with lease-based coordination.
@@ -1727,7 +1850,10 @@ export class SqliteClaimStore implements ClaimStore {
                agent_id = ?,
                agent_json = ?,
                intent_summary = ?,
-               context_json = ?
+               context_json = ?,
+               owner_ref_json = ?,
+               finalizers_json = ?,
+               deletion_timestamp = ?
            WHERE id = ?`,
         )
         .run(
@@ -1743,6 +1869,9 @@ export class SqliteClaimStore implements ClaimStore {
           JSON.stringify(spec.agent),
           spec.intentSummary,
           spec.context !== undefined ? JSON.stringify(spec.context) : null,
+          spec.ownerRef !== undefined ? JSON.stringify(spec.ownerRef) : null,
+          JSON.stringify(spec.finalizers ?? []),
+          spec.deletionTimestamp ?? null,
           spec.id,
         );
     });
@@ -1954,9 +2083,17 @@ export class SqliteClaimStore implements ClaimStore {
             .run(nowIso, freshExpiry, activeOnTarget.claim_id);
           this.db
             .prepare(
-              "UPDATE claim_spec SET intent_summary = ?, generation = generation + 1 WHERE id = ?",
+              `UPDATE claim_spec
+               SET intent_summary = ?,
+                   generation = generation + 1,
+                   owner_ref_json = COALESCE(?, owner_ref_json)
+               WHERE id = ?`,
             )
-            .run(claim.intentSummary, activeOnTarget.claim_id);
+            .run(
+              claim.intentSummary,
+              claim.ownerRef !== undefined ? JSON.stringify(claim.ownerRef) : null,
+              activeOnTarget.claim_id,
+            );
           resultClaimId = activeOnTarget.claim_id;
           return;
         }
@@ -2177,11 +2314,82 @@ export class SqliteClaimStore implements ClaimStore {
       sql += " AND s.target_ref = ?";
       params.push(query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      sql += ` AND ${CLAIM_SPEC_OWNER_REF_PREDICATE}`;
+      params.push(...ownerRefBindings(query.ownerRef));
+    }
 
     sql += " ORDER BY s.created_at DESC";
     const rows = this.db.prepare(sql).all(...params) as readonly ClaimViewRow[];
     return rows.map((row) => rowToClaimView(row));
   }
+
+  releaseOwnedBySync(ownerRef: OwnerRef): number {
+    return this.releaseOwnedBySyncBuffered(ownerRef);
+  }
+
+  releaseOwnedBySyncBuffered(
+    ownerRef: OwnerRef,
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): number {
+    const nowIso = new Date().toISOString();
+    const rows = this.db
+      .prepare(
+        `UPDATE claim_status
+         SET phase = 'released',
+             last_heartbeat_at = ?,
+             last_transition_at = ?,
+             revision = revision + 1
+         WHERE phase = 'active'
+           AND id IN (
+             SELECT s.id
+             FROM claim_spec s
+             WHERE ${CLAIM_SPEC_OWNER_REF_PREDICATE}
+           )
+         RETURNING id`,
+      )
+      .all(nowIso, nowIso, ...ownerRefBindings(ownerRef)) as readonly { id: string }[];
+
+    const claims = rows.flatMap((row) => {
+      const view = this.readClaimView(row.id);
+      return view === null ? [] : [claimViewToClaim(view)];
+    });
+    this.recordClaimWrites(claims, "MODIFIED", pendingWrites);
+    return claims.length;
+  }
+
+  releaseOwnedBy = async (ownerRef: OwnerRef): Promise<number> => this.releaseOwnedBySync(ownerRef);
+
+  deleteTerminalOwnedBySync(ownerRef: OwnerRef): number {
+    return this.deleteTerminalOwnedBySyncBuffered(ownerRef);
+  }
+
+  deleteTerminalOwnedBySyncBuffered(
+    ownerRef: OwnerRef,
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): number {
+    const views = this.db
+      .prepare(
+        `SELECT ${CLAIM_VIEW_SELECT_COLS}
+         FROM claim_spec s
+         JOIN claim_status st ON st.id = s.id
+         WHERE st.phase IN ('completed', 'expired', 'released')
+           AND ${CLAIM_SPEC_OWNER_REF_PREDICATE}`,
+      )
+      .all(...ownerRefBindings(ownerRef)) as readonly ClaimViewRow[];
+
+    const deleteSpec = this.db.prepare("DELETE FROM claim_spec WHERE id = ?");
+    for (const view of views) {
+      deleteSpec.run(view.id);
+    }
+
+    const claims = views.map((row) => claimViewToClaim(rowToClaimView(row)));
+    this.recordClaimWrites(claims, "DELETED", pendingWrites);
+    return claims.length;
+  }
+
+  deleteTerminalOwnedBy = async (ownerRef: OwnerRef): Promise<number> =>
+    this.deleteTerminalOwnedBySync(ownerRef);
 
   cleanCompleted = async (retentionMs: number): Promise<number> => {
     const cutoff = new Date(Date.now() - retentionMs).toISOString();
@@ -2307,9 +2515,10 @@ export class SqliteClaimStore implements ClaimStore {
         `INSERT INTO claim_spec (
           id, role_name, platform, blueprint, assignee_json, lease_deadline_sec,
           priority, max_iterations, generation, target_ref, agent_id, agent_json,
-          intent_summary, context_json, created_at
+          intent_summary, context_json, owner_ref_json, finalizers_json,
+          deletion_timestamp, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         spec.id,
@@ -2326,6 +2535,9 @@ export class SqliteClaimStore implements ClaimStore {
         JSON.stringify(spec.agent),
         spec.intentSummary,
         spec.context !== undefined ? JSON.stringify(spec.context) : null,
+        spec.ownerRef !== undefined ? JSON.stringify(spec.ownerRef) : null,
+        JSON.stringify(spec.finalizers ?? []),
+        spec.deletionTimestamp ?? null,
         toUtcIso(spec.createdAt),
       );
   }
@@ -2416,6 +2628,20 @@ export class SqliteClaimStore implements ClaimStore {
       reason: "lease expired",
       message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.status.leaseExpiresAt}`,
     });
+  }
+
+  private recordClaimWrites(
+    claims: readonly Claim[],
+    op: "ADDED" | "MODIFIED" | "DELETED",
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): void {
+    if (pendingWrites !== undefined) {
+      for (const claim of claims) pendingWrites.push({ op, claim });
+      return;
+    }
+    if (this.onClaimWrite) {
+      for (const claim of claims) this.onClaimWrite(op, claim);
+    }
   }
 }
 
@@ -2523,7 +2749,10 @@ export class SqliteStore implements ContributionStore {
   heartbeat = (claimId: string, leaseDurationMs?: number): Promise<Claim> =>
     this.claims.heartbeat(claimId, leaseDurationMs);
   release = (claimId: string): Promise<Claim> => this.claims.release(claimId);
+  releaseOwnedBy = (ownerRef: OwnerRef): Promise<number> => this.claims.releaseOwnedBy(ownerRef);
   complete = (claimId: string): Promise<Claim> => this.claims.complete(claimId);
+  deleteTerminalOwnedBy = (ownerRef: OwnerRef): Promise<number> =>
+    this.claims.deleteTerminalOwnedBy(ownerRef);
   expireStale = (options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> =>
     this.claims.expireStale(options);
   activeClaims = (targetRef?: string): Promise<readonly Claim[]> =>

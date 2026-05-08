@@ -20,6 +20,7 @@ import {
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity, claimViewToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
+import { type OwnerRef, ownerRefsEqual } from "../core/lifecycle-metadata.js";
 import {
   type Claim,
   type ClaimSpecRecord,
@@ -103,6 +104,16 @@ function claimToDocumentPreservingSplitFields(
     agent: claim.agent,
     intentSummary: claim.intentSummary,
     createdAt: claim.createdAt,
+    generation:
+      claim.intentSummary !== existingDocument.spec.intentSummary ||
+      claim.targetRef !== existingDocument.spec.targetRef ||
+      claim.agent.agentId !== existingDocument.spec.agent.agentId ||
+      claim.ownerRef !== existingDocument.spec.ownerRef
+        ? existingDocument.spec.generation + 1
+        : existingDocument.spec.generation,
+    ownerRef: claim.ownerRef ?? existingDocument.spec.ownerRef,
+    finalizers: claim.finalizers ?? existingDocument.spec.finalizers,
+    deletionTimestamp: claim.deletionTimestamp ?? existingDocument.spec.deletionTimestamp,
     ...(claim.context === undefined ? {} : { context: claim.context }),
   };
   const spec =
@@ -503,6 +514,7 @@ export class NexusClaimStore implements ClaimStore {
         heartbeatAt: nowIso,
         leaseExpiresAt: new Date(now.getTime() + durationMs).toISOString(),
         intentSummary: claim.intentSummary,
+        ...(claim.ownerRef !== undefined ? { ownerRef: claim.ownerRef } : {}),
         revision: (existing.revision ?? 0) + 1,
       };
       if (withEtag !== undefined) {
@@ -753,9 +765,37 @@ export class NexusClaimStore implements ClaimStore {
     if (query?.targetRef !== undefined) {
       claims = claims.filter((c) => c.targetRef === query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      claims = claims.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
 
     claims.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return claims;
+  }
+
+  async releaseOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    const nowIso = new Date().toISOString();
+    const claims = await this.listClaims({ status: "active" as ClaimStatus, ownerRef });
+    for (const claim of claims) {
+      const result = await this.readClaimWithEtag(claim.claimId);
+      const existing = result !== undefined ? claimViewToClaim(result.document) : undefined;
+      if (result === undefined || existing === undefined || existing.status !== "active") continue;
+
+      const released: Claim = {
+        ...existing,
+        status: "released" as ClaimStatus,
+        heartbeatAt: nowIso,
+        revision: (existing.revision ?? 0) + 1,
+      };
+      await this.writeClaimCas(released, result.etag, result.document);
+      await this.deleteActiveIndex(released);
+      this.claimCache.set(released.claimId, released);
+      this.publishWatch(released, "MODIFIED");
+    }
+    if (claims.length > 0) {
+      this.invalidateActiveClaimsCache();
+    }
+    return claims.length;
   }
 
   async cleanCompleted(retentionMs: number): Promise<number> {
@@ -833,6 +873,9 @@ export class NexusClaimStore implements ClaimStore {
     if (query?.targetRef !== undefined) {
       views = views.filter((view) => view.spec.targetRef === query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      views = views.filter((view) => ownerRefsEqual(view.spec.ownerRef, query.ownerRef));
+    }
 
     views.sort(
       (a, b) => new Date(b.spec.createdAt).getTime() - new Date(a.spec.createdAt).getTime(),
@@ -842,6 +885,30 @@ export class NexusClaimStore implements ClaimStore {
 
   close(): void {
     // No-op — lifecycle managed by client
+  }
+
+  async deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    const claims = await this.listClaims({
+      status: ["completed", "expired", "released"] as readonly ClaimStatus[],
+      ownerRef,
+    });
+    for (const claim of claims) {
+      await this.deleteActiveIndex(claim);
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.delete(claimPath(this.zoneId, claim.claimId)),
+          ),
+        "deleteTerminalOwnedBy",
+        this.config,
+      );
+      this.claimCache.delete(claim.claimId);
+      this.publishWatch(claim, "DELETED");
+    }
+    if (claims.length > 0) {
+      this.invalidateActiveClaimsCache();
+    }
+    return claims.length;
   }
 
   // -----------------------------------------------------------------------

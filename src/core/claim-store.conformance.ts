@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import type { OwnerRef } from "./lifecycle-metadata.js";
 import { ClaimStatus } from "./models.js";
 import type { ClaimStore } from "./store.js";
 import { makeAgent, makeClaim } from "./test-helpers.js";
@@ -630,6 +631,32 @@ export function runClaimStoreTests(
       expect(new Date(result.leaseExpiresAt).getTime()).toBeGreaterThan(beforeRenew);
     });
 
+    test("claimOrRenew updates ownerRef on same-agent renewal", async () => {
+      const initialOwner = { kind: "session" as const, id: "renew-owner-old", uid: "uid-old" };
+      const renewedOwner = { kind: "session" as const, id: "renew-owner-new", uid: "uid-new" };
+      const original = makeClaim({
+        claimId: "renew-owner-original",
+        targetRef: "renew-owner-target",
+        agent: { agentId: "agent-owner" },
+        ownerRef: initialOwner,
+      });
+      await store.createClaim(original);
+
+      const result = await store.claimOrRenew(
+        makeClaim({
+          claimId: "renew-owner-attempt",
+          targetRef: "renew-owner-target",
+          agent: { agentId: "agent-owner" },
+          ownerRef: renewedOwner,
+        }),
+      );
+      const stored = await store.getClaim(result.claimId);
+
+      expect(result.claimId).toBe("renew-owner-original");
+      expect(result.ownerRef).toEqual(renewedOwner);
+      expect(stored?.ownerRef).toEqual(renewedOwner);
+    });
+
     test("claimOrRenew respects requested lease duration on renewal", async () => {
       const original = makeClaim({
         claimId: "renew-duration",
@@ -1065,6 +1092,126 @@ export function runClaimStoreTests(
       const result = await store.listClaims();
       expect(result[0]?.claimId).toBe("lo-2");
       expect(result[1]?.claimId).toBe("lo-1");
+    });
+
+    test("listClaims filters by ownerRef", async () => {
+      const owner: OwnerRef = { kind: "session", id: "session-owner", uid: "uid-1" };
+      const otherUid: OwnerRef = { kind: "session", id: "session-owner", uid: "uid-2" };
+      const otherKind: OwnerRef = { kind: "claim", id: "session-owner", uid: "uid-1" };
+
+      await store.createClaim(
+        makeClaim({
+          claimId: "owner-match",
+          targetRef: "owner-target-1",
+          ownerRef: owner,
+        }),
+      );
+      await store.createClaim(
+        makeClaim({
+          claimId: "owner-other-uid",
+          targetRef: "owner-target-2",
+          ownerRef: otherUid,
+        }),
+      );
+      await store.createClaim(
+        makeClaim({
+          claimId: "owner-other-kind",
+          targetRef: "owner-target-3",
+          ownerRef: otherKind,
+        }),
+      );
+      await store.createClaim(makeClaim({ claimId: "owner-missing", targetRef: "owner-target-4" }));
+
+      const result = await store.listClaims({ ownerRef: owner });
+
+      expect(result.map((c) => c.claimId)).toEqual(["owner-match"]);
+    });
+
+    test("releaseOwnedBy releases only active owned claims and updates revision and heartbeat", async () => {
+      const owner: OwnerRef = { kind: "session", id: "release-owner", uid: "uid-1" };
+      const otherOwner: OwnerRef = { kind: "session", id: "release-owner", uid: "uid-2" };
+      const oldHeartbeat = "2026-01-01T00:00:00.000Z";
+
+      await store.createClaim(
+        makeClaim({
+          claimId: "release-owned-active",
+          targetRef: "release-target-1",
+          heartbeatAt: oldHeartbeat,
+          ownerRef: owner,
+          revision: 3,
+        }),
+      );
+      await store.createClaim(
+        makeClaim({
+          claimId: "release-owned-terminal",
+          targetRef: "release-target-2",
+          ownerRef: owner,
+        }),
+      );
+      await store.release("release-owned-terminal");
+      await store.createClaim(
+        makeClaim({
+          claimId: "release-other-active",
+          targetRef: "release-target-3",
+          ownerRef: otherOwner,
+        }),
+      );
+
+      const before = await store.getClaim("release-owned-active");
+      expect(before).toBeDefined();
+      const beforeRevision = before?.revision ?? 1;
+      const beforeHeartbeatMs = Date.parse(before?.heartbeatAt ?? "");
+
+      const count = await store.releaseOwnedBy(owner);
+
+      expect(count).toBe(1);
+      const released = await store.getClaim("release-owned-active");
+      expect(released?.status).toBe(ClaimStatus.Released);
+      expect(released?.revision ?? 0).toBeGreaterThan(beforeRevision);
+      expect(Date.parse(released?.heartbeatAt ?? "")).toBeGreaterThan(beforeHeartbeatMs);
+
+      const terminalOwned = await store.getClaim("release-owned-terminal");
+      expect(terminalOwned?.status).toBe(ClaimStatus.Released);
+      const unrelated = await store.getClaim("release-other-active");
+      expect(unrelated?.status).toBe(ClaimStatus.Active);
+    });
+
+    test("deleteTerminalOwnedBy deletes only non-active owned claims", async () => {
+      const owner: OwnerRef = { kind: "session", id: "delete-owner", uid: "uid-1" };
+      const otherOwner: OwnerRef = { kind: "session", id: "delete-owner", uid: "uid-2" };
+
+      await store.createClaim(
+        makeClaim({
+          claimId: "delete-owned-active",
+          targetRef: "delete-target-1",
+          ownerRef: owner,
+        }),
+      );
+      await store.createClaim(
+        makeClaim({
+          claimId: "delete-owned-terminal",
+          targetRef: "delete-target-2",
+          ownerRef: owner,
+        }),
+      );
+      await store.release("delete-owned-terminal");
+      await store.createClaim(
+        makeClaim({
+          claimId: "delete-other-terminal",
+          targetRef: "delete-target-3",
+          ownerRef: otherOwner,
+        }),
+      );
+      await store.release("delete-other-terminal");
+
+      const count = await store.deleteTerminalOwnedBy(owner);
+
+      expect(count).toBe(1);
+      expect(await store.getClaim("delete-owned-terminal")).toBeUndefined();
+      const activeOwned = await store.getClaim("delete-owned-active");
+      expect(activeOwned?.status).toBe(ClaimStatus.Active);
+      const unrelatedTerminal = await store.getClaim("delete-other-terminal");
+      expect(unrelatedTerminal?.status).toBe(ClaimStatus.Released);
     });
 
     // ------------------------------------------------------------------

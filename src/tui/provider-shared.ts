@@ -243,6 +243,7 @@ import type { GoalData, SessionInput, SessionRecord } from "./provider.js";
 interface ApiSessionResponse {
   readonly sessionId?: string;
   readonly id?: string;
+  readonly uid?: string;
   readonly goal?: string;
   readonly presetName?: string;
   readonly status: string;
@@ -255,15 +256,19 @@ interface ApiSessionResponse {
   readonly topology?: import("../core/topology.js").AgentTopology;
   readonly config?: import("../core/contract.js").GroveContract;
   readonly contributionCount?: number;
+  readonly finalizers?: readonly import("../core/lifecycle-metadata.js").Finalizer[];
 }
 
 function mapApiSession(raw: ApiSessionResponse): SessionRecord {
+  const id = (raw.sessionId ?? raw.id) as string;
   return {
-    id: (raw.sessionId ?? raw.id) as string,
+    id,
+    uid: raw.uid ?? id,
     goal: raw.goal,
     presetName: raw.presetName,
     status: raw.status as SessionRecord["status"],
     createdAt: (raw.startedAt ?? raw.createdAt) as string,
+    finalizers: raw.finalizers ?? [],
     completedAt: raw.endedAt ?? raw.completedAt,
     stopReason: raw.stopReason,
     stopStatus: raw.stopStatus,

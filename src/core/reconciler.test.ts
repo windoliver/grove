@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ClaimEntity } from "./entity.js";
 import { claimToEntity } from "./entity.js";
 import { NotFoundError } from "./errors.js";
+import { ownerRefsEqual } from "./lifecycle-metadata.js";
 import {
   type ClaimSpecRecord,
   ClaimStatus,
@@ -135,12 +136,35 @@ function makeClaimStore(overrides?: {
         putClaim(released);
         return released;
       }),
+    releaseOwnedBy: async (ownerRef) => {
+      let count = 0;
+      for (const claim of claimsById.values()) {
+        if (claim.status !== ClaimStatus.Active || !ownerRefsEqual(claim.ownerRef, ownerRef)) {
+          continue;
+        }
+        putClaim({ ...claim, status: ClaimStatus.Released });
+        count++;
+      }
+      return count;
+    },
     complete: async (claimId) => {
       const claim = claimsById.get(claimId);
       if (!claim) throw new Error("missing claim");
       const completed = { ...claim, status: ClaimStatus.Completed };
       putClaim(completed);
       return completed;
+    },
+    deleteTerminalOwnedBy: async (ownerRef) => {
+      let count = 0;
+      for (const claim of claimsById.values()) {
+        if (claim.status === ClaimStatus.Active || !ownerRefsEqual(claim.ownerRef, ownerRef)) {
+          continue;
+        }
+        claimsById.delete(claim.claimId);
+        viewsById.delete(claim.claimId);
+        count++;
+      }
+      return count;
     },
     expireStale: overrides?.expireStale ?? (async () => []),
     activeClaims: overrides?.activeClaims ?? (async () => []),
@@ -161,7 +185,6 @@ function makeClaimStore(overrides?: {
     close: () => undefined,
   };
 }
-
 function makeWorkspaceManager(overrides?: {
   listWorkspaces?: (query?: WorkspaceQuery) => Promise<readonly WorkspaceInfo[]>;
   markWorkspaceStale?: (cid: string, agentId: string) => Promise<WorkspaceInfo>;

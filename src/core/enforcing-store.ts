@@ -22,6 +22,7 @@ import {
   LeaseViolationError,
   RateLimitError,
 } from "./errors.js";
+import type { OwnerRef } from "./lifecycle-metadata.js";
 import {
   type Claim,
   type ClaimSpecRecord,
@@ -636,7 +637,10 @@ export class EnforcingClaimStore implements ClaimStore {
   getClaim = (claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined> =>
     this.inner.getClaim(claimId, opts);
   release = (claimId: string): Promise<Claim> => this.inner.release(claimId);
+  releaseOwnedBy = (ownerRef: OwnerRef): Promise<number> => this.inner.releaseOwnedBy(ownerRef);
   complete = (claimId: string): Promise<Claim> => this.inner.complete(claimId);
+  deleteTerminalOwnedBy = (ownerRef: OwnerRef): Promise<number> =>
+    this.inner.deleteTerminalOwnedBy(ownerRef);
   expireStale = (options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> =>
     this.inner.expireStale(options);
   activeClaims = (targetRef?: string): Promise<readonly Claim[]> =>

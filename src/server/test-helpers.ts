@@ -12,6 +12,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { type OwnerRef, ownerRefsEqual } from "../core/lifecycle-metadata.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import type {
   AgentIdentity,
@@ -34,6 +35,7 @@ import type {
 import { ExpiryReason } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
 import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
+import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
@@ -346,6 +348,17 @@ export class InMemoryClaimStore implements ClaimStore {
     return this.toClaim(updated);
   }
 
+  async releaseOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    let count = 0;
+    for (const claim of this.allViews().map((view) => this.toClaim(view))) {
+      if (claim.status === "active" && ownerRefsEqual(claim.ownerRef, ownerRef)) {
+        await this.release(claim.claimId);
+        count++;
+      }
+    }
+    return count;
+  }
+
   async complete(claimId: string): Promise<Claim> {
     const view = this.viewFor(claimId);
     if (view === undefined) {
@@ -375,6 +388,18 @@ export class InMemoryClaimStore implements ClaimStore {
     };
     this.putView(updated);
     return this.toClaim(updated);
+  }
+
+  async deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    let count = 0;
+    for (const claim of this.allViews().map((view) => this.toClaim(view))) {
+      if (claim.status !== "active" && ownerRefsEqual(claim.ownerRef, ownerRef)) {
+        this.specs.delete(claim.claimId);
+        this.statuses.delete(claim.claimId);
+        count++;
+      }
+    }
+    return count;
   }
 
   async expireStale(options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> {
@@ -438,6 +463,9 @@ export class InMemoryClaimStore implements ClaimStore {
     if (query?.targetRef) {
       results = results.filter((c) => c.targetRef === query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      results = results.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
     return results;
   }
 
@@ -470,6 +498,9 @@ export class InMemoryClaimStore implements ClaimStore {
     let results = this.allViews().map((view) => this.toClaim(view));
     if (query?.agentId) results = results.filter((c) => c.agent.agentId === query.agentId);
     if (query?.targetRef) results = results.filter((c) => c.targetRef === query.targetRef);
+    if (query?.ownerRef !== undefined) {
+      results = results.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
     // Filter on effective (lease-aware) phase after projection.
     const entities = results.map((c) => claimToEntity(c));
     if (query?.status === undefined) return entities;
@@ -509,6 +540,7 @@ export interface TestContext {
 export interface CreateTestAppOptions {
   readonly watchHubOptions?: WatchHubOptions;
   readonly eventBus?: EventBus;
+  readonly goalSessionStore?: GoalSessionStore;
 }
 
 /** Create a test app with fresh in-memory stores. */
@@ -552,6 +584,7 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     claimStore,
     cas,
     frontier,
+    goalSessionStore: opts.goalSessionStore,
     watchHub,
     watchSubscriber,
   };

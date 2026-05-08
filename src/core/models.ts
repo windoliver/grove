@@ -9,6 +9,7 @@
  */
 
 import type { Condition } from "./entity.js";
+import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 
 /** Contribution kinds — the type of work being contributed. */
 export const ContributionKind = {
@@ -177,6 +178,9 @@ export interface Claim {
   readonly heartbeatAt: string;
   readonly leaseExpiresAt: string;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
   /** Number of times this claim has been attempted (for retry/backoff). Defaults to 0. */
   readonly attemptCount?: number | undefined;
   /**
@@ -204,6 +208,9 @@ export interface ClaimSpecRecord {
   readonly agent: AgentIdentity;
   readonly intentSummary: string;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly ownerRef?: OwnerRef | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
   readonly createdAt: string;
 }
 
@@ -249,6 +256,11 @@ export function claimToSpecRecord(claim: Claim): ClaimSpecRecord {
     agent: claim.agent,
     intentSummary: claim.intentSummary,
     context: claim.context,
+    ...(claim.ownerRef === undefined ? {} : { ownerRef: claim.ownerRef }),
+    ...(claim.finalizers === undefined ? {} : { finalizers: claim.finalizers }),
+    ...(claim.deletionTimestamp === undefined
+      ? {}
+      : { deletionTimestamp: claim.deletionTimestamp }),
     createdAt: claim.createdAt,
   };
 }
@@ -282,6 +294,11 @@ export function claimViewToClaim(view: ClaimView): Claim {
     leaseExpiresAt: view.status.leaseExpiresAt,
     revision: view.status.revision,
     ...(view.spec.context === undefined ? {} : { context: view.spec.context }),
+    ...(view.spec.ownerRef === undefined ? {} : { ownerRef: view.spec.ownerRef }),
+    ...(view.spec.finalizers === undefined ? {} : { finalizers: view.spec.finalizers }),
+    ...(view.spec.deletionTimestamp === undefined
+      ? {}
+      : { deletionTimestamp: view.spec.deletionTimestamp }),
     ...(view.status.attemptCount > 0 ? { attemptCount: view.status.attemptCount } : {}),
   };
 }

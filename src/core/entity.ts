@@ -7,6 +7,7 @@
  */
 
 import type { AgentSession } from "./agent-runtime.js";
+import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
   Claim,
@@ -34,16 +35,13 @@ export interface Condition {
   readonly message: string;
 }
 
-export interface OwnerRef {
-  readonly kind: string;
-  readonly id: string;
-}
-
 export interface EntityMetadata {
   readonly generation: number;
   readonly creationTimestamp?: string | undefined;
   readonly labels?: Readonly<Record<string, string>> | undefined;
   readonly ownerRefs?: readonly OwnerRef[] | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
 }
 
 export interface Entity<K extends string, Spec, Status> {
@@ -184,6 +182,9 @@ export function claimToEntity(
     agent: c.agent,
     intentSummary: c.intentSummary,
     context: c.context,
+    ...(c.ownerRef === undefined ? {} : { ownerRef: c.ownerRef }),
+    ...(c.finalizers === undefined ? {} : { finalizers: c.finalizers }),
+    ...(c.deletionTimestamp === undefined ? {} : { deletionTimestamp: c.deletionTimestamp }),
     createdAt: c.createdAt,
   };
   const status: ClaimStatusRecord = {
@@ -246,11 +247,17 @@ export function claimViewToEntity(
     effectivePhase === "completed",
     view.status.lastTransitionAt,
   );
+  const terminatingCondition: Condition = mkCond(
+    "Terminating",
+    view.spec.deletionTimestamp !== undefined,
+    view.spec.deletionTimestamp ?? view.status.lastTransitionAt,
+    view.spec.deletionTimestamp !== undefined ? "deletion-requested" : effectivePhase,
+  );
 
   const conditions: readonly Condition[] =
     view.status.conditions.length > 0
       ? view.status.conditions
-      : [activeCondition, expiredCondition, completedCondition];
+      : [activeCondition, expiredCondition, completedCondition, terminatingCondition];
 
   return {
     kind: "Claim",
@@ -297,6 +304,9 @@ export function claimViewToEntity(
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
+      ownerRefs: view.spec.ownerRef !== undefined ? [view.spec.ownerRef] : undefined,
+      finalizers: view.spec.finalizers,
+      deletionTimestamp: view.spec.deletionTimestamp,
     },
   };
 }
