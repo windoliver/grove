@@ -4,6 +4,7 @@ import type {
   ContributionPutManyOutcome,
   ContributionPutOutcome,
   ContributionStore,
+  CountSinceQuery,
 } from "../../core/store.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import type { ServerDeps } from "../deps.js";
@@ -56,5 +57,36 @@ describe("contributionStoreForSession fallback wrapper", () => {
     const scoped = contributionStoreForSession({ contributionStore: inner } as ServerDeps, "s1");
 
     expect(await scoped.putMany([contribution])).toEqual(putManyResult);
+  });
+
+  test("countSince delegates with sessionId instead of materializing a list", async () => {
+    const contribution = makeContribution({ summary: "session counted" });
+    let listCalls = 0;
+    let countSinceQuery: CountSinceQuery | undefined;
+    const inner: ContributionStore = {
+      ...stubStore(contribution, undefined, []),
+      list: async () => {
+        listCalls++;
+        return [contribution];
+      },
+      countSince: async (query) => {
+        countSinceQuery = query;
+        return 7;
+      },
+    };
+
+    const scoped = contributionStoreForSession({ contributionStore: inner } as ServerDeps, "s1");
+    const count = await scoped.countSince({
+      agentId: "agent-1",
+      since: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(count).toBe(7);
+    expect(countSinceQuery).toEqual({
+      agentId: "agent-1",
+      since: "2026-01-01T00:00:00.000Z",
+      sessionId: "s1",
+    });
+    expect(listCalls).toBe(0);
   });
 });

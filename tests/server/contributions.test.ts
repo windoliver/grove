@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { OutcomeStore } from "../../src/core/outcome.js";
 import type { ContributionQuery, ContributionStore } from "../../src/core/store.js";
 import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
@@ -478,6 +479,59 @@ describe("GET /api/contributions", () => {
     const data = (await res.json()) as readonly unknown[];
     expect(data).toHaveLength(1);
     expect(unboundedListCalls).toBe(0);
+  });
+
+  test("outcome plus contribution filters page outcomes instead of scanning with an unbounded list", async () => {
+    const created: { cid: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await ctx.app.request("/api/contributions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify(
+          validManifestBody({
+            kind: i === 2 ? "work" : "review",
+            summary: `Outcome-filtered review ${i}`,
+            createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+          }),
+        ),
+      });
+      expect(res.status).toBe(201);
+      created.push((await res.json()) as { cid: string });
+    }
+
+    for (const contribution of created) {
+      await ctx.outcomeStore.set(contribution.cid, { status: "accepted", evaluatedBy: "reviewer" });
+    }
+
+    let unboundedOutcomeListCalls = 0;
+    const guardedOutcomes = new Proxy(ctx.outcomeStore, {
+      get(target, prop, receiver) {
+        if (prop === "list") {
+          return (query?: Parameters<OutcomeStore["list"]>[0]) => {
+            if (query?.limit === undefined) unboundedOutcomeListCalls++;
+            return target.list(query);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof value === "function") return value.bind(target);
+        return value;
+      },
+    }) as OutcomeStore;
+
+    const app = createApp(
+      { ...ctx.deps, outcomeStore: guardedOutcomes },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const res = await app.request("/api/contributions?outcome=accepted&kind=review&limit=1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Total-Count")).toBe("2");
+    const data = (await res.json()) as readonly unknown[];
+    expect(data).toHaveLength(1);
+    expect(unboundedOutcomeListCalls).toBe(0);
   });
 });
 

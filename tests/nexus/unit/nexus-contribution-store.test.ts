@@ -140,6 +140,24 @@ describe("NexusContributionStore adapter-specific", () => {
     tinyStore.close();
   });
 
+  test("list supports newest-first ordering before applying limit", async () => {
+    const older = makeContribution({
+      summary: "older nexus contribution",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const newer = makeContribution({
+      summary: "newer nexus contribution",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    await store.putMany([newer, older]);
+
+    const desc = await store.list({ limit: 1, order: "created_at_desc" });
+    expect(desc.map((c) => c.cid)).toEqual([newer.cid]);
+
+    const asc = await store.list({ limit: 1 });
+    expect(asc.map((c) => c.cid)).toEqual([older.cid]);
+  });
+
   // -----------------------------------------------------------------------
   // Retry on network error
   // -----------------------------------------------------------------------

@@ -22,8 +22,8 @@ import type {
 } from "../../core/models.js";
 import type { ContributeInput } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
-import type { OutcomeStats, OutcomeStatus } from "../../core/outcome.js";
-import type { ContributionQuery } from "../../core/store.js";
+import type { OutcomeStats, OutcomeStatus, OutcomeStore } from "../../core/outcome.js";
+import type { ContributionQuery, ContributionStore } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
@@ -44,6 +44,8 @@ const listQuerySchema = z.object({
   outcome: z.enum(["accepted", "rejected", "crashed", "invalidated"]).optional(),
   sessionId: z.string().optional(),
 });
+
+const OUTCOME_FILTER_SCAN_PAGE_SIZE = 100;
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -191,6 +193,52 @@ function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): numb
     case "invalidated":
       return stats.invalidated;
   }
+}
+
+async function listOutcomeFilteredContributions(
+  outcomeStore: OutcomeStore,
+  listStore: ContributionStore,
+  targetStatus: OutcomeStatus,
+  filterQuery: ContributionQuery,
+  limit: number,
+  offset: number,
+): Promise<{ readonly page: readonly Contribution[]; readonly total: number }> {
+  const keep = offset + limit;
+  const top: Contribution[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  let outcomeOffset = 0;
+
+  while (true) {
+    const outcomes = await outcomeStore.list({
+      status: targetStatus,
+      limit: OUTCOME_FILTER_SCAN_PAGE_SIZE,
+      offset: outcomeOffset,
+    });
+    if (outcomes.length === 0) break;
+
+    outcomeOffset += outcomes.length;
+    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
+
+    for (const outcome of outcomes) {
+      if (seen.has(outcome.cid)) continue;
+      seen.add(outcome.cid);
+
+      const contribution = contributions.get(outcome.cid);
+      if (contribution === undefined || !matchesContributionFilters(contribution, filterQuery)) {
+        continue;
+      }
+
+      total += 1;
+      top.push(contribution);
+      top.sort(compareByRecencyDesc);
+      if (top.length > keep) top.length = keep;
+    }
+
+    if (outcomes.length < OUTCOME_FILTER_SCAN_PAGE_SIZE) break;
+  }
+
+  return { page: top.slice(offset, offset + limit), total };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,22 +480,16 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     }
 
     const filterQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const outcomes = await outcomeStore.list({ status: targetStatus });
-    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
-    const filtered: Contribution[] = [];
-    const seen = new Set<string>();
-    for (const outcome of outcomes) {
-      if (seen.has(outcome.cid)) continue;
-      seen.add(outcome.cid);
-      const contribution = contributions.get(outcome.cid);
-      if (contribution !== undefined && matchesContributionFilters(contribution, filterQuery)) {
-        filtered.push(contribution);
-      }
-    }
-    filtered.sort(compareByRecencyDesc);
-    const page = filtered.slice(offset, offset + limit);
+    const { page, total } = await listOutcomeFilteredContributions(
+      outcomeStore,
+      listStore,
+      targetStatus,
+      filterQuery,
+      limit,
+      offset,
+    );
 
-    c.header("X-Total-Count", String(filtered.length));
+    c.header("X-Total-Count", String(total));
     return c.json(page);
   }
 

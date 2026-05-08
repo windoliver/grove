@@ -8,8 +8,9 @@
  * responses via Server-Sent Events (SSE).
  *
  * Usage:
- *   grove-mcp-http                          # listen on 0.0.0.0:4015
+ *   grove-mcp-http                          # listen on 127.0.0.1:4015
  *   PORT=8080 grove-mcp-http                # custom port
+ *   HOST=0.0.0.0 GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *   GROVE_DIR=/path grove-mcp-http          # explicit grove directory
  *
  * Endpoints:
@@ -36,6 +37,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import type { McpDeps } from "./deps.js";
+import { resolveMcpHttpListenOptions } from "./http-listen.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -55,6 +57,18 @@ const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
 const port = parsePort(process.env.PORT, 4015);
+let listenHost: string;
+
+try {
+  listenHost = resolveMcpHttpListenOptions({
+    host: process.env.GROVE_MCP_HOST ?? process.env.HOST,
+    authToken: AUTH_TOKEN,
+  }).host;
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`grove-mcp-http: FATAL: ${message}\n`);
+  process.exit(1);
+}
 
 let groveDir!: string;
 let runtime!: ReturnType<typeof createLocalRuntime>;
@@ -1429,8 +1443,8 @@ const httpServer = createServer((req, res) => {
   });
 });
 
-httpServer.listen(port, () => {
-  process.stderr.write(`grove-mcp-http: listening on http://0.0.0.0:${port}/mcp\n`);
+httpServer.listen(port, listenHost, () => {
+  process.stderr.write(`grove-mcp-http: listening on http://${listenHost}:${port}/mcp\n`);
 });
 
 // Graceful shutdown

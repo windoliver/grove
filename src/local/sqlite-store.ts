@@ -30,6 +30,7 @@ import type {
   ContributionPutResult,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   ExpiredClaim,
   ExpireStaleOptions,
   HotThreadsOptions,
@@ -1189,12 +1190,22 @@ export class SqliteContributionStore implements ContributionStore {
     return row?.cnt ?? 0;
   };
 
-  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
-    const sql =
-      query.agentId !== undefined
-        ? "SELECT COUNT(*) as cnt FROM contributions WHERE agent_id = ? AND created_at >= ?"
-        : "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ?";
-    const params = query.agentId !== undefined ? [query.agentId, query.since] : [query.since];
+  countSince = async (query: CountSinceQuery): Promise<number> => {
+    const clauses = ["c.created_at >= ?"];
+    const params: SQLQueryBindings[] = [query.since];
+
+    if (query.agentId !== undefined) {
+      clauses.push("c.agent_id = ?");
+      params.push(query.agentId);
+    }
+    if (query.sessionId !== undefined) {
+      clauses.push(
+        "EXISTS (SELECT 1 FROM session_contributions sc WHERE sc.cid = c.cid AND sc.session_id = ?)",
+      );
+      params.push(query.sessionId);
+    }
+
+    const sql = `SELECT COUNT(*) as cnt FROM contributions c WHERE ${clauses.join(" AND ")}`;
     const row = this.db.prepare(sql).get(...params) as { cnt: number } | null;
     return row?.cnt ?? 0;
   };
@@ -2041,8 +2052,7 @@ export class SqliteStore implements ContributionStore {
   ): Promise<readonly Contribution[]> =>
     this.contributions.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.contributions.count(query);
-  countSince = (query: { agentId?: string; since: string }): Promise<number> =>
-    this.contributions.countSince(query);
+  countSince = (query: CountSinceQuery): Promise<number> => this.contributions.countSince(query);
   thread = (
     rootCid: string,
     opts?: { readonly maxDepth?: number; readonly limit?: number },
