@@ -1335,16 +1335,27 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
       );
 
     case RunningPanel.Sessions:
-      // Task 16: stub Sessions panel
-      return null;
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>
+            Sessions view (stub) — wires to acp_session kind in follow-up
+          </text>
+        </box>
+      );
 
     case RunningPanel.Tasks:
-      // Task 16: stub Tasks panel
-      return null;
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>Tasks view (coming in C3/C4)</text>
+        </box>
+      );
 
     case RunningPanel.Reviews:
-      // Task 16: stub Reviews panel
-      return null;
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>Reviews view (coming in C3/C4)</text>
+        </box>
+      );
   }
 }
 
