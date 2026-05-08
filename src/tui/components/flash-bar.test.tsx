@@ -6,41 +6,46 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { FlashBar } from "./flash-bar.js";
+import { FlashBar, type FlashBarProps } from "./flash-bar.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/**
- * Extract all text content from a rendered tree.
- * Ignores component boundaries and host (box/text) elements,
- * concatenating only text nodes.
- */
-function collectText(
-  node: TestRenderer.ReactTestRendererJSON | TestRenderer.ReactTestRendererJSON[] | null,
-): string {
+function render(props: FlashBarProps): TestRenderer.ReactTestRenderer {
+  let renderer: TestRenderer.ReactTestRenderer | undefined;
+  act(() => {
+    renderer = TestRenderer.create(React.createElement(FlashBar, props));
+  });
+  if (!renderer) throw new Error("renderer not initialized");
+  return renderer;
+}
+
+type RenderedNode =
+  | TestRenderer.ReactTestRendererJSON
+  | TestRenderer.ReactTestRendererNode
+  | TestRenderer.ReactTestRendererJSON[]
+  | TestRenderer.ReactTestRendererNode[]
+  | null;
+
+function collectText(node: RenderedNode): string {
   if (!node) return "";
-  if (Array.isArray(node)) return node.map(collectText).join("");
   if (typeof node === "string") return node;
-  if (node.children) return collectText(node.children);
+  if (Array.isArray(node)) return node.map(collectText).join("");
+  if (typeof node === "object" && "children" in node && node.children) {
+    return collectText(node.children);
+  }
   return "";
 }
 
 describe("FlashBar", () => {
   test("message={null} renders null", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<FlashBar message={null} />);
-    });
-    expect(renderer!.toJSON()).toBeNull();
+    const tree = render({ message: null }).toJSON();
+    expect(tree).toBeNull();
   });
 
   test('message="alias not found" renders text containing that message', () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<FlashBar message="alias not found" />);
-    });
-    const text = collectText(renderer!.toJSON());
+    const text = collectText(render({ message: "alias not found" }).toJSON());
     expect(text).toContain("alias not found");
   });
 });

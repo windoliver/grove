@@ -4,85 +4,93 @@
  * Uses react-test-renderer because OpenTUI's custom hosts (<box>, <text>)
  * aren't DOM nodes — react-test-renderer ignores hosts and only exercises
  * component logic, which is exactly what we need here.
+ *
+ * Components are constructed via React.createElement (not JSX) to match the
+ * repo's existing test pattern; React.memo's NamedExoticComponent typing
+ * returns ReactNode, which doesn't satisfy TestRenderer.create's stricter
+ * ReactElement parameter.
  */
 
 import { describe, expect, test } from "bun:test";
+import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { Prompt } from "./prompt.js";
+import { Prompt, type PromptProps } from "./prompt.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-function collectText(
-  node: TestRenderer.ReactTestRendererJSON | TestRenderer.ReactTestRendererJSON[] | null,
-): string {
+function render(props: PromptProps): TestRenderer.ReactTestRenderer {
+  let renderer: TestRenderer.ReactTestRenderer | undefined;
+  act(() => {
+    renderer = TestRenderer.create(React.createElement(Prompt, props));
+  });
+  if (!renderer) throw new Error("renderer not initialized");
+  return renderer;
+}
+
+type RenderedNode =
+  | TestRenderer.ReactTestRendererJSON
+  | TestRenderer.ReactTestRendererNode
+  | TestRenderer.ReactTestRendererJSON[]
+  | TestRenderer.ReactTestRendererNode[]
+  | null;
+
+function collectText(node: RenderedNode): string {
   if (!node) return "";
+  if (typeof node === "string") return node;
   if (Array.isArray(node)) return node.map(collectText).join("");
-  return node.children?.map((c) => (typeof c === "string" ? c : collectText(c))).join("") ?? "";
+  if (typeof node === "object" && "children" in node && node.children) {
+    return collectText(node.children);
+  }
+  return "";
 }
 
 describe("Prompt", () => {
   test("renders nothing when mode is none", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<Prompt mode="none" query="" />);
-    });
-    const tree = renderer!.toJSON();
+    const tree = render({ mode: "none", query: "" }).toJSON();
     expect(tree).toBeNull();
   });
 
   test("renders ':query' in goto mode", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<Prompt mode="goto" query="ag" />);
-    });
-    const text = collectText(renderer!.toJSON());
+    const text = collectText(render({ mode: "goto", query: "ag" }).toJSON());
     expect(text).toContain(":");
     expect(text).toContain("ag");
   });
 
   test("renders '/query' in filter mode", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<Prompt mode="filter" query="foo" />);
-    });
-    const text = collectText(renderer!.toJSON());
+    const text = collectText(render({ mode: "filter", query: "foo" }).toJSON());
     expect(text).toContain("/");
     expect(text).toContain("foo");
   });
 
   test("dropdown shows when suggestions.length > 1", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(
-        <Prompt
-          mode="goto"
-          query="a"
-          suggestions={["a", "agents-only", "admin"]}
-          suggestionIndex={1}
-        />,
-      );
-    });
-    const text = collectText(renderer!.toJSON());
+    const text = collectText(
+      render({
+        mode: "goto",
+        query: "a",
+        suggestions: ["a", "agents-only", "admin"],
+        suggestionIndex: 1,
+      }).toJSON(),
+    );
     expect(text).toContain("agents-only");
     expect(text).toContain("admin");
   });
 
   test("dropdown hidden when only one suggestion", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(
-        <Prompt mode="goto" query="ag" suggestions={["agents-only"]} suggestionIndex={0} />,
-      );
-    });
-    const text = collectText(renderer!.toJSON());
+    const text = collectText(
+      render({
+        mode: "goto",
+        query: "ag",
+        suggestions: ["agents-only"],
+        suggestionIndex: 0,
+      }).toJSON(),
+    );
     expect(text).not.toContain("admin");
   });
 
   test("error prop renders error text", () => {
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    act(() => {
-      renderer = TestRenderer.create(<Prompt mode="goto" query="bad" error="alias not found" />);
-    });
-    expect(collectText(renderer!.toJSON())).toContain("alias not found");
+    const text = collectText(
+      render({ mode: "goto", query: "bad", error: "alias not found" }).toJSON(),
+    );
+    expect(text).toContain("alias not found");
   });
 });
