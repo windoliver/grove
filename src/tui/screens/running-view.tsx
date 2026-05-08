@@ -14,6 +14,7 @@
  * q: confirm quit (double-tap)
  */
 
+import { dirname } from "node:path";
 import { useKeyboard } from "@opentui/react";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { toast } from "@opentui-ui/toast/react";
@@ -224,7 +225,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useEffect(() => {
       if (!groveDir) return;
       let cancelled = false;
-      void loadAliases(groveDir).then((r) => {
+      // `groveDir` prop is the resolved `.grove/` directory (per resolveGroveDir);
+      // loadAliases expects the project root and joins `.grove/aliases.yaml` itself.
+      const projectRoot = dirname(groveDir);
+      void loadAliases(projectRoot).then((r) => {
         if (cancelled) return;
         setAliases(r.aliases);
         if (r.errors.length > 0) {
