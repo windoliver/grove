@@ -41,3 +41,49 @@ describe("resolveAlias direct + miss", () => {
     expect(r).toEqual({ kind: "miss", key: "" });
   });
 });
+
+describe("resolveAlias recursion + argv", () => {
+  function withCustom(extra: Record<string, string>): AliasMap {
+    const m = new Map(DEFAULT_ALIASES);
+    for (const [k, v] of Object.entries(extra)) m.set(k, { value: v });
+    return m;
+  }
+
+  test("alias chains to another alias", () => {
+    const m = withCustom({ dev: ":a" });
+    const r = resolveAlias(m, "dev");
+    expect(r).toEqual({ kind: "ok", command: "agents", argv: [], chain: ["dev", "a"] });
+  });
+
+  test("argv from input passes through", () => {
+    const r = resolveAlias(DEFAULT_ALIASES, "a foo bar");
+    expect(r).toEqual({
+      kind: "ok",
+      command: "agents",
+      argv: ["foo", "bar"],
+      chain: ["a"],
+    });
+  });
+
+  test("argv from alias value merges with input argv", () => {
+    const m = withCustom({ prod: ":a foo" });
+    const r = resolveAlias(m, "prod bar");
+    expect(r).toEqual({
+      kind: "ok",
+      command: "agents",
+      argv: ["foo", "bar"],
+      chain: ["prod", "a"],
+    });
+  });
+
+  test("terminal alias with multi-word value", () => {
+    const m = withCustom({ hello: "echo hi" });
+    const r = resolveAlias(m, "hello there");
+    expect(r).toEqual({
+      kind: "ok",
+      command: "echo",
+      argv: ["hi", "there"],
+      chain: ["hello"],
+    });
+  });
+});
