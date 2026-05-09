@@ -767,6 +767,41 @@ async function isPortBound(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * Wrap an already-running PID we adopted as ours into the same shape as a
+ * Bun.spawn return so stopServices / rollback can kill it via the standard
+ * SIGTERM → wait → SIGKILL flow. Bun.spawn isn't available for arbitrary
+ * PIDs, so we synthesize the necessary surface (kill, exited).
+ */
+function adoptExistingChild(name: string, pid: number): ManagedChildProcess {
+  const exited = new Promise<number>((resolve) => {
+    // Poll-based exit detection: probe with signal 0 every 250ms until
+    // process.kill throws. Cheap and accurate for our shutdown timing
+    // (we only need it during stopServices/rollback).
+    const tick = () => {
+      try {
+        process.kill(pid, 0);
+        setTimeout(tick, 250);
+      } catch {
+        resolve(0);
+      }
+    };
+    setTimeout(tick, 250);
+  });
+  const proc = {
+    pid,
+    kill: (signal?: string) => {
+      try {
+        process.kill(pid, (signal ?? "SIGTERM") as NodeJS.Signals);
+      } catch {
+        /* already dead */
+      }
+    },
+    exited,
+  } as unknown as ReturnType<typeof Bun.spawn>;
+  return { name, pid, proc };
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
@@ -811,8 +846,13 @@ async function spawnService(
           );
         }
       }
-      // Identity + ownership both verified — reuse silently.
-      return null;
+      // Identity + ownership both verified — adopt the existing PID into
+      // our managed-child set so the rewritten pidfile records it AND
+      // stopServices/grove-down can kill it. Returning null here would
+      // drop the live process from RunningServices: a subsequent
+      // pidfile rewrite (other children may still spawn fresh) would
+      // forget the server PID, breaking shutdown.
+      return adoptExistingChild(name, identity.pid);
     }
   }
 
