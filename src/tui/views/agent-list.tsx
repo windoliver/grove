@@ -37,11 +37,41 @@ export interface AgentListProps {
   readonly active: boolean;
   readonly cursor: number;
   readonly onSelectSession?: ((sessionName: string | undefined) => void) | undefined;
+  /** C2 (#302): substring filter on rendered row text. Empty / undefined = no filter. */
+  readonly filterText?: string | undefined;
+}
+
+/**
+ * Build a C2 (#302) filter predicate over a ClaimEntity. Case-insensitive
+ * substring match across role, agentId, agentName, platform, and targetRef.
+ * Empty/whitespace filter → undefined (no narrowing).
+ *
+ * Exported for unit testing — the filter logic is the actual surface that
+ * narrows what the user sees when typing `/foo` in the running view.
+ */
+export function buildAgentFilter(
+  filterText: string | undefined,
+): ((e: ClaimEntity) => boolean) | undefined {
+  const q = filterText?.trim().toLowerCase();
+  if (!q) return undefined;
+  return (e: ClaimEntity) => {
+    const a = e.spec.agent;
+    const haystack = [
+      a.agentName ?? "",
+      a.agentId,
+      a.role ?? "",
+      a.platform ?? "",
+      e.spec.targetRef,
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(q);
+  };
 }
 
 export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.memo(
   function AgentListView(props: AgentListProps): React.ReactNode {
-    const { provider, tmux, active, cursor, onSelectSession } = props;
+    const { provider, tmux, active, cursor, onSelectSession, filterText } = props;
     const isScoped = useProviderScoped(provider);
     const [spinnerFrame, setSpinnerFrame] = useState(0);
     useInterval(
@@ -121,6 +151,13 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       [ctx],
     );
 
+    // C2 (#302): compose isActive (view-internal) with filter (user input).
+    const filterPred = useMemo(() => buildAgentFilter(filterText), [filterText]);
+    const predicate = useMemo<(e: ClaimEntity) => boolean>(() => {
+      if (!filterPred) return isActive;
+      return (e) => isActive(e) && filterPred(e);
+    }, [filterPred]);
+
     const onSelect = useCallback(
       (entity: ClaimEntity | undefined) => {
         if (!onSelectSession) return;
@@ -171,7 +208,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
         provider={provider}
         active={active}
         cursor={cursor}
-        predicate={isActive}
+        predicate={predicate}
         sort={byRoleAndName}
         fallbackFetcher={fallbackFetcher}
         title="Agents"
