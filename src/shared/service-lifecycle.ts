@@ -307,7 +307,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           onProgress: report,
         });
         nexusManaged = true;
-        nexusStartedThisCall = true;
+        // Honor ensureNexusRunning's explicit ownership flag instead of
+        // assuming success implies we started it. Fast paths reuse a
+        // healthy/starting container without invoking `nexus up`; rollback
+        // must not stop a Nexus we only reused.
+        nexusStartedThisCall = nexusInfo.startedThisCall;
         resolvedNexusUrl = nexusInfo.url;
         if (!process.env.GROVE_NEXUS_URL) {
           process.env.GROVE_NEXUS_URL = nexusInfo.url;
@@ -790,7 +794,24 @@ async function spawnService(
             `or set PORT to an unused port and retry.`,
         );
       }
-      // PID identity matches our pidfile record — reuse silently.
+      // PID identity matches our pidfile record — but a detached child
+      // can survive a crashed parent, and `grove init --force` rotates
+      // .grove/api-key without removing grove.pid. After identity is
+      // proven, also confirm the live server still accepts the current
+      // api-key; if not, the recorded child is stale relative to the
+      // current credentials and must be restarted.
+      if (name === "server") {
+        const ownership = await verifyServerOwnership(port, groveDir);
+        if (!ownership.ok) {
+          throw new Error(
+            `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
+              `${ownership.reason}\n` +
+              `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
+              `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
+          );
+        }
+      }
+      // Identity + ownership both verified — reuse silently.
       return null;
     }
   }
