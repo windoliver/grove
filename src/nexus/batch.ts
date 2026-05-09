@@ -1,11 +1,9 @@
 /**
- * Bounded parallel execution utility built on top of the Semaphore.
+ * Bounded parallel execution utility.
  *
  * Runs an async function over an array of items with limited concurrency,
  * preserving result ordering.
  */
-
-import { Semaphore } from "./semaphore.js";
 
 /**
  * Map over `items` calling `fn` for each, with at most `concurrency`
@@ -23,7 +21,30 @@ export async function batchParallel<T, R>(
 ): Promise<R[]> {
   if (items.length === 0) return [];
 
-  const semaphore = new Semaphore(concurrency);
-  const promises: Array<Promise<R>> = items.map((item) => semaphore.run(() => fn(item)));
-  return Promise.all(promises);
+  const results = new Array<R>(items.length);
+  const workerCount = Math.min(Math.max(1, Math.floor(concurrency)), items.length);
+  let nextIndex = 0;
+  let rejection: unknown;
+
+  const worker = async (): Promise<void> => {
+    while (rejection === undefined) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+
+      const item = items[index];
+      if (item === undefined) return;
+
+      try {
+        results[index] = await fn(item);
+      } catch (err) {
+        rejection = err;
+        return;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (rejection !== undefined) throw rejection;
+  return results;
 }

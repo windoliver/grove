@@ -6,12 +6,19 @@
  */
 
 const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const DOS_DATE = 0x0021;
 const DOS_TIME = 0x0000;
+const STORED_ZIP_FLAGS = 0x0800;
 const MAX_ZIP32 = 0xffffffff;
 const MAX_UINT16 = 0xffff;
 
 export interface ZipEntryInput {
+  readonly path: string;
+  readonly bytes: Uint8Array;
+}
+
+export interface ZipEntryOutput {
   readonly path: string;
   readonly bytes: Uint8Array;
 }
@@ -72,7 +79,7 @@ export function createStoredZip(entries: readonly ZipEntryInput[]): Uint8Array {
     const view = new DataView(local.buffer);
     view.setUint32(0, 0x04034b50, true);
     view.setUint16(4, 20, true);
-    view.setUint16(6, 0x0800, true);
+    view.setUint16(6, STORED_ZIP_FLAGS, true);
     view.setUint16(8, 0, true);
     view.setUint16(10, DOS_TIME, true);
     view.setUint16(12, DOS_DATE, true);
@@ -95,7 +102,7 @@ export function createStoredZip(entries: readonly ZipEntryInput[]): Uint8Array {
     view.setUint32(0, 0x02014b50, true);
     view.setUint16(4, 20, true);
     view.setUint16(6, 20, true);
-    view.setUint16(8, 0x0800, true);
+    view.setUint16(8, STORED_ZIP_FLAGS, true);
     view.setUint16(10, 0, true);
     view.setUint16(12, DOS_TIME, true);
     view.setUint16(14, DOS_DATE, true);
@@ -139,6 +146,171 @@ export function createStoredZip(entries: readonly ZipEntryInput[]): Uint8Array {
     cursor += chunk.length;
   }
   return out;
+}
+
+function readUInt16(bytes: Uint8Array, offset: number): number {
+  if (offset + 2 > bytes.length) throw new Error("invalid zip: truncated uint16");
+  return ((bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8)) >>> 0;
+}
+
+function readUInt32(bytes: Uint8Array, offset: number): number {
+  if (offset + 4 > bytes.length) throw new Error("invalid zip: truncated uint32");
+  return (
+    ((bytes[offset] ?? 0) |
+      ((bytes[offset + 1] ?? 0) << 8) |
+      ((bytes[offset + 2] ?? 0) << 16) |
+      ((bytes[offset + 3] ?? 0) << 24)) >>>
+    0
+  );
+}
+
+function findEndOfCentralDirectory(bytes: Uint8Array): number {
+  for (let offset = bytes.length - 22; offset >= 0; offset--) {
+    if (readUInt32(bytes, offset) === 0x06054b50) return offset;
+  }
+  throw new Error("invalid zip: missing end of central directory");
+}
+
+function decodeEntryPath(bytes: Uint8Array): string {
+  try {
+    return textDecoder.decode(bytes);
+  } catch {
+    throw new Error("invalid zip: filename is not valid UTF-8");
+  }
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+export function readStoredZip(bytes: Uint8Array): readonly ZipEntryOutput[] {
+  const eocdOffset = findEndOfCentralDirectory(bytes);
+  const eocdCommentLength = readUInt16(bytes, eocdOffset + 20);
+  if (eocdCommentLength !== 0 || eocdOffset + 22 !== bytes.length) {
+    throw new Error("unsupported zip end of central directory comment or trailing data");
+  }
+  const entryCount = readUInt16(bytes, eocdOffset + 8);
+  const centralSize = readUInt32(bytes, eocdOffset + 12);
+  const centralStart = readUInt32(bytes, eocdOffset + 16);
+  let centralOffset = centralStart;
+  const centralEnd = centralOffset + centralSize;
+  if (centralEnd !== eocdOffset) {
+    throw new Error("invalid zip: central directory exceeds archive bounds");
+  }
+  const entries: ZipEntryOutput[] = [];
+  const seen = new Set<string>();
+  let expectedLocalOffset = 0;
+
+  for (let index = 0; index < entryCount; index++) {
+    const fixedHeaderEnd = centralOffset + 46;
+    if (fixedHeaderEnd > centralEnd) {
+      throw new Error("invalid zip: central directory record exceeds declared size");
+    }
+    if (readUInt32(bytes, centralOffset) !== 0x02014b50) {
+      throw new Error("invalid zip: missing central directory record");
+    }
+    const flags = readUInt16(bytes, centralOffset + 8);
+    if (flags !== STORED_ZIP_FLAGS) {
+      throw new Error(`unsupported zip flags: ${flags}`);
+    }
+    const compressionMethod = readUInt16(bytes, centralOffset + 10);
+    if (compressionMethod !== 0) {
+      throw new Error(`unsupported zip compression method: ${compressionMethod}`);
+    }
+    const expectedCrc = readUInt32(bytes, centralOffset + 16);
+    const compressedSize = readUInt32(bytes, centralOffset + 20);
+    const uncompressedSize = readUInt32(bytes, centralOffset + 24);
+    if (compressedSize !== uncompressedSize) {
+      throw new Error("invalid stored zip: compressed and uncompressed sizes differ");
+    }
+    const nameLength = readUInt16(bytes, centralOffset + 28);
+    const extraLength = readUInt16(bytes, centralOffset + 30);
+    const commentLength = readUInt16(bytes, centralOffset + 32);
+    const localOffset = readUInt32(bytes, centralOffset + 42);
+    const nameStart = centralOffset + 46;
+    const variableFieldEnd = nameStart + nameLength + extraLength + commentLength;
+    if (variableFieldEnd > centralEnd) {
+      throw new Error("invalid zip: central directory variable fields exceed declared size");
+    }
+    if (extraLength !== 0 || commentLength !== 0) {
+      throw new Error("unsupported zip central directory extra/comment fields");
+    }
+    const centralNameBytes = bytes.slice(nameStart, nameStart + nameLength);
+
+    if (localOffset !== expectedLocalOffset) {
+      throw new Error("invalid zip: local offset gap or unaccounted local record");
+    }
+    if (localOffset >= centralStart) {
+      throw new Error("invalid zip: local offset overlaps central directory");
+    }
+    if (localOffset + 30 > centralStart) {
+      throw new Error("invalid zip: local header overlaps central directory");
+    }
+    if (readUInt32(bytes, localOffset) !== 0x04034b50) {
+      throw new Error("invalid zip: missing local file header");
+    }
+    const localFlags = readUInt16(bytes, localOffset + 6);
+    if (localFlags !== STORED_ZIP_FLAGS) {
+      throw new Error(`unsupported zip flags: ${localFlags}`);
+    }
+    const localCompressionMethod = readUInt16(bytes, localOffset + 8);
+    if (localCompressionMethod !== 0) {
+      throw new Error(`unsupported zip compression method: ${localCompressionMethod}`);
+    }
+    const localCrc = readUInt32(bytes, localOffset + 14);
+    const localCompressedSize = readUInt32(bytes, localOffset + 18);
+    const localUncompressedSize = readUInt32(bytes, localOffset + 22);
+    if (
+      localCrc !== expectedCrc ||
+      localCompressedSize !== compressedSize ||
+      localUncompressedSize !== uncompressedSize
+    ) {
+      throw new Error("zip local header metadata mismatch");
+    }
+    const localNameLength = readUInt16(bytes, localOffset + 26);
+    const localExtraLength = readUInt16(bytes, localOffset + 28);
+    if (localExtraLength !== 0) {
+      throw new Error("unsupported zip local extra fields");
+    }
+    const localNameStart = localOffset + 30;
+    const dataStart = localNameStart + localNameLength + localExtraLength;
+    if (dataStart > centralStart) {
+      throw new Error("invalid zip: local header overlaps central directory");
+    }
+    const localNameBytes = bytes.slice(localNameStart, localNameStart + localNameLength);
+    if (!bytesEqual(localNameBytes, centralNameBytes)) {
+      throw new Error("zip local header path filename bytes mismatch");
+    }
+    const name = decodeEntryPath(centralNameBytes);
+    validateEntryPath(name);
+    if (seen.has(name)) throw new Error(`duplicate zip entry path: ${name}`);
+    seen.add(name);
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > centralStart) {
+      throw new Error("invalid zip: entry data overlaps central directory");
+    }
+    expectedLocalOffset = dataEnd;
+    const entryBytes = bytes.slice(dataStart, dataEnd);
+    const actualCrc = crc32(entryBytes);
+    if (actualCrc !== expectedCrc) {
+      throw new Error(`zip crc mismatch for ${name}`);
+    }
+    entries.push({ path: name, bytes: entryBytes });
+    centralOffset = variableFieldEnd;
+  }
+
+  if (centralOffset !== centralEnd) {
+    throw new Error("invalid zip: central directory size mismatch");
+  }
+  if (expectedLocalOffset !== centralStart) {
+    throw new Error("invalid zip: unaccounted local records before central directory");
+  }
+
+  return entries;
 }
 
 function validateEntryPath(path: string): void {

@@ -32,7 +32,7 @@ const COLUMNS = [
 const STATUS_LABELS: Record<string, string> = {
   [HandoffStatus.PendingPickup]: "\u23F3 pending",
   [HandoffStatus.Delivered]: "\uD83D\uDCEC delivered",
-  [HandoffStatus.Replied]: "\u2705 replied",
+  [HandoffStatus.Replied]: "\u2705 [done]",
   [HandoffStatus.Expired]: "\u231B expired",
 };
 

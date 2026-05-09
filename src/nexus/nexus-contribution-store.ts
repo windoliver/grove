@@ -26,6 +26,7 @@ import type {
   ContributionPutResult,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   HotThreadsOptions,
   ThreadNode,
   ThreadSummary,
@@ -751,6 +752,9 @@ export class NexusContributionStore implements ContributionStore {
       const requiredTags = query.tags;
       contributions = contributions.filter((c) => requiredTags.every((t) => c.tags.includes(t)));
     }
+    if (query?.order === "created_at_desc") {
+      contributions = [...contributions].reverse();
+    }
 
     // Apply limit/offset
     const offset = query?.offset ?? 0;
@@ -795,12 +799,11 @@ export class NexusContributionStore implements ContributionStore {
     );
 
     if (this.listCacheEpoch !== epochAtStart) {
-      // An invalidation arrived while we were scanning. Throw so all
-      // waiting callers (usePolledData et al.) preserve their last-known-
-      // good data instead of overwriting it with a stale pre-invalidation
-      // snapshot. The post-invalidation scan (started by the SSE refresh
-      // handler) will resolve with fresh data on the next await.
-      throw new Error("list scan superseded by cache invalidation — discard result");
+      // A write or SSE invalidation arrived while this scan was in flight.
+      // Return the snapshot to the current caller, but do not cache it: the
+      // next list() will miss cache and scan the fresh index.
+      debugLog("store.list", "scan invalidated mid-flight; returning uncached snapshot");
+      return allContributions;
     }
 
     if (ftsComplete && manifestComplete) {
@@ -992,7 +995,22 @@ export class NexusContributionStore implements ContributionStore {
     return all.length;
   }
 
-  async countSince(query: { agentId?: string; since: string }): Promise<number> {
+  async countSince(query: CountSinceQuery): Promise<number> {
+    if (query.sessionId !== undefined && query.sessionId !== this.sessionId) {
+      const scopedStore = new NexusContributionStore({
+        ...this.config,
+        sessionId: query.sessionId,
+      });
+      try {
+        return await scopedStore.countSince({
+          ...(query.agentId !== undefined ? { agentId: query.agentId } : {}),
+          since: query.since,
+        });
+      } finally {
+        scopedStore.close();
+      }
+    }
+
     const indexedCount = await this.countSinceFromCreatedAtIndex(query);
     if (indexedCount !== undefined) return indexedCount;
     await this.ensureCreatedAtIndex();
@@ -1001,7 +1019,7 @@ export class NexusContributionStore implements ContributionStore {
     return this.countSinceByList(query);
   }
 
-  private async countSinceByList(query: { agentId?: string; since: string }): Promise<number> {
+  private async countSinceByList(query: CountSinceQuery): Promise<number> {
     const all = await this.list(
       query.agentId !== undefined ? { agentId: query.agentId } : undefined,
     );
@@ -1009,10 +1027,7 @@ export class NexusContributionStore implements ContributionStore {
     return all.filter((c) => new Date(c.createdAt).getTime() >= sinceTime).length;
   }
 
-  private async countSinceFromCreatedAtIndex(query: {
-    agentId?: string;
-    since: string;
-  }): Promise<number | undefined> {
+  private async countSinceFromCreatedAtIndex(query: CountSinceQuery): Promise<number | undefined> {
     const sinceTime = Date.parse(query.since);
     if (!Number.isFinite(sinceTime)) return 0;
 

@@ -6,6 +6,7 @@
  *   grove session list
  *   grove session status
  *   grove session stop [--reason "Done"]
+ *   grove session delete <session-id> [--force]
  *
  * For TUI-based sessions, use `grove up` which will integrate with
  * SessionOrchestrator in its React UI.
@@ -54,6 +55,8 @@ export async function executeSession(args: readonly string[]): Promise<void> {
       return sessionStatus();
     case "stop":
       return sessionStop(rest);
+    case "delete":
+      return sessionDelete(rest);
     default:
       console.log(`grove session <subcommand>
 
@@ -62,6 +65,7 @@ Subcommands:
   list                                                     List all sessions
   status                                                   Show current session status
   stop [--reason <r>]                                      Stop the current session
+  delete <session-id> [--force]                            Delete a session
 
 Topology precedence: --roles > --preset > GROVE.md default`);
   }
@@ -524,5 +528,58 @@ async function sessionStop(args: readonly string[]): Promise<void> {
       code: "SESSION_ERROR",
       message: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+async function sessionDelete(args: readonly string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    options: {
+      force: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const sessionId = positionals[0];
+  if (!sessionId) {
+    outputJsonError({ code: "VALIDATION_ERROR", message: "session id is required" });
+    process.exitCode = 1;
+    return;
+  }
+
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { findGroveDir } = await import("../context.js");
+  const groveDir = findGroveDir(process.cwd());
+  const dbPath = groveDir === undefined ? undefined : join(groveDir, "grove.db");
+  if (dbPath === undefined || !existsSync(dbPath)) {
+    outputJsonError({ code: "NOT_FOUND", message: "No grove database found" });
+    process.exitCode = 1;
+    return;
+  }
+
+  const { initSqliteDb } = await import("../../local/sqlite-store.js");
+  const db = initSqliteDb(dbPath);
+  try {
+    const store = new SqliteGoalSessionStore(db);
+    const session = await store.getSession(sessionId);
+    if (session === undefined) {
+      outputJsonError({ code: "NOT_FOUND", message: `Session not found: ${sessionId}` });
+      process.exitCode = 1;
+      return;
+    }
+
+    const force = values.force === true;
+    const result = await store.deleteSession(sessionId, { force, actor: "cli" });
+    outputJson(result);
+    if (!result.deleted && !result.forced) {
+      process.exitCode = 1;
+    }
+  } finally {
+    db.close();
   }
 }

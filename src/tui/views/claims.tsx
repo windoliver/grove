@@ -1,199 +1,128 @@
 /**
- * Claims view — shows all active claims with lease countdown.
+ * Claims view — active claims with lease countdown, EntityView-backed.
  *
- * PR2 (#388) migrated from `usePolledData(provider.getClaims)` to the
- * informer-backed `useEntities("Claim", …)` hook. Reads draw from the
- * shared informer cache (SSE-driven in remote mode, in-process WatchHub
- * in local mode) instead of polling. The pre-fetched `propClaims` prop
- * stays as an explicit override for the parent's claim poller during
- * the dual-path window — once PR3 / PR4 fold those callers in, the
- * override goes away.
+ * Scoped sessions (provider.hasSessionScope) render an EmptyState
+ * directly without mounting EntityView, preserving the pre-port
+ * behavior where `getClaims` lacks sessionId filtering.
  */
 
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import type { ClaimEntity } from "../../core/entity.js";
-import type { Claim } from "../../core/models.js";
-import { formatDuration } from "../../shared/duration.js";
-import { formatTimestamp } from "../../shared/format.js";
-import { DataStatus } from "../components/data-status.js";
+import {
+  agentColumn,
+  claimIdColumn,
+  heartbeatColumn,
+  intentColumn,
+  isActive,
+  leaseColumn,
+  statusColumnWithCounts,
+  targetColumn,
+} from "../components/columns/claim-columns.js";
 import { EmptyState } from "../components/empty-state.js";
-import { Table } from "../components/table.js";
-import { useEntityWatchEnabled, useProviderScoped } from "../hooks/informer-context.js";
-import { useEntities } from "../hooks/use-entities.js";
-import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
+import { EntityView } from "../components/entity-view.js";
+import { useProviderScoped } from "../hooks/informer-context.js";
 import type { TuiDataProvider } from "../provider.js";
 
-/** Props for the Claims view. */
 export interface ClaimsProps {
   readonly provider: TuiDataProvider;
   readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: (count: number) => void;
-  /** Pre-fetched active claims from parent poller (avoids double polling). */
-  readonly activeClaims?: readonly Claim[] | undefined;
+  readonly activeClaims?: readonly unknown[] | undefined;
 }
 
-const COLUMNS = [
-  { header: "CLAIM_ID", key: "claimId", width: 20 },
-  { header: "TARGET", key: "target", width: 24 },
-  { header: "AGENT", key: "agent", width: 16 },
-  { header: "STATUS", key: "status", width: 10 },
-  { header: "LEASE", key: "lease", width: 14 },
-  { header: "HEARTBEAT", key: "heartbeat", width: 12 },
-  { header: "INTENT", key: "intent", width: 28 },
-] as const;
-
-/** Reduce a ClaimEntity to the flat row shape this view already emits. */
-function entityToRow(entity: ClaimEntity): {
-  claimId: string;
-  targetRef: string;
-  agent: { agentName?: string | undefined; agentId: string };
-  status: string;
-  intentSummary: string;
-  heartbeatAt: string;
-  leaseExpiresAt: string;
-} {
-  return {
-    claimId: entity.id,
-    targetRef: entity.spec.targetRef,
-    agent: entity.spec.agent,
-    status: entity.status.phase,
-    intentSummary: entity.spec.intentSummary,
-    heartbeatAt: entity.status.heartbeatAt,
-    leaseExpiresAt: entity.status.leaseExpiresAt,
-  };
-}
-
-const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
-
-/** Claims view component. */
-export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(function ClaimsView({
-  provider,
-  intervalMs,
-  active,
-  cursor,
-  onRowCountChanged,
-  activeClaims: propClaims,
-}: ClaimsProps): React.ReactNode {
-  const useInformerPath = useEntityWatchEnabled(provider, "Claim");
-  // Suppress claim polling under a scoped session: `provider.getClaims`
-  // does not filter by sessionId yet, so polling would surface claims
-  // from other sessions in the namespace (Codex round 2, finding 2).
-  // Mirrors the dashboard's existing behavior (RemoteDataProvider's
-  // getDashboard returns `[]` for activeClaims when scoped).
+export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(function ClaimsView(
+  props: ClaimsProps,
+): React.ReactNode {
+  const { provider, active, cursor, onRowCountChanged } = props;
   const isScoped = useProviderScoped(provider);
 
-  // Informer path: useEntities feeds when the factory is mounted and the
-  // kind is supported. We always invoke both hooks so React's hook order
-  // stays stable across renders; the unused branch's data is discarded.
-  const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
+  const fallbackFetcher = useCallback(async (): Promise<readonly ClaimEntity[]> => {
+    // Provider returns flat Claim shapes for the polled fallback path;
+    // synthesize minimal ClaimEntity envelopes so the column renders work.
+    // `as unknown as ClaimEntity` is required because the synthesized status
+    // omits `persistedPhase` (a ClaimStatusBody field not available from the
+    // flat Claim shape). Both phase fields are set to the same value here;
+    // the fallback path only needs phase for the isActive predicate and column
+    // renders, so the omission is safe.
+    const claims = await provider.getClaims({ status: "active" });
+    return claims.map(
+      (c) =>
+        ({
+          kind: "Claim",
+          namespace: "default",
+          id: c.claimId,
+          spec: {
+            targetRef: c.targetRef,
+            agent: c.agent,
+            intentSummary: c.intentSummary,
+            context: c.context,
+          },
+          status: {
+            phase: c.status as "active" | "expired" | "released" | "completed",
+            heartbeatAt: c.heartbeatAt,
+            leaseExpiresAt: c.leaseExpiresAt,
+            attemptCount: c.attemptCount ?? 0,
+          },
+          conditions: [],
+          observedGeneration: 0,
+          resourceVersion: "0",
+          metadata: { generation: 0, creationTimestamp: c.createdAt },
+        }) as unknown as ClaimEntity,
+    );
+  }, [provider]);
 
-  // Polled fallback: only fetches when the parent didn't pre-fetch AND
-  // the informer path isn't available AND we're not in a scoped session
-  // whose claim API isn't filterable by sessionId.
-  const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const polledResult = useEventDrivenData<readonly Claim[]>(
-    fetcher,
-    undefined,
-    undefined,
-    active && propClaims === undefined && !useInformerPath && !isScoped,
+  // Dup-counts must close over the current data to highlight `<phase> DUP`.
+  // Track via onDataChanged.
+  const [targetCounts, setTargetCounts] = useState<ReadonlyMap<string, number>>(new Map());
+  const onDataChanged = useCallback((data: readonly ClaimEntity[]) => {
+    const m = new Map<string, number>();
+    for (const e of data) m.set(e.spec.targetRef, (m.get(e.spec.targetRef) ?? 0) + 1);
+    setTargetCounts(m);
+  }, []);
+
+  const columns = useMemo(
+    () => [
+      claimIdColumn(20),
+      targetColumn(24),
+      agentColumn(16),
+      statusColumnWithCounts(targetCounts, 10),
+      leaseColumn(14),
+      heartbeatColumn(12),
+      intentColumn(28),
+    ],
+    [targetCounts],
   );
 
-  const data: readonly Claim[] | undefined = useMemo<readonly Claim[] | undefined>(() => {
-    // Scoped sessions render an empty list rather than risk leaking
-    // claims from other sessions while the watch + claim APIs lack
-    // sessionId filtering. The scope check runs BEFORE the propClaims
-    // shortcut because the parent App still polls `getClaims` (used by
-    // the command palette and spawn dedup); accepting that unscoped
-    // result here would re-expose the leak (Codex round 4, finding 1).
-    if (isScoped) return [];
-    if (propClaims !== undefined) return propClaims;
-    if (useInformerPath) {
-      // Project entity → row → caller-shaped Claim. The fields the view
-      // reads below are the ones populated from the entity envelope.
-      return entityResult.data.map((e) => {
-        const r = entityToRow(e);
-        return {
-          claimId: r.claimId,
-          targetRef: r.targetRef,
-          agent: r.agent,
-          status: r.status,
-          intentSummary: r.intentSummary,
-          createdAt: r.heartbeatAt,
-          heartbeatAt: r.heartbeatAt,
-          leaseExpiresAt: r.leaseExpiresAt,
-        } as Claim;
-      });
-    }
-    return polledResult.data ?? undefined;
-  }, [propClaims, useInformerPath, isScoped, entityResult.data, polledResult.data]);
-
-  const loading = useInformerPath
-    ? !entityResult.hasSynced && data === undefined
-    : polledResult.loading;
-  const isStale = useInformerPath ? false : polledResult.isStale;
-  const error = useInformerPath ? entityResult.error : polledResult.error;
-
-  useEffect(() => {
-    if (data && onRowCountChanged) {
-      onRowCountChanged(data.length);
-    }
-  }, [data, onRowCountChanged]);
-
-  if (loading && !data) {
+  if (isScoped) {
     return (
-      <box>
-        <text opacity={0.5}>Loading claims...</text>
-      </box>
-    );
-  }
-
-  const claims = data ?? [];
-
-  const targetCounts = new Map<string, number>();
-  for (const c of claims) {
-    targetCounts.set(c.targetRef, (targetCounts.get(c.targetRef) ?? 0) + 1);
-  }
-
-  const rows = claims.map((c) => {
-    const remaining = new Date(c.leaseExpiresAt).getTime() - Date.now();
-    const isDuplicate = (targetCounts.get(c.targetRef) ?? 0) > 1;
-    const statusStr =
-      c.status === "active" && remaining <= 0
-        ? "EXPIRED"
-        : isDuplicate
-          ? `${c.status} DUP`
-          : c.status;
-
-    return {
-      claimId: c.claimId.length > 20 ? `${c.claimId.slice(0, 18)}..` : c.claimId,
-      target: c.targetRef.length > 24 ? `${c.targetRef.slice(0, 22)}..` : c.targetRef,
-      agent: c.agent.agentName ?? c.agent.agentId,
-      status: statusStr,
-      lease: remaining > 0 ? formatDuration(remaining) : "expired",
-      heartbeat: formatTimestamp(c.heartbeatAt),
-      intent:
-        (c.intentSummary ?? "").length > 28
-          ? `${(c.intentSummary ?? "").slice(0, 26)}..`
-          : (c.intentSummary ?? ""),
-    };
-  });
-
-  return (
-    <box flexDirection="column">
-      <box marginBottom={1} flexDirection="row">
-        <text>{`Active Claims (${claims.length})`}</text>
-        <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
-      </box>
-      {rows.length === 0 ? (
+      <box flexDirection="column">
+        <box marginBottom={1}>
+          <text>Active Claims (0)</text>
+        </box>
         <EmptyState
           title="Active work claims. Claims prevent agents from duplicating each other's work."
           hint="Spawn agents with Ctrl+P. Each agent automatically claims work before starting."
         />
-      ) : (
-        <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
-      )}
-    </box>
+      </box>
+    );
+  }
+
+  return (
+    <EntityView
+      kind="Claim"
+      columns={columns}
+      provider={provider}
+      active={active}
+      cursor={cursor}
+      predicate={isActive}
+      fallbackFetcher={fallbackFetcher}
+      title="Active Claims"
+      emptyTitle="Active work claims. Claims prevent agents from duplicating each other's work."
+      emptyHint="Spawn agents with Ctrl+P. Each agent automatically claims work before starting."
+      onDataChanged={onDataChanged}
+      {...(onRowCountChanged ? { onRowCountChanged } : {})}
+    />
   );
 });

@@ -24,6 +24,7 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
@@ -348,13 +349,26 @@ export function App({
     };
   }, []);
 
-  // Poll active claims for topology-aware command palette
+  // Poll active claims for topology-aware command palette.
+  // In scoped sessions, `provider.getClaims` is namespace-global (no session
+  // filter) and would surface claims from other sessions — corrupting spawn-
+  // capacity checks and parent-depth calculations. We can't just stop the
+  // fetch (the hook would retain whatever it already had); we also project
+  // the result through `useMemo` so consumers see `undefined` (= "unknown")
+  // in scoped mode rather than a stale or empty list. Spawn paths that read
+  // `activeClaims` MUST treat `undefined` as "topology validation
+  // unavailable", not as "zero claims". See `handleSpawn` below.
+  const isScopedForClaims = useProviderScoped(provider);
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: activeClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
+  const { data: rawActiveClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
     claimsFetcher,
     undefined,
     undefined,
-    topology !== undefined,
+    topology !== undefined && !isScopedForClaims,
+  );
+  const activeClaims = useMemo<readonly Claim[] | null>(
+    () => (isScopedForClaims ? null : rawActiveClaims),
+    [isScopedForClaims, rawActiveClaims],
   );
 
   // Poll tmux sessions — used by command palette, agent count, split pane,
@@ -758,12 +772,26 @@ export function App({
    */
   const handleSpawn = useCallback(
     (agentId: string, command: string, _target: string, parentAgentId?: string) => {
-      const spawnCheck = checkSpawn(topology, agentId, activeClaims ?? [], parentAgentId);
+      // In scoped sessions `activeClaims` is null because we can't see only
+      // this session's claims through the namespace-global getClaims API.
+      // Refusing to spawn here is the conservative choice — substituting
+      // an empty array would let scoped operators bypass `maxInstances`,
+      // `maxChildrenPerAgent`, and depth limits enforced by checkSpawn /
+      // checkSpawnDepth. Lift this restriction once getClaims supports
+      // session-scoped filtering.
+      if (activeClaims === null) {
+        showError(
+          "Spawn unavailable in scoped session (topology checks need session-scoped claims)",
+        );
+        return;
+      }
+
+      const spawnCheck = checkSpawn(topology, agentId, activeClaims, parentAgentId);
       if (!spawnCheck.allowed) return;
 
       let depth = 0;
       if (parentAgentId !== undefined) {
-        const parentClaim = (activeClaims ?? []).find((c) => c.agent.agentId === parentAgentId);
+        const parentClaim = activeClaims.find((c) => c.agent.agentId === parentAgentId);
         const parentDepth =
           typeof parentClaim?.context?.depth === "number" ? parentClaim.context.depth : 0;
         depth = parentDepth + 1;

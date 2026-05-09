@@ -1,44 +1,35 @@
 /**
- * Agent list view — shows running agent sessions derived from claims + tmux.
- *
- * Correlates active claims with tmux sessions to build the agent fleet view.
- * In local mode, shows session status and allows spawn/kill via command palette.
+ * Agent list view — running agents derived from active claims joined
+ * with tmux session list and cost rollups. EntityView renders the
+ * list; the wrapper computes the join context and passes it to the
+ * column factories.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClaimEntity } from "../../core/entity.js";
-import type { Claim } from "../../core/models.js";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { type ClaimEntity, claimToEntity } from "../../core/entity.js";
 import { useInterval } from "../../local/use-interval.js";
-import type { TmuxManager } from "../agents/tmux-manager.js";
-import { agentIdFromSession } from "../agents/tmux-manager.js";
-import { DataStatus } from "../components/data-status.js";
+import { agentIdFromSession, type TmuxManager } from "../agents/tmux-manager.js";
+import {
+  type AgentJoinCtx,
+  agentIdColumn,
+  byRoleAndName,
+  costColumn,
+  platformColumn,
+  roleColumn,
+  sessionColumn,
+  statusColumn,
+  targetColumn,
+} from "../components/columns/agent-columns.js";
+import { isActive } from "../components/columns/claim-columns.js";
 import { EmptyState } from "../components/empty-state.js";
-import { Table } from "../components/table.js";
-import { useEntityWatchEnabled } from "../hooks/informer-context.js";
-import { useEntities } from "../hooks/use-entities.js";
+import { EntityView } from "../components/entity-view.js";
+import { useProviderScoped } from "../hooks/informer-context.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
-import { agentStatusIcon, BRAILLE_SPINNER, timing } from "../theme.js";
+import { BRAILLE_SPINNER, timing } from "../theme.js";
 
-const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
+const NAMESPACE = "default";
 
-/** Flatten a ClaimEntity to the legacy Claim shape this view consumes. */
-function entityToClaim(e: ClaimEntity): Claim {
-  return {
-    claimId: e.id,
-    targetRef: e.spec.targetRef,
-    agent: e.spec.agent,
-    status: e.status.phase,
-    intentSummary: e.spec.intentSummary,
-    createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
-    heartbeatAt: e.status.heartbeatAt,
-    leaseExpiresAt: e.status.leaseExpiresAt,
-    context: e.spec.context,
-    attemptCount: e.status.attemptCount,
-  };
-}
-
-/** Props for the AgentList view. */
 export interface AgentListProps {
   readonly provider: TuiDataProvider;
   readonly tmux?: TmuxManager | undefined;
@@ -50,137 +41,38 @@ export interface AgentListProps {
   readonly filterText?: string | undefined;
 }
 
-const COLUMNS = [
-  { header: "AGENT", key: "agentId", width: 16 },
-  { header: "ROLE", key: "role", width: 12 },
-  { header: "PLATFORM", key: "platform", width: 12 },
-  { header: "STATUS", key: "status", width: 12 },
-  { header: "COST", key: "cost", width: 14 },
-  { header: "TARGET", key: "target", width: 18 },
-  { header: "SESSION", key: "session", width: 16 },
-] as const;
-
-/** Derive detailed agent status from claim, session, and tmux state. */
-function deriveAgentStatus(
-  claim: Claim,
-  session: string | undefined,
-  tmuxSessions: readonly string[],
-): string {
-  const remaining = new Date(claim.leaseExpiresAt).getTime() - Date.now();
-
-  if (remaining <= 0) return "expired";
-  if (!session) return "claimed";
-
-  // Check if session is still alive in tmux
-  const sessionAlive = tmuxSessions.includes(session);
-  if (!sessionAlive) return "error";
-
-  // Check for stalled agents (heartbeat older than 60s)
-  const heartbeatAge = Date.now() - new Date(claim.heartbeatAt).getTime();
-  if (heartbeatAge > 60_000) {
-    return "stalled";
-  }
-
-  // Active session exists
-  return "running";
-}
-
-/** Map a status string to its theme symbol (delegates to shared agentStatusIcon). */
-function statusSymbol(status: string, spinnerFrame?: number): string {
-  return agentStatusIcon(status, spinnerFrame).icon;
-}
-
-/** Format token count to compact string (e.g. "12K", "1.2M"). */
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
-  return String(n);
-}
-
 /**
- * Apply C2 (#302) filter to agent rows: case-insensitive substring match
- * against any rendered column. Empty/whitespace filter returns rows unchanged.
+ * Build a C2 (#302) filter predicate over a ClaimEntity. Case-insensitive
+ * substring match across role, agentId, agentName, platform, and targetRef.
+ * Empty/whitespace filter → undefined (no narrowing).
  *
  * Exported for unit testing — the filter logic is the actual surface that
  * narrows what the user sees when typing `/foo` in the running view.
  */
-export function applyAgentFilter(
-  rows: readonly Record<string, string>[],
+export function buildAgentFilter(
   filterText: string | undefined,
-): readonly Record<string, string>[] {
+): ((e: ClaimEntity) => boolean) | undefined {
   const q = filterText?.trim().toLowerCase();
-  if (!q) return rows;
-  return rows.filter((row) =>
-    COLUMNS.some((c) =>
-      String(row[c.key] ?? "")
-        .toLowerCase()
-        .includes(q),
-    ),
-  );
+  if (!q) return undefined;
+  return (e: ClaimEntity) => {
+    const a = e.spec.agent;
+    const haystack = [
+      a.agentName ?? "",
+      a.agentId,
+      a.role ?? "",
+      a.platform ?? "",
+      e.spec.targetRef,
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(q);
+  };
 }
 
-/** Build agent rows by correlating claims with tmux sessions, grouped by role. */
-function buildAgentRows(
-  claims: readonly Claim[],
-  tmuxSessions: readonly string[],
-  costs?: ReadonlyMap<string, { costUsd: number; tokens: number; contextPercent?: number }>,
-  spinnerFrame?: number,
-): readonly Record<string, string>[] {
-  const agentSessions = new Map<string, string>();
-
-  for (const name of tmuxSessions) {
-    const id = agentIdFromSession(name);
-    if (id) {
-      agentSessions.set(id, name);
-    }
-  }
-
-  const rows = claims.map((claim) => {
-    const agentId = claim.agent.agentName ?? claim.agent.agentId;
-    const session = agentSessions.get(claim.agent.agentId);
-    const status = deriveAgentStatus(claim, session, tmuxSessions);
-    const agentCost = costs?.get(claim.agent.agentId);
-    const role = claim.agent.role ?? "worker";
-
-    return {
-      agentId,
-      role,
-      platform: claim.agent.platform ?? "-",
-      target: claim.targetRef.length > 18 ? `${claim.targetRef.slice(0, 16)}..` : claim.targetRef,
-      status: `${statusSymbol(status, spinnerFrame)} ${status}`,
-      cost: agentCost
-        ? `$${agentCost.costUsd.toFixed(2)} | ${formatTokens(agentCost.tokens)}`
-        : "-",
-      session: session ?? "-",
-      _role: role, // for sorting
-    };
-  });
-
-  // Group by role: coordinators first, then alphabetical
-  rows.sort((a, b) => {
-    if (a._role !== b._role) {
-      if (a._role === "coordinator") return -1;
-      if (b._role === "coordinator") return 1;
-      return a._role.localeCompare(b._role);
-    }
-    return a.agentId.localeCompare(b.agentId);
-  });
-
-  return rows;
-}
-
-/** Agent list view component. */
 export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.memo(
-  function AgentListView({
-    provider,
-    tmux,
-    intervalMs,
-    active,
-    cursor,
-    onSelectSession,
-    filterText,
-  }: AgentListProps): React.ReactNode {
-    // Animated spinner for running agents — uses timing.spinner (80ms) for consistency
+  function AgentListView(props: AgentListProps): React.ReactNode {
+    const { provider, tmux, active, cursor, onSelectSession, filterText } = props;
+    const isScoped = useProviderScoped(provider);
     const [spinnerFrame, setSpinnerFrame] = useState(0);
     useInterval(
       () => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length),
@@ -188,42 +80,16 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       active,
     );
 
-    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
-
-    const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
-
-    const claimFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-    const tmuxFetcher = useCallback(async () => {
-      if (!tmux) return [] as readonly string[];
-      const available = await tmux.isAvailable();
-      if (!available) return [] as readonly string[];
-      return tmux.listSessions();
+    const tmuxFetcher = useCallback(async (): Promise<readonly string[]> => {
+      if (!tmux) return [];
+      return (await tmux.isAvailable()) ? tmux.listSessions() : [];
     }, [tmux]);
-
-    const polledClaims = useEventDrivenData<readonly Claim[]>(
-      claimFetcher,
+    const { data: tmuxSessions } = useEventDrivenData<readonly string[]>(
+      tmuxFetcher,
       undefined,
       undefined,
-      active && !useInformerPath,
+      active && !!tmux,
     );
-
-    const claims = useMemo<readonly Claim[] | undefined>(
-      () =>
-        useInformerPath ? entityResult.data.map(entityToClaim) : (polledClaims.data ?? undefined),
-      [useInformerPath, entityResult.data, polledClaims.data],
-    );
-    const claimsLoading = useInformerPath
-      ? !entityResult.hasSynced && claims === undefined
-      : polledClaims.loading;
-    const isStale = useInformerPath ? false : polledClaims.isStale;
-    const error = useInformerPath ? entityResult.error : polledClaims.error;
-    // A8.4 (#390): tmux session list re-fetches on producer-side `agent.output`
-    // events (and the global RefreshContext fan-out), no polling timer.
-    const {
-      data: sessions,
-      isStale: tmuxStale,
-      error: tmuxError,
-    } = useEventDrivenData<readonly string[]>(tmuxFetcher, undefined, undefined, active && !!tmux);
 
     const costFetcher = useCallback(async () => {
       const cp = provider as unknown as {
@@ -238,86 +104,118 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       };
       if (!cp.getSessionCosts)
         return new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>();
-      const costs = await cp.getSessionCosts();
-      const map = new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>();
-      for (const a of costs.byAgent) {
+      const out = await cp.getSessionCosts();
+      const m = new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>();
+      for (const a of out.byAgent) {
         const entry: { costUsd: number; tokens: number; contextPercent?: number } = {
           costUsd: a.costUsd,
           tokens: a.tokens,
         };
         if (a.contextPercent !== undefined) entry.contextPercent = a.contextPercent;
-        map.set(a.agentId, entry);
+        m.set(a.agentId, entry);
       }
-      return map;
+      return m;
     }, [provider]);
-    // A8.4 (#390): cost rollups re-fetch on EventBus events via the global
-    // RefreshContext fan-out (any agent.output / contribution event).
-    const { data: agentCosts } = useEventDrivenData(costFetcher, undefined, undefined, active);
+    const { data: costs } = useEventDrivenData(costFetcher, undefined, undefined, active);
 
-    // Combine staleness from both data sources
-    const combinedStale = isStale || tmuxStale;
-    const combinedError = error ?? tmuxError;
+    const agentSessions = useMemo<ReadonlyMap<string, string>>(() => {
+      const m = new Map<string, string>();
+      for (const name of tmuxSessions ?? []) {
+        const id = agentIdFromSession(name);
+        if (id) m.set(id, name);
+      }
+      return m;
+    }, [tmuxSessions]);
 
-    const allAgentRows = buildAgentRows(
-      claims ?? [],
-      sessions ?? [],
-      agentCosts ?? undefined,
-      spinnerFrame,
+    const ctx = useMemo<AgentJoinCtx>(
+      () => ({
+        tmuxSessions: tmuxSessions ?? [],
+        agentSessions,
+        costs:
+          costs ?? new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>(),
+        spinnerFrame,
+      }),
+      [tmuxSessions, agentSessions, costs, spinnerFrame],
     );
 
-    const agentRows = useMemo(() => {
-      return applyAgentFilter(allAgentRows, filterText);
-    }, [allAgentRows, filterText]);
+    const columns = useMemo(
+      () => [
+        agentIdColumn(16),
+        roleColumn(12),
+        platformColumn(12),
+        statusColumn(ctx, 12),
+        costColumn(ctx, 14),
+        targetColumn(18),
+        sessionColumn(ctx, 16),
+      ],
+      [ctx],
+    );
 
-    // Track rows for session selection and notify parent when cursor moves
-    const rowsRef = useRef(agentRows);
-    rowsRef.current = agentRows;
+    // C2 (#302): compose isActive (view-internal) with filter (user input).
+    const filterPred = useMemo(() => buildAgentFilter(filterText), [filterText]);
+    const predicate = useMemo<(e: ClaimEntity) => boolean>(() => {
+      if (!filterPred) return isActive;
+      return (e) => isActive(e) && filterPred(e);
+    }, [filterPred]);
 
+    const onSelect = useCallback(
+      (entity: ClaimEntity | undefined) => {
+        if (!onSelectSession) return;
+        if (!entity) return onSelectSession(undefined);
+        const session = agentSessions.get(entity.spec.agent.agentId);
+        onSelectSession(session ?? undefined);
+      },
+      [onSelectSession, agentSessions],
+    );
+
+    const fallbackFetcher = useCallback(async (): Promise<readonly ClaimEntity[]> => {
+      const claims = await provider.getClaims({ status: "active" });
+      return claims.map((c) => claimToEntity(c, () => Date.now(), NAMESPACE));
+    }, [provider]);
+
+    // Scoped sessions: `useEntityWatchEnabled` returns false in scoped mode,
+    // and `provider.getClaims` is namespace-global (no session filter), so
+    // the fallback would render claims from OTHER sessions. Render an empty
+    // state instead until session-scoped claim filtering lands. Mirrors the
+    // ClaimsView short-circuit.
+    //
+    // Clear any latched selection so the terminal/input panel doesn't keep
+    // targeting an agent from the previous (un-scoped) view. Without this,
+    // selectedSession survives the transition into scoped mode and the
+    // operator's keystrokes would still hit the prior session.
     useEffect(() => {
-      if (!onSelectSession || cursor < 0) return;
-      const row = rowsRef.current[cursor];
-      const session = row?.session;
-      onSelectSession(session && session !== "-" ? session : undefined);
-    }, [cursor, onSelectSession]);
+      if (isScoped && onSelectSession) onSelectSession(undefined);
+    }, [isScoped, onSelectSession]);
 
-    if (claimsLoading && !claims) {
-      return (
-        <box>
-          <text opacity={0.5}>Loading agents...</text>
-        </box>
-      );
-    }
-
-    if (agentRows.length === 0) {
+    if (isScoped) {
       return (
         <box flexDirection="column">
-          <DataStatus
-            loading={claimsLoading && !claims}
-            isStale={combinedStale}
-            error={combinedError?.message}
-          />
+          <box marginBottom={1}>
+            <text>Agents (0)</text>
+          </box>
           <EmptyState
             title="No agents registered."
             hint="Press r to register, or Ctrl+P to spawn."
           />
-          {!tmux && <text opacity={0.5}>tmux not available — agents require tmux</text>}
         </box>
       );
     }
 
     return (
-      <box flexDirection="column">
-        <box marginBottom={1} flexDirection="row">
-          <text>{`Agents (${agentRows.length})`}</text>
-          {!tmux && <text opacity={0.5}> [no tmux]</text>}
-          <DataStatus
-            loading={claimsLoading && !claims}
-            isStale={combinedStale}
-            error={combinedError?.message}
-          />
-        </box>
-        <Table columns={[...COLUMNS]} rows={agentRows} cursor={cursor} />
-      </box>
+      <EntityView
+        kind="Claim"
+        columns={columns}
+        provider={provider}
+        active={active}
+        cursor={cursor}
+        predicate={predicate}
+        sort={byRoleAndName}
+        fallbackFetcher={fallbackFetcher}
+        title="Agents"
+        emptyTitle="No agents registered."
+        emptyHint="Press r to register, or Ctrl+P to spawn."
+        onSelect={onSelect}
+      />
     );
   },
 );
