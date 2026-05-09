@@ -300,6 +300,70 @@ describe("ClaimReconciliationController", () => {
     );
   });
 
+  test("returns transition for terminating condition-only updates", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(
+      makeView({
+        deletionTimestamp: FIXED_NOW_ISO,
+        finalizers: [Finalizer.ReleaseSlots],
+      }),
+    );
+    const transitions: ClaimStatusTransition[] = [];
+    const controller = makeController(store, {
+      onTransition: (transition) => {
+        transitions.push(transition);
+      },
+    });
+
+    const transition = await controller.reconcileClaim("claim-1");
+
+    const expectedTransition: ClaimStatusTransition = {
+      claimId: "claim-1",
+      fromPhase: ClaimStatus.Active,
+      toPhase: ClaimStatus.Active,
+      reason: "deletion-requested",
+      observedGeneration: 2,
+    };
+    expect(transition).toEqual(expectedTransition);
+    expect(transitions).toEqual([expectedTransition]);
+    expect(conditionByType(onlyPatch(store).patch.conditions, "Terminating")?.reason).toBe(
+      "deletion-requested",
+    );
+  });
+
+  test("observedGeneration catch-up takes priority over terminating condition transition", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(
+      makeView({
+        generation: 7,
+        observedGeneration: 3,
+        deletionTimestamp: FIXED_NOW_ISO,
+        finalizers: [Finalizer.ReleaseSlots],
+      }),
+    );
+    const transitions: ClaimStatusTransition[] = [];
+    const controller = makeController(store, {
+      onTransition: (transition) => {
+        transitions.push(transition);
+      },
+    });
+
+    const transition = await controller.reconcileClaim("claim-1");
+
+    const expectedTransition: ClaimStatusTransition = {
+      claimId: "claim-1",
+      fromPhase: ClaimStatus.Active,
+      toPhase: ClaimStatus.Active,
+      reason: "observed-generation-current",
+      observedGeneration: 7,
+    };
+    expect(transition).toEqual(expectedTransition);
+    expect(transitions).toEqual([expectedTransition]);
+    const patch = onlyPatch(store).patch;
+    expect(patch.observedGeneration).toBe(7);
+    expect(conditionByType(patch.conditions, "Terminating")?.reason).toBe("deletion-requested");
+  });
+
   test("preserves unknown condition types when updating lifecycle conditions", async () => {
     const store = new FakeClaimControllerStore();
     const unknownCondition = makeCondition("ThirdPartyReady", {

@@ -168,18 +168,30 @@ export class ClaimReconciliationController {
             reason: LEASE_EXPIRED_REASON,
             observedGeneration: specGeneration,
           }
-        : needsObservedGeneration && !conditionsChanged
-          ? {
-              claimId: view.spec.id,
-              fromPhase,
-              toPhase: fromPhase,
-              reason: OBSERVED_GENERATION_REASON,
-              observedGeneration: specGeneration,
-            }
-          : undefined;
+        : {
+            claimId: view.spec.id,
+            fromPhase,
+            toPhase: fromPhase,
+            reason: statusPatchTransitionReason(
+              needsObservedGeneration,
+              terminating,
+              conditionsChanged,
+            ),
+            observedGeneration: specGeneration,
+          };
 
     return { patch, transition };
   }
+}
+
+function statusPatchTransitionReason(
+  observedGenerationChanged: boolean,
+  terminating: boolean,
+  conditionsChanged: boolean,
+): string {
+  if (observedGenerationChanged) return OBSERVED_GENERATION_REASON;
+  if (terminating && conditionsChanged) return DELETION_REQUESTED_REASON;
+  return "conditions-updated";
 }
 
 function buildPatch(input: {
