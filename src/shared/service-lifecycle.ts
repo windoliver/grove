@@ -133,13 +133,24 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   // of the existing processes — stopServices on this RunningServices is a
   // no-op, leaving teardown to whoever holds the original handles.
   if (existsSync(pidFilePath)) {
+    // Read + parse + liveness in a narrow try (only file/JSON errors get
+    // treated as malformed-pidfile and fall through). Ownership errors
+    // are intentionally NOT caught — they must surface to the caller.
+    let pidData:
+      | {
+          parentPid?: number;
+          children?: ReadonlyArray<{ name?: string; pid?: number }>;
+          nexusManaged?: boolean;
+        }
+      | undefined;
     try {
       const pidRaw = readFileSync(pidFilePath, "utf-8");
-      const pidData = JSON.parse(pidRaw) as {
-        parentPid?: number;
-        children?: ReadonlyArray<{ name?: string; pid?: number }>;
-        nexusManaged?: boolean;
-      };
+      pidData = JSON.parse(pidRaw);
+    } catch {
+      // Malformed pidfile — fall through and start fresh.
+      pidData = undefined;
+    }
+    if (pidData) {
       const parentPid = pidData.parentPid;
       const parentAlive = (() => {
         if (!parentPid) return false;
@@ -165,29 +176,45 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
         }
       });
       if (parentAlive && someChildAlive) {
-        // Even when the pidfile looks valid, the reused server may have a stale
-        // in-memory key registry (e.g. .grove was re-initialized while the
-        // server kept running). Probe the configured port with the current
-        // api-key — if the existing server doesn't accept it, fail loud
-        // instead of silently 401'ing every TUI request.
+        // Two-step ownership check (fail-closed, no key disclosure on step 1):
+        //
+        // (a) verifyPortIdentity — credential-free: confirm the PID listening
+        //     on the server port matches our pidfile's recorded server PID.
+        //     A "someChildAlive" check isn't sufficient: the *server* child
+        //     might have died while another (e.g. mcp) is alive; if a foreign
+        //     listener took the server port, calling verifyServerOwnership
+        //     here would leak the api-key to it.
+        // (b) verifyServerOwnership — credentialed: only after step (a)
+        //     proves PID identity, also confirm the live process still
+        //     accepts our key (catches the .grove re-init case where the
+        //     server kept its old in-memory key registry).
         if (config.services?.server) {
           const serverPort = resolveServicePort("server");
           if (serverPort) {
-            const ownership = await verifyServerOwnership(serverPort, groveDir);
-            if (!ownership.ok) {
+            const identity = await verifyPortIdentity(serverPort, pidFilePath, "server");
+            if (!identity.ok) {
               const owner = await describePortOwner(serverPort);
               throw new Error(
-                `Existing grove-server (PID ${parentPid}) on port ${serverPort} no longer accepts this project's API key.\n` +
-                  `${ownership.reason}\n` +
+                `Recorded grove-server is not the listener on port ${serverPort}.\n` +
+                  `${identity.reason}\n` +
                   `Owner: ${owner}\n` +
+                  `Free the port (\`lsof -tiTCP:${serverPort} -sTCP:LISTEN | xargs kill\`) and retry,\n` +
+                  `or set PORT to an unused port.`,
+              );
+            }
+            const ownership = await verifyServerOwnership(serverPort, groveDir);
+            if (!ownership.ok) {
+              throw new Error(
+                `Existing grove-server (PID ${identity.pid}) on port ${serverPort} no longer accepts this project's API key.\n` +
+                  `${ownership.reason}\n` +
                   `This usually happens when .grove was re-initialized while the server kept running.\n` +
-                  `Stop the server (e.g. \`kill ${parentPid}\`) and retry, or set PORT to an unused port.`,
+                  `Stop the server (\`kill ${identity.pid}\`) and retry.`,
               );
             }
           }
         }
         report(
-          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive, ownership verified)`,
+          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive, identity + ownership verified)`,
         );
         if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
           process.env.GROVE_NEXUS_URL = config.nexusUrl;
@@ -212,8 +239,6 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       if (parentPid && !parentAlive) {
         report(`[startServices] pidfile points to dead PID ${parentPid}; ignoring`);
       }
-    } catch {
-      // Malformed pidfile — fall through and start fresh.
     }
   }
 
@@ -230,6 +255,12 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       // best-effort
     }
   }
+
+  // Track whether THIS startServices invocation actually started Nexus
+  // (vs. found one already healthy and reused it). Rollback on partial
+  // failure must only tear down what this call acquired — taking down a
+  // pre-existing Nexus that other work depends on would be a regression.
+  let nexusStartedThisCall = false;
 
   // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
   // Fire when:
@@ -256,6 +287,9 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           process.env.GROVE_NEXUS_URL = config.nexusUrl;
           if (apiKey) process.env.NEXUS_API_KEY = apiKey;
           nexusManaged = true;
+          // NOT setting nexusStartedThisCall — we just reused a healthy
+          // existing Nexus; rollback on partial spawn failure must NOT
+          // stop it.
           resolvedNexusUrl = config.nexusUrl;
           options.onProgress?.("Nexus is ready (from grove.json)");
         }
@@ -273,6 +307,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           onProgress: report,
         });
         nexusManaged = true;
+        nexusStartedThisCall = true;
         resolvedNexusUrl = nexusInfo.url;
         if (!process.env.GROVE_NEXUS_URL) {
           process.env.GROVE_NEXUS_URL = nexusInfo.url;
@@ -333,15 +368,37 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     }
   }
   if (errors.length > 0) {
-    // Roll back successful spawns to keep the host clean.
-    for (const child of children) {
-      try {
-        child.proc.kill("SIGTERM");
-      } catch {
-        /* idempotent */
-      }
-    }
-    if (nexusManaged) {
+    // Roll back any successfully spawned siblings: SIGTERM, wait for
+    // exit (5s), escalate to SIGKILL. Detached/unref'd children with
+    // async shutdown handlers can hold the port if we just SIGTERM and
+    // throw immediately.
+    const ROLLBACK_DEADLINE_MS = 5_000;
+    const deadline = Date.now() + ROLLBACK_DEADLINE_MS;
+    await Promise.all(
+      children.map(async (child) => {
+        try {
+          child.proc.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        const remaining = Math.max(0, deadline - Date.now());
+        const exited = await Promise.race([
+          child.proc.exited,
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), remaining)),
+        ]);
+        if (exited === false) {
+          try {
+            child.proc.kill("SIGKILL");
+          } catch {
+            /* already dead */
+          }
+        }
+      }),
+    );
+    // Only tear down Nexus if THIS call started it. Reusing a healthy
+    // pre-existing Nexus must not get torn down because the HTTP server
+    // failed to bind — other work may depend on it.
+    if (nexusStartedThisCall) {
       try {
         const { nexusDown } = await import("../cli/nexus-lifecycle.js");
         await nexusDown(projectRoot);
