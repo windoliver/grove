@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type DefaultTimerHandle, KeyedWorkQueue, QueueClosedError } from "./workqueue.js";
+import { KeyedWorkQueue, QueueClosedError, type WorkQueueOptions } from "./workqueue.js";
 
 interface FakeTimerHandle {
   readonly id: number;
@@ -39,7 +39,10 @@ class FakeClock {
   }
 }
 
-function makeQueue(clock: FakeClock): KeyedWorkQueue<FakeTimerHandle> {
+function makeQueue(
+  clock: FakeClock,
+  options: Partial<WorkQueueOptions<FakeTimerHandle>> = {},
+): KeyedWorkQueue<FakeTimerHandle> {
   return new KeyedWorkQueue<FakeTimerHandle>({
     baseDelayMs: 5,
     maxDelayMs: 40,
@@ -48,6 +51,7 @@ function makeQueue(clock: FakeClock): KeyedWorkQueue<FakeTimerHandle> {
     now: clock.now,
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
+    ...options,
   });
 }
 
@@ -85,7 +89,7 @@ describe("KeyedWorkQueue", () => {
 
   test("retries with capped exponential per-key backoff", async () => {
     const clock = new FakeClock();
-    const queue = makeQueue(clock);
+    const queue = makeQueue(clock, { globalRatePerSec: 1_000, globalBurst: 10 });
 
     queue.enqueue("claim-1");
     await expect(queue.take()).resolves.toEqual({ key: "claim-1", attempt: 0 });
@@ -109,11 +113,17 @@ describe("KeyedWorkQueue", () => {
     queue.retry("claim-1");
     clock.advance(40);
     await expect(queue.take()).resolves.toEqual({ key: "claim-1", attempt: 4 });
+
+    queue.retry("claim-1");
+    clock.advance(39);
+    expect(queue.size()).toBe(0);
+    clock.advance(1);
+    await expect(queue.take()).resolves.toEqual({ key: "claim-1", attempt: 5 });
   });
 
   test("acknowledge clears retry state after success", async () => {
     const clock = new FakeClock();
-    const queue = makeQueue(clock);
+    const queue = makeQueue(clock, { globalRatePerSec: 1_000, globalBurst: 10 });
 
     queue.enqueue("claim-1");
     await queue.take();
@@ -154,6 +164,36 @@ describe("KeyedWorkQueue", () => {
     await expect(pending).resolves.toEqual({ key: "claim-3", attempt: 0 });
   });
 
+  test("applies the global token bucket to retried work", async () => {
+    const clock = new FakeClock();
+    const queue = makeQueue(clock);
+
+    queue.enqueue("claim-1");
+    queue.enqueue("claim-2");
+
+    await expect(queue.take()).resolves.toEqual({ key: "claim-1", attempt: 0 });
+    await expect(queue.take()).resolves.toEqual({ key: "claim-2", attempt: 0 });
+
+    queue.retry("claim-1");
+    clock.advance(5);
+
+    let resolved = false;
+    const pending = queue.take().then((item) => {
+      resolved = true;
+      return item;
+    });
+
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    clock.advance(994);
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    clock.advance(1);
+    await expect(pending).resolves.toEqual({ key: "claim-1", attempt: 1 });
+  });
+
   test("close clears retry timers and rejects pending waiters", async () => {
     const clock = new FakeClock();
     const queue = makeQueue(clock);
@@ -172,7 +212,7 @@ describe("KeyedWorkQueue", () => {
   });
 
   test("uses default timer types without generic parameters", () => {
-    const queue = new KeyedWorkQueue<DefaultTimerHandle>();
+    const queue = new KeyedWorkQueue();
     queue.close();
     expect(queue.size()).toBe(0);
   });

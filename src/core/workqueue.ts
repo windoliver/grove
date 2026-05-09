@@ -165,23 +165,19 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
       const key = this.readyKeys.shift();
       if (key === undefined) break;
       const attempt = this.attempts.get(key) ?? 0;
-      if (attempt === 0 && this.tokens < 1) {
+      if (this.tokens < 1) {
         this.readyKeys.unshift(key);
         break;
       }
       this.readySet.delete(key);
-      if (attempt === 0) {
-        this.tokens -= 1;
-      }
+      this.tokens -= 1;
       this.inFlight.add(key);
       const waiter = this.waiters.shift();
       if (waiter === undefined) {
         this.inFlight.delete(key);
         this.readyKeys.unshift(key);
         this.readySet.add(key);
-        if (attempt === 0) {
-          this.tokens += 1;
-        }
+        this.tokens += 1;
         break;
       }
       waiter.resolve({ key, attempt });
