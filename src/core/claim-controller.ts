@@ -1,7 +1,7 @@
 import type { ClaimEntity, Condition } from "./entity.js";
 import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStatusPatch, ClaimStore } from "./store.js";
-import { KeyedWorkQueue, type WorkItemResult } from "./workqueue.js";
+import { KeyedWorkQueue, QueueClosedError, type WorkItemResult } from "./workqueue.js";
 
 export type ClaimControllerStore = Pick<
   ClaimStore,
@@ -33,6 +33,8 @@ interface ReconciliationResult {
 
 const DEFAULT_RESYNC_INTERVAL_MS = 30_000;
 const DEFAULT_WORKER_COUNT = 1;
+const MAX_RESYNC_INTERVAL_MS = 2_147_483_647;
+const MAX_WORKER_COUNT = 1_000;
 const LEASE_EXPIRED_REASON = "lease-expired";
 const OBSERVED_GENERATION_REASON = "observed-generation-current";
 const DELETION_REQUESTED_REASON = "deletion-requested";
@@ -56,6 +58,8 @@ export class ClaimReconciliationController {
     this.queue = options.queue ?? new KeyedWorkQueue({ now: this.now });
     this.resyncIntervalMs = options.resyncIntervalMs ?? DEFAULT_RESYNC_INTERVAL_MS;
     this.workerCount = options.workerCount ?? DEFAULT_WORKER_COUNT;
+    validateResyncIntervalMs(this.resyncIntervalMs);
+    validateWorkerCount(this.workerCount);
     this.onError = options.onError;
     this.onTransition = options.onTransition;
   }
@@ -92,6 +96,7 @@ export class ClaimReconciliationController {
 
   start(): void {
     if (this.running) return;
+    if (this.stopRequested) throw new QueueClosedError();
     this.running = true;
     this.stopRequested = false;
     for (let i = 0; i < this.workerCount; i += 1) {
@@ -99,7 +104,7 @@ export class ClaimReconciliationController {
     }
     this.resyncTimer = setInterval(() => {
       void this.resync().catch((error: unknown) => {
-        this.onError?.(error, "__resync__");
+        this.reportError(error, "__resync__");
       });
     }, this.resyncIntervalMs);
     this.resyncTimer.unref?.();
@@ -133,9 +138,17 @@ export class ClaimReconciliationController {
         await this.reconcileClaim(item.key);
         this.queue.acknowledge(item.key);
       } catch (error) {
-        this.onError?.(error, item.key);
         if (!this.stopRequested) this.queue.retry(item.key);
+        this.reportError(error, item.key);
       }
+    }
+  }
+
+  private reportError(error: unknown, claimId: string): void {
+    try {
+      this.onError?.(error, claimId);
+    } catch {
+      return;
     }
   }
 
@@ -223,6 +236,20 @@ export class ClaimReconciliationController {
           };
 
     return { patch, transition };
+  }
+}
+
+function validateResyncIntervalMs(value: number): void {
+  if (!Number.isFinite(value) || value < 1 || value > MAX_RESYNC_INTERVAL_MS) {
+    throw new RangeError(
+      `resyncIntervalMs must be a finite positive number no greater than ${MAX_RESYNC_INTERVAL_MS}`,
+    );
+  }
+}
+
+function validateWorkerCount(value: number): void {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_WORKER_COUNT) {
+    throw new RangeError(`workerCount must be an integer between 1 and ${MAX_WORKER_COUNT}`);
   }
 }
 

@@ -48,6 +48,7 @@ interface ViewOverrides {
 class FakeClaimControllerStore implements ClaimControllerStore {
   readonly views = new Map<string, ClaimView>();
   readonly patches: RecordedPatch[] = [];
+  listEntitiesError: Error | undefined;
   specMutationCalls = 0;
 
   seed(view: ClaimView): void {
@@ -82,6 +83,7 @@ class FakeClaimControllerStore implements ClaimControllerStore {
   };
 
   listEntities = async (): Promise<readonly ClaimEntity[]> => {
+    if (this.listEntitiesError !== undefined) throw this.listEntitiesError;
     return [...this.views.values()].map((view) => claimViewToEntity(view, () => FIXED_NOW_MS));
   };
 
@@ -181,6 +183,27 @@ function conditionByType(
 }
 
 describe("ClaimReconciliationController", () => {
+  test("rejects invalid lifecycle options", () => {
+    const invalidOptions: ReadonlyArray<{
+      readonly resyncIntervalMs?: number | undefined;
+      readonly workerCount?: number | undefined;
+    }> = [
+      { resyncIntervalMs: 0 },
+      { resyncIntervalMs: -1 },
+      { resyncIntervalMs: Number.POSITIVE_INFINITY },
+      { resyncIntervalMs: Number.NaN },
+      { workerCount: 0 },
+      { workerCount: 1.5 },
+      { workerCount: Number.POSITIVE_INFINITY },
+      { workerCount: Number.NaN },
+    ];
+
+    for (const options of invalidOptions) {
+      const store = new FakeClaimControllerStore();
+      expect(() => makeController(store, options)).toThrow(RangeError);
+    }
+  });
+
   test("expires active claims whose lease deadline has passed", async () => {
     const store = new FakeClaimControllerStore();
     store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
@@ -485,6 +508,46 @@ describe("ClaimReconciliationController", () => {
     expect(onlyPatch(store).patch.phase).toBe(ClaimStatus.Expired);
   });
 
+  test("throwing error callbacks do not prevent worker retry", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(makeView({ leaseExpiresAt: "not-a-timestamp" }));
+    let errorCount = 0;
+    const controller = makeController(store, {
+      queue: new KeyedWorkQueue({ baseDelayMs: 1, maxDelayMs: 1 }),
+      onError: () => {
+        errorCount += 1;
+        throw new Error("observer failed");
+      },
+    });
+
+    controller.enqueue("claim-1");
+    controller.start();
+    await waitFor(() => errorCount === 1);
+    store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
+    await waitFor(() => store.patches.length === 1);
+    await controller.stop();
+
+    expect(onlyPatch(store).patch.phase).toBe(ClaimStatus.Expired);
+  });
+
+  test("throwing resync error callbacks do not break shutdown", async () => {
+    const store = new FakeClaimControllerStore();
+    store.listEntitiesError = new Error("list failed");
+    let errorCount = 0;
+    const controller = makeController(store, {
+      resyncIntervalMs: 1,
+      onError: (_error, claimId) => {
+        if (claimId === "__resync__") errorCount += 1;
+        throw new Error("observer failed");
+      },
+    });
+
+    controller.start();
+    await waitFor(() => errorCount > 0);
+
+    await expect(controller.stop()).resolves.toBeUndefined();
+  });
+
   test("stop cancels workers and prevents later queued processing", async () => {
     const store = new FakeClaimControllerStore();
     store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
@@ -494,6 +557,7 @@ describe("ClaimReconciliationController", () => {
     await controller.stop();
 
     expect(() => controller.enqueue("claim-1")).toThrow("Work queue is closed");
+    expect(() => controller.start()).toThrow("Work queue is closed");
     await sleep(5);
     expect(store.patches).toEqual([]);
   });
