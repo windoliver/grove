@@ -456,6 +456,49 @@ describe("stopServices — ownership-aware cleanup", () => {
     expect(adopted.signals).toEqual([]);
   });
 
+  test("mixed adopted+spawned: rewrites pidfile to keep adopted entries (no orphan)", async () => {
+    // Round-9 regression: stopServices used to unlink the entire pidfile
+    // whenever any spawned child existed, even if adopted children were
+    // still live. That orphaned the adopted process with no record for
+    // grove-down or future identity checks.
+    tempDir = mkdtempSync(join(tmpdir(), "stop-mixed-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, JSON.stringify({ parentPid: 1, children: [] }));
+
+    const spawned = makeFakeChild("mcp"); // newly started this call
+    const adopted = makeFakeChild("server"); // adopted from prior owner
+    // The adopted child must look alive to process.kill(pid,0) — use the
+    // current process's own PID (always alive) for the test.
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      pid: process.pid,
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [spawned.child, adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Spawned was killed
+    expect(spawned.signals).toContain("SIGTERM");
+    // Adopted was NOT touched
+    expect(adopted.signals).toEqual([]);
+    // Pidfile rewritten with only the adopted entry — NOT unlinked
+    expect(existsSync(pidFile)).toBe(true);
+    const persisted = JSON.parse(require("node:fs").readFileSync(pidFile, "utf-8") as string) as {
+      children?: ReadonlyArray<{ name: string; pid: number }>;
+    };
+    expect(persisted.children?.length).toBe(1);
+    expect(persisted.children?.[0]?.name).toBe("server");
+    expect(persisted.children?.[0]?.pid).toBe(process.pid);
+  });
+
   test("preserves pidfile when only adopted children are present", async () => {
     tempDir = mkdtempSync(join(tmpdir(), "stop-borrower-"));
     const pidFile = join(tempDir, "grove.pid");

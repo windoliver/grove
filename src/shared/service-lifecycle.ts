@@ -542,17 +542,52 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   }
 
-  // Clean up PID file only if we owned at least one child or actually
-  // started Nexus. A "borrower" call that only adopted existing children
-  // must NOT delete the original owner's pidfile.
+  // Pidfile policy under mixed ownership:
+  //   - If adopted children remain live: rewrite the pidfile with ONLY
+  //     the adopted entries so subsequent identity checks + `grove down`
+  //     can still find them. Unlinking would orphan the adopted services
+  //     with no record.
+  //   - If we acquired anything (spawned or started Nexus) AND no
+  //     adopted children remain: unlink (we cleaned up everything we
+  //     owned).
+  //   - Pure-borrower call (no spawned, no nexusStartedThisCall): leave
+  //     the original owner's pidfile alone.
+  const adoptedLive = children.filter((c) => {
+    if (c.acquired !== "adopted") return false;
+    try {
+      process.kill(c.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
-  if (owned) {
+  if (adoptedLive.length > 0) {
+    try {
+      const existing = (() => {
+        try {
+          return JSON.parse(readFileSync(pidFilePath, "utf-8")) as Record<string, unknown>;
+        } catch {
+          return {} as Record<string, unknown>;
+        }
+      })();
+      const rewritten = {
+        ...existing,
+        children: adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+        startedAt: existing.startedAt ?? new Date().toISOString(),
+      };
+      writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
+    } catch {
+      /* best-effort */
+    }
+  } else if (owned) {
     try {
       unlinkSync(pidFilePath);
     } catch {
       /* ignore */
     }
   }
+  // else: pure borrower — leave the pidfile untouched.
 
   // Drop the same-process registry entry so re-entry can spawn afresh.
   // Keyed by groveDir; we stored under that key during startServices.
