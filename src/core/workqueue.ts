@@ -28,10 +28,18 @@ const DEFAULT_BASE_DELAY_MS = 5;
 const DEFAULT_MAX_DELAY_MS = 1_000_000;
 const DEFAULT_GLOBAL_RATE_PER_SEC = 50;
 const DEFAULT_GLOBAL_BURST = 300;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function validatePositiveFiniteOption(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${name} must be a finite positive number`);
+  }
+}
+
+function validateGlobalRatePerSec(value: number): void {
+  validatePositiveFiniteOption("globalRatePerSec", value);
+  if (value < 1000 / MAX_TIMER_DELAY_MS) {
+    throw new RangeError("globalRatePerSec would produce an out-of-range timer delay");
   }
 }
 
@@ -44,6 +52,9 @@ function validateAtLeastOneFiniteOption(name: string, value: number): void {
 function validateNonNegativeFiniteOption(name: string, value: number): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name} must be a finite non-negative number`);
+  }
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(`${name} must be no greater than ${MAX_TIMER_DELAY_MS}`);
   }
 }
 
@@ -83,7 +94,7 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
     this.globalBurst = options.globalBurst ?? DEFAULT_GLOBAL_BURST;
     validateNonNegativeFiniteOption("baseDelayMs", this.baseDelayMs);
     validateNonNegativeFiniteOption("maxDelayMs", this.maxDelayMs);
-    validatePositiveFiniteOption("globalRatePerSec", this.globalRatePerSec);
+    validateGlobalRatePerSec(this.globalRatePerSec);
     validateAtLeastOneFiniteOption("globalBurst", this.globalBurst);
     if (this.maxDelayMs < this.baseDelayMs) {
       throw new RangeError("maxDelayMs must be greater than or equal to baseDelayMs");
