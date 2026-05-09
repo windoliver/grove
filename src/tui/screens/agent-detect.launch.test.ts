@@ -10,6 +10,10 @@ type KeyboardKey = {
 
 type KeyboardHandler = (key: KeyboardKey) => void;
 
+interface KeyboardHandlerGlobal {
+  __groveTestKeyboardHandler?: KeyboardHandler | undefined;
+}
+
 let keyboardHandler: KeyboardHandler | undefined;
 const mountedRenderers: TestRenderer.ReactTestRenderer[] = [];
 
@@ -18,6 +22,7 @@ const mountedRenderers: TestRenderer.ReactTestRenderer[] = [];
 mock.module("@opentui/react", () => ({
   useKeyboard: (handler: KeyboardHandler): void => {
     keyboardHandler = handler;
+    (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
   },
   useRenderer: (): { destroy: () => void } => ({
     destroy: () => undefined,
@@ -44,7 +49,8 @@ mock.module("../layout/edge-render.js", () => ({
   renderGraph: () => ({ lines: [] }),
 }));
 
-const { AgentDetect } = await import("./agent-detect.js");
+const agentDetectModulePath = "./agent-detect.js?agent-detect-launch";
+const { AgentDetect } = (await import(agentDetectModulePath)) as typeof import("./agent-detect.js");
 
 const TEST_TOPOLOGY: AgentTopology = {
   structure: "flat",
@@ -54,6 +60,7 @@ const TEST_TOPOLOGY: AgentTopology = {
 
 beforeEach(() => {
   keyboardHandler = undefined;
+  (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = undefined;
 });
 
 afterEach(async () => {
@@ -96,14 +103,16 @@ async function mountLaunchPreview(
   }
   mountedRenderers.push(renderer);
 
-  const handler = keyboardHandler;
+  const handler =
+    keyboardHandler ?? (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler;
   if (!handler) {
     throw new Error("No keyboard handler registered");
   }
 }
 
 async function pressCurrentKey(key: KeyboardKey): Promise<void> {
-  const handler = keyboardHandler;
+  const handler =
+    keyboardHandler ?? (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler;
   if (!handler) {
     throw new Error("No keyboard handler registered");
   }

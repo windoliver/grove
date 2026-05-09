@@ -46,6 +46,10 @@ type KeyboardKey = {
 };
 type KeyboardHandler = (key: KeyboardKey) => void;
 
+interface KeyboardHandlerGlobal {
+  __groveTestKeyboardHandler?: KeyboardHandler | undefined;
+}
+
 interface CapturedScreens {
   screen?: "preset-select" | "launch-preview" | "spawning" | "running" | "complete";
   presetSelect?: PresetSelectProps;
@@ -118,6 +122,7 @@ let rendererDestroy = mock(() => undefined);
 mock.module("@opentui/react", () => ({
   useKeyboard: (handler: KeyboardHandler): void => {
     keyboardHandler = handler;
+    (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
   },
   useRenderer: (): { destroy: () => void } => ({
     destroy: rendererDestroy,
