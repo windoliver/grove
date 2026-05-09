@@ -446,6 +446,67 @@ function waitForChildExit(child: NodeChildProcess): Promise<number> {
   });
 }
 
+/**
+ * Probe a running grove-server with our project's API key to confirm it's
+ * the same namespace we belong to. Returns ok=false when the server returns
+ * 401 (foreign registry) or any other non-success status that signals the
+ * listener can't authorize our key.
+ */
+export async function verifyServerOwnership(
+  port: number,
+  groveDir: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let apiKey: string | undefined;
+  try {
+    const { readClientKey } = await import("../core/project-key.js");
+    apiKey = readClientKey(groveDir);
+  } catch {
+    /* fall through */
+  }
+  if (!apiKey) {
+    return { ok: false, reason: `No api-key in ${groveDir} to verify ownership.` };
+  }
+  let resp: Response | null = null;
+  try {
+    resp = await fetch(`http://localhost:${port}/api/list?kind=Claim`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch (err) {
+    return { ok: false, reason: `Auth probe failed: ${(err as Error).message ?? err}` };
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    return {
+      ok: false,
+      reason: `Existing listener returned ${resp.status} for our API key — its key registry doesn't include us.`,
+    };
+  }
+  if (!resp.ok) {
+    return { ok: false, reason: `Auth probe got HTTP ${resp.status}.` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Best-effort: identify the process holding a TCP port via `lsof`. Returns
+ * a human-readable string for error messages; never throws.
+ */
+async function describePortOwner(port: number): Promise<string> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", ["-iTCP:" + port, "-sTCP:LISTEN", "-Pn"], {
+      encoding: "utf8",
+      timeout: 1500,
+    });
+    const out = (r.stdout ?? "").trim();
+    if (!out) return "(lsof returned no listeners)";
+    const lines = out.split("\n").slice(0, 3); // header + first match
+    return lines.join(" | ");
+  } catch (err) {
+    return `(lsof unavailable: ${(err as Error).message ?? err})`;
+  }
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
@@ -458,11 +519,32 @@ async function spawnService(
         signal: AbortSignal.timeout(2000),
       }).catch(() => null);
       if (resp?.ok) {
-        // Service already running — skip spawn, return null (not an error)
+        // Something is listening. Before reusing it, verify it accepts our
+        // namespace credentials — otherwise a stale/foreign server (e.g.
+        // orphaned bun serve.js from a deleted worktree whose .grove was
+        // wiped) silently steals the bridge and every TUI request 401s.
+        // Probe an authed endpoint with the project's API key; on 401 we
+        // know the listener is foreign and refuse to fall through.
+        if (name === "server") {
+          const ours = await verifyServerOwnership(port, groveDir);
+          if (!ours.ok) {
+            const owner = await describePortOwner(port);
+            throw new Error(
+              `Port ${port} is already bound by a different grove-server.\n` +
+                `${ours.reason}\n` +
+                `Owner: ${owner}\n` +
+                `Free the port with: kill <PID> (e.g. \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`),\n` +
+                `or set GROVE_SERVER_PORT to an unused port and retry.`,
+            );
+          }
+        }
+        // Service already running and ours — skip spawn, return null (not an error)
         return null;
       }
-    } catch {
-      // Port not in use — proceed with spawn
+    } catch (err) {
+      // Re-raise the foreign-server error; treat any other fetch error as
+      // "port not in use, proceed with spawn".
+      if (err instanceof Error && err.message.startsWith("Port ")) throw err;
     }
   }
 

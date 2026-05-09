@@ -180,3 +180,74 @@ describe("service startup configuration", () => {
     expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Foreign-server detection (regression: orphan grove-server from a deleted
+// worktree was silently reused by `grove up`, producing 401s in the TUI).
+// ---------------------------------------------------------------------------
+
+describe("verifyServerOwnership — foreign-listener detection", () => {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  let port: number;
+  let groveDir: string;
+
+  function startFakeServer(handler: (req: Request) => Response | Promise<Response>) {
+    server = Bun.serve({ port: 0, fetch: handler });
+    if (server.port === undefined) throw new Error("Bun.serve returned no port");
+    port = server.port;
+  }
+
+  afterEach(async () => {
+    if (server) {
+      server.stop();
+      server = undefined;
+    }
+  });
+
+  test("returns ok=true when listener authorizes our key", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-ok-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_correct\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_correct")
+        return Response.json({ items: [], listResourceVersion: "0" });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns ok=false with 401 reason when listener has foreign registry", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-foreign-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_ours\n", { mode: 0o600 });
+    startFakeServer(
+      () =>
+        new Response(JSON.stringify({ error: { code: "NAMESPACE_UNAUTHORIZED" } }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("401");
+    }
+  });
+
+  test("returns ok=false when no api-key file exists", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-nokey-"));
+    startFakeServer(() => Response.json({}));
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("No api-key");
+  });
+
+  test("returns ok=false on non-401 error status", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-500-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_x\n", { mode: 0o600 });
+    startFakeServer(() => new Response("boom", { status: 500 }));
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("500");
+  });
+});
