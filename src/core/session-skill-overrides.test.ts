@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentTopology } from "./topology.js";
 import {
   applySessionSkillOverrides,
   normalizeSkillList,
   type SessionSkillOverrideClause,
 } from "./session-skill-overrides.js";
+import type { AgentTopology } from "./topology.js";
 
 const BASE_TOPOLOGY: AgentTopology = {
   structure: "graph",

@@ -69,6 +69,59 @@ async function flushAsync(ms: number = 0): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function mountLaunchPreview(
+  onContinue: (
+    detected: Map<string, boolean>,
+    roleMapping: Map<string, string>,
+    rolePrompts: Map<string, string>,
+    edgeTimeouts: Map<string, number>,
+    roleSkills: Map<string, readonly string[]>,
+  ) => void,
+  topology: AgentTopology = TEST_TOPOLOGY,
+): Promise<void> {
+  let renderer: TestRenderer.ReactTestRenderer | undefined;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(AgentDetect, {
+        topology,
+        onContinue,
+        onBack: () => undefined,
+      }),
+    );
+    await flushAsync();
+  });
+
+  if (!renderer) {
+    throw new Error("AgentDetect did not mount");
+  }
+  mountedRenderers.push(renderer);
+
+  const handler = keyboardHandler;
+  if (!handler) {
+    throw new Error("No keyboard handler registered");
+  }
+}
+
+async function pressCurrentKey(key: KeyboardKey): Promise<void> {
+  const handler = keyboardHandler;
+  if (!handler) {
+    throw new Error("No keyboard handler registered");
+  }
+  await act(async () => {
+    handler(key);
+    await flushAsync();
+  });
+}
+
+async function typeCurrentText(value: string): Promise<void> {
+  for (const char of value) {
+    await pressCurrentKey({
+      name: char === " " ? "space" : char,
+      sequence: char,
+    });
+  }
+}
+
 describe("AgentDetect launch preview", () => {
   test("launch submits initialized role skills for all roles", async () => {
     let capturedRoleSkills: Map<string, readonly string[]> | undefined;
@@ -82,36 +135,55 @@ describe("AgentDetect launch preview", () => {
       capturedRoleSkills = roleSkills;
     };
 
-    let renderer: TestRenderer.ReactTestRenderer | undefined;
-    await act(async () => {
-      renderer = TestRenderer.create(
-        React.createElement(AgentDetect, {
-          topology: TEST_TOPOLOGY,
-          onContinue,
-          onBack: () => undefined,
-        }),
-      );
-      await flushAsync();
-    });
+    await mountLaunchPreview(onContinue);
 
-    if (!renderer) {
-      throw new Error("AgentDetect did not mount");
-    }
-    mountedRenderers.push(renderer);
-
-    const handler = keyboardHandler;
-    if (!handler) {
-      throw new Error("No keyboard handler registered");
-    }
-
-    await act(async () => {
-      handler({ name: "return" });
-      await flushAsync();
-    });
+    await pressCurrentKey({ name: "return" });
 
     expect(capturedRoleSkills).toEqual(
       new Map<string, readonly string[]>([
         ["planner", ["grove"]],
+        ["builder", []],
+      ]),
+    );
+  });
+
+  test("skill editing and copy-to-all are reflected on launch", async () => {
+    let capturedRoleSkills: Map<string, readonly string[]> | undefined;
+    await mountLaunchPreview(
+      (_detected, _roleMapping, _rolePrompts, _edgeTimeouts, roleSkills): void => {
+        capturedRoleSkills = roleSkills;
+      },
+    );
+
+    await pressCurrentKey({ name: "j" });
+    await pressCurrentKey({ name: "s" });
+    await typeCurrentText("review, lint");
+    await pressCurrentKey({ name: "return" });
+    await pressCurrentKey({ name: "a" });
+    await pressCurrentKey({ name: "return" });
+
+    expect(capturedRoleSkills).toEqual(
+      new Map<string, readonly string[]>([
+        ["planner", ["review", "lint"]],
+        ["builder", ["review", "lint"]],
+      ]),
+    );
+  });
+
+  test("clear removes the selected role skills before launch", async () => {
+    let capturedRoleSkills: Map<string, readonly string[]> | undefined;
+    await mountLaunchPreview(
+      (_detected, _roleMapping, _rolePrompts, _edgeTimeouts, roleSkills): void => {
+        capturedRoleSkills = roleSkills;
+      },
+    );
+
+    await pressCurrentKey({ name: "x" });
+    await pressCurrentKey({ name: "return" });
+
+    expect(capturedRoleSkills).toEqual(
+      new Map<string, readonly string[]>([
+        ["planner", []],
         ["builder", []],
       ]),
     );

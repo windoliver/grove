@@ -116,6 +116,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       return presetName ? lookupPresetTopology(presetName) : undefined;
     });
 
+    const resolveBaselineTopology = useCallback(
+      (presetName?: string): AgentTopology | undefined => {
+        if (presetName) {
+          return lookupPresetTopology(presetName) ?? initialTopology;
+        }
+        return initialTopology;
+      },
+      [initialTopology],
+    );
+
     // Capture the resume session ID for setSessionScope — written in the useState
     // initializer (runs synchronously before effects) and read in the mount effect below.
     const resumeScopeIdRef = useRef<string | undefined>(undefined);
@@ -376,18 +386,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     }, [provider, renderer, state.sessionId, spawnManager]);
 
     // Screen 1 -> Screen 2: preset selected → resolve topology and go to goal input
-    const handlePresetSelect = useCallback((presetName: string) => {
-      // Resolve topology from preset, falling back to GROVE.md default
-      const presetTopology = lookupPresetTopology(presetName);
-      if (presetTopology) {
-        setTopology(presetTopology);
-      }
-      setState((s) => ({
-        ...s,
-        screen: "goal-input",
-        selectedPreset: presetName,
-      }));
-    }, []);
+    const handlePresetSelect = useCallback(
+      (presetName: string) => {
+        // Resolve topology from preset, falling back to GROVE.md default
+        const presetTopology = resolveBaselineTopology(presetName);
+        if (presetTopology) {
+          setTopology(presetTopology);
+        }
+        setState((s) => ({
+          ...s,
+          screen: "goal-input",
+          selectedPreset: presetName,
+        }));
+      },
+      [resolveBaselineTopology],
+    );
 
     // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
@@ -707,26 +720,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
       hasSpawnedRef.current = false; // Reset spawn guard for new session
-      setState((s) => {
-        // If we have preset + role mapping from a prior run, skip to goal input
-        if (s.selectedPreset && s.roleMapping) {
-          // Destructure to omit session-specific fields, preserve preset/detection state
-          const {
-            goal: _g,
-            sessionId: _s,
-            sessionStartedAt: _st,
-            spawnStates: _sp,
-            completeSnapshot: _c,
-            ...preserved
-          } = s;
-          return { ...preserved, screen: "goal-input" as const };
-        }
-        // No prior preset state — fall back to preset selection
-        return {
-          screen: presets && presets.length > 0 ? ("preset-select" as const) : ("running" as const),
-        };
+      sessionTopologyRef.current = undefined;
+
+      if (state.selectedPreset && state.roleMapping) {
+        setTopology(resolveBaselineTopology(state.selectedPreset));
+        const {
+          goal: _g,
+          sessionId: _s,
+          sessionStartedAt: _st,
+          spawnStates: _sp,
+          completeSnapshot: _c,
+          ...preserved
+        } = state;
+        setState({ ...preserved, screen: "goal-input" as const });
+        return;
+      }
+
+      setState({
+        screen: presets && presets.length > 0 ? ("preset-select" as const) : ("running" as const),
       });
-    }, [presets]);
+    }, [presets, resolveBaselineTopology, state]);
 
     // Compute duration string
     const getDuration = useCallback(() => {

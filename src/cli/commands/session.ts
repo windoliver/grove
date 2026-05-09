@@ -28,6 +28,7 @@ import {
 import { MockRuntime } from "../../core/mock-runtime.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
+import type { AgentTopology } from "../../core/topology.js";
 import type { TopologyResolutionResult } from "../../core/topology-resolver.js";
 import { SqliteGoalSessionStore } from "../../local/sqlite-goal-session-store.js";
 import { outputJson, outputJsonError } from "../format.js";

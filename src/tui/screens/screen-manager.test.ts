@@ -12,6 +12,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import type { Contribution } from "../../core/models.js";
 import { ContributionKind, ContributionMode } from "../../core/models.js";
+import { lookupPresetTopology } from "../../core/presets.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import type {
@@ -735,6 +736,70 @@ describe("ScreenManager transition flow", () => {
     });
 
     expect(captured.screen).toBe("preset-select");
+  });
+
+  test("complete -> new session restores preset topology after session skill edits", async () => {
+    const presetTopology = lookupPresetTopology("review-loop");
+    if (!presetTopology) {
+      throw new Error("Expected review-loop preset topology");
+    }
+
+    renderScreenManager({
+      presets: PRESETS,
+      initialState: {
+        screen: "goal-input",
+        selectedPreset: "review-loop",
+      },
+    });
+
+    await submitGoal("First run");
+
+    await act(async () => {
+      requireLaunchPreview().onContinue(
+        new Map([["claude", true]]),
+        new Map([
+          ["coder", "claude"],
+          ["reviewer", "claude"],
+        ]),
+        new Map(),
+        new Map(),
+        new Map<string, readonly string[]>([
+          ["coder", ["grove", "review"]],
+          ["reviewer", []],
+        ]),
+      );
+      await flushAsync();
+      await flushAsync();
+    });
+
+    await act(async () => {
+      requireSpawnProgress().onAllResolved();
+      await flushAsync();
+    });
+
+    await act(async () => {
+      requireRunningView().onComplete("First run complete");
+      await flushAsync();
+      await flushAsync();
+    });
+
+    act(() => {
+      requireCompleteView().onNewSession();
+    });
+
+    await submitGoal("Second run");
+
+    const nextLaunchPreview = requireLaunchPreview();
+    expect(nextLaunchPreview.topology?.roles).toEqual([
+      expect.objectContaining({
+        name: presetTopology.roles[0]?.name,
+        skills: presetTopology.roles[0]?.skills,
+      }),
+      expect.objectContaining({
+        name: presetTopology.roles[1]?.name,
+        skills: presetTopology.roles[1]?.skills,
+      }),
+    ]);
   });
 });
 
