@@ -16,6 +16,7 @@ import type {
   ContributionPutOutcome,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   HotThreadsOptions,
   ThreadNode,
   ThreadSummary,
@@ -157,14 +158,8 @@ class SessionFilteredContributionStore implements ContributionStore {
   count = (query?: ContributionQuery): Promise<number> =>
     this.inner.count({ ...query, sessionId: this.sessionId });
 
-  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
-    const contributions = await this.inner.list({
-      sessionId: this.sessionId,
-      agentId: query.agentId,
-    });
-    const sinceMs = Date.parse(query.since);
-    return contributions.filter((c) => Date.parse(c.createdAt) >= sinceMs).length;
-  };
+  countSince = (query: CountSinceQuery): Promise<number> =>
+    this.inner.countSince({ ...query, sessionId: this.sessionId });
 
   thread = async (
     rootCid: string,

@@ -511,6 +511,22 @@ describe("NexusOutcomeStore", () => {
     expect(second.isNew).toBe(false);
     expect(await store.getStats()).toMatchObject({ total: 1, accepted: 1 });
   });
+
+  test("list returns newest evaluated outcomes before applying pagination", async () => {
+    await store.set("blake3:aaaaaaaa", {
+      status: "accepted",
+      evaluatedBy: "agent-1",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await store.set("blake3:bbbbbbbb", {
+      status: "accepted",
+      evaluatedBy: "agent-1",
+    });
+
+    const first = await store.list({ status: "accepted", limit: 1 });
+
+    expect(first.map((record) => record.cid)).toEqual(["blake3:bbbbbbbb"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
+import { parseGroveConfig } from "../core/config.js";
 import type { AgentIdentity } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
@@ -26,9 +27,16 @@ import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import {
+  type ResolvedSkillCatalogRoot,
+  resolveNexusSkillCatalogRoot,
+  type SkillResolutionWarning,
+} from "../nexus/nexus-skill-catalog.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
-import { agentIdFromSession, tmuxSessionName } from "./agents/tmux-manager.js";
+import { agentIdFromSession } from "./agents/tmux-manager.js";
 // ---------------------------------------------------------------------------
 import type { AcpSessionStore } from "./data/acp-session-store.js";
 import { AgentLogBuffer } from "./data/agent-log-buffer.js";
@@ -125,6 +133,28 @@ export interface SpawnResult {
   readonly workspaceMode: WorkspaceMode;
 }
 
+class RequiredSkillCatalogResolutionError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "RequiredSkillCatalogResolutionError";
+  }
+}
+
+function isRequiredSkillCatalogResolutionError(
+  error: unknown,
+): error is RequiredSkillCatalogResolutionError {
+  return error instanceof RequiredSkillCatalogResolutionError;
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatSkillCatalogWarning(warning: SkillResolutionWarning): string {
+  const fallback = warning.fallbackSource ? ` fallback: ${warning.fallbackSource};` : "";
+  return `Nexus skill catalog warning for '${warning.skillName}': attempted ${warning.attemptedSource};${fallback} ${warning.reason}`;
+}
+
 /**
  * Manages the full spawn/kill lifecycle for TUI-spawned agents.
  *
@@ -165,6 +195,7 @@ export class SpawnManager {
         readonly name: string;
         readonly command: string;
         readonly args: readonly string[];
+        readonly startupTimeoutSec?: number | undefined;
         readonly env: Readonly<Record<string, string>>;
       }
     | undefined;
@@ -460,6 +491,64 @@ export class SpawnManager {
     );
   }
 
+  private reportSkillCatalogWarnings(warnings: readonly SkillResolutionWarning[]): void {
+    for (const warning of warnings) {
+      const message = formatSkillCatalogWarning(warning);
+      this.onError(message);
+      debugLog("spawn", message);
+    }
+  }
+
+  private async resolveSkillRootForSpawn(
+    roleSkills: readonly string[],
+  ): Promise<ResolvedSkillCatalogRoot | undefined> {
+    if (roleSkills.length === 0 || !this.groveDir) return undefined;
+    const configPath = join(this.groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    const raw = await readFile(configPath, "utf-8");
+    const config = parseGroveConfig(raw);
+    if (config.mode !== "nexus" || config.skillCatalog === undefined) return undefined;
+
+    const projectRoot = dirname(this.groveDir);
+    const nexusUrl = resolveConfiguredNexusUrl({
+      projectRoot,
+      config,
+      env: process.env,
+    });
+    if (!nexusUrl) {
+      if (config.skillCatalog.policy !== "required") return undefined;
+      throw new RequiredSkillCatalogResolutionError(
+        "Nexus skill catalog required but no Nexus URL is configured",
+        undefined,
+      );
+    }
+    const client = new NexusHttpClient({
+      url: nexusUrl,
+      apiKey: process.env.NEXUS_API_KEY || undefined,
+    });
+    try {
+      const result = await resolveNexusSkillCatalogRoot({
+        client,
+        zoneId: process.env.GROVE_ZONE_ID ?? "default",
+        cacheRoot: join(this.groveDir, "cache", "skills"),
+        skills: roleSkills,
+        policy: config.skillCatalog.policy,
+        trustedKeys: config.skillCatalog.trustedKeys,
+        localFallbackRoots: [join(this.groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
+      });
+      this.reportSkillCatalogWarnings(result.warnings);
+      return result;
+    } catch (error) {
+      if (config.skillCatalog.policy === "required") {
+        throw new RequiredSkillCatalogResolutionError(
+          `Nexus skill catalog required but resolution failed: ${messageFromError(error)}`,
+          error,
+        );
+      }
+      throw error;
+    }
+  }
+
   /**
    * Set the session topology so spawn() can resolve edge-type-aware base branches.
    * Call before spawning when the topology is known (e.g. after preset selection).
@@ -670,11 +759,13 @@ export class SpawnManager {
           ? (context.skills as readonly string[])
           : [];
         if (roleSkills.length > 0 && this.groveDir) {
+          const resolvedSkillCatalog = await this.resolveSkillRootForSpawn(roleSkills);
           await injectSkills({
             workspacePath,
             skills: roleSkills,
-            bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
-            workspaceOverrideRoot: join(this.groveDir, "skills"),
+            bundledSkillsRoot:
+              resolvedSkillCatalog?.root ?? resolveBundledSkillsRoot(dirname(this.groveDir)),
+            workspaceOverrideRoot: resolvedSkillCatalog ? undefined : join(this.groveDir, "skills"),
           });
         }
         // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
@@ -706,7 +797,10 @@ export class SpawnManager {
         }
       } catch (configErr) {
         const reason = configErr instanceof Error ? configErr.message : String(configErr);
-        if (this.workspaceIsolationPolicy === "strict") {
+        if (
+          this.workspaceIsolationPolicy === "strict" ||
+          isRequiredSkillCatalogResolutionError(configErr)
+        ) {
           throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
         }
         this.onError(`Config write failed: ${reason}`);
@@ -965,40 +1059,36 @@ export class SpawnManager {
   }
 
   /**
-   * Stop all currently spawned agents for the active TUI session without
-   * deleting their workspaces. Completion needs this lighter-weight teardown:
-   * operators still need to inspect artifacts, but the bridge/runtime must stop
-   * accepting post-done handoffs that would otherwise keep agents ping-ponging.
+   * Stop all active agents for the current session while keeping the manager
+   * reusable for a subsequent TUI session.
    */
-  async stopCurrentSession(): Promise<void> {
+  async stopActiveSession(): Promise<void> {
     this.stopLogPolling();
+    this.routableSessions.clear();
 
-    const runtimeEntries = [...this.agentSessions.entries()];
-    for (const [spawnId, session] of runtimeEntries) {
-      try {
-        await this.agentRuntime?.close(session);
-      } catch {
-        /* best-effort */
-      }
-
-      const tracked = this.spawnRecords.get(spawnId);
-      const roleKey = tracked?.role ?? session.role ?? spawnId;
+    const sessions = [...this.agentSessions.entries()];
+    for (const [spawnId, session] of sessions) {
+      const record = this.spawnRecords.get(spawnId);
+      const roleKey = record?.role ?? session.role ?? spawnId;
       this.wsBridge?.unregisterSession(roleKey, session.id);
       this.unregisterAcpSession(session.id);
-      this.agentSessions.delete(spawnId);
-      this.routableSessions.delete(spawnId);
+      this.sessionStore?.remove(spawnId);
     }
 
-    if (!this.agentRuntime && this.tmux) {
-      for (const spawnId of this.spawnRecords.keys()) {
-        try {
-          await this.tmux.kill(tmuxSessionName(spawnId));
-        } catch {
-          /* best-effort */
-        }
-        this.routableSessions.delete(spawnId);
-      }
+    if (this.agentRuntime) {
+      await Promise.allSettled(
+        sessions.map(([, session]) =>
+          this.agentRuntime?.close(session).catch(() => {
+            /* best-effort — session may already be gone */
+          }),
+        ),
+      );
+    } else if (this.tmux) {
+      await Promise.allSettled(sessions.map(([spawnId]) => this.tmux?.kill(`grove-${spawnId}`)));
     }
+
+    this.agentSessions.clear();
+    this.spawnRecords.clear();
   }
 
   /** Get the spawn record for an agentId (for testing). */
@@ -1518,8 +1608,8 @@ export class SpawnManager {
     const projectRoot = join(groveDir, "..");
 
     // Resolve Nexus URL: env var takes precedence (explicit override), then
-    // fall back to the nexusUrl stored in the *session*'s .grove/grove.json
-    // (set by `grove init --nexus-url` and refreshed by startServices).
+    // fall back to managed nexus.yaml or the nexusUrl stored in the session's
+    // .grove/grove.json.
     //
     // Note: `groveDir` here is the SHARED nexus-workspaces dir (parent of all
     // workspace folders), not the per-session .grove dir — so we can't read
@@ -1534,9 +1624,26 @@ export class SpawnManager {
       try {
         const configPath = join(this.groveDir, "grove.json");
         if (existsSync(configPath)) {
-          const raw = await (await import("node:fs/promises")).readFile(configPath, "utf-8");
-          const cfg = JSON.parse(raw) as { nexusUrl?: string };
-          if (cfg.nexusUrl) resolvedNexusUrl = cfg.nexusUrl;
+          const raw = await readFile(configPath, "utf-8");
+          try {
+            const config = parseGroveConfig(raw);
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          } catch {
+            const config = JSON.parse(raw) as {
+              readonly mode?: string | undefined;
+              readonly nexusManaged?: boolean | undefined;
+              readonly nexusUrl?: string | undefined;
+            };
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          }
         }
       } catch {
         /* best-effort */
@@ -1581,6 +1688,7 @@ export class SpawnManager {
       name: "grove",
       command: mcpCommand,
       args: ["run", mcpServePath],
+      startupTimeoutSec: 30,
       env: { ...mcpEnv },
     };
     if (process.env.GROVE_CODEX_WRITE_MCP_CONFIG === "1") {

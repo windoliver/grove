@@ -496,6 +496,9 @@ function appendCodexMcpServerOverrides(
     const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
     args.push("-c", `${serverKey}.command=${tomlString(command)}`);
     args.push("-c", `${serverKey}.args=${tomlStringArray(server.args ?? [])}`);
+    if (server.startupTimeoutSec !== undefined) {
+      args.push("-c", `${serverKey}.startup_timeout_sec=${server.startupTimeoutSec}`);
+    }
 
     const envEntries = Object.entries(mergedCodexMcpServerEnv(server, env))
       .filter(([envName, envValue]) => shouldPassMcpEnvViaCodexConfig(envName, envValue))

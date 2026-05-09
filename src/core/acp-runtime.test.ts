@@ -108,6 +108,7 @@ describe("buildAcpLaunchArgs", () => {
               name: "grove",
               command: "/Users/example/.bun/bin/bun",
               args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+              startupTimeoutSec: 30,
               env: {
                 GROVE_DIR: "/tmp/grove/.grove",
                 GROVE_NEXUS_URL: "http://localhost:10120",
@@ -129,6 +130,8 @@ describe("buildAcpLaunchArgs", () => {
       'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
       "-c",
       'mcp_servers.grove.args=["run", "/tmp/grove/dist/mcp/serve.js"]',
+      "-c",
+      "mcp_servers.grove.startup_timeout_sec=30",
       "-c",
       'mcp_servers.grove.env.GROVE_AGENT_ID="grove-coder-0--abc"',
       "-c",
@@ -156,6 +159,7 @@ describe("buildAcpLaunchArgs", () => {
             name: "grove",
             command: "/Users/example/.bun/bin/bun",
             args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+            startupTimeoutSec: 30,
             env: {
               GROVE_DIR: "/tmp/grove/.grove",
               GROVE_NEXUS_URL: "http://localhost:10120",

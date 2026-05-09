@@ -43,6 +43,7 @@ import type {
   ContributionPutOutcome,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   ExpiredClaim,
   ExpireStaleOptions,
   ThreadNode,
@@ -319,8 +320,7 @@ export class EnforcingContributionStore implements ContributionStore {
   ): Promise<readonly Contribution[]> =>
     this.inner.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.inner.count(query);
-  countSince = (query: { agentId?: string; since: string }): Promise<number> =>
-    this.inner.countSince(query);
+  countSince = (query: CountSinceQuery): Promise<number> => this.inner.countSince(query);
   thread = (
     rootCid: string,
     opts?: { readonly maxDepth?: number; readonly limit?: number },

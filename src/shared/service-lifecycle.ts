@@ -18,6 +18,13 @@ interface ManagedChildProcess {
   readonly name: string;
   readonly pid: number;
   readonly proc: ReturnType<typeof Bun.spawn>;
+  /**
+   * "spawned" → this call started the process; rollback may SIGTERM it.
+   * "adopted" → the process was already running and we attached to it
+   *   for shutdown bookkeeping. Rollback must NOT kill an adopted child
+   *   on unrelated sibling failure (other concurrent work may depend on it).
+   */
+  readonly acquired: "spawned" | "adopted";
 }
 
 /** Options for starting services. */
@@ -38,6 +45,14 @@ export interface ServiceStartOptions {
 export interface RunningServices {
   readonly children: ManagedChildProcess[];
   readonly nexusManaged: boolean;
+  /**
+   * True only when THIS startServices invocation transitioned Nexus from
+   * stopped→running. False when Nexus was already healthy and we reused it.
+   * stopServices uses this to gate `nexusDown` — a routine shutdown of a
+   * process that only reused Nexus must not stop a Nexus other concurrent
+   * work depends on.
+   */
+  readonly nexusStartedThisCall: boolean;
   readonly projectRoot: string;
   readonly pidFilePath: string;
   /**
@@ -47,6 +62,14 @@ export interface RunningServices {
    */
   readonly resolvedNexusUrl?: string | undefined;
 }
+
+/**
+ * Process-local registry of RunningServices keyed by groveDir. Lets a
+ * same-process re-entry return the ORIGINAL handle (with its real child
+ * shutdown surfaces) instead of an empty children[] that would orphan the
+ * services on cleanup. Cleared by stopServices.
+ */
+const SAME_PROCESS_REGISTRY = new Map<string, RunningServices>();
 
 // ---------------------------------------------------------------------------
 // Config persistence helper (caller responsibility, not startServices)
@@ -115,7 +138,13 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   );
 
   if (!existsSync(configPath)) {
-    return { children, nexusManaged, projectRoot, pidFilePath };
+    return {
+      children,
+      nexusManaged,
+      nexusStartedThisCall: false,
+      projectRoot,
+      pidFilePath,
+    };
   }
 
   const raw = readFileSync(configPath, "utf-8");
@@ -133,13 +162,24 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   // of the existing processes — stopServices on this RunningServices is a
   // no-op, leaving teardown to whoever holds the original handles.
   if (existsSync(pidFilePath)) {
+    // Read + parse + liveness in a narrow try (only file/JSON errors get
+    // treated as malformed-pidfile and fall through). Ownership errors
+    // are intentionally NOT caught — they must surface to the caller.
+    let pidData:
+      | {
+          parentPid?: number;
+          children?: ReadonlyArray<{ name?: string; pid?: number }>;
+          nexusManaged?: boolean;
+        }
+      | undefined;
     try {
       const pidRaw = readFileSync(pidFilePath, "utf-8");
-      const pidData = JSON.parse(pidRaw) as {
-        parentPid?: number;
-        children?: ReadonlyArray<{ name?: string; pid?: number }>;
-        nexusManaged?: boolean;
-      };
+      pidData = JSON.parse(pidRaw);
+    } catch {
+      // Malformed pidfile — fall through and start fresh.
+      pidData = undefined;
+    }
+    if (pidData) {
       const parentPid = pidData.parentPid;
       const parentAlive = (() => {
         if (!parentPid) return false;
@@ -164,35 +204,80 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           return false;
         }
       });
-      if (parentAlive && someChildAlive) {
-        report(
-          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive)`,
+      // Same-process re-entry fast path: this same TUI process already
+      // ran startServices and pidfile records itself as parent. ALL
+      // configured children must be alive — partial death (e.g. server
+      // crashed while mcp lives) means we need to spawn the missing one,
+      // not silently report success. Fall through to spawnService loop
+      // (each invocation handles identity-match adoption per service).
+      const sameParent = parentPid === process.pid;
+      const allConfiguredChildrenAlive = (() => {
+        const recordedAlive = new Set(
+          (pidData.children ?? [])
+            .filter((c) => {
+              if (!c.pid || !c.name) return false;
+              try {
+                process.kill(c.pid, 0);
+                return true;
+              } catch {
+                return false;
+              }
+            })
+            .map((c) => c.name as string),
         );
-        if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
-          process.env.GROVE_NEXUS_URL = config.nexusUrl;
-        }
-        if (!process.env.NEXUS_API_KEY) {
-          try {
-            const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
-            const apiKey = readNexusApiKey(projectRoot);
-            if (apiKey) process.env.NEXUS_API_KEY = apiKey;
-          } catch {
-            // best-effort
+        if (config.services?.server && !recordedAlive.has("server")) return false;
+        if (config.services?.mcp && !recordedAlive.has("mcp")) return false;
+        return true;
+      })();
+      if (sameParent && allConfiguredChildrenAlive) {
+        // Already running in this same process. Return the ORIGINAL
+        // RunningServices handle from the process-local registry so
+        // shutdown still has live child references. Returning a fresh
+        // empty handle here would let the caller overwrite the original
+        // owner reference and orphan the children on cleanup.
+        const cached = SAME_PROCESS_REGISTRY.get(groveDir);
+        if (cached) {
+          report(
+            `[startServices] same-process re-entry: returning cached RunningServices for PID ${parentPid}`,
+          );
+          if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
+            process.env.GROVE_NEXUS_URL = config.nexusUrl;
           }
+          if (!process.env.NEXUS_API_KEY) {
+            try {
+              const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+              const apiKey = readNexusApiKey(projectRoot);
+              if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+            } catch {
+              /* best-effort */
+            }
+          }
+          return cached;
         }
-        return {
-          children,
-          nexusManaged: pidData.nexusManaged ?? false,
-          projectRoot,
-          pidFilePath,
-          ...(config.nexusUrl !== undefined ? { resolvedNexusUrl: config.nexusUrl } : {}),
-        };
+        // Pidfile says same parent but registry is empty (e.g. an older
+        // process wrote the pidfile, then we re-launched). Fall through
+        // to per-service spawn check — adoption path will reattach.
+        report(
+          `[startServices] same-process pidfile but no in-process registry entry; falling through to per-service check`,
+        );
       }
-      if (parentPid && !parentAlive) {
-        report(`[startServices] pidfile points to dead PID ${parentPid}; ignoring`);
+      // Else: fall through. spawnService handles per-service identity
+      // adoption (configured-but-bound: adopt; configured-but-unbound:
+      // spawn fresh). Crashed siblings auto-restart; foreign listeners
+      // throw with remediation. No early return — every configured
+      // service goes through verification independently.
+      if (parentAlive && !sameParent) {
+        report(
+          `[startServices] pidfile present (parent PID ${parentPid} alive, different process); per-service identity check will adopt or spawn each.`,
+        );
+      } else if (parentPid && !parentAlive) {
+        report(
+          `[startServices] pidfile points to dead PID ${parentPid}; per-service check follows.`,
+        );
       }
-    } catch {
-      // Malformed pidfile — fall through and start fresh.
+      // someChildAlive is no longer used as a gate; the per-service
+      // spawnService path uses isPortBound + identity to decide adopt-vs-spawn.
+      void someChildAlive;
     }
   }
 
@@ -209,6 +294,12 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       // best-effort
     }
   }
+
+  // Track whether THIS startServices invocation actually started Nexus
+  // (vs. found one already healthy and reused it). Rollback on partial
+  // failure must only tear down what this call acquired — taking down a
+  // pre-existing Nexus that other work depends on would be a regression.
+  let nexusStartedThisCall = false;
 
   // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
   // Fire when:
@@ -235,6 +326,9 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           process.env.GROVE_NEXUS_URL = config.nexusUrl;
           if (apiKey) process.env.NEXUS_API_KEY = apiKey;
           nexusManaged = true;
+          // NOT setting nexusStartedThisCall — we just reused a healthy
+          // existing Nexus; rollback on partial spawn failure must NOT
+          // stop it.
           resolvedNexusUrl = config.nexusUrl;
           options.onProgress?.("Nexus is ready (from grove.json)");
         }
@@ -252,6 +346,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           onProgress: report,
         });
         nexusManaged = true;
+        // Honor ensureNexusRunning's explicit ownership flag instead of
+        // assuming success implies we started it. Fast paths reuse a
+        // healthy/starting container without invoking `nexus up`; rollback
+        // must not stop a Nexus we only reused.
+        nexusStartedThisCall = nexusInfo.startedThisCall;
         resolvedNexusUrl = nexusInfo.url;
         if (!process.env.GROVE_NEXUS_URL) {
           process.env.GROVE_NEXUS_URL = nexusInfo.url;
@@ -297,9 +396,68 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     spawnPromises.push(spawnService("mcp", resolveEntry("src/mcp/serve-http.ts"), groveDir));
   }
 
-  const results = await Promise.all(spawnPromises);
-  for (const result of results) {
-    if (result) children.push(result);
+  // Use allSettled so a single failed spawn doesn't abandon successfully
+  // started siblings as detached orphans. On any rejection we kill the
+  // children that did start before re-raising the first error.
+  const settled = await Promise.allSettled(spawnPromises);
+  const errors: Error[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      if (result.value) children.push(result.value);
+    } else {
+      errors.push(
+        result.reason instanceof Error ? result.reason : new Error(String(result.reason)),
+      );
+    }
+  }
+  if (errors.length > 0) {
+    // Roll back ONLY children this call spawned. Adopted children
+    // (existing PIDs we attached to via verifyPortIdentity) were already
+    // running before this invocation; killing them on unrelated sibling
+    // failure would mirror the round-5 Nexus-tear-down regression.
+    const toKill = children.filter((c) => c.acquired === "spawned");
+    const ROLLBACK_DEADLINE_MS = 5_000;
+    const deadline = Date.now() + ROLLBACK_DEADLINE_MS;
+    await Promise.all(
+      toKill.map(async (child) => {
+        try {
+          child.proc.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        const remaining = Math.max(0, deadline - Date.now());
+        const exited = await Promise.race([
+          child.proc.exited,
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), remaining)),
+        ]);
+        if (exited === false) {
+          try {
+            child.proc.kill("SIGKILL");
+          } catch {
+            /* already dead */
+          }
+        }
+      }),
+    );
+    // Only tear down Nexus if THIS call started it. Reusing a healthy
+    // pre-existing Nexus must not get torn down because the HTTP server
+    // failed to bind — other work may depend on it.
+    if (nexusStartedThisCall) {
+      try {
+        const { nexusDown } = await import("../cli/nexus-lifecycle.js");
+        await nexusDown(projectRoot);
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Re-raise the first error with all reasons attached.
+    const composite = new Error(
+      errors.length === 1
+        ? errors[0]?.message
+        : `${errors.length} services failed to start:\n${errors.map((e) => `  - ${e.message}`).join("\n")}`,
+    );
+    if (errors[0]?.stack) composite.stack = errors[0].stack;
+    throw composite;
   }
 
   // Write PID file
@@ -313,7 +471,19 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
   }
 
-  return { children, nexusManaged, projectRoot, pidFilePath, resolvedNexusUrl };
+  const result: RunningServices = {
+    children,
+    nexusManaged,
+    nexusStartedThisCall,
+    projectRoot,
+    pidFilePath,
+    ...(resolvedNexusUrl !== undefined ? { resolvedNexusUrl } : {}),
+  };
+  // Cache for same-process re-entry so a second startServices(groveDir)
+  // call from the same TUI returns this same handle instead of an empty
+  // shell that would orphan the children on cleanup.
+  SAME_PROCESS_REGISTRY.set(groveDir, result);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,10 +497,17 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
  * Also stops managed Nexus and cleans up the PID file.
  */
 export async function stopServices(services: RunningServices): Promise<void> {
-  const { children, nexusManaged, projectRoot, pidFilePath } = services;
+  const { children, nexusManaged, nexusStartedThisCall, projectRoot, pidFilePath } = services;
 
-  // SIGTERM all children
-  for (const child of children) {
+  // Only stop children THIS startServices invocation actually spawned.
+  // Adopted children belong to a prior owner (e.g. another TUI process
+  // that is still using them); killing them on our routine cleanup
+  // would silently disrupt that owner's session. Same for nexusDown:
+  // gated on nexusStartedThisCall, not nexusManaged.
+  const ownedChildren = children.filter((c) => c.acquired === "spawned");
+
+  // SIGTERM owned children
+  for (const child of ownedChildren) {
     try {
       child.proc.kill("SIGTERM");
     } catch {
@@ -340,7 +517,7 @@ export async function stopServices(services: RunningServices): Promise<void> {
 
   // Wait for graceful shutdown (max 5s), then SIGKILL
   const deadline = Date.now() + 5_000;
-  for (const child of children) {
+  for (const child of ownedChildren) {
     const remaining = Math.max(0, deadline - Date.now());
     const exited = await Promise.race([
       child.proc.exited,
@@ -355,8 +532,8 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   }
 
-  // Stop managed Nexus
-  if (nexusManaged) {
+  // Stop managed Nexus only if we actually started it this call.
+  if (nexusManaged && nexusStartedThisCall) {
     try {
       const { nexusDown } = await import("../cli/nexus-lifecycle.js");
       await nexusDown(projectRoot);
@@ -365,11 +542,60 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   }
 
-  // Clean up PID file
-  try {
-    unlinkSync(pidFilePath);
-  } catch {
-    /* ignore */
+  // Pidfile policy under mixed ownership:
+  //   - If adopted children remain live: rewrite the pidfile with ONLY
+  //     the adopted entries so subsequent identity checks + `grove down`
+  //     can still find them. Unlinking would orphan the adopted services
+  //     with no record.
+  //   - If we acquired anything (spawned or started Nexus) AND no
+  //     adopted children remain: unlink (we cleaned up everything we
+  //     owned).
+  //   - Pure-borrower call (no spawned, no nexusStartedThisCall): leave
+  //     the original owner's pidfile alone.
+  const adoptedLive = children.filter((c) => {
+    if (c.acquired !== "adopted") return false;
+    try {
+      process.kill(c.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
+  if (adoptedLive.length > 0) {
+    try {
+      const existing = (() => {
+        try {
+          return JSON.parse(readFileSync(pidFilePath, "utf-8")) as Record<string, unknown>;
+        } catch {
+          return {} as Record<string, unknown>;
+        }
+      })();
+      const rewritten = {
+        ...existing,
+        children: adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+        startedAt: existing.startedAt ?? new Date().toISOString(),
+      };
+      writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
+    } catch {
+      /* best-effort */
+    }
+  } else if (owned) {
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* ignore */
+    }
+  }
+  // else: pure borrower — leave the pidfile untouched.
+
+  // Drop the same-process registry entry so re-entry can spawn afresh.
+  // Keyed by groveDir; we stored under that key during startServices.
+  for (const [dir, cached] of SAME_PROCESS_REGISTRY) {
+    if (cached === services) {
+      SAME_PROCESS_REGISTRY.delete(dir);
+      break;
+    }
   }
 }
 
@@ -446,6 +672,247 @@ function waitForChildExit(child: NodeChildProcess): Promise<number> {
   });
 }
 
+/**
+ * Probe a running grove-server to confirm it's the same project's namespace
+ * we belong to. Fails closed against:
+ *   1. No project api-key on disk → can't prove ownership.
+ *   2. Listener returns 2xx for a bogus bearer → not enforcing auth, foreign.
+ *   3. Listener rejects (401/403/4xx/5xx) our project key → foreign registry.
+ *   4. Listener accepts our key but the response shape isn't Grove's
+ *      ListResponse → not grove-server.
+ * Only an authenticated request that returns the expected Grove list shape
+ * counts as ownership-proven.
+ */
+export async function verifyServerOwnership(
+  port: number,
+  groveDir: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let apiKey: string | undefined;
+  try {
+    const { readClientKey } = await import("../core/project-key.js");
+    apiKey = readClientKey(groveDir);
+  } catch {
+    /* fall through */
+  }
+  if (!apiKey) {
+    return { ok: false, reason: `No api-key in ${groveDir} to verify ownership.` };
+  }
+
+  const url = `http://localhost:${port}/api/list?kind=Claim`;
+
+  // Step 1: bogus-key probe. A correctly-auth-enforcing grove-server must
+  // reject this with 401 (NamespaceUnauthorizedError). If the listener
+  // accepts a random key with 2xx, it's not enforcing auth — almost
+  // certainly a different service squatting on the port.
+  try {
+    const bogus = await fetch(url, {
+      headers: { Authorization: "Bearer grv_NOT_A_REAL_KEY_ownership_probe" },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (bogus.ok) {
+      return {
+        ok: false,
+        reason: `Listener returned ${bogus.status} for a bogus bearer token — auth is not enforced; this is not a grove-server.`,
+      };
+    }
+  } catch (err) {
+    return { ok: false, reason: `Bogus-key probe failed: ${(err as Error).message ?? err}` };
+  }
+
+  // Step 2: real-key probe. Must succeed AND return the Grove ListResponse
+  // shape ({items: array, listResourceVersion: string}). Anything else is
+  // a foreign listener that happens to 401 strangers but doesn't speak
+  // our protocol.
+  let resp: Response | null = null;
+  try {
+    resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch (err) {
+    return { ok: false, reason: `Auth probe failed: ${(err as Error).message ?? err}` };
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    return {
+      ok: false,
+      reason: `Listener returned ${resp.status} for our API key — its key registry doesn't include us.`,
+    };
+  }
+  if (!resp.ok) {
+    return { ok: false, reason: `Auth probe got HTTP ${resp.status}.` };
+  }
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch {
+    return { ok: false, reason: "Auth probe response was not JSON; not a grove-server." };
+  }
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray((body as { items?: unknown }).items) ||
+    typeof (body as { listResourceVersion?: unknown }).listResourceVersion !== "string"
+  ) {
+    return {
+      ok: false,
+      reason: "Auth probe response shape doesn't match Grove ListResponse; not a grove-server.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Best-effort: identify the process holding a TCP port via `lsof`. Returns
+ * a human-readable string for error messages; never throws.
+ */
+async function describePortOwner(port: number): Promise<string> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", [`-iTCP:${port}`, "-sTCP:LISTEN", "-Pn"], {
+      encoding: "utf8",
+      timeout: 1500,
+    });
+    const out = (r.stdout ?? "").trim();
+    if (!out) return "(lsof returned no listeners)";
+    const lines = out.split("\n").slice(0, 3); // header + first match
+    return lines.join(" | ");
+  } catch (err) {
+    return `(lsof unavailable: ${(err as Error).message ?? err})`;
+  }
+}
+
+/**
+ * Get the PID of the process listening on a TCP port via `lsof -ti`.
+ * Returns undefined if no listener or lsof unavailable.
+ */
+async function getListeningPid(port: number): Promise<number | undefined> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: 1500,
+    });
+    const first = (r.stdout ?? "").trim().split(/\s+/)[0];
+    const pid = first ? Number.parseInt(first, 10) : Number.NaN;
+    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Identity-based ownership check: compare the PID listening on `port` to
+ * the PID recorded in our pidfile for the named service. Fails closed when
+ * the pidfile is absent (fresh startup, but the port is bound = foreign by
+ * definition) or when PIDs don't match.
+ *
+ * Crucially: this check sends NO credentials. The credentialed
+ * verifyServerOwnership check is reserved for the pidfile-reuse path,
+ * where PID identity has already been confirmed by the parent-alive +
+ * child-alive guards in startServices.
+ */
+export async function verifyPortIdentity(
+  port: number,
+  pidFilePath: string,
+  serviceName: string,
+): Promise<{ ok: true; pid: number } | { ok: false; reason: string }> {
+  const listeningPid = await getListeningPid(port);
+  if (!listeningPid) {
+    return { ok: false, reason: `Could not identify the process on port ${port}.` };
+  }
+  let pidData: { children?: ReadonlyArray<{ name?: string; pid?: number }> } | undefined;
+  try {
+    const text = readFileSync(pidFilePath, "utf-8");
+    pidData = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      reason: `No pidfile record at ${pidFilePath}; the listener wasn't spawned by this grove project.`,
+    };
+  }
+  const recorded = pidData?.children?.find((c) => c.name === serviceName);
+  if (!recorded?.pid) {
+    return {
+      ok: false,
+      reason: `Pidfile has no record of "${serviceName}"; the listener on port ${port} (PID ${listeningPid}) is foreign.`,
+    };
+  }
+  if (recorded.pid !== listeningPid) {
+    return {
+      ok: false,
+      reason: `Pidfile records ${serviceName} PID=${recorded.pid} but port ${port} is held by PID ${listeningPid}; foreign listener.`,
+    };
+  }
+  return { ok: true, pid: listeningPid };
+}
+
+/**
+ * Detect whether a TCP port has any listener. Returns true on a successful
+ * connection, false on ECONNREFUSED/timeout. Independent of HTTP — covers
+ * the case where a process is bound but its /health returns 404/500 or
+ * isn't HTTP at all.
+ */
+async function isPortBound(port: number): Promise<boolean> {
+  const { Socket } = await import("node:net");
+  return new Promise<boolean>((resolve) => {
+    const sock = new Socket();
+    let settled = false;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(v);
+    };
+    sock.setTimeout(1500);
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    sock.once("timeout", () => done(false));
+    sock.connect(port, "127.0.0.1");
+  });
+}
+
+/**
+ * Wrap an already-running PID we adopted as ours into the same shape as a
+ * Bun.spawn return so stopServices / rollback can kill it via the standard
+ * SIGTERM → wait → SIGKILL flow. Bun.spawn isn't available for arbitrary
+ * PIDs, so we synthesize the necessary surface (kill, exited).
+ */
+function adoptExistingChild(
+  name: string,
+  pid: number,
+): ManagedChildProcess & { acquired: "adopted" } {
+  const exited = new Promise<number>((resolve) => {
+    // Poll-based exit detection: probe with signal 0 every 250ms until
+    // process.kill throws. Cheap and accurate for our shutdown timing
+    // (we only need it during stopServices/rollback).
+    const tick = () => {
+      try {
+        process.kill(pid, 0);
+        setTimeout(tick, 250);
+      } catch {
+        resolve(0);
+      }
+    };
+    setTimeout(tick, 250);
+  });
+  const proc = {
+    pid,
+    kill: (signal?: string) => {
+      try {
+        process.kill(pid, (signal ?? "SIGTERM") as NodeJS.Signals);
+      } catch {
+        /* already dead */
+      }
+    },
+    exited,
+  } as unknown as ReturnType<typeof Bun.spawn>;
+  return { name, pid, proc, acquired: "adopted" };
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
@@ -453,16 +920,50 @@ async function spawnService(
 ): Promise<ManagedChildProcess | null> {
   const port = resolveServicePort(name);
   if (port) {
-    try {
-      const resp = await fetch(`http://localhost:${port}/health`, {
-        signal: AbortSignal.timeout(2000),
-      }).catch(() => null);
-      if (resp?.ok) {
-        // Service already running — skip spawn, return null (not an error)
-        return null;
+    // Identity gate (NO credentials): if the port is bound, the listening
+    // PID must match a record in our pidfile for this service name. Any
+    // mismatch — including no pidfile at all — is treated as foreign.
+    // We deliberately do NOT send the project's API key to an unverified
+    // listener; a port squatter that returns 401 to a bogus token would
+    // otherwise receive the real key on the second probe.
+    const bound = await isPortBound(port);
+    if (bound) {
+      const pidFilePath = join(groveDir, "grove.pid");
+      const identity = await verifyPortIdentity(port, pidFilePath, name);
+      if (!identity.ok) {
+        const owner = await describePortOwner(port);
+        throw new Error(
+          `Port ${port} is bound by a process that this grove project did not spawn.\n` +
+            `${identity.reason}\n` +
+            `Owner: ${owner}\n` +
+            `Free the port with: \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`,\n` +
+            `or set PORT to an unused port and retry.`,
+        );
       }
-    } catch {
-      // Port not in use — proceed with spawn
+      // PID identity matches our pidfile record — but a detached child
+      // can survive a crashed parent, and `grove init --force` rotates
+      // .grove/api-key without removing grove.pid. After identity is
+      // proven, also confirm the live server still accepts the current
+      // api-key; if not, the recorded child is stale relative to the
+      // current credentials and must be restarted.
+      if (name === "server") {
+        const ownership = await verifyServerOwnership(port, groveDir);
+        if (!ownership.ok) {
+          throw new Error(
+            `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
+              `${ownership.reason}\n` +
+              `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
+              `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
+          );
+        }
+      }
+      // Identity + ownership both verified — adopt the existing PID into
+      // our managed-child set so the rewritten pidfile records it AND
+      // stopServices/grove-down can kill it. Returning null here would
+      // drop the live process from RunningServices: a subsequent
+      // pidfile rewrite (other children may still spawn fresh) would
+      // forget the server PID, breaking shutdown.
+      return adoptExistingChild(name, identity.pid);
     }
   }
 
@@ -486,11 +987,19 @@ async function spawnService(
       await waitForServiceHealth(`http://localhost:${port}/health`, SERVICE_HEALTH_TIMEOUT_MS);
     }
 
-    // Verify the process is still alive after health check / timeout
+    // Verify the process is still alive after health check / timeout.
+    // If it died during startup, surface the failure instead of silently
+    // returning null — leaving startServices believing the service is
+    // running when it isn't would only resurface as confusing 401s/timeouts
+    // downstream (the same class of regression Codex flagged in round 2).
     try {
       process.kill(pid, 0); // Signal 0 = check existence
     } catch {
-      return null; // Process died during startup
+      const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+      throw new Error(
+        `${name} exited during startup. Last log lines:\n${tail || "(empty)"}\n` +
+          `Common cause: another listener on the configured port. Run: lsof -iTCP:${port} -sTCP:LISTEN`,
+      );
     }
 
     const proc = {
@@ -505,8 +1014,24 @@ async function spawnService(
       exited,
     } as unknown as ReturnType<typeof Bun.spawn>;
 
-    return { name, pid, proc };
+    return { name, pid, proc, acquired: "spawned" };
+  } catch (err) {
+    // Re-raise foreign-port and startup-death errors so callers see them;
+    // only swallow truly transient spawn errors (already covered above by
+    // the broad fetch.catch for /health probes).
+    if (err instanceof Error) throw err;
+    throw new Error(`spawn ${name} failed: ${String(err)}`);
+  }
+}
+
+/** Read the last ~20 lines of a log file for diagnostic context. */
+async function readLogTail(path: string): Promise<string> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const text = await readFile(path, "utf8");
+    const lines = text.split(/\r?\n/);
+    return lines.slice(-20).join("\n");
   } catch {
-    return null;
+    return "";
   }
 }

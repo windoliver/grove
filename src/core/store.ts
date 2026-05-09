@@ -64,6 +64,13 @@ export interface ContributionQuery {
   readonly sessionId?: string | undefined;
 }
 
+export interface CountSinceQuery {
+  readonly agentId?: string | undefined;
+  readonly since: string;
+  /** When set, only count contributions linked to this session. */
+  readonly sessionId?: string | undefined;
+}
+
 /** Result of a store-boundary contribution insert attempt. */
 export interface ContributionPutResult {
   /** CID of the stored row. For duplicates this is the existing row CID. */
@@ -168,7 +175,7 @@ export interface ContributionStore {
    * @param query.agentId - If provided, only count contributions by this agent.
    * @param query.since - ISO 8601 timestamp; counts contributions with `created_at >= since`.
    */
-  countSince(query: { agentId?: string; since: string }): Promise<number>;
+  countSince(query: CountSinceQuery): Promise<number>;
 
   /**
    * Walk a discussion thread rooted at a contribution.
