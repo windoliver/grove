@@ -1,8 +1,8 @@
 /**
- * Detects session completion by watching for a done signal from any topology role.
+ * Detects session completion by watching for explicit done signals.
  *
  * Watches contribution events for [DONE] prefix or context.done flag.
- * Calls onDone when the session has been marked complete.
+ * Calls onDone when a required terminal role has marked the session complete.
  *
  * Extracted from ScreenManager to reduce component complexity.
  */
@@ -47,7 +47,7 @@ interface DoneContribution {
  * @param topology - Agent topology with role definitions
  * @param screen - Current screen state (only active on "running" or "advanced")
  * @param eventBus - Event bus for real-time done detection; without it the hook is inert
- * @param onDone - Callback when the session has been marked complete
+ * @param onDone - Callback when the session has been explicitly signaled done
  */
 export function useDoneDetection(
   topology: AgentTopology | undefined,
@@ -60,8 +60,7 @@ export function useDoneDetection(
 
   const checkDone = useCallback(
     (role: string) => {
-      if (!topology) return;
-      if (doneSignaledRef.current) return;
+      if (!topology || doneSignaledRef.current) return;
       doneRolesRef.current.add(role);
       const roleNames = new Set(requiredDoneRoleNames(topology));
       const allDone = [...roleNames].every((r) => doneRolesRef.current.has(r));
