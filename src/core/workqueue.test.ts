@@ -63,6 +63,7 @@ describe("KeyedWorkQueue", () => {
       { globalRatePerSec: Number.POSITIVE_INFINITY },
       { globalRatePerSec: Number.NaN },
       { globalBurst: 0 },
+      { globalBurst: 0.5 },
       { globalBurst: -1 },
       { globalBurst: Number.POSITIVE_INFINITY },
       { globalBurst: Number.NaN },

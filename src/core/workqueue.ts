@@ -35,6 +35,12 @@ function validatePositiveFiniteOption(name: string, value: number): void {
   }
 }
 
+function validateAtLeastOneFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 1) {
+    throw new RangeError(`${name} must be a finite number greater than or equal to 1`);
+  }
+}
+
 function validateNonNegativeFiniteOption(name: string, value: number): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name} must be a finite non-negative number`);
@@ -78,7 +84,7 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
     validateNonNegativeFiniteOption("baseDelayMs", this.baseDelayMs);
     validateNonNegativeFiniteOption("maxDelayMs", this.maxDelayMs);
     validatePositiveFiniteOption("globalRatePerSec", this.globalRatePerSec);
-    validatePositiveFiniteOption("globalBurst", this.globalBurst);
+    validateAtLeastOneFiniteOption("globalBurst", this.globalBurst);
     if (this.maxDelayMs < this.baseDelayMs) {
       throw new RangeError("maxDelayMs must be greater than or equal to baseDelayMs");
     }
