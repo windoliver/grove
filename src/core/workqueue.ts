@@ -29,6 +29,18 @@ const DEFAULT_MAX_DELAY_MS = 1_000_000;
 const DEFAULT_GLOBAL_RATE_PER_SEC = 50;
 const DEFAULT_GLOBAL_BURST = 300;
 
+function validatePositiveFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be a finite positive number`);
+  }
+}
+
+function validateNonNegativeFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a finite non-negative number`);
+  }
+}
+
 export class QueueClosedError extends Error {
   constructor() {
     super("Work queue is closed");
@@ -63,6 +75,13 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
     this.maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
     this.globalRatePerSec = options.globalRatePerSec ?? DEFAULT_GLOBAL_RATE_PER_SEC;
     this.globalBurst = options.globalBurst ?? DEFAULT_GLOBAL_BURST;
+    validateNonNegativeFiniteOption("baseDelayMs", this.baseDelayMs);
+    validateNonNegativeFiniteOption("maxDelayMs", this.maxDelayMs);
+    validatePositiveFiniteOption("globalRatePerSec", this.globalRatePerSec);
+    validatePositiveFiniteOption("globalBurst", this.globalBurst);
+    if (this.maxDelayMs < this.baseDelayMs) {
+      throw new RangeError("maxDelayMs must be greater than or equal to baseDelayMs");
+    }
     this.now = options.now ?? Date.now;
     this.setTimer =
       options.setTimer ??
@@ -144,6 +163,11 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
       this.clearTimer(this.paceTimer);
       this.paceTimer = undefined;
     }
+    this.readyKeys.splice(0);
+    this.readySet.clear();
+    this.inFlight.clear();
+    this.dirty.clear();
+    this.attempts.clear();
     const error = new QueueClosedError();
     for (const waiter of this.waiters.splice(0)) {
       waiter.reject(error);

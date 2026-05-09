@@ -56,6 +56,31 @@ function makeQueue(
 }
 
 describe("KeyedWorkQueue", () => {
+  test("rejects invalid numeric options", () => {
+    const invalidOptions: ReadonlyArray<Partial<WorkQueueOptions<FakeTimerHandle>>> = [
+      { globalRatePerSec: 0 },
+      { globalRatePerSec: -1 },
+      { globalRatePerSec: Number.POSITIVE_INFINITY },
+      { globalRatePerSec: Number.NaN },
+      { globalBurst: 0 },
+      { globalBurst: -1 },
+      { globalBurst: Number.POSITIVE_INFINITY },
+      { globalBurst: Number.NaN },
+      { baseDelayMs: -1 },
+      { baseDelayMs: Number.POSITIVE_INFINITY },
+      { baseDelayMs: Number.NaN },
+      { maxDelayMs: -1 },
+      { maxDelayMs: Number.POSITIVE_INFINITY },
+      { maxDelayMs: Number.NaN },
+      { baseDelayMs: 10, maxDelayMs: 5 },
+    ];
+
+    const clock = new FakeClock();
+    for (const options of invalidOptions) {
+      expect(() => makeQueue(clock, options)).toThrow(RangeError);
+    }
+  });
+
   test("dedupes duplicate pending keys", async () => {
     const clock = new FakeClock();
     const queue = makeQueue(clock);
@@ -211,6 +236,33 @@ describe("KeyedWorkQueue", () => {
     expect(() => queue.enqueue("claim-2")).toThrow(QueueClosedError);
     expect(() => queue.take()).toThrow(QueueClosedError);
     expect(() => queue.retry("claim-2")).toThrow(QueueClosedError);
+  });
+
+  test("close clears retained queue state", async () => {
+    const clock = new FakeClock();
+    const queue = makeQueue(clock, { globalBurst: 10 });
+
+    queue.enqueue("ready-1");
+    queue.enqueue("ready-2");
+    queue.enqueue("in-flight");
+    queue.enqueue("retrying");
+
+    await expect(queue.take()).resolves.toEqual({ key: "ready-1", attempt: 0 });
+    await expect(queue.take()).resolves.toEqual({ key: "ready-2", attempt: 0 });
+    await expect(queue.take()).resolves.toEqual({ key: "in-flight", attempt: 0 });
+    await expect(queue.take()).resolves.toEqual({ key: "retrying", attempt: 0 });
+
+    queue.enqueue("in-flight");
+    queue.retry("retrying");
+    queue.enqueue("ready-3");
+
+    expect(queue.size()).toBe(1);
+    expect(queue.pendingKeys()).toEqual(["ready-3"]);
+
+    queue.close();
+
+    expect(queue.size()).toBe(0);
+    expect(queue.pendingKeys()).toEqual([]);
   });
 
   test("uses default timer types without generic parameters", () => {
