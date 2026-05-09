@@ -18,6 +18,13 @@ interface ManagedChildProcess {
   readonly name: string;
   readonly pid: number;
   readonly proc: ReturnType<typeof Bun.spawn>;
+  /**
+   * "spawned" → this call started the process; rollback may SIGTERM it.
+   * "adopted" → the process was already running and we attached to it
+   *   for shutdown bookkeeping. Rollback must NOT kill an adopted child
+   *   on unrelated sibling failure (other concurrent work may depend on it).
+   */
+  readonly acquired: "spawned" | "adopted";
 }
 
 /** Options for starting services. */
@@ -175,46 +182,36 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           return false;
         }
       });
-      if (parentAlive && someChildAlive) {
-        // Two-step ownership check (fail-closed, no key disclosure on step 1):
-        //
-        // (a) verifyPortIdentity — credential-free: confirm the PID listening
-        //     on the server port matches our pidfile's recorded server PID.
-        //     A "someChildAlive" check isn't sufficient: the *server* child
-        //     might have died while another (e.g. mcp) is alive; if a foreign
-        //     listener took the server port, calling verifyServerOwnership
-        //     here would leak the api-key to it.
-        // (b) verifyServerOwnership — credentialed: only after step (a)
-        //     proves PID identity, also confirm the live process still
-        //     accepts our key (catches the .grove re-init case where the
-        //     server kept its old in-memory key registry).
-        if (config.services?.server) {
-          const serverPort = resolveServicePort("server");
-          if (serverPort) {
-            const identity = await verifyPortIdentity(serverPort, pidFilePath, "server");
-            if (!identity.ok) {
-              const owner = await describePortOwner(serverPort);
-              throw new Error(
-                `Recorded grove-server is not the listener on port ${serverPort}.\n` +
-                  `${identity.reason}\n` +
-                  `Owner: ${owner}\n` +
-                  `Free the port (\`lsof -tiTCP:${serverPort} -sTCP:LISTEN | xargs kill\`) and retry,\n` +
-                  `or set PORT to an unused port.`,
-              );
-            }
-            const ownership = await verifyServerOwnership(serverPort, groveDir);
-            if (!ownership.ok) {
-              throw new Error(
-                `Existing grove-server (PID ${identity.pid}) on port ${serverPort} no longer accepts this project's API key.\n` +
-                  `${ownership.reason}\n` +
-                  `This usually happens when .grove was re-initialized while the server kept running.\n` +
-                  `Stop the server (\`kill ${identity.pid}\`) and retry.`,
-              );
-            }
-          }
-        }
+      // Same-process re-entry fast path: this same TUI process already
+      // ran startServices and pidfile records itself as parent. ALL
+      // configured children must be alive — partial death (e.g. server
+      // crashed while mcp lives) means we need to spawn the missing one,
+      // not silently report success. Fall through to spawnService loop
+      // (each invocation handles identity-match adoption per service).
+      const sameParent = parentPid === process.pid;
+      const allConfiguredChildrenAlive = (() => {
+        const recordedAlive = new Set(
+          (pidData.children ?? [])
+            .filter((c) => {
+              if (!c.pid || !c.name) return false;
+              try {
+                process.kill(c.pid, 0);
+                return true;
+              } catch {
+                return false;
+              }
+            })
+            .map((c) => c.name as string),
+        );
+        if (config.services?.server && !recordedAlive.has("server")) return false;
+        if (config.services?.mcp && !recordedAlive.has("mcp")) return false;
+        return true;
+      })();
+      if (sameParent && allConfiguredChildrenAlive) {
+        // Already running in this same process — no need to verify
+        // identity/ownership (we ourselves spawned them). Skip spawning.
         report(
-          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive, identity + ownership verified)`,
+          `[startServices] same-process re-entry: services already running for PID ${parentPid}; reusing`,
         );
         if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
           process.env.GROVE_NEXUS_URL = config.nexusUrl;
@@ -236,9 +233,23 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           ...(config.nexusUrl !== undefined ? { resolvedNexusUrl: config.nexusUrl } : {}),
         };
       }
-      if (parentPid && !parentAlive) {
-        report(`[startServices] pidfile points to dead PID ${parentPid}; ignoring`);
+      // Else: fall through. spawnService handles per-service identity
+      // adoption (configured-but-bound: adopt; configured-but-unbound:
+      // spawn fresh). Crashed siblings auto-restart; foreign listeners
+      // throw with remediation. No early return — every configured
+      // service goes through verification independently.
+      if (parentAlive && !sameParent) {
+        report(
+          `[startServices] pidfile present (parent PID ${parentPid} alive, different process); per-service identity check will adopt or spawn each.`,
+        );
+      } else if (parentPid && !parentAlive) {
+        report(
+          `[startServices] pidfile points to dead PID ${parentPid}; per-service check follows.`,
+        );
       }
+      // someChildAlive is no longer used as a gate; the per-service
+      // spawnService path uses isPortBound + identity to decide adopt-vs-spawn.
+      void someChildAlive;
     }
   }
 
@@ -372,14 +383,15 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     }
   }
   if (errors.length > 0) {
-    // Roll back any successfully spawned siblings: SIGTERM, wait for
-    // exit (5s), escalate to SIGKILL. Detached/unref'd children with
-    // async shutdown handlers can hold the port if we just SIGTERM and
-    // throw immediately.
+    // Roll back ONLY children this call spawned. Adopted children
+    // (existing PIDs we attached to via verifyPortIdentity) were already
+    // running before this invocation; killing them on unrelated sibling
+    // failure would mirror the round-5 Nexus-tear-down regression.
+    const toKill = children.filter((c) => c.acquired === "spawned");
     const ROLLBACK_DEADLINE_MS = 5_000;
     const deadline = Date.now() + ROLLBACK_DEADLINE_MS;
     await Promise.all(
-      children.map(async (child) => {
+      toKill.map(async (child) => {
         try {
           child.proc.kill("SIGTERM");
         } catch {
@@ -773,7 +785,10 @@ async function isPortBound(port: number): Promise<boolean> {
  * SIGTERM → wait → SIGKILL flow. Bun.spawn isn't available for arbitrary
  * PIDs, so we synthesize the necessary surface (kill, exited).
  */
-function adoptExistingChild(name: string, pid: number): ManagedChildProcess {
+function adoptExistingChild(
+  name: string,
+  pid: number,
+): ManagedChildProcess & { acquired: "adopted" } {
   const exited = new Promise<number>((resolve) => {
     // Poll-based exit detection: probe with signal 0 every 250ms until
     // process.kill throws. Cheap and accurate for our shutdown timing
@@ -799,7 +814,7 @@ function adoptExistingChild(name: string, pid: number): ManagedChildProcess {
     },
     exited,
   } as unknown as ReturnType<typeof Bun.spawn>;
-  return { name, pid, proc };
+  return { name, pid, proc, acquired: "adopted" };
 }
 
 async function spawnService(
@@ -903,7 +918,7 @@ async function spawnService(
       exited,
     } as unknown as ReturnType<typeof Bun.spawn>;
 
-    return { name, pid, proc };
+    return { name, pid, proc, acquired: "spawned" };
   } catch (err) {
     // Re-raise foreign-port and startup-death errors so callers see them;
     // only swallow truly transient spawn errors (already covered above by
