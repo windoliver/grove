@@ -468,10 +468,15 @@ function waitForChildExit(child: NodeChildProcess): Promise<number> {
 }
 
 /**
- * Probe a running grove-server with our project's API key to confirm it's
- * the same namespace we belong to. Returns ok=false when the server returns
- * 401 (foreign registry) or any other non-success status that signals the
- * listener can't authorize our key.
+ * Probe a running grove-server to confirm it's the same project's namespace
+ * we belong to. Fails closed against:
+ *   1. No project api-key on disk → can't prove ownership.
+ *   2. Listener returns 2xx for a bogus bearer → not enforcing auth, foreign.
+ *   3. Listener rejects (401/403/4xx/5xx) our project key → foreign registry.
+ *   4. Listener accepts our key but the response shape isn't Grove's
+ *      ListResponse → not grove-server.
+ * Only an authenticated request that returns the expected Grove list shape
+ * counts as ownership-proven.
  */
 export async function verifyServerOwnership(
   port: number,
@@ -487,9 +492,35 @@ export async function verifyServerOwnership(
   if (!apiKey) {
     return { ok: false, reason: `No api-key in ${groveDir} to verify ownership.` };
   }
+
+  const url = `http://localhost:${port}/api/list?kind=Claim`;
+
+  // Step 1: bogus-key probe. A correctly-auth-enforcing grove-server must
+  // reject this with 401 (NamespaceUnauthorizedError). If the listener
+  // accepts a random key with 2xx, it's not enforcing auth — almost
+  // certainly a different service squatting on the port.
+  try {
+    const bogus = await fetch(url, {
+      headers: { Authorization: "Bearer grv_NOT_A_REAL_KEY_ownership_probe" },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (bogus.ok) {
+      return {
+        ok: false,
+        reason: `Listener returned ${bogus.status} for a bogus bearer token — auth is not enforced; this is not a grove-server.`,
+      };
+    }
+  } catch (err) {
+    return { ok: false, reason: `Bogus-key probe failed: ${(err as Error).message ?? err}` };
+  }
+
+  // Step 2: real-key probe. Must succeed AND return the Grove ListResponse
+  // shape ({items: array, listResourceVersion: string}). Anything else is
+  // a foreign listener that happens to 401 strangers but doesn't speak
+  // our protocol.
   let resp: Response | null = null;
   try {
-    resp = await fetch(`http://localhost:${port}/api/list?kind=Claim`, {
+    resp = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(2000),
     });
@@ -499,11 +530,28 @@ export async function verifyServerOwnership(
   if (resp.status === 401 || resp.status === 403) {
     return {
       ok: false,
-      reason: `Existing listener returned ${resp.status} for our API key — its key registry doesn't include us.`,
+      reason: `Listener returned ${resp.status} for our API key — its key registry doesn't include us.`,
     };
   }
   if (!resp.ok) {
     return { ok: false, reason: `Auth probe got HTTP ${resp.status}.` };
+  }
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch {
+    return { ok: false, reason: "Auth probe response was not JSON; not a grove-server." };
+  }
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray((body as { items?: unknown }).items) ||
+    typeof (body as { listResourceVersion?: unknown }).listResourceVersion !== "string"
+  ) {
+    return {
+      ok: false,
+      reason: "Auth probe response shape doesn't match Grove ListResponse; not a grove-server.",
+    };
   }
   return { ok: true };
 }
@@ -528,6 +576,35 @@ async function describePortOwner(port: number): Promise<string> {
   }
 }
 
+/**
+ * Detect whether a TCP port has any listener. Returns true on a successful
+ * connection, false on ECONNREFUSED/timeout. Independent of HTTP — covers
+ * the case where a process is bound but its /health returns 404/500 or
+ * isn't HTTP at all.
+ */
+async function isPortBound(port: number): Promise<boolean> {
+  const { Socket } = await import("node:net");
+  return new Promise<boolean>((resolve) => {
+    const sock = new Socket();
+    let settled = false;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(v);
+    };
+    sock.setTimeout(1500);
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    sock.once("timeout", () => done(false));
+    sock.connect(port, "127.0.0.1");
+  });
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
@@ -535,37 +612,42 @@ async function spawnService(
 ): Promise<ManagedChildProcess | null> {
   const port = resolveServicePort(name);
   if (port) {
-    try {
-      const resp = await fetch(`http://localhost:${port}/health`, {
-        signal: AbortSignal.timeout(2000),
-      }).catch(() => null);
-      if (resp?.ok) {
-        // Something is listening. Before reusing it, verify it accepts our
-        // namespace credentials — otherwise a stale/foreign server (e.g.
-        // orphaned bun serve.js from a deleted worktree whose .grove was
-        // wiped) silently steals the bridge and every TUI request 401s.
-        // Probe an authed endpoint with the project's API key; on 401 we
-        // know the listener is foreign and refuse to fall through.
-        if (name === "server") {
-          const ours = await verifyServerOwnership(port, groveDir);
-          if (!ours.ok) {
-            const owner = await describePortOwner(port);
-            throw new Error(
-              `Port ${port} is already bound by a different grove-server.\n` +
-                `${ours.reason}\n` +
-                `Owner: ${owner}\n` +
-                `Free the port with: kill <PID> (e.g. \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`),\n` +
-                `or set PORT to an unused port and retry.`,
-            );
-          }
+    // Treat the port as occupied if anything is bound to it, regardless of
+    // whether /health responds. A foreign service that doesn't speak HTTP,
+    // or speaks HTTP but returns 404 for /health, would otherwise slip past
+    // the ownership probe and let us spawn a child that immediately dies
+    // on EADDRINUSE — silently leaving startServices without an HTTP server.
+    const bound = await isPortBound(port);
+    if (bound) {
+      // Only the configured "server" service has the namespace-auth probe
+      // surface; for other services (mcp), fall back to the legacy /health
+      // check — but still fail loud if /health isn't OK.
+      if (name === "server") {
+        const ours = await verifyServerOwnership(port, groveDir);
+        if (!ours.ok) {
+          const owner = await describePortOwner(port);
+          throw new Error(
+            `Port ${port} is already bound by a different listener (not a grove-server for this project).\n` +
+              `${ours.reason}\n` +
+              `Owner: ${owner}\n` +
+              `Free the port with: kill <PID> (e.g. \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`),\n` +
+              `or set PORT to an unused port and retry.`,
+          );
         }
-        // Service already running and ours — skip spawn, return null (not an error)
+        // Owned by us — reuse without spawning.
         return null;
       }
-    } catch (err) {
-      // Re-raise the foreign-server error; treat any other fetch error as
-      // "port not in use, proceed with spawn".
-      if (err instanceof Error && err.message.startsWith("Port ")) throw err;
+      // Non-server services: confirm /health is OK before reusing.
+      const healthResp = await fetch(`http://localhost:${port}/health`, {
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => null);
+      if (healthResp?.ok) return null;
+      const owner = await describePortOwner(port);
+      throw new Error(
+        `Port ${port} is bound but ${name}'s /health did not respond OK.\n` +
+          `Owner: ${owner}\n` +
+          `Free the port (\`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`) or change the service port and retry.`,
+      );
     }
   }
 
@@ -589,11 +671,19 @@ async function spawnService(
       await waitForServiceHealth(`http://localhost:${port}/health`, SERVICE_HEALTH_TIMEOUT_MS);
     }
 
-    // Verify the process is still alive after health check / timeout
+    // Verify the process is still alive after health check / timeout.
+    // If it died during startup, surface the failure instead of silently
+    // returning null — leaving startServices believing the service is
+    // running when it isn't would only resurface as confusing 401s/timeouts
+    // downstream (the same class of regression Codex flagged in round 2).
     try {
       process.kill(pid, 0); // Signal 0 = check existence
     } catch {
-      return null; // Process died during startup
+      const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+      throw new Error(
+        `${name} exited during startup. Last log lines:\n${tail || "(empty)"}\n` +
+          `Common cause: another listener on the configured port. Run: lsof -iTCP:${port} -sTCP:LISTEN`,
+      );
     }
 
     const proc = {
@@ -609,7 +699,23 @@ async function spawnService(
     } as unknown as ReturnType<typeof Bun.spawn>;
 
     return { name, pid, proc };
+  } catch (err) {
+    // Re-raise foreign-port and startup-death errors so callers see them;
+    // only swallow truly transient spawn errors (already covered above by
+    // the broad fetch.catch for /health probes).
+    if (err instanceof Error) throw err;
+    throw new Error(`spawn ${name} failed: ${String(err)}`);
+  }
+}
+
+/** Read the last ~20 lines of a log file for diagnostic context. */
+async function readLogTail(path: string): Promise<string> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const text = await readFile(path, "utf8");
+    const lines = text.split(/\r?\n/);
+    return lines.slice(-20).join("\n");
   } catch {
-    return null;
+    return "";
   }
 }

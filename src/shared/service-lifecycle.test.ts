@@ -250,4 +250,56 @@ describe("verifyServerOwnership — foreign-listener detection", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("500");
   });
+
+  test("returns ok=false when listener accepts ANY bearer (auth not enforced)", async () => {
+    // Permissive listener squatting on the port: 200s on every call.
+    // The bogus-key probe must catch this before we leak the real key.
+    groveDir = mkdtempSync(join(tmpdir(), "verify-permissive-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_real\n", { mode: 0o600 });
+    let realKeySeen = false;
+    startFakeServer((req) => {
+      if (req.headers.get("Authorization") === "Bearer grv_real") realKeySeen = true;
+      return Response.json({ items: [], listResourceVersion: "0" });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/bogus.*auth.*not.*enforced/i);
+    // Defense-in-depth: the real key must not have been sent once we knew
+    // auth wasn't enforced.
+    expect(realKeySeen).toBe(false);
+  });
+
+  test("returns ok=false when authed response shape isn't Grove ListResponse", async () => {
+    // Listener that 401s strangers (passes step 1) but responds to our key
+    // with a non-Grove shape — e.g. a different service that happens to
+    // namespace its bearers identically. Must reject.
+    groveDir = mkdtempSync(join(tmpdir(), "verify-shape-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_match\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_match")
+        return Response.json({ status: "ok", message: "hello from not-grove" });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/shape|grove-server/i);
+  });
+
+  test("returns ok=false when authed response is not JSON", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-nonjson-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_match\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_match")
+        return new Response("plain text body", {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/JSON|grove-server/i);
+  });
 });
