@@ -209,6 +209,8 @@ describe("KeyedWorkQueue", () => {
     expect(clock.timerCount).toBe(0);
     await expect(pending).rejects.toBeInstanceOf(QueueClosedError);
     expect(() => queue.enqueue("claim-2")).toThrow(QueueClosedError);
+    expect(() => queue.take()).toThrow(QueueClosedError);
+    expect(() => queue.retry("claim-2")).toThrow(QueueClosedError);
   });
 
   test("uses default timer types without generic parameters", () => {
