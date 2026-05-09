@@ -165,8 +165,29 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
         }
       });
       if (parentAlive && someChildAlive) {
+        // Even when the pidfile looks valid, the reused server may have a stale
+        // in-memory key registry (e.g. .grove was re-initialized while the
+        // server kept running). Probe the configured port with the current
+        // api-key — if the existing server doesn't accept it, fail loud
+        // instead of silently 401'ing every TUI request.
+        if (config.services?.server) {
+          const serverPort = resolveServicePort("server");
+          if (serverPort) {
+            const ownership = await verifyServerOwnership(serverPort, groveDir);
+            if (!ownership.ok) {
+              const owner = await describePortOwner(serverPort);
+              throw new Error(
+                `Existing grove-server (PID ${parentPid}) on port ${serverPort} no longer accepts this project's API key.\n` +
+                  `${ownership.reason}\n` +
+                  `Owner: ${owner}\n` +
+                  `This usually happens when .grove was re-initialized while the server kept running.\n` +
+                  `Stop the server (e.g. \`kill ${parentPid}\`) and retry, or set PORT to an unused port.`,
+              );
+            }
+          }
+        }
         report(
-          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive)`,
+          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive, ownership verified)`,
         );
         if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
           process.env.GROVE_NEXUS_URL = config.nexusUrl;
@@ -494,7 +515,7 @@ export async function verifyServerOwnership(
 async function describePortOwner(port: number): Promise<string> {
   try {
     const { spawnSync } = await import("node:child_process");
-    const r = spawnSync("lsof", ["-iTCP:" + port, "-sTCP:LISTEN", "-Pn"], {
+    const r = spawnSync("lsof", [`-iTCP:${port}`, "-sTCP:LISTEN", "-Pn"], {
       encoding: "utf8",
       timeout: 1500,
     });
@@ -534,7 +555,7 @@ async function spawnService(
                 `${ours.reason}\n` +
                 `Owner: ${owner}\n` +
                 `Free the port with: kill <PID> (e.g. \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`),\n` +
-                `or set GROVE_SERVER_PORT to an unused port and retry.`,
+                `or set PORT to an unused port and retry.`,
             );
           }
         }

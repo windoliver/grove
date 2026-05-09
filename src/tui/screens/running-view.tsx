@@ -851,8 +851,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           }),
         cmdClearText: () => setCmdState((s) => ({ ...s, text: "" })),
         cmdExit: () => {
-          // Esc on already-empty filter prompt also clears any retained filter
-          if (cmdState.mode === "filter" && cmdState.text === "" && filterQuery !== "") {
+          // Esc on already-empty filter prompt also clears any retained filter.
+          // Read from refs (synchronous) so a same-tick burst — e.g. paste of
+          // `/foo<Esc><Esc>` — sees the latest cmdState the router applied,
+          // not the last-committed React state.
+          const live = cmdStateRef.current;
+          if (live.mode === "filter" && live.text === "" && filterQueryRef.current !== "") {
             setFilterQuery("");
           }
           setCmdState(exitCmdMode);
@@ -878,9 +882,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         aliases,
         gotoDispatch,
         flash,
-        cmdState.mode,
-        cmdState.text,
-        filterQuery,
+        // cmdState.mode/.text and filterQuery intentionally NOT listed:
+        // cmdExit reads cmdStateRef/filterQueryRef synchronously, all other
+        // cmd-mode actions go through setCmdState((s) => ...) which sees the
+        // latest value via React's reducer form.
         setCmdState,
         setFilterQuery,
       ],
