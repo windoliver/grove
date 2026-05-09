@@ -318,9 +318,45 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     spawnPromises.push(spawnService("mcp", resolveEntry("src/mcp/serve-http.ts"), groveDir));
   }
 
-  const results = await Promise.all(spawnPromises);
-  for (const result of results) {
-    if (result) children.push(result);
+  // Use allSettled so a single failed spawn doesn't abandon successfully
+  // started siblings as detached orphans. On any rejection we kill the
+  // children that did start before re-raising the first error.
+  const settled = await Promise.allSettled(spawnPromises);
+  const errors: Error[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      if (result.value) children.push(result.value);
+    } else {
+      errors.push(
+        result.reason instanceof Error ? result.reason : new Error(String(result.reason)),
+      );
+    }
+  }
+  if (errors.length > 0) {
+    // Roll back successful spawns to keep the host clean.
+    for (const child of children) {
+      try {
+        child.proc.kill("SIGTERM");
+      } catch {
+        /* idempotent */
+      }
+    }
+    if (nexusManaged) {
+      try {
+        const { nexusDown } = await import("../cli/nexus-lifecycle.js");
+        await nexusDown(projectRoot);
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Re-raise the first error with all reasons attached.
+    const composite = new Error(
+      errors.length === 1
+        ? errors[0]?.message
+        : `${errors.length} services failed to start:\n${errors.map((e) => `  - ${e.message}`).join("\n")}`,
+    );
+    if (errors[0]?.stack) composite.stack = errors[0].stack;
+    throw composite;
   }
 
   // Write PID file
@@ -577,6 +613,71 @@ async function describePortOwner(port: number): Promise<string> {
 }
 
 /**
+ * Get the PID of the process listening on a TCP port via `lsof -ti`.
+ * Returns undefined if no listener or lsof unavailable.
+ */
+async function getListeningPid(port: number): Promise<number | undefined> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: 1500,
+    });
+    const first = (r.stdout ?? "").trim().split(/\s+/)[0];
+    const pid = first ? Number.parseInt(first, 10) : Number.NaN;
+    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Identity-based ownership check: compare the PID listening on `port` to
+ * the PID recorded in our pidfile for the named service. Fails closed when
+ * the pidfile is absent (fresh startup, but the port is bound = foreign by
+ * definition) or when PIDs don't match.
+ *
+ * Crucially: this check sends NO credentials. The credentialed
+ * verifyServerOwnership check is reserved for the pidfile-reuse path,
+ * where PID identity has already been confirmed by the parent-alive +
+ * child-alive guards in startServices.
+ */
+export async function verifyPortIdentity(
+  port: number,
+  pidFilePath: string,
+  serviceName: string,
+): Promise<{ ok: true; pid: number } | { ok: false; reason: string }> {
+  const listeningPid = await getListeningPid(port);
+  if (!listeningPid) {
+    return { ok: false, reason: `Could not identify the process on port ${port}.` };
+  }
+  let pidData: { children?: ReadonlyArray<{ name?: string; pid?: number }> } | undefined;
+  try {
+    const text = readFileSync(pidFilePath, "utf-8");
+    pidData = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      reason: `No pidfile record at ${pidFilePath}; the listener wasn't spawned by this grove project.`,
+    };
+  }
+  const recorded = pidData?.children?.find((c) => c.name === serviceName);
+  if (!recorded?.pid) {
+    return {
+      ok: false,
+      reason: `Pidfile has no record of "${serviceName}"; the listener on port ${port} (PID ${listeningPid}) is foreign.`,
+    };
+  }
+  if (recorded.pid !== listeningPid) {
+    return {
+      ok: false,
+      reason: `Pidfile records ${serviceName} PID=${recorded.pid} but port ${port} is held by PID ${listeningPid}; foreign listener.`,
+    };
+  }
+  return { ok: true, pid: listeningPid };
+}
+
+/**
  * Detect whether a TCP port has any listener. Returns true on a successful
  * connection, false on ECONNREFUSED/timeout. Independent of HTTP — covers
  * the case where a process is bound but its /health returns 404/500 or
@@ -612,42 +713,28 @@ async function spawnService(
 ): Promise<ManagedChildProcess | null> {
   const port = resolveServicePort(name);
   if (port) {
-    // Treat the port as occupied if anything is bound to it, regardless of
-    // whether /health responds. A foreign service that doesn't speak HTTP,
-    // or speaks HTTP but returns 404 for /health, would otherwise slip past
-    // the ownership probe and let us spawn a child that immediately dies
-    // on EADDRINUSE — silently leaving startServices without an HTTP server.
+    // Identity gate (NO credentials): if the port is bound, the listening
+    // PID must match a record in our pidfile for this service name. Any
+    // mismatch — including no pidfile at all — is treated as foreign.
+    // We deliberately do NOT send the project's API key to an unverified
+    // listener; a port squatter that returns 401 to a bogus token would
+    // otherwise receive the real key on the second probe.
     const bound = await isPortBound(port);
     if (bound) {
-      // Only the configured "server" service has the namespace-auth probe
-      // surface; for other services (mcp), fall back to the legacy /health
-      // check — but still fail loud if /health isn't OK.
-      if (name === "server") {
-        const ours = await verifyServerOwnership(port, groveDir);
-        if (!ours.ok) {
-          const owner = await describePortOwner(port);
-          throw new Error(
-            `Port ${port} is already bound by a different listener (not a grove-server for this project).\n` +
-              `${ours.reason}\n` +
-              `Owner: ${owner}\n` +
-              `Free the port with: kill <PID> (e.g. \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`),\n` +
-              `or set PORT to an unused port and retry.`,
-          );
-        }
-        // Owned by us — reuse without spawning.
-        return null;
+      const pidFilePath = join(groveDir, "grove.pid");
+      const identity = await verifyPortIdentity(port, pidFilePath, name);
+      if (!identity.ok) {
+        const owner = await describePortOwner(port);
+        throw new Error(
+          `Port ${port} is bound by a process that this grove project did not spawn.\n` +
+            `${identity.reason}\n` +
+            `Owner: ${owner}\n` +
+            `Free the port with: \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`,\n` +
+            `or set PORT to an unused port and retry.`,
+        );
       }
-      // Non-server services: confirm /health is OK before reusing.
-      const healthResp = await fetch(`http://localhost:${port}/health`, {
-        signal: AbortSignal.timeout(2000),
-      }).catch(() => null);
-      if (healthResp?.ok) return null;
-      const owner = await describePortOwner(port);
-      throw new Error(
-        `Port ${port} is bound but ${name}'s /health did not respond OK.\n` +
-          `Owner: ${owner}\n` +
-          `Free the port (\`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`) or change the service port and retry.`,
-      );
+      // PID identity matches our pidfile record — reuse silently.
+      return null;
     }
   }
 
