@@ -28,7 +28,7 @@ import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
-import { agentIdFromSession } from "./agents/tmux-manager.js";
+import { agentIdFromSession, tmuxSessionName } from "./agents/tmux-manager.js";
 // ---------------------------------------------------------------------------
 import type { AcpSessionStore } from "./data/acp-session-store.js";
 import { AgentLogBuffer } from "./data/agent-log-buffer.js";
@@ -960,6 +960,43 @@ export class SpawnManager {
           "clean workspace during kill",
           { silent: true },
         );
+      }
+    }
+  }
+
+  /**
+   * Stop all currently spawned agents for the active TUI session without
+   * deleting their workspaces. Completion needs this lighter-weight teardown:
+   * operators still need to inspect artifacts, but the bridge/runtime must stop
+   * accepting post-done handoffs that would otherwise keep agents ping-ponging.
+   */
+  async stopCurrentSession(): Promise<void> {
+    this.stopLogPolling();
+
+    const runtimeEntries = [...this.agentSessions.entries()];
+    for (const [spawnId, session] of runtimeEntries) {
+      try {
+        await this.agentRuntime?.close(session);
+      } catch {
+        /* best-effort */
+      }
+
+      const tracked = this.spawnRecords.get(spawnId);
+      const roleKey = tracked?.role ?? session.role ?? spawnId;
+      this.wsBridge?.unregisterSession(roleKey, session.id);
+      this.unregisterAcpSession(session.id);
+      this.agentSessions.delete(spawnId);
+      this.routableSessions.delete(spawnId);
+    }
+
+    if (!this.agentRuntime && this.tmux) {
+      for (const spawnId of this.spawnRecords.keys()) {
+        try {
+          await this.tmux.kill(tmuxSessionName(spawnId));
+        } catch {
+          /* best-effort */
+        }
+        this.routableSessions.delete(spawnId);
       }
     }
   }

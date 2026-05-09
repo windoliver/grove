@@ -309,6 +309,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           /* best-effort */
         });
         spawnManager.stopLogPolling();
+        await spawnManager.stopCurrentSession().catch(() => {
+          /* best-effort */
+        });
 
         let contributionCount = 0;
         try {
@@ -334,7 +337,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [provider, spawnManager],
     );
     const handleDone = useCallback(() => {
-      void snapshotAndComplete("All roles signaled done");
+      if (doneSignaledRef.current) return;
+      doneSignaledRef.current = true;
+      void snapshotAndComplete("Session signaled done");
     }, [snapshotAndComplete]);
     useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
 
@@ -857,7 +862,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                   typeof c.context === "object" &&
                   (c.context as Record<string, unknown>).done === true);
               if (isDone) {
-                doneSignaledRef.current = true;
+                handleDone();
                 return;
               }
               // Routing is handled by the SSE push bridge — don't re-deliver here.

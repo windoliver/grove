@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { LocalEventBus } from "../../core/local-event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import { ContributionKind, ContributionMode } from "../../core/models.js";
 import { lookupPresetTopology } from "../../core/presets.js";
@@ -86,6 +87,7 @@ interface TestSpawnManager {
   readonly reconcileCalls: string[];
   readonly saveTraceCalls: string[];
   readonly stopLogPollingCalls: string[];
+  readonly stopCurrentSessionCalls: string[];
   reconcile(): Promise<void>;
   ensureLogBuffer(roleName: string): void;
   getLogBuffers(): Map<string, unknown>;
@@ -94,6 +96,7 @@ interface TestSpawnManager {
   setSessionId(sessionId: string): void;
   loadTraces(sessionId: string): Promise<void>;
   saveTraces(): Promise<void>;
+  stopCurrentSession(): Promise<void>;
   setSessionGoal(goal: string): void;
   setTopology(topology: AgentTopology): void;
   spawn(
@@ -360,6 +363,7 @@ function makeSpawnManager(): TestSpawnManager {
     reconcileCalls: [],
     saveTraceCalls: [],
     stopLogPollingCalls: [],
+    stopCurrentSessionCalls: [],
     reconcile: async () => {
       manager.reconcileCalls.push("reconcile");
     },
@@ -378,6 +382,9 @@ function makeSpawnManager(): TestSpawnManager {
     loadTraces: async () => undefined,
     saveTraces: async () => {
       manager.saveTraceCalls.push("save");
+    },
+    stopCurrentSession: async () => {
+      manager.stopCurrentSessionCalls.push("stop-current");
     },
     setSessionGoal: (goal: string) => {
       manager.sessionGoals.push(goal);
@@ -699,7 +706,7 @@ describe("ScreenManager transition flow", () => {
     const providerBundle = makeProvider({
       contributions: [makeContribution("c1"), makeContribution("c2")],
     });
-    renderScreenManager({
+    const { spawnManager } = renderScreenManager({
       provider: providerBundle.provider,
       topology: TEST_TOPOLOGY,
       initialState: {
@@ -720,6 +727,99 @@ describe("ScreenManager transition flow", () => {
     expect(requireCompleteView().reason).toBe("All roles signaled done");
     expect(requireCompleteView().contributionCount).toBe(2);
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
+    expect(spawnManager.stopCurrentSessionCalls).toEqual(["stop-current"]);
+  });
+
+  test("running -> complete when reviewer signals grove_done", async () => {
+    const eventBus = new LocalEventBus();
+    const doneContribution: Contribution = {
+      ...makeContribution("done-reviewer"),
+      kind: ContributionKind.Discussion,
+      summary: "[DONE] Approved",
+      context: { done: true, reason: "Approved", ephemeral: true },
+      agent: { agentId: "reviewer-1", role: "reviewer" },
+    };
+    const providerBundle = makeProvider({
+      contributions: [doneContribution],
+    });
+    const reviewTopology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        { name: "coder", description: "Writes code", command: "codex" },
+        { name: "reviewer", description: "Reviews code", command: "claude" },
+      ],
+      spawning: { dynamic: false },
+    };
+
+    renderScreenManager({
+      appProps: { ...makeAppProps(providerBundle.provider, reviewTopology), eventBus },
+      provider: providerBundle.provider,
+      initialState: {
+        screen: "running",
+        goal: "Complete the review loop",
+        sessionId: "session-review-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      await eventBus.publishLocal({
+        type: "contribution",
+        sourceRole: "reviewer",
+        targetRole: "reviewer",
+        payload: {
+          summary: doneContribution.summary,
+          context: doneContribution.context,
+        },
+        timestamp: "2026-03-29T00:00:01.000Z",
+      });
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Session signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-review-done"]);
+    eventBus.close();
+  });
+
+  test("running -> complete when contribution feed observes reviewer grove_done", async () => {
+    const doneContribution: Contribution = {
+      ...makeContribution("done-reviewer-feed"),
+      kind: ContributionKind.Discussion,
+      summary: "[DONE] Approved",
+      context: { done: true, reason: "Approved", ephemeral: true },
+      agent: { agentId: "reviewer-1", role: "reviewer" },
+    };
+    const providerBundle = makeProvider({
+      contributions: [doneContribution],
+    });
+
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Complete from feed",
+        sessionId: "session-feed-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      const onNewContribution = requireRunningView().onNewContribution;
+      if (!onNewContribution) throw new Error("RunningView did not receive onNewContribution");
+      onNewContribution(doneContribution);
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Session signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-feed-done"]);
+    expect(spawnManager.stopCurrentSessionCalls).toEqual(["stop-current"]);
   });
 
   test("complete -> preset-select starts a fresh session when no preset state is reusable", () => {

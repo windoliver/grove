@@ -1,8 +1,10 @@
 /**
- * Detects session completion by watching for done signals from all topology roles.
+ * Detects session completion by watching for explicit done signals.
  *
  * Polls contributions for [DONE] prefix or context.done flag.
- * Calls onDone when all roles have signaled completion.
+ * Calls onDone on the first done signal. `grove_done` is an explicit session
+ * terminator in the TUI workflow; waiting for every role to also signal done
+ * leaves review-loop sessions alive after reviewer approval.
  *
  * Extracted from ScreenManager to reduce component complexity.
  */
@@ -33,7 +35,7 @@ function isDoneContribution(c: { summary: string; context?: unknown }): boolean 
  * @param topology - Agent topology with role definitions
  * @param screen - Current screen state (only active on "running" or "advanced")
  * @param eventBus - Event bus for real-time done detection; without it the hook is inert
- * @param onDone - Callback when all roles have signaled done
+ * @param onDone - Callback when the session has been explicitly signaled done
  */
 export function useDoneDetection(
   topology: AgentTopology | undefined,
@@ -41,20 +43,19 @@ export function useDoneDetection(
   eventBus: EventBus | undefined,
   onDone: () => void,
 ): void {
-  const doneRolesRef = useRef<Set<string>>(new Set());
+  const doneSignaledRef = useRef(false);
 
-  const checkDone = useCallback(
-    (role: string) => {
-      if (!topology) return;
-      doneRolesRef.current.add(role);
-      const roleNames = new Set(topology.roles.map((r) => r.name));
-      const allDone = [...roleNames].every((r) => doneRolesRef.current.has(r));
-      if (allDone && roleNames.size > 0) {
-        onDone();
-      }
-    },
-    [topology, onDone],
-  );
+  const signalDone = useCallback(() => {
+    if (!topology || doneSignaledRef.current) return;
+    doneSignaledRef.current = true;
+    onDone();
+  }, [topology, onDone]);
+
+  useEffect(() => {
+    if (screen !== "running" && screen !== "advanced") {
+      doneSignaledRef.current = false;
+    }
+  }, [screen]);
 
   // Event-driven mode: subscribe to EventBus for real-time done detection
   useEffect(() => {
@@ -70,11 +71,11 @@ export function useDoneDetection(
             payload.summary &&
             isDoneContribution(payload as { summary: string; context?: unknown })
           ) {
-            checkDone(event.sourceRole);
+            signalDone();
           }
         }
         if (event.type === "stop") {
-          checkDone(role.name);
+          signalDone();
         }
       };
       handlers.push({ role: role.name, handler });
@@ -86,5 +87,5 @@ export function useDoneDetection(
         eventBus.unsubscribe(role, handler);
       }
     };
-  }, [screen, topology, eventBus, checkDone]);
+  }, [screen, topology, eventBus, signalDone]);
 }
