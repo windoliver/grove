@@ -45,6 +45,14 @@ export interface ServiceStartOptions {
 export interface RunningServices {
   readonly children: ManagedChildProcess[];
   readonly nexusManaged: boolean;
+  /**
+   * True only when THIS startServices invocation transitioned Nexus from
+   * stopped→running. False when Nexus was already healthy and we reused it.
+   * stopServices uses this to gate `nexusDown` — a routine shutdown of a
+   * process that only reused Nexus must not stop a Nexus other concurrent
+   * work depends on.
+   */
+  readonly nexusStartedThisCall: boolean;
   readonly projectRoot: string;
   readonly pidFilePath: string;
   /**
@@ -54,6 +62,14 @@ export interface RunningServices {
    */
   readonly resolvedNexusUrl?: string | undefined;
 }
+
+/**
+ * Process-local registry of RunningServices keyed by groveDir. Lets a
+ * same-process re-entry return the ORIGINAL handle (with its real child
+ * shutdown surfaces) instead of an empty children[] that would orphan the
+ * services on cleanup. Cleared by stopServices.
+ */
+const SAME_PROCESS_REGISTRY = new Map<string, RunningServices>();
 
 // ---------------------------------------------------------------------------
 // Config persistence helper (caller responsibility, not startServices)
@@ -122,7 +138,13 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   );
 
   if (!existsSync(configPath)) {
-    return { children, nexusManaged, projectRoot, pidFilePath };
+    return {
+      children,
+      nexusManaged,
+      nexusStartedThisCall: false,
+      projectRoot,
+      pidFilePath,
+    };
   }
 
   const raw = readFileSync(configPath, "utf-8");
@@ -208,30 +230,36 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
         return true;
       })();
       if (sameParent && allConfiguredChildrenAlive) {
-        // Already running in this same process — no need to verify
-        // identity/ownership (we ourselves spawned them). Skip spawning.
-        report(
-          `[startServices] same-process re-entry: services already running for PID ${parentPid}; reusing`,
-        );
-        if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
-          process.env.GROVE_NEXUS_URL = config.nexusUrl;
-        }
-        if (!process.env.NEXUS_API_KEY) {
-          try {
-            const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
-            const apiKey = readNexusApiKey(projectRoot);
-            if (apiKey) process.env.NEXUS_API_KEY = apiKey;
-          } catch {
-            // best-effort
+        // Already running in this same process. Return the ORIGINAL
+        // RunningServices handle from the process-local registry so
+        // shutdown still has live child references. Returning a fresh
+        // empty handle here would let the caller overwrite the original
+        // owner reference and orphan the children on cleanup.
+        const cached = SAME_PROCESS_REGISTRY.get(groveDir);
+        if (cached) {
+          report(
+            `[startServices] same-process re-entry: returning cached RunningServices for PID ${parentPid}`,
+          );
+          if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
+            process.env.GROVE_NEXUS_URL = config.nexusUrl;
           }
+          if (!process.env.NEXUS_API_KEY) {
+            try {
+              const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+              const apiKey = readNexusApiKey(projectRoot);
+              if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+            } catch {
+              /* best-effort */
+            }
+          }
+          return cached;
         }
-        return {
-          children,
-          nexusManaged: pidData.nexusManaged ?? false,
-          projectRoot,
-          pidFilePath,
-          ...(config.nexusUrl !== undefined ? { resolvedNexusUrl: config.nexusUrl } : {}),
-        };
+        // Pidfile says same parent but registry is empty (e.g. an older
+        // process wrote the pidfile, then we re-launched). Fall through
+        // to per-service spawn check — adoption path will reattach.
+        report(
+          `[startServices] same-process pidfile but no in-process registry entry; falling through to per-service check`,
+        );
       }
       // Else: fall through. spawnService handles per-service identity
       // adoption (configured-but-bound: adopt; configured-but-unbound:
@@ -443,7 +471,19 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
   }
 
-  return { children, nexusManaged, projectRoot, pidFilePath, resolvedNexusUrl };
+  const result: RunningServices = {
+    children,
+    nexusManaged,
+    nexusStartedThisCall,
+    projectRoot,
+    pidFilePath,
+    ...(resolvedNexusUrl !== undefined ? { resolvedNexusUrl } : {}),
+  };
+  // Cache for same-process re-entry so a second startServices(groveDir)
+  // call from the same TUI returns this same handle instead of an empty
+  // shell that would orphan the children on cleanup.
+  SAME_PROCESS_REGISTRY.set(groveDir, result);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,10 +497,17 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
  * Also stops managed Nexus and cleans up the PID file.
  */
 export async function stopServices(services: RunningServices): Promise<void> {
-  const { children, nexusManaged, projectRoot, pidFilePath } = services;
+  const { children, nexusManaged, nexusStartedThisCall, projectRoot, pidFilePath } = services;
 
-  // SIGTERM all children
-  for (const child of children) {
+  // Only stop children THIS startServices invocation actually spawned.
+  // Adopted children belong to a prior owner (e.g. another TUI process
+  // that is still using them); killing them on our routine cleanup
+  // would silently disrupt that owner's session. Same for nexusDown:
+  // gated on nexusStartedThisCall, not nexusManaged.
+  const ownedChildren = children.filter((c) => c.acquired === "spawned");
+
+  // SIGTERM owned children
+  for (const child of ownedChildren) {
     try {
       child.proc.kill("SIGTERM");
     } catch {
@@ -470,7 +517,7 @@ export async function stopServices(services: RunningServices): Promise<void> {
 
   // Wait for graceful shutdown (max 5s), then SIGKILL
   const deadline = Date.now() + 5_000;
-  for (const child of children) {
+  for (const child of ownedChildren) {
     const remaining = Math.max(0, deadline - Date.now());
     const exited = await Promise.race([
       child.proc.exited,
@@ -485,8 +532,8 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   }
 
-  // Stop managed Nexus
-  if (nexusManaged) {
+  // Stop managed Nexus only if we actually started it this call.
+  if (nexusManaged && nexusStartedThisCall) {
     try {
       const { nexusDown } = await import("../cli/nexus-lifecycle.js");
       await nexusDown(projectRoot);
@@ -495,11 +542,25 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   }
 
-  // Clean up PID file
-  try {
-    unlinkSync(pidFilePath);
-  } catch {
-    /* ignore */
+  // Clean up PID file only if we owned at least one child or actually
+  // started Nexus. A "borrower" call that only adopted existing children
+  // must NOT delete the original owner's pidfile.
+  const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
+  if (owned) {
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Drop the same-process registry entry so re-entry can spawn afresh.
+  // Keyed by groveDir; we stored under that key during startServices.
+  for (const [dir, cached] of SAME_PROCESS_REGISTRY) {
+    if (cached === services) {
+      SAME_PROCESS_REGISTRY.delete(dir);
+      break;
+    }
   }
 }
 

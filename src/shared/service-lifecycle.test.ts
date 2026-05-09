@@ -51,7 +51,12 @@ function makeFakeChild(name: string, opts?: { hangOnExit?: boolean }) {
   };
 
   return {
-    child: { name, pid: proc.pid, proc } as unknown as RunningServices["children"][number],
+    child: {
+      name,
+      pid: proc.pid,
+      proc,
+      acquired: "spawned",
+    } as unknown as RunningServices["children"][number],
     signals,
     forceExit: () => resolveExited!(1),
   };
@@ -84,6 +89,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [child],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -107,6 +113,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [child],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -126,6 +133,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -148,9 +156,15 @@ describe("stopServices", () => {
 
     const services: RunningServices = {
       children: [
-        { name: "dead-server", pid: 99999, proc } as unknown as RunningServices["children"][number],
+        {
+          name: "dead-server",
+          pid: 99999,
+          proc,
+          acquired: "spawned",
+        } as unknown as RunningServices["children"][number],
       ],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -392,5 +406,79 @@ describe("verifyPortIdentity — credential-free identity gate", () => {
     const result = await lifecycle.verifyPortIdentity(port, pidFilePath, "server");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/no record|foreign/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle ownership in stopServices: adopted children + reused Nexus must
+// NOT be torn down on routine cleanup (different from rollback's own filter).
+// ---------------------------------------------------------------------------
+
+describe("stopServices — ownership-aware cleanup", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    try {
+      const { rmSync } = require("node:fs") as typeof import("node:fs");
+      if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test("does NOT kill adopted children", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "stop-adopted-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, "{}");
+
+    // Two children: one spawned (should be killed), one adopted (must NOT).
+    const spawned = makeFakeChild("server");
+    const adopted = makeFakeChild("mcp");
+    // Cast adopted to acquired:"adopted" to simulate spawnService's reuse path.
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [spawned.child, adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Spawned child got SIGTERM
+    expect(spawned.signals).toContain("SIGTERM");
+    // Adopted child was untouched
+    expect(adopted.signals).toEqual([]);
+  });
+
+  test("preserves pidfile when only adopted children are present", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "stop-borrower-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, '{"parentPid": 1234}');
+
+    const adopted = makeFakeChild("server");
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Adopted not killed, pidfile retained for the original owner.
+    expect(adopted.signals).toEqual([]);
+    expect(existsSync(pidFile)).toBe(true);
   });
 });
