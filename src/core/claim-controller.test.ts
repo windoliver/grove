@@ -147,6 +147,9 @@ function makeController(
   store: FakeClaimControllerStore,
   overrides: {
     readonly queue?: KeyedWorkQueue | undefined;
+    readonly resyncIntervalMs?: number | undefined;
+    readonly workerCount?: number | undefined;
+    readonly onError?: (error: unknown, claimId: string) => void;
     readonly onTransition?: (transition: ClaimStatusTransition) => void;
   } = {},
 ): ClaimReconciliationController {
@@ -154,6 +157,9 @@ function makeController(
     claimStore: store,
     now: () => FIXED_NOW_MS,
     queue: overrides.queue,
+    resyncIntervalMs: overrides.resyncIntervalMs,
+    workerCount: overrides.workerCount,
+    onError: overrides.onError,
     onTransition: overrides.onTransition,
   });
 }
@@ -435,4 +441,72 @@ describe("ClaimReconciliationController", () => {
     await expect(queue.take()).resolves.toEqual({ key: "claim-1", attempt: 0 });
     await expect(queue.take()).resolves.toEqual({ key: "claim-2", attempt: 0 });
   });
+
+  test("start processes queued claims and invokes transition callback", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
+    const transitions: ClaimStatusTransition[] = [];
+    const controller = makeController(store, {
+      onTransition: (transition) => {
+        transitions.push(transition);
+      },
+    });
+
+    controller.enqueue("claim-1");
+    controller.start();
+    await waitFor(() => store.patches.length === 1);
+    await controller.stop();
+
+    const recorded = onlyPatch(store);
+    expect(recorded.patch.phase).toBe(ClaimStatus.Expired);
+    expect(transitions).toHaveLength(1);
+  });
+
+  test("failed worker reconcile retries and re-reads fresh store state", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(makeView({ leaseExpiresAt: "not-a-timestamp" }));
+    const errors: Array<{ readonly error: unknown; readonly claimId: string }> = [];
+    const queue = new KeyedWorkQueue({ baseDelayMs: 1, maxDelayMs: 1 });
+    const controller = makeController(store, {
+      queue,
+      onError: (error, claimId) => {
+        errors.push({ error, claimId });
+      },
+    });
+
+    controller.enqueue("claim-1");
+    controller.start();
+    await waitFor(() => errors.length === 1);
+    store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
+    await waitFor(() => store.patches.length === 1);
+    await controller.stop();
+
+    expect(errors[0]?.claimId).toBe("claim-1");
+    expect(onlyPatch(store).patch.phase).toBe(ClaimStatus.Expired);
+  });
+
+  test("stop cancels workers and prevents later queued processing", async () => {
+    const store = new FakeClaimControllerStore();
+    store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
+    const controller = makeController(store);
+
+    controller.start();
+    await controller.stop();
+
+    expect(() => controller.enqueue("claim-1")).toThrow("Work queue is closed");
+    await sleep(5);
+    expect(store.patches).toEqual([]);
+  });
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > 500) throw new Error("condition was not met in time");
+    await sleep(1);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

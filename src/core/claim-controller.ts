@@ -1,7 +1,7 @@
 import type { ClaimEntity, Condition } from "./entity.js";
 import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStatusPatch, ClaimStore } from "./store.js";
-import { KeyedWorkQueue } from "./workqueue.js";
+import { KeyedWorkQueue, type WorkItemResult } from "./workqueue.js";
 
 export type ClaimControllerStore = Pick<
   ClaimStore,
@@ -45,6 +45,10 @@ export class ClaimReconciliationController {
   private readonly workerCount: number;
   private readonly onError: ((error: unknown, claimId: string) => void) | undefined;
   private readonly onTransition: ((transition: ClaimStatusTransition) => void) | undefined;
+  private running = false;
+  private stopRequested = false;
+  private workers: Promise<void>[] = [];
+  private resyncTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: ClaimReconciliationControllerOptions) {
     this.claimStore = options.claimStore;
@@ -87,14 +91,52 @@ export class ClaimReconciliationController {
   }
 
   start(): void {
-    void this.resyncIntervalMs;
-    void this.workerCount;
-    void this.onError;
+    if (this.running) return;
+    this.running = true;
+    this.stopRequested = false;
+    for (let i = 0; i < this.workerCount; i += 1) {
+      this.workers.push(this.workerLoop());
+    }
+    this.resyncTimer = setInterval(() => {
+      void this.resync().catch((error: unknown) => {
+        this.onError?.(error, "__resync__");
+      });
+    }, this.resyncIntervalMs);
+    this.resyncTimer.unref?.();
   }
 
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
+    if (!this.running && this.stopRequested) return;
+    this.stopRequested = true;
+    if (this.resyncTimer !== undefined) {
+      clearInterval(this.resyncTimer);
+      this.resyncTimer = undefined;
+    }
     this.queue.close();
-    return Promise.resolve();
+    const workers = this.workers;
+    this.workers = [];
+    await Promise.all(workers);
+    this.running = false;
+  }
+
+  private async workerLoop(): Promise<void> {
+    while (!this.stopRequested) {
+      let item: WorkItemResult;
+      try {
+        item = await this.queue.take();
+      } catch (error) {
+        if (this.stopRequested) return;
+        throw error;
+      }
+
+      try {
+        await this.reconcileClaim(item.key);
+        this.queue.acknowledge(item.key);
+      } catch (error) {
+        this.onError?.(error, item.key);
+        if (!this.stopRequested) this.queue.retry(item.key);
+      }
+    }
   }
 
   private computeReconciliation(view: ClaimView): ReconciliationResult | undefined {
