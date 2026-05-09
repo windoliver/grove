@@ -68,6 +68,7 @@ describe("KeyedWorkQueue", () => {
       { globalBurst: -1 },
       { globalBurst: Number.POSITIVE_INFINITY },
       { globalBurst: Number.NaN },
+      { baseDelayMs: 0 },
       { baseDelayMs: -1 },
       { baseDelayMs: 2_147_483_648 },
       { baseDelayMs: Number.POSITIVE_INFINITY },

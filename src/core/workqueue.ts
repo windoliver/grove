@@ -34,6 +34,9 @@ function validatePositiveFiniteOption(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${name} must be a finite positive number`);
   }
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(`${name} must be no greater than ${MAX_TIMER_DELAY_MS}`);
+  }
 }
 
 function validateGlobalRatePerSec(value: number): void {
@@ -92,7 +95,7 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
     this.maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
     this.globalRatePerSec = options.globalRatePerSec ?? DEFAULT_GLOBAL_RATE_PER_SEC;
     this.globalBurst = options.globalBurst ?? DEFAULT_GLOBAL_BURST;
-    validateNonNegativeFiniteOption("baseDelayMs", this.baseDelayMs);
+    validatePositiveFiniteOption("baseDelayMs", this.baseDelayMs);
     validateNonNegativeFiniteOption("maxDelayMs", this.maxDelayMs);
     validateGlobalRatePerSec(this.globalRatePerSec);
     validateAtLeastOneFiniteOption("globalBurst", this.globalBurst);
