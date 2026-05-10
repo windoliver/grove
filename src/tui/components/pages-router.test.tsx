@@ -2,7 +2,8 @@
  * Tests for PagesRouter.
  *
  * Two groups:
- *   Group 1 — pure reducer (no rendering). All 8 action-mapping cases.
+ *   Group 1 — pure reducer (no rendering). Only the dialog-key cases now;
+ *             non-dialog states are uniformly noop.
  *   Group 2 — component rendering via react-test-renderer + store mutations.
  *
  * Note on useKeyboard mocking:
@@ -10,6 +11,9 @@
  *   to capture the keyboard handler. This lets us drive keyboard events from tests
  *   without a real OpenTUI renderer. The mock is set up at module scope so it applies
  *   before the pages-router module is imported.
+ *
+ * Esc-pop behavior was deliberately moved out of the router (see
+ * pages-router.tsx header). Tests reflect that: bare escape is a noop here.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -29,22 +33,8 @@ import type { RouterKeyState } from "./pages-router.js";
 import { reduceRouterKey } from "./pages-router.js";
 
 describe("reduceRouterKey", () => {
-  const clean: RouterKeyState = { dialogOpen: false, dirty: false, depth: 2 };
-  const cleanDepth1: RouterKeyState = { dialogOpen: false, dirty: false, depth: 1 };
-  const dirty: RouterKeyState = { dialogOpen: false, dirty: true, depth: 2 };
-  const withDialog: RouterKeyState = { dialogOpen: true, dirty: false, depth: 2 };
-
-  test("escape + clean + depth=2 → pop", () => {
-    expect(reduceRouterKey(clean, "escape")).toEqual({ type: "pop" });
-  });
-
-  test("escape + clean + depth=1 → quit", () => {
-    expect(reduceRouterKey(cleanDepth1, "escape")).toEqual({ type: "quit" });
-  });
-
-  test("escape + dirty → openDialog", () => {
-    expect(reduceRouterKey(dirty, "escape")).toEqual({ type: "openDialog" });
-  });
+  const closed: RouterKeyState = { dialogOpen: false };
+  const withDialog: RouterKeyState = { dialogOpen: true };
 
   test("dialogOpen=true + y → popAndCloseDialog", () => {
     expect(reduceRouterKey(withDialog, "y")).toEqual({ type: "popAndCloseDialog" });
@@ -64,10 +54,16 @@ describe("reduceRouterKey", () => {
     expect(reduceRouterKey(withDialog, "return")).toEqual({ type: "noop" });
   });
 
-  test("non-escape key with dialogOpen=false → noop", () => {
-    expect(reduceRouterKey(clean, "j")).toEqual({ type: "noop" });
-    expect(reduceRouterKey(clean, "q")).toEqual({ type: "noop" });
-    expect(reduceRouterKey(clean, "tab")).toEqual({ type: "noop" });
+  test("dialogOpen=false + escape → noop (router does NOT pop or quit)", () => {
+    expect(reduceRouterKey(closed, "escape")).toEqual({ type: "noop" });
+  });
+
+  test("dialogOpen=false + any non-escape key → noop", () => {
+    expect(reduceRouterKey(closed, "j")).toEqual({ type: "noop" });
+    expect(reduceRouterKey(closed, "q")).toEqual({ type: "noop" });
+    expect(reduceRouterKey(closed, "tab")).toEqual({ type: "noop" });
+    expect(reduceRouterKey(closed, "y")).toEqual({ type: "noop" });
+    expect(reduceRouterKey(closed, "n")).toEqual({ type: "noop" });
   });
 });
 
@@ -127,9 +123,14 @@ function makeStore(...pages: Page[]): PagesStore {
   return store;
 }
 
+interface RenderRouterOptions {
+  readonly presetName?: string;
+  readonly sessionId?: string;
+}
+
 function renderRouter(
   store: PagesStore,
-  onQuit: () => void = () => undefined,
+  options: RenderRouterOptions = {},
 ): TestRenderer.ReactTestRenderer {
   let renderer!: TestRenderer.ReactTestRenderer;
   act(() => {
@@ -137,8 +138,9 @@ function renderRouter(
       React.createElement(PagesRouter, {
         store,
         components: STUB_COMPONENTS,
-        onQuit,
         width: 120,
+        ...(options.presetName !== undefined ? { presetName: options.presetName } : {}),
+        ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
       }),
     );
   });
@@ -214,8 +216,21 @@ describe("PagesRouter rendering", () => {
     expect(flat).toContain("Agents");
   });
 
-  // Keyboard-driven tests: use mock-captured handler
-  test("esc on non-dirty top with depth=2 calls store.pop()", async () => {
+  test("breadcrumb forwards presetName during the wizard", () => {
+    const store = makeStore({ kind: "goal-input" });
+    const renderer = renderRouter(store, { presetName: "review-loop" });
+    mountedRenderers.push(renderer);
+
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("review-loop");
+  });
+
+  // Keyboard-driven tests: use mock-captured handler.
+  // The router no longer pops or opens dialogs on bare escape — those
+  // responsibilities live in inner screens (running-view, etc.). The
+  // dialog-handling branch is dormant in production; Task 9 will rewire it.
+
+  test("esc when dialog is closed is a noop (no pop, stack unchanged)", async () => {
     const store = makeStore({ kind: "running" }, { kind: "panel", params: { panel: "agents" } });
     expect(store.depth()).toBe(2);
     const renderer = renderRouter(store);
@@ -223,63 +238,38 @@ describe("PagesRouter rendering", () => {
 
     await pressKey("escape");
 
-    expect(store.depth()).toBe(1);
-    expect(store.top()?.kind).toBe("running");
-  });
-
-  test("esc on dirty top opens dialog (rendered text contains 'Discard unsaved changes?')", async () => {
-    const store = makeStore({ kind: "running" }, { kind: "panel", params: { panel: "agents" } });
-    // Register a dirty check for the panel page
-    store.registerDirtyCheck("panel", () => true);
-
-    const renderer = renderRouter(store);
-    mountedRenderers.push(renderer);
-
-    await pressKey("escape");
-
-    const flat = JSON.stringify(renderer.toJSON());
-    expect(flat).toContain("Discard unsaved changes?");
-  });
-
-  test("from open dialog, n closes dialog without popping", async () => {
-    const store = makeStore({ kind: "running" }, { kind: "panel", params: { panel: "agents" } });
-    store.registerDirtyCheck("panel", () => true);
-
-    const renderer = renderRouter(store);
-    mountedRenderers.push(renderer);
-
-    // Open dialog
-    await pressKey("escape");
-    expect(JSON.stringify(renderer.toJSON())).toContain("Discard unsaved changes?");
-
-    // Close without popping
-    await pressKey("n");
-
-    const flat = JSON.stringify(renderer.toJSON());
-    expect(flat).not.toContain("Discard unsaved changes?");
-    // Stack should be unchanged
+    // Router does NOT pop on bare escape — stack should be unchanged.
     expect(store.depth()).toBe(2);
+    expect(store.top()?.kind).toBe("panel");
   });
 
-  test("from open dialog, y pops and closes dialog", async () => {
+  test("esc when dialog is closed at depth=1 does not call onQuit (no quit prop)", async () => {
+    const store = makeStore({ kind: "running" });
+    expect(store.depth()).toBe(1);
+    const renderer = renderRouter(store);
+    mountedRenderers.push(renderer);
+
+    await pressKey("escape");
+
+    // Stack stays the same — router never quits on its own.
+    expect(store.depth()).toBe(1);
+    expect(store.top()?.kind).toBe("running");
+  });
+
+  test("esc when dirty top is registered does NOT open dialog (router no longer auto-opens)", async () => {
     const store = makeStore({ kind: "running" }, { kind: "panel", params: { panel: "agents" } });
     store.registerDirtyCheck("panel", () => true);
 
     const renderer = renderRouter(store);
     mountedRenderers.push(renderer);
 
-    // Open dialog
     await pressKey("escape");
-    expect(JSON.stringify(renderer.toJSON())).toContain("Discard unsaved changes?");
-
-    // Confirm pop
-    await pressKey("y");
 
     const flat = JSON.stringify(renderer.toJSON());
+    // Dialog stays dormant; the dirty-confirm UX is rewired in a later task.
     expect(flat).not.toContain("Discard unsaved changes?");
-    // Stack should have been popped
-    expect(store.depth()).toBe(1);
-    expect(store.top()?.kind).toBe("running");
+    // Stack unchanged.
+    expect(store.depth()).toBe(2);
   });
 
   test("renders null when the store is empty", () => {

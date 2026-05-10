@@ -636,7 +636,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           // No topology — go straight to running
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
           // Collapse the wizard so esc from running doesn't re-enter launch-preview.
-          pages.replace({ kind: "running" });
+          // Use resetTo (not replace) for parity with the topology branch in
+          // handleSpawnComplete — both paths must collapse the entire wizard
+          // stack into a single running entry.
+          pages.resetTo({ kind: "running" });
         }
       },
       [provider, topology, contract, state.selectedPreset, spawnManager, appProps.groveDir, pages],
@@ -990,7 +993,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
     return (
       <PagesStoreProvider store={pages}>
-        <PagesRouter store={pages} components={components} onQuit={handleQuit} width={100} />
+        <PagesRouter
+          store={pages}
+          components={components}
+          width={100}
+          presetName={state.selectedPreset}
+          sessionId={state.sessionId}
+        />
       </PagesStoreProvider>
     );
   },

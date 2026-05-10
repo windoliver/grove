@@ -1,11 +1,21 @@
 /**
- * PagesRouter — integration point that maps the top page to a screen component,
- * handles esc-pop with confirm-on-dirty, and renders the breadcrumb.
+ * PagesRouter — integration point that maps the top page to a screen component
+ * and renders the breadcrumb. Handles the dirty-confirm dialog when open.
  *
  * Architecture:
  *   - Pure key-reducer (reduceRouterKey) is exported so tests can exercise it
  *     directly without mounting any components or mocking useKeyboard.
  *   - The component composes the reducer with useKeyboard and applies actions.
+ *
+ * Esc handling note:
+ *   In production, multiple components register `useKeyboard` handlers via
+ *   `@opentui/react` and ALL handlers fire on every keypress (no
+ *   stopPropagation). To avoid double-pop / unwanted-quit conflicts with
+ *   inner screens that already handle escape (running-view, agent-detect,
+ *   goal-input, etc.), this router does NOT pop or quit on bare escape.
+ *   Pop/quit responsibility lives entirely with inner screens, whose onBack
+ *   callbacks are wired by screen-manager to pages.pop/replace/resetTo.
+ *   The router only consumes keys when the confirm dialog is open.
  */
 
 import { useKeyboard } from "@opentui/react";
@@ -24,8 +34,9 @@ export type PagesRouterComponentMap = Record<PageKind, React.ComponentType<{ pag
 export interface PagesRouterProps {
   readonly store: PagesStore;
   readonly components: PagesRouterComponentMap;
-  readonly onQuit: () => void;
   readonly width: number;
+  readonly presetName?: string | undefined;
+  readonly sessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -34,28 +45,18 @@ export interface PagesRouterProps {
 
 export type RouterAction =
   | { type: "noop" }
-  | { type: "pop" }
-  | { type: "openDialog" }
   | { type: "closeDialog" }
-  | { type: "popAndCloseDialog" }
-  | { type: "quit" };
+  | { type: "popAndCloseDialog" };
 
 export interface RouterKeyState {
   readonly dialogOpen: boolean;
-  readonly dirty: boolean; // hasDirtyTop()
-  readonly depth: number;
 }
 
 export function reduceRouterKey(state: RouterKeyState, keyName: string): RouterAction {
-  if (state.dialogOpen) {
-    if (keyName === "y") return { type: "popAndCloseDialog" };
-    if (keyName === "n" || keyName === "escape") return { type: "closeDialog" };
-    return { type: "noop" };
-  }
-  if (keyName !== "escape") return { type: "noop" };
-  if (state.dirty) return { type: "openDialog" };
-  if (state.depth <= 1) return { type: "quit" };
-  return { type: "pop" };
+  if (!state.dialogOpen) return { type: "noop" };
+  if (keyName === "y") return { type: "popAndCloseDialog" };
+  if (keyName === "n" || keyName === "escape") return { type: "closeDialog" };
+  return { type: "noop" };
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +64,8 @@ export function reduceRouterKey(state: RouterKeyState, keyName: string): RouterA
 // ---------------------------------------------------------------------------
 
 export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.memo(
-  function PagesRouter({ store, components, onQuit, width }: PagesRouterProps) {
-    const { top, depth, snapshot } = useScreenStack(store);
+  function PagesRouter({ store, components, width, presetName, sessionId }: PagesRouterProps) {
+    const { top, snapshot } = useScreenStack(store);
     const [dialogOpen, setDialogOpen] = useState(false);
 
     const handleConfirm = useCallback(() => {
@@ -79,19 +80,12 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
     useKeyboard(
       useCallback(
         (key) => {
-          const state: RouterKeyState = {
-            dialogOpen,
-            dirty: store.hasDirtyTop(),
-            depth,
-          };
-          const action = reduceRouterKey(state, key.name);
+          // Fast-path: when the dialog is closed, this handler is a noop.
+          // Pop/quit lives in inner screens to avoid useKeyboard handler
+          // conflicts (see file header).
+          if (!dialogOpen) return;
+          const action = reduceRouterKey({ dialogOpen }, key.name);
           switch (action.type) {
-            case "pop":
-              store.pop();
-              break;
-            case "openDialog":
-              setDialogOpen(true);
-              break;
             case "closeDialog":
               setDialogOpen(false);
               break;
@@ -99,14 +93,11 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
               store.pop();
               setDialogOpen(false);
               break;
-            case "quit":
-              onQuit();
-              break;
             case "noop":
               break;
           }
         },
-        [dialogOpen, store, depth, onQuit],
+        [dialogOpen, store],
       ),
     );
 
@@ -116,7 +107,12 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
 
     return (
       <>
-        <BreadcrumbBar stack={snapshot} width={width} />
+        <BreadcrumbBar
+          stack={snapshot}
+          presetName={presetName}
+          sessionId={sessionId}
+          width={width}
+        />
         <Component page={top} />
         <ConfirmPopDialog visible={dialogOpen} onConfirm={handleConfirm} onCancel={handleCancel} />
       </>
