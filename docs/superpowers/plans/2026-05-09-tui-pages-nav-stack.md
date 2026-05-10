@@ -12,6 +12,50 @@
 
 ---
 
+## Codebase Conventions (read before any test or component work)
+
+This codebase **does not use `@testing-library/react`**. The plan code samples below show conceptual test shape; **translate them into the project's actual conventions** before committing:
+
+1. **React tests use `react-test-renderer` + `bun:test`.**
+   Reference: `src/tui/components/entity-view.test.tsx`. Pattern:
+
+   ```tsx
+   import TestRenderer, { act } from "react-test-renderer";
+   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+   let renderer!: TestRenderer.ReactTestRenderer;
+   await act(async () => {
+     renderer = TestRenderer.create(<MyComponent ... /> as React.ReactElement);
+   });
+
+   const flat = JSON.stringify(renderer.toJSON());
+   expect(flat).toContain("expected text");
+   renderer.unmount();
+   ```
+
+   Inspect rendered text with `JSON.stringify(renderer.toJSON())`. Drive component state changes via `act(async () => { /* mutate store, etc. */ })`.
+
+2. **Keyboard handling uses `useKeyboard` from `@opentui/react`.**
+   Reference: `src/tui/screens/running-view.tsx:889+`. The PagesRouter MUST register its esc handler via `useKeyboard` — **not** an `onKeyDown` JSX prop (OpenTUI does not surface DOM events).
+
+   Pattern:
+   ```tsx
+   import { useKeyboard } from "@opentui/react";
+   useKeyboard(useCallback((key) => {
+     if (key.name === "escape") handleEscape();
+     else if (dialogOpen && key.name === "y") confirmPop();
+     else if (dialogOpen && key.name === "n") cancelDialog();
+   }, [/* deps */]));
+   ```
+
+   To test keyboard logic, **factor the handler into a pure function** (e.g., `routerKeyReducer(state, key) → action`) and unit-test that function directly. The component test then only verifies that the handler is registered with `useKeyboard` and that the produced output (rendered JSON) reflects the resulting state.
+
+3. **Existing render/imperative-state pattern for screens** — see `screen-manager.test.ts` for `act`-driven state advance, `running-view.c2.test.tsx` for keyboard injection via store/state mutation.
+
+When the implementation steps below show `fireEvent.keyDown(...)` or `<element onKeyDown={...} />`, treat that as **pseudocode for the intent**, not literal code to write. Implement the behavior using `useKeyboard` + a pure key-reducer, and test the reducer directly.
+
+---
+
 ## File Structure
 
 | File | Purpose |
