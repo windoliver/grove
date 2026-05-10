@@ -39,6 +39,7 @@ import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
+import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-stack.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
@@ -281,6 +282,56 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useEffect(() => {
       persistViewState({ expandedPanel, zoomLevel, traceSelectedAgent });
     }, [expandedPanel, zoomLevel, traceSelectedAgent, persistViewState]);
+
+    // ─── PagesStore wiring (#303): goto pushes panel pages, top→expandedPanel sync ───
+    // The store is created once at screen-manager mount and supplied via context.
+    // Each :a/:s/:d/:t/:r entry pushes a panel page; the sync effect below mirrors
+    // the visible top page back into local expandedPanel/zoomLevel state so the
+    // existing panel-render logic remains unchanged. Esc on a panel page pops
+    // the stack (handled in the useKeyboard short-circuit further below).
+    const pagesStore = usePagesStoreFromContext();
+    const { top: pagesTop } = useScreenStack(pagesStore);
+
+    // Mirror the latest zoomLevel into a ref so the sync effect can read it
+    // without listing it in the dep array (which would re-fire the mapping
+    // every time the zoom changes — defeating the lastAppliedTopRef guard).
+    const zoomLevelRef = useRef(zoomLevel);
+    useEffect(() => {
+      zoomLevelRef.current = zoomLevel;
+    }, [zoomLevel]);
+
+    // Track the last-applied top page (by identity) so the effect is idempotent
+    // even when expandedPanel/zoomLevel changes for unrelated reasons (1-9 keys,
+    // panel toggles). Without this, every state change would re-run the mapping.
+    const lastAppliedTopRef = useRef<typeof pagesTop>(undefined);
+    useEffect(() => {
+      if (lastAppliedTopRef.current === pagesTop) return;
+      lastAppliedTopRef.current = pagesTop;
+      if (!pagesTop) return;
+      if (pagesTop.kind === "panel") {
+        const panel = pagesTop.params?.panel ?? "";
+        const map: Record<string, RunningPanel> = {
+          agents: RunningPanel.Agents,
+          sessions: RunningPanel.Sessions,
+          dag: RunningPanel.Dag,
+          tasks: RunningPanel.Tasks,
+          reviews: RunningPanel.Reviews,
+          feed: RunningPanel.Feed,
+        };
+        const target = map[panel];
+        if (target !== undefined) {
+          setExpandedPanel((cur) => {
+            const next = expandPanelTransition(cur, zoomLevelRef.current, target);
+            setZoomLevel(next.zoomLevel);
+            return next.expandedPanel;
+          });
+        }
+      } else if (pagesTop.kind === "running") {
+        // Back at the bottom of the stack — clear panel zoom.
+        setExpandedPanel(null);
+        setZoomLevel("normal");
+      }
+    }, [pagesTop]);
 
     // ─── Elapsed timer ───
     const [elapsed, setElapsed] = useState("0s");
@@ -628,36 +679,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     );
 
     // ─── C2 goto dispatch table ───
+    // Each goto pushes a panel page onto the PagesStore (#303). The sync
+    // effect above translates the new top page back into expandedPanel /
+    // zoomLevel — keeping render output unchanged but routing navigation
+    // through the unified k9s-style stack.
     const gotoDispatch = useMemo<Record<string, () => void>>(
       () => ({
-        agents: () => {
-          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Agents);
-          setExpandedPanel(next.expandedPanel);
-          setZoomLevel(next.zoomLevel);
-        },
-        dag: () => {
-          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Dag);
-          setExpandedPanel(next.expandedPanel);
-          setZoomLevel(next.zoomLevel);
-        },
-        sessions: () => {
-          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Sessions);
-          setExpandedPanel(next.expandedPanel);
-          setZoomLevel(next.zoomLevel);
-        },
-        tasks: () => {
-          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Tasks);
-          setExpandedPanel(next.expandedPanel);
-          setZoomLevel(next.zoomLevel);
-        },
-        reviews: () => {
-          const next = expandPanelTransition(expandedPanel, zoomLevel, RunningPanel.Reviews);
-          setExpandedPanel(next.expandedPanel);
-          setZoomLevel(next.zoomLevel);
-        },
+        agents: () => pagesStore.push({ kind: "panel", params: { panel: "agents" } }),
+        dag: () => pagesStore.push({ kind: "panel", params: { panel: "dag" } }),
+        sessions: () => pagesStore.push({ kind: "panel", params: { panel: "sessions" } }),
+        tasks: () => pagesStore.push({ kind: "panel", params: { panel: "tasks" } }),
+        reviews: () => pagesStore.push({ kind: "panel", params: { panel: "reviews" } }),
         quit: () => onQuit(),
       }),
-      [expandedPanel, zoomLevel, onQuit],
+      [pagesStore, onQuit],
     );
 
     // Tab-complete suggestions for goto mode.
@@ -909,6 +944,27 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               return;
             }
           }
+
+          // (#303) PagesStore esc-pop short-circuit. When a panel page sits
+          // above the running root (depth > 1) and no other dismissal layer
+          // is active, esc pops the stack — the sync effect then mirrors the
+          // new top back into expandedPanel/zoomLevel. Layered dismissal
+          // (cmd-mode, prompt-mode, help, VFS, filter) takes priority and is
+          // handled by the existing routeRunningKey path (which we fall
+          // through to when the guard fails).
+          if (
+            key.name === "escape" &&
+            pagesStore.depth() > 1 &&
+            !confirmQuit &&
+            cmdStateRef.current.mode === "none" &&
+            !promptMode &&
+            !showHelp &&
+            filterQueryRef.current === ""
+          ) {
+            pagesStore.pop();
+            return;
+          }
+
           // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
           // because keyboardState's useMemo only re-runs after React commits,
           // and a burst of keys arriving in a single tick would otherwise see
@@ -921,7 +977,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           };
           routeRunningKey(key, liveState, keyboardActions);
         },
-        [showVfs, keyboardState, keyboardActions],
+        [showVfs, keyboardState, keyboardActions, pagesStore, confirmQuit, promptMode, showHelp],
       ),
     );
 
