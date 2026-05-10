@@ -292,6 +292,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const pagesStore = usePagesStoreFromContext();
     const { top: pagesTop } = useScreenStack(pagesStore);
 
+    // ─── Dirty-check: prompt-mode (#303) ───
+    // Registers a dirty check while prompt mode is active so hasDirtyTop()
+    // returns true when the user has typed something into the prompt bar.
+    useEffect(() => {
+      if (!promptMode) return;
+      return pagesStore.registerDirtyCheck("running", () => promptText.trim().length > 0);
+    }, [pagesStore, promptMode, promptText]);
+
     // Mirror the latest zoomLevel into a ref so the sync effect can read it
     // without listing it in the dep array (which would re-fire the mapping
     // every time the zoom changes — defeating the lastAppliedTopRef guard).

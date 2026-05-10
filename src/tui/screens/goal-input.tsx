@@ -6,8 +6,9 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type { AgentTopology } from "../../core/topology.js";
+import { usePagesStoreFromContext } from "../hooks/use-screen-stack.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
 
 /** Props for the GoalInput screen. */
@@ -31,6 +32,11 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
 }: GoalInputProps): React.ReactNode {
   const [buffer, setBuffer] = useState("");
   const [showEmpty, setShowEmpty] = useState(false);
+
+  const pages = usePagesStoreFromContext();
+  useEffect(() => {
+    return pages.registerDirtyCheck("goal-input", () => buffer.trim().length > 0);
+  }, [pages, buffer]);
 
   useKeyboard(
     useCallback(
