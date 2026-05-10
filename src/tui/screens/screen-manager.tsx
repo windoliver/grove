@@ -942,11 +942,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           onQuit={handleQuit}
         />
       );
-      // Stub kinds the router knows about but screen-manager doesn't drive yet.
-      // Returning the default running view keeps the router safe even if a page
-      // for these kinds is pushed (Task 9 / Task 10 will wire real screens).
-      const PanelPage = (): React.ReactNode => RunningPage();
-      const EntityDetailPage = (): React.ReactNode => RunningPage();
+      // panel and entity-detail share the same RunningPage component reference
+      // (not wrapper functions) so React's reconciler sees the same type across
+      // running/panel/entity-detail stack pushes and preserves the mounted
+      // RunningView subtree. Distinct wrapper functions (PanelPage, EntityDetailPage)
+      // would cause React to unmount+remount on every :a/:s/:d/:t/:r push, losing
+      // feed cursor, autoFollow, traceSelectedAgent, and other local state.
       return {
         "preset-select": PresetSelectPage,
         "goal-input": GoalInputPage,
@@ -956,8 +957,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         running: RunningPage,
         advanced: AdvancedPage,
         complete: CompletePage,
-        panel: PanelPage,
-        "entity-detail": EntityDetailPage,
+        panel: RunningPage,
+        "entity-detail": RunningPage,
       };
     }, [
       presets,
