@@ -16,6 +16,13 @@
  *   Pop/quit responsibility lives entirely with inner screens, whose onBack
  *   callbacks are wired by screen-manager to pages.pop/replace/resetTo.
  *   The router only consumes keys when the confirm dialog is open.
+ *
+ * Dormant dirty-confirm UX:
+ *   `<ConfirmPopDialog>` and `setDialogOpen` are wired but never triggered in
+ *   production. `pages.hasDirtyTop()` and the goal-input/prompt-mode dirty
+ *   checks are registered (Task 9 / #303) but no caller fires the dialog yet.
+ *   A follow-up will rewire dirty → confirm UX through a different mechanism
+ *   that respects the multi-handler keyboard model documented above.
  */
 
 import { useKeyboard } from "@opentui/react";
