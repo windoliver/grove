@@ -8,7 +8,11 @@ import { describe, expect, test } from "bun:test";
 import TestRenderer, { act } from "react-test-renderer";
 import { PagesStore } from "../data/pages-store.js";
 import type { ScreenStackValue } from "./use-screen-stack.js";
-import { useScreenStack } from "./use-screen-stack.js";
+import {
+  PagesStoreProvider,
+  usePagesStoreFromContext,
+  useScreenStack,
+} from "./use-screen-stack.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -212,5 +216,61 @@ describe("useScreenStack", () => {
     expect(store.depth()).toBe(1);
 
     renderer.unmount();
+  });
+});
+
+describe("PagesStoreProvider and usePagesStoreFromContext", () => {
+  // -------------------------------------------------------------------------
+  // 6. Provider exposes store via context hook
+  // -------------------------------------------------------------------------
+  test("PagesStoreProvider exposes store via usePagesStoreFromContext", async () => {
+    const store = new PagesStore();
+    store.push({ kind: "preset-select" });
+
+    let capturedStore: PagesStore | undefined;
+
+    function Consumer(): null {
+      capturedStore = usePagesStoreFromContext();
+      return null;
+    }
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <PagesStoreProvider store={store}>
+          <Consumer />
+        </PagesStoreProvider>,
+      );
+    });
+
+    expect(capturedStore).toBe(store);
+    renderer.unmount();
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. usePagesStoreFromContext throws when no provider in tree
+  // -------------------------------------------------------------------------
+  test("usePagesStoreFromContext throws when no provider is in tree", async () => {
+    function Consumer(): null {
+      usePagesStoreFromContext();
+      return null;
+    }
+
+    let caughtError: Error | undefined;
+
+    try {
+      await act(async () => {
+        TestRenderer.create(<Consumer />);
+      });
+    } catch (e) {
+      if (e instanceof Error) {
+        caughtError = e;
+      } else {
+        throw e;
+      }
+    }
+
+    expect(caughtError).toBeDefined();
+    expect(caughtError!.message).toContain("PagesStoreProvider");
   });
 });

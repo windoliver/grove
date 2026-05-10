@@ -4,9 +4,19 @@
  * Subscribes to the store's "top" event channel via useSyncExternalStore;
  * exposes the current top page, stack depth, immutable snapshot, and
  * stable push/pop/replace action callbacks.
+ *
+ * Also provides PagesStoreProvider and usePagesStoreFromContext for
+ * accessing the store via React context (avoiding prop drilling).
  */
 
-import { useCallback, useSyncExternalStore } from "react";
+import {
+  createContext,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useSyncExternalStore,
+} from "react";
 import type { Page, PagesStore } from "../data/pages-store.js";
 
 // ---------------------------------------------------------------------------
@@ -52,4 +62,25 @@ export function useScreenStack(store: PagesStore): ScreenStackValue {
   const replace = useCallback((page: Page) => store.replace(page), [store]);
 
   return { top, depth, snapshot, push, pop, replace };
+}
+
+// ---------------------------------------------------------------------------
+// Context Provider
+// ---------------------------------------------------------------------------
+
+const PagesStoreContext = createContext<PagesStore | null>(null);
+
+export interface PagesStoreProviderProps {
+  readonly store: PagesStore;
+  readonly children: ReactNode;
+}
+
+export function PagesStoreProvider({ store, children }: PagesStoreProviderProps): ReactElement {
+  return <PagesStoreContext.Provider value={store}>{children}</PagesStoreContext.Provider>;
+}
+
+export function usePagesStoreFromContext(): PagesStore {
+  const s = useContext(PagesStoreContext);
+  if (!s) throw new Error("usePagesStoreFromContext: no <PagesStoreProvider> in tree");
+  return s;
 }
