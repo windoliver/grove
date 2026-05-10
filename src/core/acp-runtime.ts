@@ -99,14 +99,27 @@ function resolveAgentFromConfig(config: AgentConfig): string {
  * grove-spawned workspaces are ephemeral and explicitly approved by the
  * `GROVE_ALLOW_ALL_PERMISSIONS=1` / sandbox config the launcher passes.
  */
+// Model-selection keys (`model`, `model_provider`) are deliberately excluded:
+// users routinely bump `model` to a value codex-acp's bundled CLI hasn't
+// caught up to yet (e.g. "gpt-5.5"), and copying it into the isolated config
+// makes every grove-spawned codex agent fail at first prompt with
+// `invalid_request_error: The '<model>' model requires a newer version of
+// Codex`. Grove instead pins `DEFAULT_CODEX_MODEL` via `-c model=...` in
+// `buildAcpLaunchArgs` so agents always run a model the launched codex CLI
+// actually supports. Set GROVE_CODEX_MODEL to override.
 const SAFE_CODEX_TOP_LEVEL_KEYS = new Set([
-  "model",
-  "model_provider",
   "personality",
   "model_reasoning_effort",
   "model_reasoning_summaries",
   "approvals_reviewer",
 ]);
+
+/**
+ * Default model passed to codex when no role-level `model` and no
+ * `GROVE_CODEX_MODEL` override is set. Pinned to a value that codex-acp
+ * 0.11.1 (and the bundled CLI) accepts; bump as the supported floor moves.
+ */
+export const DEFAULT_CODEX_MODEL = "gpt-5.4";
 
 /**
  * Match a top-level TOML scalar assignment: `key = ...` outside any table.
@@ -363,10 +376,8 @@ export function buildAcpLaunchArgs(
   const args = [...launch.args];
   if (launch.agent !== "codex") return args;
 
-  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim();
-  if (model) {
-    args.push("-c", `model=${JSON.stringify(model)}`);
-  }
+  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim() || DEFAULT_CODEX_MODEL;
+  args.push("-c", `model=${JSON.stringify(model)}`);
 
   const allowAll =
     env.GROVE_ALLOW_ALL_PERMISSIONS === "1" ||
