@@ -82,6 +82,24 @@ export interface TargetMetricInfo {
   readonly direction: "minimize" | "maximize";
 }
 
+/**
+ * Map RunningPanel enum → the `panel` param string used in
+ * `Page.params.panel`. Inverse of the lookup in the pagesTop sync effect.
+ * Used by `keyboardActions.expandPanel` to push the matching panel page
+ * onto PagesStore when the user presses 1-4 so HintBar stays in sync.
+ */
+const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = Object.freeze({
+  [RunningPanel.Feed]: "feed",
+  [RunningPanel.Agents]: "agents",
+  [RunningPanel.Dag]: "dag",
+  [RunningPanel.Terminal]: undefined,
+  [RunningPanel.Trace]: undefined,
+  [RunningPanel.Handoffs]: undefined,
+  [RunningPanel.Sessions]: "sessions",
+  [RunningPanel.Tasks]: "tasks",
+  [RunningPanel.Reviews]: "reviews",
+});
+
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
   readonly provider: TuiDataProvider;
@@ -715,11 +733,28 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           const next = expandPanelTransition(expandedPanel, zoomLevel, panel);
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          // Mirror the panel into PagesStore so HintBar (and any future
+          // PagesStore-driven UI) sees the same view as the user — without
+          // this, pressing `1-4` toggles the local panel state but the
+          // hint bar keeps showing running-view hints instead of the
+          // panel-specific chain (#309 / #303 desync follow-up).
+          const panelName = RUNNING_PANEL_PARAM[panel];
+          if (next.expandedPanel === null) {
+            // Toggled off — collapse the stack panel page if one is on top.
+            if (pagesStore.top()?.kind === "panel") {
+              pagesStore.pop();
+            }
+          } else if (panelName) {
+            pagesStore.push({ kind: "panel", params: { panel: panelName } });
+          }
         },
         collapsePanel: () => {
           const next = collapsePanel();
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          if (pagesStore.top()?.kind === "panel") {
+            pagesStore.pop();
+          }
         },
         toggleFullscreen: () => {
           const next = toggleFullscreenTransition(expandedPanel, zoomLevel);
