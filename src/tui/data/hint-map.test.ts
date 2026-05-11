@@ -52,7 +52,7 @@ describe("hintsForPage - all non-panel/non-detail page kinds", () => {
     });
   }
 
-  it("hintsForPage({kind:\"spawning\"}) → frozen, empty (no wired keys)", () => {
+  it('hintsForPage({kind:"spawning"}) → frozen, empty (no wired keys)', () => {
     const hints = hintsForPage({ kind: "spawning" });
     expect(hints).toEqual([]);
     expect(Object.isFrozen(hints)).toBe(true);
