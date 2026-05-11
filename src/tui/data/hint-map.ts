@@ -10,14 +10,14 @@
  * assembles them into the STATIC lookup map.
  */
 
-import { LAUNCH_PREVIEW_HINTS } from "../screens/agent-detect.js";
-import { COMPLETE_HINTS } from "../screens/complete-view.js";
-import { GOAL_INPUT_HINTS } from "../screens/goal-input.js";
-import { PRESET_SELECT_HINTS } from "../screens/preset-select.js";
-import { RUNNING_VIEW_HINTS } from "../screens/running-view.js";
-import { SPAWNING_HINTS } from "../screens/spawn-progress.js";
 import { ADVANCED_HINTS } from "../views/advanced-hints.js";
+import { COMPLETE_HINTS } from "../views/complete-hints.js";
+import { GOAL_INPUT_HINTS } from "../views/goal-input-hints.js";
+import { LAUNCH_PREVIEW_HINTS } from "../views/launch-preview-hints.js";
 import { PANEL_HINTS } from "../views/panel-hints.js";
+import { PRESET_SELECT_HINTS } from "../views/preset-select-hints.js";
+import { RUNNING_VIEW_HINTS } from "../views/running-view-hints.js";
+import { SPAWNING_HINTS } from "../views/spawning-hints.js";
 import type { Page } from "./pages-store.js";
 
 // ---------------------------------------------------------------------------

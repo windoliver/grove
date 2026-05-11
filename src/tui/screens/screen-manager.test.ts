@@ -155,11 +155,6 @@ mock.module("./preset-select.js", () => ({
     captured = { ...captured, screen: "preset-select", presetSelect: props };
     return null;
   },
-  PRESET_SELECT_HINTS: Object.freeze([
-    { key: "Enter", label: "Select" },
-    { key: "?", label: "Details" },
-    { key: "q", label: "Quit" },
-  ]),
 }));
 
 mock.module("./agent-detect.js", () => ({
@@ -167,12 +162,6 @@ mock.module("./agent-detect.js", () => ({
     captured = { ...captured, screen: "launch-preview", launchPreview: props };
     return null;
   },
-  LAUNCH_PREVIEW_HINTS: Object.freeze([
-    { key: "Enter", label: "Launch" },
-    { key: "c", label: "CLI" },
-    { key: "e", label: "Edit" },
-    { key: "Esc", label: "Back" },
-  ]),
 }));
 
 mock.module("./spawn-progress.js", () => ({
@@ -180,7 +169,6 @@ mock.module("./spawn-progress.js", () => ({
     captured = { ...captured, screen: "spawning", spawnProgress: props };
     return null;
   },
-  SPAWNING_HINTS: Object.freeze([{ key: "Esc", label: "Cancel" }]),
 }));
 
 mock.module("./running-view.js", () => ({
@@ -188,14 +176,6 @@ mock.module("./running-view.js", () => ({
     captured = { ...captured, screen: "running", runningView: props };
     return null;
   },
-  RUNNING_VIEW_HINTS: Object.freeze([
-    { key: ":", label: "Goto" },
-    { key: "/", label: "Filter" },
-    { key: "1-5", label: "Panel" },
-    { key: "Esc", label: "Back" },
-    { key: "?", label: "Help" },
-    { key: "q", label: "Quit" },
-  ]),
 }));
 
 mock.module("./complete-view.js", () => ({
@@ -203,10 +183,6 @@ mock.module("./complete-view.js", () => ({
     captured = { ...captured, screen: "complete", completeView: props };
     return null;
   },
-  COMPLETE_HINTS: Object.freeze([
-    { key: "Enter", label: "NewSession" },
-    { key: "q", label: "Quit" },
-  ]),
 }));
 
 const { ScreenManager } = await import("./screen-manager.js");

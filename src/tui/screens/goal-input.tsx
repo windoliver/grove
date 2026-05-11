@@ -150,11 +150,3 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
     </box>
   );
 });
-
-import type { KeyAction } from "../data/hint-map.js";
-
-export const GOAL_INPUT_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Continue" },
-  { key: "Esc", label: "Back" },
-  { key: "Ctrl+U", label: "Clear" },
-]);
