@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { DEFAULT_HINTS, hintsForPage, type KeyAction } from "./hint-map.js";
-import type { PageKind } from "./pages-store.js";
+import type { Page, PageKind } from "./pages-store.js";
 
 // ---------------------------------------------------------------------------
 // 1. hintsForPage({kind:"running"}) returns non-empty KeyAction[] with
@@ -60,6 +60,43 @@ describe("DEFAULT_HINTS", () => {
   it("is non-empty", () => {
     expect(DEFAULT_HINTS.length).toBeGreaterThan(0);
   });
+
+  it("each KeyAction entry is frozen (deep-freeze contract)", () => {
+    for (const action of DEFAULT_HINTS) {
+      expect(Object.isFrozen(action)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Deep-freeze contract: every hint set returned by hintsForPage
+//     must freeze its KeyAction entries, not just the outer array. Without
+//     this, callers could mutate `entry.key` / `entry.label` and corrupt
+//     all future renders sharing that module-singleton array.
+// ---------------------------------------------------------------------------
+describe("KeyAction deep-freeze contract", () => {
+  const PAGES_TO_CHECK: readonly Page[] = [
+    { kind: "running" },
+    { kind: "goal-input" },
+    { kind: "complete" },
+    { kind: "advanced" },
+    { kind: "preset-select" },
+    { kind: "agent-detect" },
+    { kind: "launch-preview" },
+    { kind: "panel", params: { panel: "agents" } },
+    { kind: "panel", params: { panel: "dag" } },
+  ];
+
+  for (const page of PAGES_TO_CHECK) {
+    const tag = page.kind === "panel" ? `panel:${page.params?.panel}` : page.kind;
+    it(`hintsForPage(${tag}) returns entries that are individually frozen`, () => {
+      const hints = hintsForPage(page);
+      expect(hints.length).toBeGreaterThan(0);
+      for (const action of hints) {
+        expect(Object.isFrozen(action)).toBe(true);
+      }
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------

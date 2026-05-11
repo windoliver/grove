@@ -5,9 +5,9 @@
  * need to depend on the root orchestration component.
  */
 
-import type { KeyAction } from "../data/hint-map.js";
+import { defineHints, type KeyAction } from "../data/hint-map.js";
 
-export const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
+export const ADVANCED_HINTS: readonly KeyAction[] = defineHints([
   { key: "Ctrl+B", label: "Back" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },

@@ -1,7 +1,7 @@
 /** Hints for the running view (#309). Panel toggle keys are 1-4 (see running-keyboard.ts). */
-import type { KeyAction } from "../data/hint-map.js";
+import { defineHints, type KeyAction } from "../data/hint-map.js";
 
-export const RUNNING_VIEW_HINTS: readonly KeyAction[] = Object.freeze([
+export const RUNNING_VIEW_HINTS: readonly KeyAction[] = defineHints([
   { key: ":", label: "Goto" },
   { key: "/", label: "Filter" },
   { key: "1-4", label: "Panel" },

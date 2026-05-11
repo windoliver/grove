@@ -17,7 +17,6 @@ import { LAUNCH_PREVIEW_HINTS } from "../views/launch-preview-hints.js";
 import { PANEL_HINTS } from "../views/panel-hints.js";
 import { PRESET_SELECT_HINTS } from "../views/preset-select-hints.js";
 import { RUNNING_VIEW_HINTS } from "../views/running-view-hints.js";
-import { SPAWNING_HINTS } from "../views/spawning-hints.js";
 import type { Page } from "./pages-store.js";
 
 // ---------------------------------------------------------------------------
@@ -30,11 +29,22 @@ export interface KeyAction {
   readonly label: string;
 }
 
+/**
+ * Deep-freeze a KeyAction[] literal — freezes each entry object AND the
+ * array. Use this when defining hint constants so consumers can't mutate
+ * `entry.key` / `entry.label` and corrupt all future renders for that
+ * hint set (module-singletons are returned by reference from
+ * `hintsForPage`).
+ */
+export function defineHints(actions: readonly KeyAction[]): readonly KeyAction[] {
+  return Object.freeze(actions.map((a) => Object.freeze({ ...a })));
+}
+
 // ---------------------------------------------------------------------------
 // Default hints (defined here — not view-specific)
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_HINTS: readonly KeyAction[] = Object.freeze([
+export const DEFAULT_HINTS: readonly KeyAction[] = defineHints([
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },
 ]);
@@ -55,7 +65,8 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   "goal-input": GOAL_INPUT_HINTS,
   "agent-detect": LAUNCH_PREVIEW_HINTS,
   "launch-preview": LAUNCH_PREVIEW_HINTS,
-  spawning: SPAWNING_HINTS,
+  // `spawning` intentionally absent — no actionable shortcuts on a
+  // transient screen. Falls back to DEFAULT_HINTS ([?]Help [q]Quit).
   running: RUNNING_VIEW_HINTS,
   complete: COMPLETE_HINTS,
   advanced: ADVANCED_HINTS,

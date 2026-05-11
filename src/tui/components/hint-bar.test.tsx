@@ -114,4 +114,23 @@ describe("truncateForWidth – pure function", () => {
     expect(result.actions).toEqual([]);
     expect(result.truncated).toBe(false);
   });
+
+  test("10. exact-fit width keeps all actions, truncated=false", () => {
+    // Full render width with paddingX:
+    //   "[Enter]Focus" 12 + "  [Space]Expand" 15 + "  [R]Review" 11
+    //   + "  [M]Merge" 10 + "  [L]Logs" 9 = 57 chars content
+    //   + PADDING_X 2 = 59 cols total
+    // Pre-fix bug: truncateForWidth subtracted ELLIPSIS_BUDGET first,
+    // turning a 59-col exact fit into 57 budget → drops last action.
+    const result = truncateForWidth(SAMPLE, 59);
+    expect(result.actions).toEqual(SAMPLE);
+    expect(result.truncated).toBe(false);
+  });
+
+  test("11. one column short of exact fit triggers truncation", () => {
+    // At width 58 the chain no longer fits; expect ellipsis + fewer actions.
+    const result = truncateForWidth(SAMPLE, 58);
+    expect(result.truncated).toBe(true);
+    expect(result.actions.length).toBeLessThan(SAMPLE.length);
+  });
 });

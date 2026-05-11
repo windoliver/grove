@@ -28,6 +28,28 @@ export function truncateForWidth(
   width: number,
 ): { actions: readonly KeyAction[]; truncated: boolean } {
   if (hints.length === 0) return { actions: [], truncated: false };
+
+  // First pass: see if every action fits within the no-ellipsis budget
+  // (width - paddingX). Only when this fails do we re-fit with ellipsis
+  // budget reserved — otherwise an exact-fit chain falsely drops its last
+  // action to make room for an unneeded "…".
+  const fullBudget = width - PADDING_X;
+  if (fullBudget > 0) {
+    let used = 0;
+    let fits = true;
+    for (let i = 0; i < hints.length; i++) {
+      const a = hints[i];
+      if (!a) continue;
+      used += `[${a.key}]${a.label}`.length + (i === 0 ? 0 : SEPARATOR.length);
+      if (used > fullBudget) {
+        fits = false;
+        break;
+      }
+    }
+    if (fits) return { actions: hints, truncated: false };
+  }
+
+  // Second pass: reserve ellipsis budget and greedily include actions.
   const budget = width - PADDING_X - ELLIPSIS_BUDGET;
   if (budget <= 0) return { actions: [], truncated: true };
 
