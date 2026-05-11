@@ -1000,3 +1000,5 @@ export function App({
     </box>
   );
 }
+
+export { ADVANCED_HINTS } from "./data/hint-map.js";

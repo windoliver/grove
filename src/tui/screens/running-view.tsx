@@ -1825,3 +1825,5 @@ function renderStatusBar(
     </box>
   );
 }
+
+export { RUNNING_VIEW_HINTS } from "../data/hint-map.js";

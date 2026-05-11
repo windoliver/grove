@@ -606,3 +606,5 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
     );
   },
 );
+
+export { LAUNCH_PREVIEW_HINTS } from "../data/hint-map.js";

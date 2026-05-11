@@ -189,3 +189,5 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
     );
   },
 );
+
+export { PRESET_SELECT_HINTS } from "../data/hint-map.js";

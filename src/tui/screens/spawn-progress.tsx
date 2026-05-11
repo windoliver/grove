@@ -210,3 +210,5 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
     );
   },
 );
+
+export { SPAWNING_HINTS } from "../data/hint-map.js";

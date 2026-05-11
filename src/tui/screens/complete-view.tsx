@@ -146,3 +146,5 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
     );
   },
 );
+
+export { COMPLETE_HINTS } from "../data/hint-map.js";

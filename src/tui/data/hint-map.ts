@@ -7,6 +7,7 @@
  * Issue #309: Context-Aware Hint Bar, Task 1.
  */
 
+import { PANEL_HINTS } from "../views/panel-hints.js";
 import type { Page } from "./pages-store.js";
 
 // ---------------------------------------------------------------------------
@@ -28,28 +29,35 @@ export const DEFAULT_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "q", label: "Quit" },
 ]);
 
-const PRESET_SELECT_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints for the preset-select screen (#309). */
+export const PRESET_SELECT_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "Enter", label: "Select" },
   { key: "?", label: "Details" },
   { key: "q", label: "Quit" },
 ]);
 
-const GOAL_INPUT_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints for the goal-input screen (#309). */
+export const GOAL_INPUT_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "Enter", label: "Continue" },
   { key: "Esc", label: "Back" },
   { key: "Ctrl+U", label: "Clear" },
 ]);
 
-const LAUNCH_PREVIEW_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints for the launch-preview screen (#309). Used for both `agent-detect` and `launch-preview` PageKinds. */
+export const LAUNCH_PREVIEW_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "Enter", label: "Launch" },
   { key: "c", label: "CLI" },
   { key: "e", label: "Edit" },
   { key: "Esc", label: "Back" },
 ]);
 
-const SPAWNING_HINTS: readonly KeyAction[] = Object.freeze([{ key: "Esc", label: "Cancel" }]);
+/** Hints for the spawning screen (#309). */
+export const SPAWNING_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Esc", label: "Cancel" },
+]);
 
-const RUNNING_VIEW_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints shown when the pages stack top is `running` (#309). */
+export const RUNNING_VIEW_HINTS: readonly KeyAction[] = Object.freeze([
   { key: ":", label: "Goto" },
   { key: "/", label: "Filter" },
   { key: "1-5", label: "Panel" },
@@ -58,30 +66,17 @@ const RUNNING_VIEW_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "q", label: "Quit" },
 ]);
 
-const COMPLETE_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints for the complete screen (#309). */
+export const COMPLETE_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "Enter", label: "NewSession" },
   { key: "q", label: "Quit" },
 ]);
 
-const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
+/** Hints for advanced (boardroom) mode (#309). */
+export const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
   { key: "Ctrl+B", label: "Back" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },
-]);
-
-const PANEL_GENERIC: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Detail" },
-  { key: "Esc", label: "Close" },
-  { key: "?", label: "Help" },
-  { key: "q", label: "Quit" },
-]);
-
-const DAG_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Focus" },
-  { key: "Space", label: "Expand" },
-  { key: "R", label: "Review" },
-  { key: "M", label: "Merge" },
-  { key: "L", label: "Logs" },
 ]);
 
 // ---------------------------------------------------------------------------
@@ -106,12 +101,12 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   advanced: ADVANCED_HINTS,
 
   // panel sub-kinds
-  "panel:agents": PANEL_GENERIC,
-  "panel:sessions": PANEL_GENERIC,
-  "panel:tasks": PANEL_GENERIC,
-  "panel:reviews": PANEL_GENERIC,
-  "panel:feed": PANEL_GENERIC,
-  "panel:dag": DAG_HINTS,
+  "panel:agents": PANEL_HINTS.agents,
+  "panel:dag": PANEL_HINTS.dag,
+  "panel:sessions": PANEL_HINTS.sessions,
+  "panel:tasks": PANEL_HINTS.tasks,
+  "panel:reviews": PANEL_HINTS.reviews,
+  "panel:feed": PANEL_HINTS.feed,
 } satisfies Record<string, readonly KeyAction[]>);
 
 // ---------------------------------------------------------------------------

@@ -150,3 +150,5 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
     </box>
   );
 });
+
+export { GOAL_INPUT_HINTS } from "../data/hint-map.js";
