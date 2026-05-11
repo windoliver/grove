@@ -47,12 +47,14 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <Probe
-          store={store}
-          onValue={(v) => {
-            captured = v;
-          }}
-        />) as React.ReactElement,
+        (
+          <Probe
+            store={store}
+            onValue={(v) => {
+              captured = v;
+            }}
+          />
+        ) as React.ReactElement,
       );
     });
 
@@ -78,12 +80,14 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <Probe
-          store={store}
-          onValue={(v) => {
-            renders.push(v);
-          }}
-        />) as React.ReactElement,
+        (
+          <Probe
+            store={store}
+            onValue={(v) => {
+              renders.push(v);
+            }}
+          />
+        ) as React.ReactElement,
       );
     });
 
@@ -113,12 +117,14 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <Probe
-          store={store}
-          onValue={(v) => {
-            renders.push(v);
-          }}
-        />) as React.ReactElement,
+        (
+          <Probe
+            store={store}
+            onValue={(v) => {
+              renders.push(v);
+            }}
+          />
+        ) as React.ReactElement,
       );
     });
 
@@ -147,12 +153,14 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <Probe
-          store={store}
-          onValue={() => {
-            renderCount += 1;
-          }}
-        />) as React.ReactElement,
+        (
+          <Probe
+            store={store}
+            onValue={() => {
+              renderCount += 1;
+            }}
+          />
+        ) as React.ReactElement,
       );
     });
 
@@ -186,12 +194,14 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <Probe
-          store={store}
-          onValue={(v) => {
-            captured = v;
-          }}
-        />) as React.ReactElement,
+        (
+          <Probe
+            store={store}
+            onValue={(v) => {
+              captured = v;
+            }}
+          />
+        ) as React.ReactElement,
       );
     });
 
@@ -238,9 +248,11 @@ describe("PagesStoreProvider and usePagesStoreFromContext", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (        <PagesStoreProvider store={store}>
-          <Consumer />
-        </PagesStoreProvider>) as React.ReactElement,
+        (
+          <PagesStoreProvider store={store}>
+            <Consumer />
+          </PagesStoreProvider>
+        ) as React.ReactElement,
       );
     });
 
