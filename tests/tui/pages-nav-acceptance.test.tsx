@@ -24,6 +24,7 @@ import { PagesStore } from "../../src/tui/data/pages-store.js";
 // ---------------------------------------------------------------------------
 
 mock.module("@opentui/react", () => ({
+  // Hooks PagesRouter uses directly.
   useKeyboard: (): void => {
     // No-op: keyboard handler is not exercised in this data-plane test.
     // Esc is simulated via direct store.pop() calls, mirroring the pop
@@ -31,6 +32,22 @@ mock.module("@opentui/react", () => ({
   },
   useRenderer: (): { destroy: () => void } => ({ destroy: () => undefined }),
   useTerminalDimensions: (): { width: number; height: number } => ({ width: 120, height: 40 }),
+  // Re-exports consumed transitively by @opentui-ui packages that running-view
+  // imports through the hint-map import graph (#309). Without these, bun's
+  // module-mock rejects index.js's `export { createPortal, ... }` aggregator.
+  useTimeline: (): unknown => ({}),
+  useOnResize: (_handler: unknown): void => undefined,
+  useAppContext: (): unknown => ({}),
+  createPortal: (children: unknown): unknown => children,
+  createRoot: (): unknown => ({}),
+  createElement: (): unknown => null,
+  flushSync: (fn: () => void): void => fn(),
+  extend: (): void => undefined,
+  getComponentCatalogue: (): unknown => ({}),
+  componentCatalogue: {},
+  baseComponents: {},
+  TimeToFirstDraw: (): null => null,
+  AppContext: {},
 }));
 
 // Import AFTER mock.module so the mock is applied at component load time.
