@@ -25,9 +25,7 @@ import { PagesStore } from "../../src/tui/data/pages-store.js";
 
 mock.module("@opentui/react", () => ({
   useKeyboard: (): void => {
-    // No-op: keyboard handler is not exercised in this data-plane test.
-    // Esc is simulated via direct store.pop() calls, mirroring the pop
-    // short-circuit that running-view fires on escape (Task 8).
+    /* noop */
   },
   useRenderer: (): { destroy: () => void } => ({ destroy: () => undefined }),
   useTerminalDimensions: (): { width: number; height: number } => ({ width: 120, height: 40 }),

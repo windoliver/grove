@@ -10,7 +10,7 @@
  *   Ctrl+A: toggle to App (advanced mode) / Ctrl+B back to RunningView
  */
 
-import { useKeyboard, useRenderer } from "@opentui/react";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
 import {
@@ -109,6 +109,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     resumeSessionId: resumeSessionIdFromProps,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
+    const { width: termWidth } = useTerminalDimensions();
     const { provider, topology: initialTopology, contract } = appProps;
 
     // Resolved topology — starts from GROVE.md default, or from a preset
@@ -1020,7 +1021,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         <PagesRouter
           store={pages}
           components={components}
-          width={100}
+          width={termWidth}
           presetName={state.selectedPreset}
           sessionId={state.sessionId}
         />

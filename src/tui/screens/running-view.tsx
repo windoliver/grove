@@ -82,6 +82,24 @@ export interface TargetMetricInfo {
   readonly direction: "minimize" | "maximize";
 }
 
+/**
+ * Map RunningPanel enum → the `panel` param string used in
+ * `Page.params.panel`. Inverse of the lookup in the pagesTop sync effect.
+ * Used by `keyboardActions.expandPanel` to push the matching panel page
+ * onto PagesStore when the user presses 1-4 so HintBar stays in sync.
+ */
+const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = Object.freeze({
+  [RunningPanel.Feed]: "feed",
+  [RunningPanel.Agents]: "agents",
+  [RunningPanel.Dag]: "dag",
+  [RunningPanel.Terminal]: "terminal",
+  [RunningPanel.Trace]: undefined,
+  [RunningPanel.Handoffs]: undefined,
+  [RunningPanel.Sessions]: "sessions",
+  [RunningPanel.Tasks]: "tasks",
+  [RunningPanel.Reviews]: "reviews",
+});
+
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
   readonly provider: TuiDataProvider;
@@ -325,14 +343,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           tasks: RunningPanel.Tasks,
           reviews: RunningPanel.Reviews,
           feed: RunningPanel.Feed,
+          terminal: RunningPanel.Terminal,
         };
         const target = map[panel];
         if (target !== undefined) {
-          setExpandedPanel((cur) => {
-            const next = expandPanelTransition(cur, zoomLevelRef.current, target);
-            setZoomLevel(next.zoomLevel);
-            return next.expandedPanel;
-          });
+          // SET (not toggle). expandPanelTransition would collapse the panel
+          // if local state already matches target — which happens when the
+          // user pressed a direct 1-4 shortcut: keyboardActions.expandPanel
+          // mutated local state first, then pushed onto PagesStore; this
+          // effect then runs and would toggle the just-set panel back to null.
+          // Set the panel + zoom directly so the round-trip stays stable.
+          setExpandedPanel(target);
+          if (zoomLevelRef.current === "normal") setZoomLevel("half");
         }
       } else if (pagesTop.kind === "running") {
         // Back at the bottom of the stack — clear panel zoom.
@@ -715,11 +737,31 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           const next = expandPanelTransition(expandedPanel, zoomLevel, panel);
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          // Mirror the panel into PagesStore so HintBar / breadcrumb stay
+          // in sync with the visible panel. Shortcut keys (1-4) are
+          // switches, not drill-down — normalize the stack by collapsing
+          // ALL trailing `panel` pages first so a prior goto history like
+          // `:agents :sessions` followed by shortcut `3` doesn't leave
+          // `panel:agents` underneath. Without this normalization, the
+          // sync effect would later restore the stale panel when the
+          // shortcut-selected page is popped (#309 round 10 fix).
+          while (pagesStore.top()?.kind === "panel") pagesStore.pop();
+          const panelName = RUNNING_PANEL_PARAM[panel];
+          if (next.expandedPanel !== null && panelName) {
+            pagesStore.push({ kind: "panel", params: { panel: panelName } });
+          }
+          // If next.expandedPanel === null we already popped to clean state.
+          // If panelName is undefined (Trace/Handoffs), we also stop at clean
+          // state — HintBar falls back to running hints; restore the panel
+          // mapping when those routes land in PANEL_HINTS.
         },
         collapsePanel: () => {
           const next = collapsePanel();
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          if (pagesStore.top()?.kind === "panel") {
+            pagesStore.pop();
+          }
         },
         toggleFullscreen: () => {
           const next = toggleFullscreenTransition(expandedPanel, zoomLevel);
@@ -920,6 +962,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         aliases,
         gotoDispatch,
         flash,
+        // pagesStore is stable across renders (returned by usePagesStoreFromContext);
+        // listing it satisfies biome's useExhaustiveDependencies for the
+        // round-7 expandPanel/collapsePanel push/pop/replace calls.
+        pagesStore,
         // cmdState.mode/.text and filterQuery intentionally NOT listed:
         // cmdExit reads cmdStateRef/filterQueryRef synchronously, all other
         // cmd-mode actions go through setCmdState((s) => ...) which sees the

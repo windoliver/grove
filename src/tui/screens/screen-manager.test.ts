@@ -139,6 +139,11 @@ mock.module("@opentui/react", () => ({
 
 mock.module("../app.js", () => ({
   App: (): null => null,
+  ADVANCED_HINTS: Object.freeze([
+    { key: "Ctrl+B", label: "Back" },
+    { key: "?", label: "Help" },
+    { key: "q", label: "Quit" },
+  ]),
 }));
 
 mock.module("../hooks/use-permission-detection.js", () => ({
