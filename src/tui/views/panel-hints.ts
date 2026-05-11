@@ -23,8 +23,16 @@
 
 import { defineHints, type KeyAction } from "../data/hint-map.js";
 
+// Generic panel hints — only shortcuts that are actually wired on a
+// panel page:
+//   Esc → running-view's esc-pop short-circuit (depth>1 → pop)
+//   ?   → running-keyboard normal-mode help toggle
+//   q   → running-keyboard normal-mode showQuitDialog
+// `[Enter]Detail` was removed: the current running-view Enter handler
+// routes through the feed-detail / advanced-mode path, not a panel-
+// aware drill-in. Restore [Enter] hint when the panel-specific Enter
+// handler lands (Epic C entity-detail nav work).
 const GENERIC: readonly KeyAction[] = defineHints([
-  { key: "Enter", label: "Detail" },
   { key: "Esc", label: "Close" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },
