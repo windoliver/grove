@@ -92,7 +92,7 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
   [RunningPanel.Feed]: "feed",
   [RunningPanel.Agents]: "agents",
   [RunningPanel.Dag]: "dag",
-  [RunningPanel.Terminal]: undefined,
+  [RunningPanel.Terminal]: "terminal",
   [RunningPanel.Trace]: undefined,
   [RunningPanel.Handoffs]: undefined,
   [RunningPanel.Sessions]: "sessions",
@@ -343,14 +343,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           tasks: RunningPanel.Tasks,
           reviews: RunningPanel.Reviews,
           feed: RunningPanel.Feed,
+          terminal: RunningPanel.Terminal,
         };
         const target = map[panel];
         if (target !== undefined) {
-          setExpandedPanel((cur) => {
-            const next = expandPanelTransition(cur, zoomLevelRef.current, target);
-            setZoomLevel(next.zoomLevel);
-            return next.expandedPanel;
-          });
+          // SET (not toggle). expandPanelTransition would collapse the panel
+          // if local state already matches target — which happens when the
+          // user pressed a direct 1-4 shortcut: keyboardActions.expandPanel
+          // mutated local state first, then pushed onto PagesStore; this
+          // effect then runs and would toggle the just-set panel back to null.
+          // Set the panel + zoom directly so the round-trip stays stable.
+          setExpandedPanel(target);
+          if (zoomLevelRef.current === "normal") setZoomLevel("half");
         }
       } else if (pagesTop.kind === "running") {
         // Back at the bottom of the stack — clear panel zoom.

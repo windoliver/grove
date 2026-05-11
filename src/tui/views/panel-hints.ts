@@ -54,6 +54,7 @@ export interface PanelHints {
   readonly tasks: readonly KeyAction[];
   readonly reviews: readonly KeyAction[];
   readonly feed: readonly KeyAction[];
+  readonly terminal: readonly KeyAction[];
 }
 
 export const PANEL_HINTS: PanelHints = Object.freeze({
@@ -63,4 +64,5 @@ export const PANEL_HINTS: PanelHints = Object.freeze({
   tasks: GENERIC,
   reviews: GENERIC,
   feed: GENERIC,
+  terminal: GENERIC,
 } satisfies PanelHints);

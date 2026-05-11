@@ -126,10 +126,10 @@ describe("hintsForPage - panel:dag", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. All 6 panel names resolve to non-empty arrays.
+// 5. All known panel names resolve to non-empty arrays.
 // ---------------------------------------------------------------------------
 describe("hintsForPage - all panel sub-kinds", () => {
-  const PANEL_NAMES = ["agents", "dag", "sessions", "tasks", "reviews", "feed"];
+  const PANEL_NAMES = ["agents", "dag", "sessions", "tasks", "reviews", "feed", "terminal"];
 
   for (const panel of PANEL_NAMES) {
     it(`panel:${panel} → non-empty`, () => {

@@ -81,6 +81,7 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   "panel:sessions": PANEL_HINTS.sessions,
   "panel:tasks": PANEL_HINTS.tasks,
   "panel:reviews": PANEL_HINTS.reviews,
+  "panel:terminal": PANEL_HINTS.terminal,
   "panel:feed": PANEL_HINTS.feed,
 } satisfies Record<string, readonly KeyAction[]>);
 
