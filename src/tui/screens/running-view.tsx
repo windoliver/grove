@@ -1590,7 +1590,6 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
       return (
         <DagView
           provider={ctx.provider}
-          intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
           highlightText={ctx.filterText}

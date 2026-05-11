@@ -72,7 +72,7 @@ describe("#311 acceptance — xray DAG view", () => {
       renderer = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={provider as never} intervalMs={1000} active cursor={-1} />
+            <DagView provider={provider as never} active cursor={-1} />
           </DagStateProvider>
         ) as React.ReactElement,
       );
@@ -99,7 +99,7 @@ describe("#311 acceptance — xray DAG view", () => {
       renderer = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={provider as never} intervalMs={1000} active cursor={-1} />
+            <DagView provider={provider as never} active cursor={-1} />
           </DagStateProvider>
         ) as React.ReactElement,
       );
@@ -123,7 +123,7 @@ describe("#311 acceptance — xray DAG view", () => {
       renderer = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={provider as never} intervalMs={1000} active cursor={-1} />
+            <DagView provider={provider as never} active cursor={-1} />
           </DagStateProvider>
         ) as React.ReactElement,
       );
@@ -157,7 +157,7 @@ describe("#311 acceptance — xray DAG view", () => {
       renderer1 = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={provider as never} intervalMs={1000} active cursor={-1} />
+            <DagView provider={provider as never} active cursor={-1} />
           </DagStateProvider>
         ) as React.ReactElement,
       );
@@ -172,7 +172,7 @@ describe("#311 acceptance — xray DAG view", () => {
       renderer2 = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={provider as never} intervalMs={1000} active cursor={-1} />
+            <DagView provider={provider as never} active cursor={-1} />
           </DagStateProvider>
         ) as React.ReactElement,
       );

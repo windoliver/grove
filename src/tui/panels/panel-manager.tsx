@@ -253,7 +253,6 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
           return (
             <DagView
               provider={provider}
-              intervalMs={intervalMs}
               active
               cursor={isFocused(Panel.Dag) ? nav.state.cursor : -1}
               onContributionsLoaded={onContributionsLoaded}

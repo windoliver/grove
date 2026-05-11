@@ -100,7 +100,6 @@ const EDGE_LABEL: Record<string, string> = {
 /** Props for the xray DagView. */
 export interface DagProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onContributionsLoaded?: (contributions: readonly Contribution[]) => void;
@@ -113,7 +112,6 @@ export interface DagProps {
 /** Xray-style DAG view (issue #311 C5). */
 export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function DagView({
   provider,
-  intervalMs: _intervalMs,
   active,
   cursor,
   onContributionsLoaded,
