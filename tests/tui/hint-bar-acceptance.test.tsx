@@ -133,29 +133,38 @@ describe("issue #309 acceptance", () => {
   });
 
   test("no global hint registry: src/tui/ has no useRegisterHints or hintRegistry symbol", async () => {
-    const fs = await import("node:fs/promises");
+    // Delegate to `git grep` instead of a JS-level recursive walk — git's
+    // native grep parallelizes over tracked files and finishes in <100ms
+    // even under heavy `bun test` parallel load. The pre-fix Node.js
+    // `walk + readFile` per-file approach hit bun's 5s per-test timeout
+    // under full test load and took ~3.8s standalone (#309 round 4 fix).
+    const { spawnSync } = await import("node:child_process");
     const path = await import("node:path");
 
-    const SRC = path.join(import.meta.dir, "..", "..", "src", "tui");
+    const REPO_ROOT = path.join(import.meta.dir, "..", "..");
+    const result = spawnSync(
+      "git",
+      [
+        "-C",
+        REPO_ROOT,
+        "grep",
+        "--name-only",
+        "--extended-regexp",
+        "useRegisterHints|hintRegistry",
+        "--",
+        "src/tui/*.ts",
+        "src/tui/*.tsx",
+        "src/tui/**/*.ts",
+        "src/tui/**/*.tsx",
+      ],
+      { encoding: "utf-8", timeout: 10_000 },
+    );
 
-    async function* walk(dir: string): AsyncGenerator<string> {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const p = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          yield* walk(p);
-        } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
-          yield p;
-        }
-      }
+    // git grep exit codes: 0 = match, 1 = no match, >1 = error.
+    if (result.status !== 0 && result.status !== 1) {
+      throw new Error(`git grep failed: ${result.stderr}`);
     }
-
-    const FORBIDDEN = [/useRegisterHints/, /hintRegistry/];
-    const offenders: string[] = [];
-    for await (const file of walk(SRC)) {
-      const text = await fs.readFile(file, "utf-8");
-      if (FORBIDDEN.some((rx) => rx.test(text))) offenders.push(file);
-    }
+    const offenders = result.stdout.split("\n").filter((line) => line.length > 0);
     expect(offenders).toEqual([]);
   });
 });
