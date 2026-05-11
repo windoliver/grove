@@ -962,6 +962,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         aliases,
         gotoDispatch,
         flash,
+        // pagesStore is stable across renders (returned by usePagesStoreFromContext);
+        // listing it satisfies biome's useExhaustiveDependencies for the
+        // round-7 expandPanel/collapsePanel push/pop/replace calls.
+        pagesStore,
         // cmdState.mode/.text and filterQuery intentionally NOT listed:
         // cmdExit reads cmdStateRef/filterQueryRef synchronously, all other
         // cmd-mode actions go through setCmdState((s) => ...) which sees the
