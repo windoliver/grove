@@ -115,18 +115,28 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
 
     const Component = components[top.kind];
 
+    // Column layout with explicit row reservations so a page component
+    // that renders `height="100%"` (RunningView, advanced/boardroom) can't
+    // push the HintBar off-screen. Breadcrumb and HintBar are auto-height,
+    // page content gets flexGrow=1 to fill the middle.
     return (
-      <>
-        <BreadcrumbBar
-          stack={snapshot}
-          presetName={presetName}
-          sessionId={sessionId}
-          width={width}
-        />
-        {React.createElement(Component, { page: top })}
-        <HintBar hints={hints} width={width} />
+      <box flexDirection="column" width="100%" height="100%">
+        <box flexShrink={0}>
+          <BreadcrumbBar
+            stack={snapshot}
+            presetName={presetName}
+            sessionId={sessionId}
+            width={width}
+          />
+        </box>
+        <box flexGrow={1} flexShrink={1}>
+          {React.createElement(Component, { page: top })}
+        </box>
+        <box flexShrink={0}>
+          <HintBar hints={hints} width={width} />
+        </box>
         <ConfirmPopDialog visible={dialogOpen} onConfirm={handleConfirm} onCancel={handleCancel} />
-      </>
+      </box>
     );
   },
 );

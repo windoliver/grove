@@ -38,15 +38,25 @@ describe("hintsForPage - all non-panel/non-detail page kinds", () => {
     "entity-detail",
   ];
 
-  const NON_PANEL_KINDS = ALL_PAGE_KINDS.filter((k) => k !== "panel" && k !== "entity-detail");
+  // Spawning is deliberately empty — see hint-map.ts STATIC entry comment.
+  // It has no keyboard handlers, so showing any hint would be misleading.
+  const KINDS_WITH_HINTS = ALL_PAGE_KINDS.filter(
+    (k) => k !== "panel" && k !== "entity-detail" && k !== "spawning",
+  );
 
-  for (const kind of NON_PANEL_KINDS) {
+  for (const kind of KINDS_WITH_HINTS) {
     it(`hintsForPage({kind:"${kind}"}) → frozen, non-empty`, () => {
       const hints = hintsForPage({ kind });
       expect(hints.length).toBeGreaterThan(0);
       expect(Object.isFrozen(hints)).toBe(true);
     });
   }
+
+  it("hintsForPage({kind:\"spawning\"}) → frozen, empty (no wired keys)", () => {
+    const hints = hintsForPage({ kind: "spawning" });
+    expect(hints).toEqual([]);
+    expect(Object.isFrozen(hints)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -65,8 +65,12 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   "goal-input": GOAL_INPUT_HINTS,
   "agent-detect": LAUNCH_PREVIEW_HINTS,
   "launch-preview": LAUNCH_PREVIEW_HINTS,
-  // `spawning` intentionally absent — no actionable shortcuts on a
-  // transient screen. Falls back to DEFAULT_HINTS ([?]Help [q]Quit).
+  // Spawning is transient and has NO active keyboard handlers
+  // (SpawnProgress takes no onCancel/onQuit/onHelp). Return an empty
+  // frozen array so HintBar renders nothing — we deliberately do NOT
+  // fall back to DEFAULT_HINTS here because [?]Help and [q]Quit are
+  // also unwired on this screen.
+  spawning: Object.freeze([]),
   running: RUNNING_VIEW_HINTS,
   complete: COMPLETE_HINTS,
   advanced: ADVANCED_HINTS,

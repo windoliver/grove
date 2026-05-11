@@ -2,13 +2,23 @@
  * Per-panel KeyAction[] constants for the running view's panel zoom
  * pages (#309). Keyed by the `panel` param of `Page` with kind="panel".
  *
- * DAG's chain is the issue #309 acceptance literal — `[Space]Expand`,
- * `[R]Review`, `[M]Merge`, `[L]Logs` are forward-looking placeholders for
- * the DAG drill-in work in epic #284. The hint surface lands here per
- * #309's spec; the keyboard routes for those actions are implemented in
- * follow-up issues (#311 xray DAG view + Epic C drill-in work). Only
- * `[Enter]Focus` is currently wired (via running-keyboard's normal-mode
- * "1-4" panel toggle reaching the DAG panel).
+ * DAG hints — forward-looking placeholders
+ * ----------------------------------------
+ * The DAG chain `[Enter]Focus [Space]Expand [R]Review [M]Merge [L]Logs`
+ * is the issue #309 acceptance literal verbatim, mandated by the issue
+ * spec. NONE of these keys are wired to DAG-specific actions in #309 —
+ * issue #309 only delivers the hint-bar infrastructure. The actual key
+ * routes land with the DAG drill-in work in Epic C follow-up issues
+ * (#311 xray DAG view + entity-detail navigation).
+ *
+ * Today on `panel:dag`:
+ * - Enter → routes through running-view's normal-mode keyboard to the
+ *   feed-detail / advanced-mode toggle (NOT panel-aware Focus yet).
+ * - Space / R / M / L → no panel:dag-specific handler; fall through to
+ *   their global RunningView routes (mostly no-ops on this panel).
+ *
+ * The hint surface is stable and conforms to the issue acceptance; the
+ * behind-the-key handlers are the contract of the DAG drill-in issues.
  */
 
 import { defineHints, type KeyAction } from "../data/hint-map.js";
