@@ -308,11 +308,12 @@ interface DagRowProps {
   readonly highlight: string;
 }
 
-const DagRowView = React.memo(function DagRowView({
-  row,
-  isSelected,
-  highlight,
-}: DagRowProps): React.ReactNode {
+// Plain component (no React.memo): every projection run allocates fresh
+// RenderRow objects, so prop-identity memoization would just add a
+// comparator call per row without skipping work. Row rendering is a
+// terminal-cell write, not a DOM mutation — the saved work is negligible
+// even at 100+ rows.
+function DagRowView({ row, isSelected, highlight }: DagRowProps): React.ReactNode {
   const { node, depth, expander, incomingEdge } = row;
   const indent = "  ".repeat(depth);
   const expanderGlyph = expander === "expanded" ? "▼" : expander === "collapsed" ? "▶" : "·";
@@ -341,4 +342,4 @@ const DagRowView = React.memo(function DagRowView({
       <text color={summaryColor}>{`[${node.kind}] ${truncatedSummary}`}</text>
     </box>
   );
-});
+}
