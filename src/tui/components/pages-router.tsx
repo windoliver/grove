@@ -28,9 +28,11 @@
 import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useState } from "react";
 import type { Page, PageKind, PagesStore } from "../data/pages-store.js";
+import { useHints } from "../hooks/use-hints.js";
 import { useScreenStack } from "../hooks/use-screen-stack.js";
 import { BreadcrumbBar } from "./breadcrumb-bar.js";
 import { ConfirmPopDialog } from "./confirm-pop-dialog.js";
+import { HintBar } from "./hint-bar.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -73,6 +75,7 @@ export function reduceRouterKey(state: RouterKeyState, keyName: string): RouterA
 export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.memo(
   function PagesRouter({ store, components, width, presetName, sessionId }: PagesRouterProps) {
     const { top, snapshot } = useScreenStack(store);
+    const hints = useHints(store);
     const [dialogOpen, setDialogOpen] = useState(false);
 
     const handleConfirm = useCallback(() => {
@@ -121,6 +124,7 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
           width={width}
         />
         {React.createElement(Component, { page: top })}
+        <HintBar hints={hints} width={width} />
         <ConfirmPopDialog visible={dialogOpen} onConfirm={handleConfirm} onCancel={handleCancel} />
       </>
     );

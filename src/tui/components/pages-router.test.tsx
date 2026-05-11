@@ -278,4 +278,48 @@ describe("PagesRouter rendering", () => {
     mountedRenderers.push(renderer);
     expect(renderer.toJSON()).toBeNull();
   });
+
+  test("HintBar reflects current top page (#309 wiring)", async () => {
+    const store = new PagesStore();
+    store.push({ kind: "running" });
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <PagesRouter store={store} components={STUB_COMPONENTS} width={120} />
+        ) as React.ReactElement,
+      );
+    });
+
+    // Running hints visible
+    expect(JSON.stringify(renderer.toJSON())).toContain("[:]");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Goto");
+    expect(JSON.stringify(renderer.toJSON())).toContain("[/]");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Filter");
+
+    // Push panel:dag → DAG hints
+    await act(async () => {
+      store.push({ kind: "panel", params: { panel: "dag" } });
+    });
+    const dagFlat = JSON.stringify(renderer.toJSON());
+    expect(dagFlat).toContain("[Enter]");
+    expect(dagFlat).toContain("Focus");
+    expect(dagFlat).toContain("[Space]");
+    expect(dagFlat).toContain("Expand");
+    expect(dagFlat).toContain("[R]");
+    expect(dagFlat).toContain("Review");
+    expect(dagFlat).toContain("[M]");
+    expect(dagFlat).toContain("Merge");
+    expect(dagFlat).toContain("[L]");
+    expect(dagFlat).toContain("Logs");
+
+    // Pop → running hints again
+    await act(async () => {
+      store.pop();
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain("Goto");
+
+    renderer.unmount();
+  });
 });
