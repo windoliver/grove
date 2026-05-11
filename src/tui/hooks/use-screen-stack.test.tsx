@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { PagesStore } from "../data/pages-store.js";
 import type { ScreenStackValue } from "./use-screen-stack.js";
@@ -46,12 +47,12 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <Probe
+        (        <Probe
           store={store}
           onValue={(v) => {
             captured = v;
           }}
-        />,
+        />) as React.ReactElement,
       );
     });
 
@@ -77,12 +78,12 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <Probe
+        (        <Probe
           store={store}
           onValue={(v) => {
             renders.push(v);
           }}
-        />,
+        />) as React.ReactElement,
       );
     });
 
@@ -112,12 +113,12 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <Probe
+        (        <Probe
           store={store}
           onValue={(v) => {
             renders.push(v);
           }}
-        />,
+        />) as React.ReactElement,
       );
     });
 
@@ -146,12 +147,12 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <Probe
+        (        <Probe
           store={store}
           onValue={() => {
             renderCount += 1;
           }}
-        />,
+        />) as React.ReactElement,
       );
     });
 
@@ -185,12 +186,12 @@ describe("useScreenStack", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <Probe
+        (        <Probe
           store={store}
           onValue={(v) => {
             captured = v;
           }}
-        />,
+        />) as React.ReactElement,
       );
     });
 
@@ -237,9 +238,9 @@ describe("PagesStoreProvider and usePagesStoreFromContext", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        <PagesStoreProvider store={store}>
+        (        <PagesStoreProvider store={store}>
           <Consumer />
-        </PagesStoreProvider>,
+        </PagesStoreProvider>) as React.ReactElement,
       );
     });
 
@@ -260,7 +261,7 @@ describe("PagesStoreProvider and usePagesStoreFromContext", () => {
 
     try {
       await act(async () => {
-        TestRenderer.create(<Consumer />);
+        TestRenderer.create((<Consumer />) as React.ReactElement);
       });
     } catch (e) {
       if (e instanceof Error) {

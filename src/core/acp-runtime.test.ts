@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AcpLaunch } from "./acp-launch.js";
-import { AcpRuntime, buildAcpLaunchArgs, buildAcpLaunchEnv } from "./acp-runtime.js";
+import {
+  AcpRuntime,
+  buildAcpLaunchArgs,
+  buildAcpLaunchEnv,
+  prepareIsolatedCodexHome,
+} from "./acp-runtime.js";
 import { DENY_ALL_RESOLVER } from "./permission-resolver.js";
 
 describe("AcpRuntime construction", () => {
@@ -233,5 +241,52 @@ describe("buildAcpLaunchArgs", () => {
         { GROVE_ALLOW_ALL_PERMISSIONS: "1" },
       ),
     ).toEqual(["claude-agent-acp.js"]);
+  });
+});
+
+describe("prepareIsolatedCodexHome", () => {
+  test("writes Grove MCP into the isolated Codex config with private env off argv", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "grove-user-codex-"));
+    let isolated = "";
+    try {
+      writeFileSync(
+        join(userHome, "config.toml"),
+        ['model = "gpt-5.4-mini"', "", "[mcp_servers.untrusted]", 'command = "bad-mcp"', ""].join(
+          "\n",
+        ),
+        "utf-8",
+      );
+      writeFileSync(join(userHome, "auth.json"), '{"token":"ok"}', "utf-8");
+
+      isolated = await prepareIsolatedCodexHome({ CODEX_HOME: userHome }, [
+        {
+          name: "grove",
+          command: "/bin/bun",
+          args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+          env: {
+            GROVE_DIR: "/tmp/project/.grove",
+            GROVE_NEXUS_URL: "http://localhost:59588",
+            NEXUS_API_KEY: "secret-key",
+            GROVE_SESSION_ID: "session-1",
+          },
+        },
+      ]);
+
+      const config = readFileSync(join(isolated, "config.toml"), "utf-8");
+      expect(config).toContain('model = "gpt-5.4-mini"');
+      expect(config).not.toContain("bad-mcp");
+      expect(config).toContain("[mcp_servers.grove]");
+      expect(config).toContain('command = "/bin/bun"');
+      expect(config).toContain('args = ["run", "/tmp/grove/dist/mcp/serve.js"]');
+      expect(config).toContain("[mcp_servers.grove.env]");
+      expect(config).toContain('GROVE_DIR = "/tmp/project/.grove"');
+      expect(config).toContain('GROVE_NEXUS_URL = "http://localhost:59588"');
+      expect(config).toContain('NEXUS_API_KEY = "secret-key"');
+      expect(config).toContain('GROVE_SESSION_ID = "session-1"');
+      expect(existsSync(join(isolated, "auth.json"))).toBe(true);
+    } finally {
+      if (isolated) rmSync(isolated, { recursive: true, force: true });
+      rmSync(userHome, { recursive: true, force: true });
+    }
   });
 });

@@ -120,7 +120,7 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
           sessionId={sessionId}
           width={width}
         />
-        <Component page={top} />
+        {React.createElement(Component, { page: top })}
         <ConfirmPopDialog visible={dialogOpen} onConfirm={handleConfirm} onCancel={handleCancel} />
       </>
     );

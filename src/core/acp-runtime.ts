@@ -126,6 +126,34 @@ export const DEFAULT_CODEX_MODEL = "gpt-5.4";
  * We bail at the first `[` line to switch to "inside-section" mode.
  */
 const TOML_TOP_LEVEL_KEY_LINE = /^([A-Za-z0-9_-]+)\s*=/;
+const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
+const CODEX_GENERATED_MCP_END = "# END GROVE GENERATED MCP";
+
+type McpServerConfig = NonNullable<AgentConfig["mcpServers"]>[number];
+
+function buildCodexMcpConfigBlock(server: McpServerConfig, env: NodeJS.ProcessEnv): string {
+  const name = server.name.trim();
+  const command = server.command.trim();
+  if (!name || !command) return "";
+
+  const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
+  const lines = [
+    CODEX_GENERATED_MCP_START,
+    `[${serverKey}]`,
+    `command = ${tomlString(command)}`,
+    `args = ${tomlStringArray(server.args ?? [])}`,
+    "",
+    `[${serverKey}.env]`,
+  ];
+  const envEntries = Object.entries(mergedCodexMcpServerEnv(server, env)).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  for (const [envName, envValue] of envEntries) {
+    lines.push(`${tomlKeySegment(envName)} = ${tomlString(envValue)}`);
+  }
+  lines.push(CODEX_GENERATED_MCP_END);
+  return lines.join("\n");
+}
 
 /**
  * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Copies the
@@ -135,7 +163,10 @@ const TOML_TOP_LEVEL_KEY_LINE = /^([A-Za-z0-9_-]+)\s*=/;
  * on bootstrap), `projects.*` trust (grove uses its own permission gating),
  * `notify` hooks (would invoke desktop apps for grove turns), plugins.
  */
-async function prepareIsolatedCodexHome(env: NodeJS.ProcessEnv): Promise<string> {
+export async function prepareIsolatedCodexHome(
+  env: NodeJS.ProcessEnv,
+  mcpServers: AgentConfig["mcpServers"] = [],
+): Promise<string> {
   const userHome = env.CODEX_HOME ?? join(env.HOME ?? "/tmp", ".codex");
   const isolated = mkdtempSync(join(tmpdir(), "grove-codex-"));
   // Copy auth.json if present so login persists.
@@ -194,7 +225,14 @@ async function prepareIsolatedCodexHome(env: NodeJS.ProcessEnv): Promise<string>
     // flag in `buildAcpLaunchArgs` overrides this when a model is configured.
     safeLines.push('model = "gpt-5"');
   }
-  writeFileSync(join(isolated, "config.toml"), `${safeLines.join("\n")}\n`, "utf-8");
+  const mcpBlocks = (mcpServers ?? [])
+    .map((server) => buildCodexMcpConfigBlock(server, env))
+    .filter((block) => block.length > 0);
+  const configSections = [...safeLines, ...mcpBlocks.map((block) => `\n${block}`)];
+  writeFileSync(join(isolated, "config.toml"), `${configSections.join("\n")}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
   // Ensure plugins dir exists empty (some codex plugins bundle MCP servers).
   mkdirSync(join(isolated, "plugins"), { recursive: true });
   return isolated;
@@ -218,8 +256,9 @@ async function launchSubprocess(
   // which closes the entire ACP stdio connection and breaks downstream sends.
   // Isolate codex from the user MCP config by pointing CODEX_HOME at an
   // ephemeral directory that contains only the user's auth (so login still
-  // works) and a minimal config.toml. Grove's per-spawn MCP servers are
-  // appended via `-c` flags in buildAcpLaunchArgs and remain in effect.
+  // works), safe scalar settings, and the current Grove MCP server block.
+  // The MCP block is written to config.toml so codex loads tools at startup
+  // even when the ACP adapter does not surface session/new mcpServers.
   const childEnv = buildAcpLaunchEnv(agent, env, opts.mcpServers);
   let isolatedHomeForCleanup: string | undefined;
   if (agent === "codex" && env.GROVE_CODEX_NO_ISOLATION !== "1") {
@@ -229,7 +268,7 @@ async function launchSubprocess(
     // and run user-level notify hooks against grove turns). Operators that
     // explicitly accept the risk can opt out with GROVE_CODEX_NO_ISOLATION=1.
     try {
-      const isolatedHome = await prepareIsolatedCodexHome(env);
+      const isolatedHome = await prepareIsolatedCodexHome(childEnv, opts.mcpServers);
       childEnv.CODEX_HOME = isolatedHome;
       isolatedHomeForCleanup = isolatedHome;
     } catch (err) {
@@ -584,6 +623,7 @@ export class AcpRuntime implements AgentRuntime {
         const env = { ...inheritedEnv, ...(s.env ?? {}) };
         return {
           name: s.name,
+          type: "stdio" as const,
           command: s.command,
           args: [...(s.args ?? [])],
           env: Object.entries(env).map(([name, value]) => ({ name, value })),

@@ -3,25 +3,24 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ConfirmPopDialog } from "./confirm-pop-dialog.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const noop = (): void => {
+  /* noop for test */
+};
 
 describe("ConfirmPopDialog", () => {
   test("renders null when visible=false", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     act(() => {
       renderer = TestRenderer.create(
-        <ConfirmPopDialog
-          visible={false}
-          onConfirm={() => {
-            // noop for test
-          }}
-          onCancel={() => {
-            // noop for test
-          }}
-        />,
+        (
+          <ConfirmPopDialog visible={false} onConfirm={noop} onCancel={noop} />
+        ) as React.ReactElement,
       );
     });
 
@@ -33,15 +32,9 @@ describe("ConfirmPopDialog", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     act(() => {
       renderer = TestRenderer.create(
-        <ConfirmPopDialog
-          visible={true}
-          onConfirm={() => {
-            // noop for test
-          }}
-          onCancel={() => {
-            // noop for test
-          }}
-        />,
+        (
+          <ConfirmPopDialog visible={true} onConfirm={noop} onCancel={noop} />
+        ) as React.ReactElement,
       );
     });
 
@@ -55,15 +48,9 @@ describe("ConfirmPopDialog", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     act(() => {
       renderer = TestRenderer.create(
-        <ConfirmPopDialog
-          visible={true}
-          onConfirm={() => {
-            // noop for test
-          }}
-          onCancel={() => {
-            // noop for test
-          }}
-        />,
+        (
+          <ConfirmPopDialog visible={true} onConfirm={noop} onCancel={noop} />
+        ) as React.ReactElement,
       );
     });
 

@@ -19,6 +19,12 @@ import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
 import { detectCli } from "./agent-cli-detect.js";
+import {
+  applyRoleSkillsToAll,
+  formatRoleSkillsInput,
+  parseRoleSkillsInput,
+  setRoleSkills,
+} from "./role-skills.js";
 
 /** Known CLI tools and their platform identifiers. */
 const AGENT_CLIS: readonly { cli: string; platform: string; label: string }[] = [
@@ -37,6 +43,7 @@ export interface AgentDetectProps {
     roleMapping: Map<string, string>,
     rolePrompts: Map<string, string>,
     edgeTimeouts: Map<string, number>,
+    roleSkills: Map<string, readonly string[]>,
   ) => void;
   readonly onBack: () => void;
 }
@@ -54,6 +61,8 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
     const [cursor, setCursor] = useState(0);
     const [editing, setEditing] = useState(false);
     const [editBuffer, setEditBuffer] = useState("");
+    const [editingSkills, setEditingSkills] = useState(false);
+    const [skillBuffer, setSkillBuffer] = useState("");
 
     // Role prompts — initialized from topology, editable by user
     const [rolePrompts, setRolePrompts] = useState<Map<string, string>>(() => {
@@ -67,6 +76,17 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
     });
 
     const roles = topology?.roles ?? [];
+    const roleNames = useMemo(() => roles.map((role) => role.name), [roles]);
+
+    const [roleSkills, setRoleSkillsState] = useState<Map<string, readonly string[]>>(() => {
+      const map = new Map<string, readonly string[]>();
+      if (topology) {
+        for (const role of topology.roles) {
+          map.set(role.name, [...(role.skills ?? [])]);
+        }
+      }
+      return map;
+    });
 
     // Edge reply timeouts — initialized from topology, editable by user via [t] key
     const [edgeTimeouts, setEdgeTimeouts] = useState<Map<string, number>>(() => {
@@ -202,6 +222,27 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             return;
           }
 
+          if (editingSkills) {
+            if (key.name === "escape" || key.name === "return" || key.name === "enter") {
+              const roleName = roles[cursor]?.name;
+              if (roleName) {
+                setRoleSkillsState((current) =>
+                  setRoleSkills(current, roleName, parseRoleSkillsInput(skillBuffer)),
+                );
+              }
+              setEditingSkills(false);
+              return;
+            }
+            if (key.name === "backspace") {
+              setSkillBuffer((current) => current.slice(0, -1));
+              return;
+            }
+            if ((key.sequence ?? "").length === 1) {
+              setSkillBuffer((current) => current + (key.sequence ?? ""));
+            }
+            return;
+          }
+
           if (editing) {
             if (key.name === "escape") {
               // Save on exit
@@ -227,6 +268,28 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           }
           if (key.name === "k" || key.name === "up") {
             setCursor((c) => Math.max(c - 1, 0));
+            return;
+          }
+          if (key.name === "s") {
+            const roleName = roles[cursor]?.name;
+            if (roleName) {
+              setSkillBuffer(formatRoleSkillsInput(roleSkills.get(roleName) ?? []));
+              setEditingSkills(true);
+            }
+            return;
+          }
+          if (key.name === "x") {
+            const roleName = roles[cursor]?.name;
+            if (roleName) {
+              setRoleSkillsState((current) => setRoleSkills(current, roleName, []));
+            }
+            return;
+          }
+          if (key.name === "a") {
+            const roleName = roles[cursor]?.name;
+            if (roleName) {
+              setRoleSkillsState((current) => applyRoleSkillsToAll(roleNames, current, roleName));
+            }
             return;
           }
           // c: cycle CLI for the selected role
@@ -270,7 +333,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           // Enter: launch agents (only Enter, not Tab/Space/Right which caused accidental spawns)
           if (key.name === "return" || key.name === "enter") {
             if (!scanning) {
-              onContinue(detected, roleMapping, rolePrompts, edgeTimeouts);
+              onContinue(detected, roleMapping, rolePrompts, edgeTimeouts, roleSkills);
             }
             return;
           }
@@ -285,14 +348,18 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           roleMapping,
           rolePrompts,
           edgeTimeouts,
+          roleSkills,
           onContinue,
           onBack,
           editing,
           editBuffer,
+          editingSkills,
+          skillBuffer,
           editingTimeout,
           timeoutBuffer,
           cursor,
           roles,
+          roleNames,
           availableClis,
         ],
       ),
@@ -481,16 +548,58 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           </box>
         ) : null}
 
+        {/* Role skills — editable */}
+        {roles.length > 0 ? (
+          <box
+            flexDirection="column"
+            marginX={2}
+            marginTop={1}
+            borderStyle="round"
+            borderColor={theme.border}
+            paddingX={1}
+          >
+            <text color={theme.text} bold>
+              Role Skills (s:edit, x:clear, a:copy to all)
+            </text>
+            {roles.map((role, i) => {
+              const selected = i === cursor;
+              const skills = roleSkills.get(role.name) ?? [];
+              const isEditingSelected = editingSkills && selected;
+              return (
+                <box
+                  key={role.name}
+                  flexDirection="row"
+                  backgroundColor={selected ? theme.selectedBg : undefined}
+                  paddingX={1}
+                >
+                  <text color={selected ? theme.focus : theme.text}>{selected ? "> " : "  "}</text>
+                  <text color={theme.text}>{role.name.padEnd(12)}</text>
+                  <text color={theme.secondary}> </text>
+                  <text color={isEditingSelected ? theme.focus : theme.secondary}>
+                    {isEditingSelected
+                      ? `${skillBuffer}_`
+                      : skills.length > 0
+                        ? formatRoleSkillsInput(skills)
+                        : "(none)"}
+                  </text>
+                </box>
+              );
+            })}
+          </box>
+        ) : null}
+
         {/* Hints */}
         <box paddingX={2} marginTop={1}>
           <text color={theme.secondary}>
             {editingTimeout
               ? "Type timeout in seconds (min 10, 0 or empty = no deadline)  Enter/Esc:save"
-              : editing
-                ? "Edit prompt (vim keys)  Esc:save & close"
-                : scanning
-                  ? "Scanning..."
-                  : "c:change CLI  e:edit prompt  t:set deadline  j/k:navigate  Enter:launch  Esc:back"}
+              : editingSkills
+                ? "Edit skills as comma-separated names  Enter/Esc:save"
+                : editing
+                  ? "Edit prompt (vim keys)  Esc:save & close"
+                  : scanning
+                    ? "Scanning..."
+                    : "c:change CLI  e:edit prompt  s:edit skills  x:clear skills  a:copy skills  t:set deadline  j/k:navigate  Enter:launch  Esc:back"}
           </text>
         </box>
       </box>

@@ -76,7 +76,9 @@ export interface PagesStoreProviderProps {
 }
 
 export function PagesStoreProvider({ store, children }: PagesStoreProviderProps): ReactElement {
-  return <PagesStoreContext.Provider value={store}>{children}</PagesStoreContext.Provider>;
+  return (
+    <PagesStoreContext.Provider value={store}>{children}</PagesStoreContext.Provider>
+  ) as ReactElement;
 }
 
 export function usePagesStoreFromContext(): PagesStore {

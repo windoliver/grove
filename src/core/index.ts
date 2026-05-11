@@ -47,6 +47,12 @@ export type {
 } from "./bounty-store.js";
 export type { ContentStore, PutOptions } from "./cas.js";
 export { validateMediaType } from "./cas.js";
+export type {
+  ClaimControllerStore,
+  ClaimReconciliationControllerOptions,
+  ClaimStatusTransition,
+} from "./claim-controller.js";
+export { ClaimReconciliationController } from "./claim-controller.js";
 export {
   computeLeaseDuration,
   DEFAULT_LEASE_DURATION_MS,
@@ -219,7 +225,10 @@ export {
   type AgentIdentity,
   type Artifact,
   type Claim,
+  type ClaimSpecRecord,
   ClaimStatus,
+  type ClaimStatusRecord,
+  type ClaimView,
   type Contribution,
   type ContributionInput,
   ContributionKind,
@@ -281,6 +290,8 @@ export type {
 export { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
 export type {
   ActiveClaimFilter,
+  ClaimQuery,
+  ClaimStatusPatch,
   ClaimStore,
   ContributionQuery,
   ContributionStore,
@@ -295,6 +306,12 @@ export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
 export type { RouteResult } from "./topology-router.js";
 export { TopologyRouter } from "./topology-router.js";
+export type {
+  DefaultTimerHandle,
+  WorkItemResult,
+  WorkQueueOptions,
+} from "./workqueue.js";
+export { KeyedWorkQueue, QueueClosedError } from "./workqueue.js";
 export type {
   CheckoutOptions,
   StaleOptions,
