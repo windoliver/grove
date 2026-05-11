@@ -739,28 +739,21 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setZoomLevel(next.zoomLevel);
           // Mirror the panel into PagesStore so HintBar / breadcrumb stay
           // in sync with the visible panel. Shortcut keys (1-4) are
-          // switches, not drill-down: pressing 2 then 3 should leave the
-          // stack at `[running, panel:dag]` — NOT `[running, panel:agents,
-          // panel:dag]` — so Esc collapses cleanly. Use replace() when a
-          // panel page is already on top; push() only when transitioning
-          // running → first panel. For unmapped panels (Trace/Handoffs)
-          // we pop any stale panel page so the bar doesn't lie about a
-          // panel that's no longer visible.
+          // switches, not drill-down — normalize the stack by collapsing
+          // ALL trailing `panel` pages first so a prior goto history like
+          // `:agents :sessions` followed by shortcut `3` doesn't leave
+          // `panel:agents` underneath. Without this normalization, the
+          // sync effect would later restore the stale panel when the
+          // shortcut-selected page is popped (#309 round 10 fix).
+          while (pagesStore.top()?.kind === "panel") pagesStore.pop();
           const panelName = RUNNING_PANEL_PARAM[panel];
-          const topKind = pagesStore.top()?.kind;
-          if (next.expandedPanel === null) {
-            // Toggled off — collapse the stack panel page if one is on top.
-            if (topKind === "panel") pagesStore.pop();
-          } else if (panelName) {
-            const page = { kind: "panel" as const, params: { panel: panelName } };
-            if (topKind === "panel") pagesStore.replace(page);
-            else pagesStore.push(page);
-          } else {
-            // Unmapped panel (Trace/Handoffs) — pop any stale panel page
-            // so HintBar falls back to running hints rather than lying
-            // about a panel that's no longer visible.
-            if (topKind === "panel") pagesStore.pop();
+          if (next.expandedPanel !== null && panelName) {
+            pagesStore.push({ kind: "panel", params: { panel: panelName } });
           }
+          // If next.expandedPanel === null we already popped to clean state.
+          // If panelName is undefined (Trace/Handoffs), we also stop at clean
+          // state — HintBar falls back to running hints; restore the panel
+          // mapping when those routes land in PANEL_HINTS.
         },
         collapsePanel: () => {
           const next = collapsePanel();
