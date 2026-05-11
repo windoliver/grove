@@ -1593,7 +1593,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
-          filterText={ctx.filterText}
+          highlightText={ctx.filterText}
         />
       );
 
