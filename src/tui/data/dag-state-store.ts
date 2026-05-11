@@ -12,8 +12,12 @@
  *
  * Mirrors the PagesStore pattern: subscribe by event, mutators emit
  * synchronously, snapshot() returns the same object reference until a
- * mutation occurs (required by useSyncExternalStore).
+ * mutation occurs (required by useSyncExternalStore). Listener errors are
+ * isolated via try/catch so one throwing listener cannot starve the rest
+ * or propagate out of a mutator.
  */
+
+import { debugLog } from "../debug-log.js";
 
 export interface DagStateSnapshot {
   readonly collapsed: ReadonlySet<string>;
@@ -105,8 +109,19 @@ export class DagStateStore {
 
   private invalidate(): void {
     this.cachedSnapshot = null;
-    for (const l of this.listeners) {
-      l();
+    // Snapshot listeners before iterating so self-unsubscribe during emit
+    // is safe, and wrap each call so a throwing listener cannot starve the
+    // rest or propagate out of a mutator.
+    const snapshot = [...this.listeners];
+    for (const l of snapshot) {
+      try {
+        l();
+      } catch (err) {
+        debugLog(
+          "DagStateStore",
+          `listener threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 }

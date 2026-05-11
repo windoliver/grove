@@ -83,6 +83,22 @@ describe("DagStateStore", () => {
     expect(s.snapshot().collapsed.has("a")).toBe(true);
   });
 
+  test("throwing listener is isolated; subsequent listeners still fire and mutator does not throw", () => {
+    const s = new DagStateStore();
+    const calls: string[] = [];
+    s.subscribe("change", () => {
+      calls.push("before");
+    });
+    s.subscribe("change", () => {
+      throw new Error("boom");
+    });
+    s.subscribe("change", () => {
+      calls.push("after");
+    });
+    expect(() => s.toggleCollapsed("a")).not.toThrow();
+    expect(calls).toEqual(["before", "after"]);
+  });
+
   test("setHighlight no-op when value unchanged does not re-emit", () => {
     const s = new DagStateStore();
     let count = 0;
