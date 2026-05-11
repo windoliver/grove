@@ -185,6 +185,15 @@ const _themeStore: {
   agentWaiting: string;
   agentIdle: string;
   agentError: string;
+  // xray DAG node-status colors (#311)
+  statusRunning: string;
+  statusDone: string;
+  statusFailed: string;
+  statusBlocked: string;
+  statusAwaitingReview: string;
+  statusIdle: string;
+  // Filter-highlight foreground for xray DAG (#311)
+  highlightMatch: string;
 } = {
   // Focus & chrome
   focus: resolveColor("#00cccc"),
@@ -226,6 +235,17 @@ const _themeStore: {
   agentWaiting: "◐",
   agentIdle: "○",
   agentError: "\u2717",
+
+  // xray DAG node-status colors (#311 task 5)
+  statusRunning: resolveColor("#ffcc00"),
+  statusDone: resolveColor("#7fbf7f"),
+  statusFailed: resolveColor("#ff6666"),
+  statusBlocked: resolveColor("#cc66ff"),
+  statusAwaitingReview: resolveColor("#7faaff"),
+  statusIdle: resolveColor("#7f7f7f"),
+
+  // Filter-highlight foreground for xray DAG (#311 task 5)
+  highlightMatch: resolveColor("#ffff66"),
 };
 
 /**
