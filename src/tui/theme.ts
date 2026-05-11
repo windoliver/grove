@@ -145,6 +145,13 @@ export interface ThemeColorTokens {
   warning: string;
   info: string;
   compare: string;
+  statusRunning: string;
+  statusDone: string;
+  statusFailed: string;
+  statusBlocked: string;
+  statusAwaitingReview: string;
+  statusIdle: string;
+  highlightMatch: string;
 }
 
 // ---------------------------------------------------------------------------
