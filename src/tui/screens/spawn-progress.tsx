@@ -211,4 +211,8 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
   },
 );
 
-export { SPAWNING_HINTS } from "../data/hint-map.js";
+import type { KeyAction } from "../data/hint-map.js";
+
+export const SPAWNING_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Esc", label: "Cancel" },
+]);

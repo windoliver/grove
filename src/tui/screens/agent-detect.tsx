@@ -607,4 +607,11 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
   },
 );
 
-export { LAUNCH_PREVIEW_HINTS } from "../data/hint-map.js";
+import type { KeyAction } from "../data/hint-map.js";
+
+export const LAUNCH_PREVIEW_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Enter", label: "Launch" },
+  { key: "c", label: "CLI" },
+  { key: "e", label: "Edit" },
+  { key: "Esc", label: "Back" },
+]);

@@ -147,4 +147,9 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
   },
 );
 
-export { COMPLETE_HINTS } from "../data/hint-map.js";
+import type { KeyAction } from "../data/hint-map.js";
+
+export const COMPLETE_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Enter", label: "NewSession" },
+  { key: "q", label: "Quit" },
+]);

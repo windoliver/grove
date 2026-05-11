@@ -190,4 +190,10 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
   },
 );
 
-export { PRESET_SELECT_HINTS } from "../data/hint-map.js";
+import type { KeyAction } from "../data/hint-map.js";
+
+export const PRESET_SELECT_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Enter", label: "Select" },
+  { key: "?", label: "Details" },
+  { key: "q", label: "Quit" },
+]);

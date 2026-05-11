@@ -1001,4 +1001,10 @@ export function App({
   );
 }
 
-export { ADVANCED_HINTS } from "./data/hint-map.js";
+import type { KeyAction } from "./data/hint-map.js";
+
+export const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
+  { key: "Ctrl+B", label: "Back" },
+  { key: "?", label: "Help" },
+  { key: "q", label: "Quit" },
+]);

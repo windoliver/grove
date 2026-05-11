@@ -5,8 +5,18 @@
  *
  * Pure data module — no side effects, no subscriptions.
  * Issue #309: Context-Aware Hint Bar, Task 1.
+ *
+ * Each view module DEFINES its own hint constant; this module imports and
+ * assembles them into the STATIC lookup map.
  */
 
+import { ADVANCED_HINTS } from "../app.js";
+import { LAUNCH_PREVIEW_HINTS } from "../screens/agent-detect.js";
+import { COMPLETE_HINTS } from "../screens/complete-view.js";
+import { GOAL_INPUT_HINTS } from "../screens/goal-input.js";
+import { PRESET_SELECT_HINTS } from "../screens/preset-select.js";
+import { RUNNING_VIEW_HINTS } from "../screens/running-view.js";
+import { SPAWNING_HINTS } from "../screens/spawn-progress.js";
 import { PANEL_HINTS } from "../views/panel-hints.js";
 import type { Page } from "./pages-store.js";
 
@@ -21,60 +31,10 @@ export interface KeyAction {
 }
 
 // ---------------------------------------------------------------------------
-// Exported hint constants (all frozen)
+// Default hints (defined here — not view-specific)
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "?", label: "Help" },
-  { key: "q", label: "Quit" },
-]);
-
-/** Hints for the preset-select screen (#309). */
-export const PRESET_SELECT_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Select" },
-  { key: "?", label: "Details" },
-  { key: "q", label: "Quit" },
-]);
-
-/** Hints for the goal-input screen (#309). */
-export const GOAL_INPUT_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Continue" },
-  { key: "Esc", label: "Back" },
-  { key: "Ctrl+U", label: "Clear" },
-]);
-
-/** Hints for the launch-preview screen (#309). Used for both `agent-detect` and `launch-preview` PageKinds. */
-export const LAUNCH_PREVIEW_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "Launch" },
-  { key: "c", label: "CLI" },
-  { key: "e", label: "Edit" },
-  { key: "Esc", label: "Back" },
-]);
-
-/** Hints for the spawning screen (#309). */
-export const SPAWNING_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Esc", label: "Cancel" },
-]);
-
-/** Hints shown when the pages stack top is `running` (#309). */
-export const RUNNING_VIEW_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: ":", label: "Goto" },
-  { key: "/", label: "Filter" },
-  { key: "1-5", label: "Panel" },
-  { key: "Esc", label: "Back" },
-  { key: "?", label: "Help" },
-  { key: "q", label: "Quit" },
-]);
-
-/** Hints for the complete screen (#309). */
-export const COMPLETE_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Enter", label: "NewSession" },
-  { key: "q", label: "Quit" },
-]);
-
-/** Hints for advanced (boardroom) mode (#309). */
-export const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Ctrl+B", label: "Back" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },
 ]);
