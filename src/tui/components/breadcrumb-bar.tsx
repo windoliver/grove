@@ -45,6 +45,7 @@ const PANEL_LABELS: Record<string, string> = {
   tasks: "Tasks",
   reviews: "Reviews",
   feed: "Feed",
+  terminal: "Terminal",
 };
 
 function pageLabel(p: Page): string {
