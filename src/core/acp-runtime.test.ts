@@ -82,6 +82,8 @@ describe("buildAcpLaunchArgs", () => {
     expect(buildAcpLaunchArgs(codexLaunch, { command: "codex --full-auto" })).toEqual([
       "codex-acp.js",
       "-c",
+      'model="gpt-5.4"',
+      "-c",
       'sandbox_mode="danger-full-access"',
       "-c",
       'approval_policy="never"',
@@ -92,10 +94,19 @@ describe("buildAcpLaunchArgs", () => {
     expect(buildAcpLaunchArgs(codexLaunch, {}, { GROVE_ALLOW_ALL_PERMISSIONS: "1" })).toEqual([
       "codex-acp.js",
       "-c",
+      'model="gpt-5.4"',
+      "-c",
       'sandbox_mode="danger-full-access"',
       "-c",
       'approval_policy="never"',
     ]);
+  });
+
+  test("pins DEFAULT_CODEX_MODEL when neither opts.model nor GROVE_CODEX_MODEL is set", () => {
+    // User config can have a model codex-acp's bundled CLI doesn't support
+    // yet (e.g. gpt-5.5). Grove must override via -c model so spawned
+    // agents don't fail the very first prompt with invalid_request_error.
+    expect(buildAcpLaunchArgs(codexLaunch, {})).toEqual(["codex-acp.js", "-c", 'model="gpt-5.4"']);
   });
 
   test("passes only non-secret Grove MCP env through codex config args", () => {
@@ -126,6 +137,8 @@ describe("buildAcpLaunchArgs", () => {
       ),
     ).toEqual([
       "codex-acp.js",
+      "-c",
+      'model="gpt-5.4"',
       "-c",
       'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
       "-c",
@@ -260,7 +273,11 @@ describe("prepareIsolatedCodexHome", () => {
       ]);
 
       const config = readFileSync(join(isolated, "config.toml"), "utf-8");
-      expect(config).toContain('model = "gpt-5.4-mini"');
+      // User's `model` is intentionally NOT copied into the isolated config —
+      // grove pins the model via `-c model=...` in buildAcpLaunchArgs to avoid
+      // user configs lagging codex-acp's bundled CLI (e.g. user sets gpt-5.5
+      // but the CLI rejects it). See SAFE_CODEX_TOP_LEVEL_KEYS / DEFAULT_CODEX_MODEL.
+      expect(config).not.toContain('model = "gpt-5.4-mini"');
       expect(config).not.toContain("bad-mcp");
       expect(config).toContain("[mcp_servers.grove]");
       expect(config).toContain('command = "/bin/bun"');

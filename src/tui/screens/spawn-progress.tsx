@@ -12,7 +12,6 @@ import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceMode } from "../../core/workspace-provisioner.js";
 import { useInterval } from "../../local/use-interval.js";
-import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
 
 /** Spawn status for a single agent role. */
@@ -134,8 +133,6 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
 
     return (
       <box flexDirection="column" width="100%" height="100%">
-        <BreadcrumbBar screen="spawning" presetName={presetName} width={100} />
-
         <box flexDirection="column" paddingX={2} paddingTop={1}>
           <text color={theme.text} bold>
             Starting session...

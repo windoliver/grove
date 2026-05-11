@@ -14,7 +14,6 @@
 import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentTopology } from "../../core/topology.js";
-import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { EmptyState } from "../components/empty-state.js";
 import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
@@ -374,8 +373,6 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         borderStyle="round"
         borderColor={theme.focus}
       >
-        <BreadcrumbBar screen="agent-detect" width={100} />
-
         <box flexDirection="column" paddingX={2} paddingTop={1}>
           <text color={theme.focus} bold>
             {scanning ? "Scanning..." : "Detection complete"}
