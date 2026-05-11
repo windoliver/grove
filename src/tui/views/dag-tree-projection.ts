@@ -14,17 +14,22 @@
  * branches.
  */
 
-import type { Claim, Contribution, RelationType } from "../../core/models.js";
+import { type Claim, type Contribution, RelationType } from "../../core/models.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { compareTimestampsDesc } from "../../shared/format.js";
 import { type DagNodeStatus, deriveDagStatus } from "./derive-dag-status.js";
 
 const EDGE_RELATION_TYPES: ReadonlySet<RelationType> = new Set([
-  "derives_from",
-  "adopts",
-  "reviews",
-  "reproduces",
+  RelationType.DerivesFrom,
+  RelationType.Adopts,
+  RelationType.Reviews,
+  RelationType.Reproduces,
 ]);
+
+export interface DagEdgeRef {
+  readonly cid: string;
+  readonly relationType: RelationType;
+}
 
 export interface DagNode {
   readonly cid: string;
@@ -32,8 +37,8 @@ export interface DagNode {
   readonly summary: string;
   readonly agentLabel: string;
   readonly status: DagNodeStatus;
-  readonly parents: readonly { readonly cid: string; readonly relationType: RelationType }[];
-  readonly children: readonly { readonly cid: string; readonly relationType: RelationType }[];
+  readonly parents: readonly DagEdgeRef[];
+  readonly children: readonly DagEdgeRef[];
 }
 
 export interface RenderRow {
@@ -79,16 +84,10 @@ export function projectDagTree(input: ProjectInput): ProjectResult {
     }
   }
 
-  const parentsByCid = new Map<
-    string,
-    { readonly cid: string; readonly relationType: RelationType }[]
-  >();
-  const childrenByCid = new Map<
-    string,
-    { readonly cid: string; readonly relationType: RelationType }[]
-  >();
+  const parentsByCid = new Map<string, DagEdgeRef[]>();
+  const childrenByCid = new Map<string, DagEdgeRef[]>();
   for (const c of contributions) {
-    const parents: { readonly cid: string; readonly relationType: RelationType }[] = [];
+    const parents: DagEdgeRef[] = [];
     for (const r of c.relations) {
       if (!EDGE_RELATION_TYPES.has(r.relationType)) continue;
       if (!cidSet.has(r.targetCid)) continue;
@@ -116,7 +115,7 @@ export function projectDagTree(input: ProjectInput): ProjectResult {
   for (const [cid, kids] of childrenByCid) {
     hasReviewChild.set(
       cid,
-      kids.some((k) => k.relationType === "reviews"),
+      kids.some((k) => k.relationType === RelationType.Reviews),
     );
   }
 
