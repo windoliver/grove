@@ -31,6 +31,7 @@ import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-co
 import { useDerived } from "../hooks/use-derived.js";
 import { shallowArraysEqual } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
+import { useNowTicker } from "../hooks/use-now-ticker.js";
 import type { DagData, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
 import { projectDagTree, type RenderRow } from "./dag-tree-projection.js";
@@ -247,20 +248,23 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     }
   }, [contributions, onContributionsLoaded]);
 
+  // Ticking clock so an active claim whose lease expires between data
+  // events flips running → blocked without waiting for the next push.
+  const now = useNowTicker();
   const projection = useMemo(
     () =>
       projectDagTree({
         contributions,
         outcomes: outcomes ?? new Map(),
         claims,
-        now: Date.now(),
+        now,
         options: {
           collapsed: snapshot.collapsed,
           focusCid: snapshot.focusCid,
           maxNodes: DAG_TOTAL_CAP,
         },
       }),
-    [contributions, outcomes, claims, snapshot.collapsed, snapshot.focusCid],
+    [contributions, outcomes, claims, now, snapshot.collapsed, snapshot.focusCid],
   );
 
   if (loading && contributions.length === 0) {
