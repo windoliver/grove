@@ -1000,11 +1000,3 @@ export function App({
     </box>
   );
 }
-
-import type { KeyAction } from "./data/hint-map.js";
-
-export const ADVANCED_HINTS: readonly KeyAction[] = Object.freeze([
-  { key: "Ctrl+B", label: "Back" },
-  { key: "?", label: "Help" },
-  { key: "q", label: "Quit" },
-]);
