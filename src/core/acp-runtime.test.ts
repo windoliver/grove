@@ -273,7 +273,11 @@ describe("prepareIsolatedCodexHome", () => {
       ]);
 
       const config = readFileSync(join(isolated, "config.toml"), "utf-8");
-      expect(config).toContain('model = "gpt-5.4-mini"');
+      // User's `model` is intentionally NOT copied into the isolated config —
+      // grove pins the model via `-c model=...` in buildAcpLaunchArgs to avoid
+      // user configs lagging codex-acp's bundled CLI (e.g. user sets gpt-5.5
+      // but the CLI rejects it). See SAFE_CODEX_TOP_LEVEL_KEYS / DEFAULT_CODEX_MODEL.
+      expect(config).not.toContain('model = "gpt-5.4-mini"');
       expect(config).not.toContain("bad-mcp");
       expect(config).toContain("[mcp_servers.grove]");
       expect(config).toContain('command = "/bin/bun"');
