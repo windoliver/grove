@@ -77,16 +77,14 @@ function entityToContribution(e: ContributionEntity): Contribution {
  *  the lease-collapsed `phase` here instead, expired-but-not-yet-purged
  *  claims would render as `awaiting-review`/`idle` after a relist. */
 function entityToClaim(e: ClaimEntity): Claim {
-  // Server-version handling: modern payloads expose `persistedPhase`
-  // (raw store state) alongside the lease-aware `phase`. Use it
-  // directly when present. On legacy payloads (no persistedPhase) the
-  // only signal we have is `phase`; treat `phase === "expired"` as if
-  // it were a persisted-active record so `deriveDagStatus` can apply
-  // its lease check and surface `blocked`. The alternative (mapping
-  // to `expired`) drops the active claim before status derivation runs
-  // and silently regresses the blocked path.
-  const persisted =
-    e.status.persistedPhase ?? (e.status.phase === "expired" ? "active" : e.status.phase);
+  // Modern payloads expose `persistedPhase` (raw store state). When
+  // present, we use it directly so the lease-aware `phase` collapse
+  // doesn't hide blocked claims. On legacy payloads (no persistedPhase),
+  // we don't try to disambiguate truly-terminal expired records from
+  // active-with-lease-expired records — the filter above drops everything
+  // except phase === "active", and we pass `phase` through here so any
+  // active row that does come through is correctly classified.
+  const persisted = e.status.persistedPhase ?? e.status.phase;
   return {
     claimId: e.id,
     targetRef: e.spec.targetRef,
@@ -211,20 +209,15 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const derivedClaims = useDerived<readonly Claim[]>(
     () => {
       const all = claimInformer.list() as readonly ClaimEntity[];
-      // When `persistedPhase` is present (modern server) it tells us the
-      // raw store state directly — filter on that. When absent (legacy
-      // server emits only the lease-aware `phase`), we cannot tell an
-      // active-with-expired-lease row from a truly released/expired one
-      // by phase alone, so we accept `active` AND `expired` and let
-      // `deriveDagStatus` resolve via the actual lease timestamp.
-      // Without this, a one-version-behind server silently regresses the
-      // blocked status path.
+      // Modern payloads carry `persistedPhase` (raw store state) — filter
+      // on that so an active claim whose lease just expired still reaches
+      // `deriveDagStatus` and surfaces as `blocked`. Legacy payloads only
+      // expose lease-aware `phase`, which collapses such rows to
+      // "expired"; we accept this loss rather than falsely classify every
+      // terminal expired claim as blocked. The polled `status: "all"`
+      // fallback covers the blocked path under version skew.
       return all
-        .filter((e) => {
-          const pp = e.status.persistedPhase;
-          if (pp !== undefined) return pp === "active";
-          return e.status.phase === "active" || e.status.phase === "expired";
-        })
+        .filter((e) => (e.status.persistedPhase ?? e.status.phase) === "active")
         .map(entityToClaim);
     },
     ["Claim"],
@@ -338,7 +331,15 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const lastReportedCidsRef = useRef<readonly string[] | null>(null);
   useEffect(() => {
     if (!onContributionsLoaded) return;
-    if (cursor < 0) return;
+    // While unfocused, clear the dedup ref so the FIRST tick after refocus
+    // re-emits even if the cid sequence happens to match what we last
+    // reported. Otherwise the parent's contributionList stays populated
+    // by whichever panel reported in between, and Enter on the refocused
+    // DAG opens the other panel's row.
+    if (cursor < 0) {
+      lastReportedCidsRef.current = null;
+      return;
+    }
     if (projection.rows.length === 0) return;
     const cidSeq = projection.rows.map((r) => r.cid);
     const prev = lastReportedCidsRef.current;
