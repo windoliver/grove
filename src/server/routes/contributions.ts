@@ -12,6 +12,11 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { DefaultFrontierCalculator } from "../../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../../core/frontier-reward-service.js";
 import type {
   Contribution,
   ContributionKind,
@@ -368,7 +373,26 @@ contributions.post("/", async (c) => {
         400,
       );
     }
-    opDeps = { ...opDeps, contract: sessionConfig, contributionStore: scopedContributionStore };
+    const scopedFrontier =
+      opDeps.frontier ?? new DefaultFrontierCalculator(scopedContributionStore);
+    const scopedFrontierRewardService =
+      serverDeps.frontierRewardService !== undefined &&
+      serverDeps.bountyStore !== undefined &&
+      serverDeps.creditsService !== undefined
+        ? new FrontierRewardService({
+            frontier: scopedFrontier,
+            bountyStore: serverDeps.bountyStore,
+            creditsService: serverDeps.creditsService,
+            eligibleMetrics: frontierRewardEligibleMetrics(sessionConfig),
+          })
+        : undefined;
+    opDeps = {
+      ...opDeps,
+      contract: sessionConfig,
+      contributionStore: scopedContributionStore,
+      frontier: scopedFrontier,
+      frontierRewardService: scopedFrontierRewardService,
+    };
   }
 
   const result = await contributeOperation(input, opDeps);

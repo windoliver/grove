@@ -4,7 +4,11 @@ import type { GroveContract } from "../core/contract.js";
 import type { FrontierRewardService } from "../core/frontier-reward-service.js";
 import { type Contribution, ScoreDirection } from "../core/models.js";
 import type { Session } from "../core/session.js";
+import { makeContribution } from "../core/test-helpers.js";
 import { InMemoryContributionStore } from "../core/testing.js";
+import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
+import { SqliteCreditsService } from "../local/sqlite-credits-service.js";
+import { initSqliteDb } from "../local/sqlite-store.js";
 import type { GoalData } from "../tui/provider.js";
 import type { ServerDeps } from "./deps.js";
 import { operationDepsForSession } from "./routes/shared.js";
@@ -31,34 +35,59 @@ describe("frontier reward wiring", () => {
     expect(operationDepsForSession(rootDeps, SESSION_ID).frontierRewardService).toBeUndefined();
   });
 
-  test("session-scoped contribution writes do not invoke root frontier rewards", async () => {
+  test("session-scoped contribution writes use scoped frontier rewards, not root rewards", async () => {
     const { app, deps } = createTestApp();
     const scopedContributionStore = new InMemoryContributionStore();
+    const db = initSqliteDb(":memory:");
+    const bountyStore = new SqliteBountyStore(db);
+    const creditsService = new SqliteCreditsService(db, {
+      initialBalance: 0,
+      rewardTreasuryBalance: 100,
+    });
     const rewardCalls: string[] = [];
     const rootRewardService = rewardProbe((contribution) => {
       rewardCalls.push(contribution.cid);
     });
 
-    Object.assign(deps, {
-      contributionStoreForSession: () => scopedContributionStore,
-      frontierRewardService: rootRewardService,
-      goalSessionStore: new StubGoalSessionStore(),
-    } satisfies Partial<ServerDeps>);
-
-    const res = await app.request("/api/contributions", {
-      method: "POST",
-      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
-      body: JSON.stringify(
-        makeManifestBody({
-          sessionId: SESSION_ID,
-          summary: "session-scoped frontier reward probe",
-          scores: { accuracy: { value: 0.9, direction: ScoreDirection.Maximize } },
+    try {
+      await scopedContributionStore.put(
+        makeContribution({
+          summary: "session baseline",
+          scores: { accuracy: { value: 0.5, direction: ScoreDirection.Maximize } },
         }),
-      ),
-    });
+      );
 
-    expect(res.status).toBe(201);
-    expect(rewardCalls).toEqual([]);
+      Object.assign(deps, {
+        contributionStoreForSession: () => scopedContributionStore,
+        frontierRewardService: rootRewardService,
+        bountyStore,
+        creditsService,
+        goalSessionStore: new StubGoalSessionStore(),
+      } satisfies Partial<ServerDeps>);
+
+      const res = await app.request("/api/contributions", {
+        method: "POST",
+        headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(
+          makeManifestBody({
+            sessionId: SESSION_ID,
+            summary: "session-scoped frontier reward probe",
+            scores: { accuracy: { value: 0.9, direction: ScoreDirection.Maximize } },
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+      expect(rewardCalls).toEqual([]);
+      expect(await bountyStore.listRewards({ rewardType: "frontier_advance" })).toHaveLength(1);
+      expect(await creditsService.balance("test-agent-001")).toEqual({
+        available: 1,
+        reserved: 0,
+        total: 1,
+      });
+    } finally {
+      db.close();
+    }
   });
 });
 
