@@ -5,17 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCacheRoot, resolveRepo } from "./repo-cache.js";
 
+const GIT_INTEGRATION_TIMEOUT_MS = 60_000;
+
 function makeFixtureRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "grove-rc-fx-"));
   execSync("git -c init.defaultBranch=main init --bare", { cwd: dir, stdio: "pipe" });
-  // Push an initial commit via a scratch clone
+  // Seed the bare repo from a scratch working tree. Avoid cloning the empty
+  // bare repo first; the code under test already exercises clone/fetch.
   const scratch = mkdtempSync(join(tmpdir(), "grove-rc-scratch-"));
-  execSync(`git clone "${dir}" "${scratch}"`, { stdio: "pipe" });
+  execSync("git -c init.defaultBranch=main init", { cwd: scratch, stdio: "pipe" });
   execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
   execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
   execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
-  execSync("git branch -M main", { cwd: scratch, stdio: "pipe" });
-  execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
+  execSync(`git push "${dir}" main`, { cwd: scratch, stdio: "pipe" });
   rmSync(scratch, { recursive: true, force: true });
   return dir;
 }
@@ -50,253 +52,303 @@ describe("resolveCacheRoot", () => {
 });
 
 describe("resolveRepo — local path without origin", () => {
-  test("returns the local path verbatim and skips the cache", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "grove-rc-local-"));
-    try {
-      execSync("git init", { cwd: dir, stdio: "pipe" });
-      execSync('git config user.email "t@t"', { cwd: dir, stdio: "pipe" });
-      execSync('git config user.name "t"', { cwd: dir, stdio: "pipe" });
-      execSync("git commit --allow-empty -m init", { cwd: dir, stdio: "pipe" });
-
-      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+  test(
+    "returns the local path verbatim and skips the cache",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "grove-rc-local-"));
       try {
-        const result = await resolveRepo({ kind: "local", path: dir }, { cacheRoot });
-        expect(result.bareClonePath).toBe(dir);
-        expect(result.fetched).toBe(false);
-        expect(result.stale).toBe(false);
-        expect(result.key).toBe("local");
+        execSync("git init", { cwd: dir, stdio: "pipe" });
+        execSync('git config user.email "t@t"', { cwd: dir, stdio: "pipe" });
+        execSync('git config user.name "t"', { cwd: dir, stdio: "pipe" });
+        execSync("git commit --allow-empty -m init", { cwd: dir, stdio: "pipe" });
+
+        const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+        try {
+          const result = await resolveRepo({ kind: "local", path: dir }, { cacheRoot });
+          expect(result.bareClonePath).toBe(dir);
+          expect(result.fetched).toBe(false);
+          expect(result.stale).toBe(false);
+          expect(result.key).toBe("local");
+        } finally {
+          rmSync(cacheRoot, { recursive: true, force: true });
+        }
       } finally {
-        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — fresh clone", () => {
-  test("clones into cache, writes .ok, manifest, last-fetch", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const result = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+  test(
+    "clones into cache, writes .ok, manifest, last-fetch",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const result = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
 
-      expect(result.fetched).toBe(true);
-      expect(result.stale).toBe(false);
-      expect(result.key).toBe(`local/${fixture.replace(/^\//, "")}.git`);
-      expect(existsSync(join(result.bareClonePath, "HEAD"))).toBe(true);
-      expect(existsSync(join(result.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
-      expect(existsSync(join(result.bareClonePath, ".grove-cache", "last-fetch"))).toBe(true);
+        expect(result.fetched).toBe(true);
+        expect(result.stale).toBe(false);
+        expect(result.key).toBe(`local/${fixture.replace(/^\//, "")}.git`);
+        expect(existsSync(join(result.bareClonePath, "HEAD"))).toBe(true);
+        expect(existsSync(join(result.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
+        expect(existsSync(join(result.bareClonePath, ".grove-cache", "last-fetch"))).toBe(true);
 
-      const manifest = JSON.parse(
-        readFileSync(join(result.bareClonePath, ".grove-cache", "manifest.json"), "utf-8"),
-      );
-      expect(manifest.canonicalUrl).toBe(`file://${fixture}`);
-      expect(manifest.aliases).toEqual([`file://${fixture}`]);
-      expect(typeof manifest.createdAt).toBe("string");
-      expect(typeof manifest.lastFetchedAt).toBe("string");
-      expect(typeof manifest.lastAccessedAt).toBe("string");
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+        const manifest = JSON.parse(
+          readFileSync(join(result.bareClonePath, ".grove-cache", "manifest.json"), "utf-8"),
+        );
+        expect(manifest.canonicalUrl).toBe(`file://${fixture}`);
+        expect(manifest.aliases).toEqual([`file://${fixture}`]);
+        expect(typeof manifest.createdAt).toBe("string");
+        expect(typeof manifest.lastFetchedAt).toBe("string");
+        expect(typeof manifest.lastAccessedAt).toBe("string");
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — cache hit", () => {
-  test("second call within TTL does not fetch", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      expect(first.fetched).toBe(true);
+  test(
+    "second call within TTL does not fetch",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        expect(first.fetched).toBe(true);
 
-      const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      expect(second.fetched).toBe(false);
-      expect(second.stale).toBe(false);
-      expect(second.bareClonePath).toBe(first.bareClonePath);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+        const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        expect(second.fetched).toBe(false);
+        expect(second.stale).toBe(false);
+        expect(second.bareClonePath).toBe(first.bareClonePath);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
-  test("TTL expiry triggers fetch", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const first = await resolveRepo(
-        { kind: "url", url: `file://${fixture}` },
-        { cacheRoot, fetchTtlMs: 0 },
-      );
-      expect(first.fetched).toBe(true);
+  test(
+    "TTL expiry triggers fetch",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const first = await resolveRepo(
+          { kind: "url", url: `file://${fixture}` },
+          { cacheRoot, fetchTtlMs: 0 },
+        );
+        expect(first.fetched).toBe(true);
 
-      // Backdate last-fetch by 10s
-      const lastFetch = join(first.bareClonePath, ".grove-cache", "last-fetch");
-      const past = new Date(Date.now() - 10_000);
-      utimesSync(lastFetch, past, past);
+        // Backdate last-fetch by 10s
+        const lastFetch = join(first.bareClonePath, ".grove-cache", "last-fetch");
+        const past = new Date(Date.now() - 10_000);
+        utimesSync(lastFetch, past, past);
 
-      const second = await resolveRepo(
-        { kind: "url", url: `file://${fixture}` },
-        { cacheRoot, fetchTtlMs: 1000 },
-      );
-      expect(second.fetched).toBe(true);
-      expect(second.stale).toBe(false);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+        const second = await resolveRepo(
+          { kind: "url", url: `file://${fixture}` },
+          { cacheRoot, fetchTtlMs: 1000 },
+        );
+        expect(second.fetched).toBe(true);
+        expect(second.stale).toBe(false);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
-  test("appends new alias on URL-form change", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      await resolveRepo({ kind: "url", url: `file://${fixture}/` }, { cacheRoot }); // trailing slash → same key
+  test(
+    "appends new alias on URL-form change",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        await resolveRepo({ kind: "url", url: `file://${fixture}/` }, { cacheRoot }); // trailing slash → same key
 
-      const manifestPath = join(
-        cacheRoot,
-        `local/${fixture.replace(/^\//, "")}.git`,
-        ".grove-cache",
-        "manifest.json",
-      );
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-      expect(manifest.aliases).toContain(`file://${fixture}`);
-      expect(manifest.aliases).toContain(`file://${fixture}/`);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+        const manifestPath = join(
+          cacheRoot,
+          `local/${fixture.replace(/^\//, "")}.git`,
+          ".grove-cache",
+          "manifest.json",
+        );
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+        expect(manifest.aliases).toContain(`file://${fixture}`);
+        expect(manifest.aliases).toContain(`file://${fixture}/`);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — fresh hard-fail", () => {
-  test("opts.fresh + unreachable remote throws", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      // Prime the cache against the fixture.
-      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      // Nuke the fixture so the next fetch fails.
-      rmSync(fixture, { recursive: true, force: true });
+  test(
+    "opts.fresh + unreachable remote throws",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        // Prime the cache against the fixture.
+        await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        // Nuke the fixture so the next fetch fails.
+        rmSync(fixture, { recursive: true, force: true });
 
-      await expect(
-        resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot, fresh: true }),
-      ).rejects.toThrow(/--fresh fetch failed/);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-    }
-  });
+        await expect(
+          resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot, fresh: true }),
+        ).rejects.toThrow(/--fresh fetch failed/);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
-  test("stale path (no --fresh) proceeds with stale=true when fetch fails", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      rmSync(fixture, { recursive: true, force: true });
+  test(
+    "stale path (no --fresh) proceeds with stale=true when fetch fails",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        rmSync(fixture, { recursive: true, force: true });
 
-      const result = await resolveRepo(
-        { kind: "url", url: `file://${fixture}` },
-        { cacheRoot, fetchTtlMs: 0 },
-      );
-      expect(result.stale).toBe(true);
-      expect(result.fetched).toBe(false);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-    }
-  });
+        const result = await resolveRepo(
+          { kind: "url", url: `file://${fixture}` },
+          { cacheRoot, fetchTtlMs: 0 },
+        );
+        expect(result.stale).toBe(true);
+        expect(result.fetched).toBe(false);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — corruption recovery", () => {
-  test("absent .ok triggers nuke + re-clone", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      expect(first.fetched).toBe(true);
+  test(
+    "absent .ok triggers nuke + re-clone",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        expect(first.fetched).toBe(true);
 
-      // Simulate crash: remove .ok, leave garbage behind.
-      rmSync(join(first.bareClonePath, ".grove-cache", ".ok"));
-      writeFileSync(join(first.bareClonePath, "garbage"), "x");
+        // Simulate crash: remove .ok, leave garbage behind.
+        rmSync(join(first.bareClonePath, ".grove-cache", ".ok"));
+        writeFileSync(join(first.bareClonePath, "garbage"), "x");
 
-      const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-      expect(second.fetched).toBe(true);
-      expect(existsSync(join(second.bareClonePath, "garbage"))).toBe(false);
-      expect(existsSync(join(second.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+        const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        expect(second.fetched).toBe(true);
+        expect(existsSync(join(second.bareClonePath, "garbage"))).toBe(false);
+        expect(existsSync(join(second.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — timeout", () => {
-  test("clone timeout throws and leaves the entry recoverable", async () => {
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      // Use a non-existent remote to force a slow git failure; 1ms timeout ensures abort.
-      await expect(
-        resolveRepo(
-          { kind: "url", url: "https://example.invalid/does/not/exist" },
-          { cacheRoot, timeoutMs: 1 },
-        ),
-      ).rejects.toBeDefined();
-
-      // Next call (with a working fixture) must still succeed — the failed
-      // cacheDir must either not exist or be recoverable.
-      const fixture = makeFixtureRepo();
+  test(
+    "clone timeout throws and leaves the entry recoverable",
+    async () => {
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
       try {
-        // Different URL → different cache entry; just prove the cache root itself is usable.
-        const result = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
-        expect(result.fetched).toBe(true);
+        // Use a non-existent remote to force a slow git failure; 1ms timeout ensures abort.
+        await expect(
+          resolveRepo(
+            { kind: "url", url: "https://example.invalid/does/not/exist" },
+            { cacheRoot, timeoutMs: 1 },
+          ),
+        ).rejects.toBeDefined();
+
+        // Next call (with a working fixture) must still succeed — the failed
+        // cacheDir must either not exist or be recoverable.
+        const fixture = makeFixtureRepo();
+        try {
+          // Different URL → different cache entry; just prove the cache root itself is usable.
+          const result = await resolveRepo(
+            { kind: "url", url: `file://${fixture}` },
+            { cacheRoot },
+          );
+          expect(result.fetched).toBe(true);
+        } finally {
+          rmSync(fixture, { recursive: true, force: true });
+        }
       } finally {
-        rmSync(fixture, { recursive: true, force: true });
+        rmSync(cacheRoot, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — concurrency", () => {
-  test("five concurrent callers produce one clone + four hits", async () => {
-    const fixture = makeFixtureRepo();
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const results = await Promise.all(
-        Array.from({ length: 5 }, () =>
-          resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot }),
-        ),
-      );
-      const fetched = results.filter((r) => r.fetched).length;
-      expect(fetched).toBe(1);
-      for (const r of results) {
-        expect(r.bareClonePath).toBe(results[0]!.bareClonePath);
+  test(
+    "five concurrent callers produce one clone + four hits",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const results = await Promise.all(
+          Array.from({ length: 5 }, () =>
+            resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot }),
+          ),
+        );
+        const fetched = results.filter((r) => r.fetched).length;
+        expect(fetched).toBe(1);
+        const first = results[0];
+        expect(first).toBeDefined();
+        if (first === undefined) return;
+        for (const r of results) {
+          expect(r.bareClonePath).toBe(first.bareClonePath);
+        }
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });
 
 describe("resolveRepo — local with origin", () => {
-  test("reads origin and caches via URL path", async () => {
-    const fixture = makeFixtureRepo();
-    const workTree = mkdtempSync(join(tmpdir(), "grove-rc-wt-"));
-    execSync(`git clone "${fixture}" "${workTree}"`, { stdio: "pipe" });
+  test(
+    "reads origin and caches via URL path",
+    async () => {
+      const fixture = makeFixtureRepo();
+      const workTree = mkdtempSync(join(tmpdir(), "grove-rc-wt-"));
+      execSync(`git clone "${fixture}" "${workTree}"`, { stdio: "pipe" });
 
-    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
-    try {
-      const result = await resolveRepo({ kind: "local", path: workTree }, { cacheRoot });
-      expect(result.fetched).toBe(true);
-      expect(result.bareClonePath).not.toBe(workTree);
-      expect(result.bareClonePath.startsWith(cacheRoot)).toBe(true);
-    } finally {
-      rmSync(cacheRoot, { recursive: true, force: true });
-      rmSync(workTree, { recursive: true, force: true });
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+      const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+      try {
+        const result = await resolveRepo({ kind: "local", path: workTree }, { cacheRoot });
+        expect(result.fetched).toBe(true);
+        expect(result.bareClonePath).not.toBe(workTree);
+        expect(result.bareClonePath.startsWith(cacheRoot)).toBe(true);
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+        rmSync(workTree, { recursive: true, force: true });
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 });

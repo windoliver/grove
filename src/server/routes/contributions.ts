@@ -22,12 +22,14 @@ import type {
 } from "../../core/models.js";
 import type { ContributeInput } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
-import type { OutcomeStats, OutcomeStatus } from "../../core/outcome.js";
-import type { ContributionQuery } from "../../core/store.js";
+import type { OutcomeStats, OutcomeStatus, OutcomeStore } from "../../core/outcome.js";
+import type { ContributionQuery, ContributionStore } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
 import { contributionStoreForSession } from "./shared.js";
+
+const OUTCOME_FILTER_PAGE_SIZE = 100;
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -178,6 +180,52 @@ function matchesContributionFilters(contribution: Contribution, query: Contribut
 function compareByRecencyDesc(a: Contribution, b: Contribution): number {
   const byDate = Date.parse(b.createdAt) - Date.parse(a.createdAt);
   return byDate !== 0 ? byDate : b.cid.localeCompare(a.cid);
+}
+
+async function listOutcomeFilteredContributions(args: {
+  readonly outcomeStore: OutcomeStore;
+  readonly contributionStore: ContributionStore;
+  readonly status: OutcomeStatus;
+  readonly filterQuery: ContributionQuery;
+  readonly limit: number;
+  readonly offset: number;
+}): Promise<{ readonly page: readonly Contribution[]; readonly total: number }> {
+  const filtered: Contribution[] = [];
+  const seen = new Set<string>();
+  let outcomeOffset = 0;
+
+  for (;;) {
+    const outcomes = await args.outcomeStore.list({
+      status: args.status,
+      limit: OUTCOME_FILTER_PAGE_SIZE,
+      offset: outcomeOffset,
+    });
+    if (outcomes.length === 0) break;
+    outcomeOffset += outcomes.length;
+
+    const contributions = await args.contributionStore.getMany(
+      outcomes.map((outcome) => outcome.cid),
+    );
+    for (const outcome of outcomes) {
+      if (seen.has(outcome.cid)) continue;
+      seen.add(outcome.cid);
+      const contribution = contributions.get(outcome.cid);
+      if (
+        contribution !== undefined &&
+        matchesContributionFilters(contribution, args.filterQuery)
+      ) {
+        filtered.push(contribution);
+      }
+    }
+
+    if (outcomes.length < OUTCOME_FILTER_PAGE_SIZE) break;
+  }
+
+  filtered.sort(compareByRecencyDesc);
+  return {
+    page: filtered.slice(args.offset, args.offset + args.limit),
+    total: filtered.length,
+  };
 }
 
 function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): number {
@@ -432,22 +480,16 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     }
 
     const filterQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const outcomes = await outcomeStore.list({ status: targetStatus });
-    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
-    const filtered: Contribution[] = [];
-    const seen = new Set<string>();
-    for (const outcome of outcomes) {
-      if (seen.has(outcome.cid)) continue;
-      seen.add(outcome.cid);
-      const contribution = contributions.get(outcome.cid);
-      if (contribution !== undefined && matchesContributionFilters(contribution, filterQuery)) {
-        filtered.push(contribution);
-      }
-    }
-    filtered.sort(compareByRecencyDesc);
-    const page = filtered.slice(offset, offset + limit);
+    const { page, total } = await listOutcomeFilteredContributions({
+      outcomeStore,
+      contributionStore: listStore,
+      status: targetStatus,
+      filterQuery,
+      limit,
+      offset,
+    });
 
-    c.header("X-Total-Count", String(filtered.length));
+    c.header("X-Total-Count", String(total));
     return c.json(page);
   }
 

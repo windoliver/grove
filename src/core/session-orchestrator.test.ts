@@ -183,6 +183,26 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
+  test("stop unsubscribes event handlers so later events are ignored", async () => {
+    const contract = makeContract();
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract);
+
+    await orchestrator.start();
+    await orchestrator.stop("Operator stopped");
+
+    const sendsAfterStop = runtime.sendCalls.length;
+    await bus.publish({
+      type: "contribution",
+      sourceRole: "coder",
+      targetRole: "reviewer",
+      payload: { cid: "blake3:abc", summary: "late event" },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(runtime.sendCalls).toHaveLength(sendsAfterStop);
+    bus.close();
+  });
+
   test("stop records semantic stop status", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);

@@ -6,11 +6,44 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { FsCas } from "./fs-cas.js";
+
+async function countFiles(root: string): Promise<number> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    let count = 0;
+    for (const entry of entries) {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) {
+        count += await countFiles(path);
+      } else if (entry.isFile()) {
+        count++;
+      }
+    }
+    return count;
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === "ENOENT") return 0;
+    throw err;
+  }
+}
+
+class SlowExistsFsCas extends FsCas {
+  activeExists = 0;
+  maxActiveExists = 0;
+
+  override async exists(_contentHash: string): Promise<boolean> {
+    this.activeExists++;
+    this.maxActiveExists = Math.max(this.maxActiveExists, this.activeExists);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    this.activeExists--;
+    return false;
+  }
+}
 
 describe("FsCas concurrency", () => {
   let store: FsCas;
@@ -104,5 +137,41 @@ describe("FsCas concurrency", () => {
     expect(retrieved2).toEqual(data);
 
     store2.close();
+  });
+
+  test("existsMany limits concurrent existence checks", async () => {
+    store.close();
+    const slowStore = new SlowExistsFsCas(dir);
+    store = slowStore;
+    const hashes = Array.from({ length: 40 }, (_, i) => `blake3:${String(i).padStart(64, "0")}`);
+
+    await slowStore.existsMany(hashes);
+
+    expect(slowStore.maxActiveExists).toBeLessThanOrEqual(16);
+  });
+
+  test("put with invalid mediaType does not leave a blob behind", async () => {
+    const data = new TextEncoder().encode("invalid metadata should not persist content");
+
+    await expect(store.put(data, { mediaType: "text/plain; charset=utf-8" })).rejects.toThrow();
+
+    expect(await countFiles(dir)).toBe(0);
+  });
+
+  test("putFile with invalid mediaType does not leave a blob behind", async () => {
+    const sourceDir = await mkdtemp(join(tmpdir(), "fs-cas-invalid-source-"));
+    try {
+      await mkdir(sourceDir, { recursive: true });
+      const source = join(sourceDir, "input.txt");
+      await writeFile(source, "invalid metadata should not persist file content");
+
+      await expect(
+        store.putFile(source, { mediaType: "text/plain; charset=utf-8" }),
+      ).rejects.toThrow();
+
+      expect(await countFiles(dir)).toBe(0);
+    } finally {
+      await rm(sourceDir, { recursive: true, force: true });
+    }
   });
 });

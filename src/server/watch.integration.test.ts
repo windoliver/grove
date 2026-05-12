@@ -115,4 +115,50 @@ describe("GET /api/watch", () => {
     expect((events[0]?.data as { code: number }).code).toBe(410);
     expect((events[0]?.data as { reason: string }).reason).toBe("expired");
   });
+
+  test("removes request abort listener when a stream closes without request abort", async () => {
+    const originalAdd = AbortSignal.prototype.addEventListener;
+    const originalRemove = AbortSignal.prototype.removeEventListener;
+    let activeAbortListeners = 0;
+
+    AbortSignal.prototype.addEventListener = function (
+      type,
+      listener,
+      options,
+    ): ReturnType<typeof originalAdd> {
+      if (type === "abort") activeAbortListeners++;
+      return originalAdd.call(this, type, listener, options);
+    };
+    AbortSignal.prototype.removeEventListener = function (
+      type,
+      listener,
+      options,
+    ): ReturnType<typeof originalRemove> {
+      if (type === "abort") activeAbortListeners--;
+      return originalRemove.call(this, type, listener, options);
+    };
+
+    try {
+      const { app } = createTestApp({ watchHubOptions: { maxEventsPerKey: 1 } });
+      for (const summary of ["a", "b"]) {
+        const res = await app.request("/api/contributions", {
+          method: "POST",
+          headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify(makeManifestBody({ summary })),
+        });
+        expect(res.status).toBe(201);
+      }
+
+      const watchRes = await app.request("/api/watch?kind=Contribution&resumeFrom=0", {
+        headers: TEST_AUTH_HEADERS,
+      });
+      const events = await readSseEvents(watchRes, 1, 2_000);
+
+      expect(events[0]?.event).toBe("ERROR");
+      expect(activeAbortListeners).toBe(0);
+    } finally {
+      AbortSignal.prototype.addEventListener = originalAdd;
+      AbortSignal.prototype.removeEventListener = originalRemove;
+    }
+  });
 });

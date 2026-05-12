@@ -17,6 +17,13 @@ import { FsCas } from "../local/fs-cas.js";
 import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
 
 const CLI_PATH = join(import.meta.dir, "main.ts");
+const CLI_INTEGRATION_TIMEOUT_MS = 30_000;
+
+type CliTestBody = () => void | Promise<void>;
+
+function cliTest(name: string, fn: CliTestBody): void {
+  test(name, fn, CLI_INTEGRATION_TIMEOUT_MS);
+}
 
 /** Run the CLI with given args in a working directory and return stdout, stderr, exitCode. */
 async function runCli(
@@ -84,7 +91,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("CLI dispatch", () => {
-  test("--help prints usage and exits 0", async () => {
+  cliTest("--help prints usage and exits 0", async () => {
     const { stdout, exitCode } = await runCli(["--help"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("grove");
@@ -92,7 +99,7 @@ describe("CLI dispatch", () => {
     expect(stdout).toContain("frontier");
   });
 
-  test("-h prints usage", async () => {
+  cliTest("-h prints usage", async () => {
     const { stdout, exitCode } = await runCli(["-h"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("grove");
@@ -101,13 +108,13 @@ describe("CLI dispatch", () => {
   // bare `grove` now launches the TUI (issue #113) instead of printing usage.
   // Not testable in CI (requires TTY for OpenTUI renderer).
 
-  test("unknown command exits 2 (usage error)", async () => {
+  cliTest("unknown command exits 2 (usage error)", async () => {
     const { stderr, exitCode } = await runCli(["bogus"], tmpDir);
     expect(exitCode).toBe(2);
     expect(stderr).toContain("unknown command");
   });
 
-  test("--version prints version", async () => {
+  cliTest("--version prints version", async () => {
     const { stdout, exitCode } = await runCli(["--version"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("grove");
@@ -122,14 +129,14 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // grove log
   // -------------------------------------------------------------------------
-  test("grove log works", async () => {
+  cliTest("grove log works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["log"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Initial schema");
   });
 
-  test("grove log --json works", async () => {
+  cliTest("grove log --json works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["log", "--json"], tmpDir);
     expect(exitCode).toBe(0);
@@ -139,7 +146,7 @@ describe("CLI commands (with grove)", () => {
     expect(Array.isArray(parsed.results)).toBe(true);
   });
 
-  test("grove log -n 1 returns newest only", async () => {
+  cliTest("grove log -n 1 returns newest only", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["log", "-n", "1"], tmpDir);
     expect(exitCode).toBe(0);
@@ -148,7 +155,7 @@ describe("CLI commands (with grove)", () => {
     expect(stdout).not.toContain("Initial schema");
   });
 
-  test("grove log --kind filters contributions", async () => {
+  cliTest("grove log --kind filters contributions", async () => {
     await setupGrove();
     // Both seeded are "work" kind, so --kind=review should show nothing
     const { stdout, exitCode } = await runCli(["log", "--kind", "review"], tmpDir);
@@ -159,14 +166,14 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // grove search
   // -------------------------------------------------------------------------
-  test("grove search works", async () => {
+  cliTest("grove search works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["search", "--query", "schema"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("schema");
   });
 
-  test("grove search --tag filters", async () => {
+  cliTest("grove search --tag filters", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["search", "--tag", "schema"], tmpDir);
     expect(exitCode).toBe(0);
@@ -174,7 +181,7 @@ describe("CLI commands (with grove)", () => {
     expect(stdout).not.toContain("Add validation");
   });
 
-  test("grove search --json works", async () => {
+  cliTest("grove search --json works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["search", "--json"], tmpDir);
     expect(exitCode).toBe(0);
@@ -185,7 +192,7 @@ describe("CLI commands (with grove)", () => {
     expect(parsed.results.length).toBe(2);
   });
 
-  test("grove search -n 1 --sort recency returns newest only", async () => {
+  cliTest("grove search -n 1 --sort recency returns newest only", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["search", "-n", "1", "--sort", "recency"], tmpDir);
     expect(exitCode).toBe(0);
@@ -196,7 +203,7 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // grove frontier
   // -------------------------------------------------------------------------
-  test("grove frontier works (empty is ok)", async () => {
+  cliTest("grove frontier works (empty is ok)", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["frontier"], tmpDir);
     expect(exitCode).toBe(0);
@@ -204,7 +211,7 @@ describe("CLI commands (with grove)", () => {
     expect(stdout.length).toBeGreaterThan(0);
   });
 
-  test("grove frontier --json works", async () => {
+  cliTest("grove frontier --json works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["frontier", "--json"], tmpDir);
     expect(exitCode).toBe(0);
@@ -215,14 +222,14 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // grove tree
   // -------------------------------------------------------------------------
-  test("grove tree works", async () => {
+  cliTest("grove tree works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["tree"], tmpDir);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("*"); // DAG node marker
   });
 
-  test("grove tree --json works", async () => {
+  cliTest("grove tree --json works", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["tree", "--json"], tmpDir);
     expect(exitCode).toBe(0);
@@ -230,7 +237,7 @@ describe("CLI commands (with grove)", () => {
     expect(Array.isArray(parsed)).toBe(true);
   });
 
-  test("grove tree --from filters to subtree", async () => {
+  cliTest("grove tree --from filters to subtree", async () => {
     groveDir = join(tmpDir, ".grove");
     await mkdir(groveDir, { recursive: true });
     const db = initSqliteDb(join(groveDir, "grove.db"));
@@ -259,7 +266,7 @@ describe("CLI commands (with grove)", () => {
     expect(stdout).not.toContain("unrelated-e2e");
   });
 
-  test("grove tree --depth limits traversal", async () => {
+  cliTest("grove tree --depth limits traversal", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["tree", "--depth", "1"], tmpDir);
     expect(exitCode).toBe(0);
@@ -269,7 +276,7 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // grove checkout
   // -------------------------------------------------------------------------
-  test("grove checkout materializes artifacts to --to dir", async () => {
+  cliTest("grove checkout materializes artifacts to --to dir", async () => {
     groveDir = join(tmpDir, ".grove");
     await mkdir(groveDir, { recursive: true });
     const db = initSqliteDb(join(groveDir, "grove.db"));
@@ -301,7 +308,7 @@ describe("CLI commands (with grove)", () => {
     expect(content).toBe("e2e artifact content");
   });
 
-  test("grove checkout with nested artifacts", async () => {
+  cliTest("grove checkout with nested artifacts", async () => {
     groveDir = join(tmpDir, ".grove");
     await mkdir(groveDir, { recursive: true });
     const db = initSqliteDb(join(groveDir, "grove.db"));
@@ -328,7 +335,7 @@ describe("CLI commands (with grove)", () => {
     expect(content).toBe("nested e2e");
   });
 
-  test("grove checkout fails for missing CID", async () => {
+  cliTest("grove checkout fails for missing CID", async () => {
     await setupGrove();
     const badCid = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
     const { stderr, exitCode } = await runCli(
@@ -339,7 +346,7 @@ describe("CLI commands (with grove)", () => {
     expect(stderr).toContain("not found");
   });
 
-  test("grove checkout rejects missing --to", async () => {
+  cliTest("grove checkout rejects missing --to", async () => {
     await setupGrove();
     const { stderr, exitCode } = await runCli(["checkout", "blake3:abc"], tmpDir);
     expect(exitCode).toBe(1);
@@ -349,7 +356,7 @@ describe("CLI commands (with grove)", () => {
   // -------------------------------------------------------------------------
   // Error handling
   // -------------------------------------------------------------------------
-  test("fails gracefully outside a grove", async () => {
+  cliTest("fails gracefully outside a grove", async () => {
     const emptyDir = await mkdtemp(join(tmpdir(), "grove-empty-"));
     try {
       const { stderr, exitCode } = await runCli(["log"], emptyDir);
@@ -366,7 +373,7 @@ describe("CLI commands (with grove)", () => {
 // ---------------------------------------------------------------------------
 
 describe("grove init --preset", () => {
-  test("grove init --preset review-loop creates correct .grove/ structure", async () => {
+  cliTest("grove init --preset review-loop creates correct .grove/ structure", async () => {
     const { stdout, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "review-loop"],
       tmpDir,
@@ -381,7 +388,7 @@ describe("grove init --preset", () => {
     expect(existsSync(join(tmpDir, ".grove", "workspaces"))).toBe(true);
   });
 
-  test("grove.json contains expected preset config", async () => {
+  cliTest("grove.json contains expected preset config", async () => {
     await runCli(["init", "test-grove", "--preset", "review-loop"], tmpDir);
 
     const configPath = join(tmpDir, ".grove", "grove.json");
@@ -398,7 +405,7 @@ describe("grove init --preset", () => {
     expect(config.services).toEqual({ server: true, mcp: true });
   });
 
-  test("GROVE.md has expected topology for preset", async () => {
+  cliTest("GROVE.md has expected topology for preset", async () => {
     await runCli(["init", "test-grove", "--preset", "review-loop"], tmpDir);
 
     const grovemdPath = join(tmpDir, "GROVE.md");
@@ -411,7 +418,7 @@ describe("grove init --preset", () => {
     expect(content).toContain("reviewer");
   });
 
-  test("nexus-preferring preset uses managed Nexus without --nexus-url", async () => {
+  cliTest("nexus-preferring preset uses managed Nexus without --nexus-url", async () => {
     const { stdout, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "swarm-ops"],
       tmpDir,
@@ -427,7 +434,7 @@ describe("grove init --preset", () => {
     expect(config.nexusUrl).toBeUndefined();
   });
 
-  test("nexus-preferring preset uses nexus with --nexus-url", async () => {
+  cliTest("nexus-preferring preset uses nexus with --nexus-url", async () => {
     const { stdout, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "swarm-ops", "--nexus-url", "http://localhost:4000"],
       tmpDir,
@@ -441,7 +448,7 @@ describe("grove init --preset", () => {
     expect(config.nexusUrl).toBe("http://localhost:4000");
   });
 
-  test("grove init --preset unknown fails with error", async () => {
+  cliTest("grove init --preset unknown fails with error", async () => {
     const { stderr, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "nonexistent"],
       tmpDir,
@@ -456,7 +463,7 @@ describe("grove init --preset", () => {
 // ---------------------------------------------------------------------------
 
 describe("grove up/down", () => {
-  test("grove up --headless fails without grove.json", async () => {
+  cliTest("grove up --headless fails without grove.json", async () => {
     // Set up a bare grove without grove.json
     await setupGrove();
     const { stderr, exitCode } = await runCli(["up", "--headless"], tmpDir);
@@ -464,7 +471,7 @@ describe("grove up/down", () => {
     expect(stderr).toContain("grove.json");
   });
 
-  test("grove down reports no services when PID file missing", async () => {
+  cliTest("grove down reports no services when PID file missing", async () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["down"], tmpDir);
     expect(exitCode).toBe(0);

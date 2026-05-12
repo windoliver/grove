@@ -14,6 +14,7 @@ import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
+import type { OutcomeStore } from "../core/outcome.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,
@@ -310,6 +311,7 @@ export interface TestContext {
 export interface CreateTestAppOptions {
   readonly watchHubOptions?: WatchHubOptions;
   readonly eventBus?: EventBus;
+  readonly outcomeStore?: OutcomeStore | undefined;
 }
 
 /** Create a test app with fresh in-memory stores. */
@@ -355,6 +357,7 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     frontier,
     watchHub,
     watchSubscriber,
+    ...(opts.outcomeStore !== undefined ? { outcomeStore: opts.outcomeStore } : {}),
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
