@@ -7,14 +7,15 @@
  * On tmux failure: roll back claim + workspace.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
+import { parseGroveConfig } from "../core/config.js";
 import type { AgentIdentity } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
@@ -26,6 +27,13 @@ import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import {
+  type ResolvedSkillCatalogRoot,
+  resolveNexusSkillCatalogRoot,
+  type SkillResolutionWarning,
+} from "../nexus/nexus-skill-catalog.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -38,6 +46,58 @@ import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
+
+const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
+const CODEX_GENERATED_MCP_END = "# END GROVE GENERATED MCP";
+const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map(tomlString).join(", ")}]`;
+}
+
+function tomlKeySegment(segment: string): string {
+  return SAFE_TOML_BARE_KEY.test(segment) ? segment : tomlString(segment);
+}
+
+function stripGeneratedCodexMcpBlock(contents: string): string {
+  const start = contents.indexOf(CODEX_GENERATED_MCP_START);
+  if (start === -1) return contents.trimEnd();
+  const end = contents.indexOf(CODEX_GENERATED_MCP_END, start);
+  if (end === -1) return contents.slice(0, start).trimEnd();
+  return `${contents.slice(0, start)}${contents.slice(end + CODEX_GENERATED_MCP_END.length)}`.trimEnd();
+}
+
+function buildCodexMcpConfigBlock(server: {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+}): string {
+  const serverKey = `mcp_servers.${tomlKeySegment(server.name)}`;
+  const lines = [
+    CODEX_GENERATED_MCP_START,
+    `[${serverKey}]`,
+    `command = ${tomlString(server.command)}`,
+    `args = ${tomlStringArray(server.args)}`,
+    "",
+    `[${serverKey}.env]`,
+  ];
+  for (const [name, value] of Object.entries(server.env)) {
+    lines.push(`${tomlKeySegment(name)} = ${tomlString(value)}`);
+  }
+  lines.push(CODEX_GENERATED_MCP_END, "");
+  return lines.join("\n");
+}
+
+function isNotFoundError(err: unknown): boolean {
+  return (
+    err instanceof Error && "code" in err && (err as { readonly code?: unknown }).code === "ENOENT"
+  );
+}
 
 /** PR context injected as env vars when spawning agents. */
 export interface PrContext {
@@ -71,6 +131,28 @@ export interface SpawnResult {
   readonly workspacePath: string;
   /** Describes how this agent's workspace was provisioned. */
   readonly workspaceMode: WorkspaceMode;
+}
+
+class RequiredSkillCatalogResolutionError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "RequiredSkillCatalogResolutionError";
+  }
+}
+
+function isRequiredSkillCatalogResolutionError(
+  error: unknown,
+): error is RequiredSkillCatalogResolutionError {
+  return error instanceof RequiredSkillCatalogResolutionError;
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatSkillCatalogWarning(warning: SkillResolutionWarning): string {
+  const fallback = warning.fallbackSource ? ` fallback: ${warning.fallbackSource};` : "";
+  return `Nexus skill catalog warning for '${warning.skillName}': attempted ${warning.attemptedSource};${fallback} ${warning.reason}`;
 }
 
 /**
@@ -113,6 +195,7 @@ export class SpawnManager {
         readonly name: string;
         readonly command: string;
         readonly args: readonly string[];
+        readonly startupTimeoutSec?: number | undefined;
         readonly env: Readonly<Record<string, string>>;
       }
     | undefined;
@@ -408,6 +491,64 @@ export class SpawnManager {
     );
   }
 
+  private reportSkillCatalogWarnings(warnings: readonly SkillResolutionWarning[]): void {
+    for (const warning of warnings) {
+      const message = formatSkillCatalogWarning(warning);
+      this.onError(message);
+      debugLog("spawn", message);
+    }
+  }
+
+  private async resolveSkillRootForSpawn(
+    roleSkills: readonly string[],
+  ): Promise<ResolvedSkillCatalogRoot | undefined> {
+    if (roleSkills.length === 0 || !this.groveDir) return undefined;
+    const configPath = join(this.groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    const raw = await readFile(configPath, "utf-8");
+    const config = parseGroveConfig(raw);
+    if (config.mode !== "nexus" || config.skillCatalog === undefined) return undefined;
+
+    const projectRoot = dirname(this.groveDir);
+    const nexusUrl = resolveConfiguredNexusUrl({
+      projectRoot,
+      config,
+      env: process.env,
+    });
+    if (!nexusUrl) {
+      if (config.skillCatalog.policy !== "required") return undefined;
+      throw new RequiredSkillCatalogResolutionError(
+        "Nexus skill catalog required but no Nexus URL is configured",
+        undefined,
+      );
+    }
+    const client = new NexusHttpClient({
+      url: nexusUrl,
+      apiKey: process.env.NEXUS_API_KEY || undefined,
+    });
+    try {
+      const result = await resolveNexusSkillCatalogRoot({
+        client,
+        zoneId: process.env.GROVE_ZONE_ID ?? "default",
+        cacheRoot: join(this.groveDir, "cache", "skills"),
+        skills: roleSkills,
+        policy: config.skillCatalog.policy,
+        trustedKeys: config.skillCatalog.trustedKeys,
+        localFallbackRoots: [join(this.groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
+      });
+      this.reportSkillCatalogWarnings(result.warnings);
+      return result;
+    } catch (error) {
+      if (config.skillCatalog.policy === "required") {
+        throw new RequiredSkillCatalogResolutionError(
+          `Nexus skill catalog required but resolution failed: ${messageFromError(error)}`,
+          error,
+        );
+      }
+      throw error;
+    }
+  }
+
   /**
    * Set the session topology so spawn() can resolve edge-type-aware base branches.
    * Call before spawning when the topology is known (e.g. after preset selection).
@@ -543,6 +684,12 @@ export class SpawnManager {
     // can edit files, commit, push, and create PRs.
     let workspacePath: string;
     let workspaceMode!: WorkspaceMode;
+    // Hoisted out of the inner block so the spawn-failure catch can clean
+    // up the provisioned worktree even though the workspace registry path
+    // (cleanWorkspace) won't see it (no spawn record was persisted yet).
+    let provisionedWorkspacePath: string | undefined;
+    let provisionedBranch: string | undefined;
+    let provisionedRepoCwd: string | undefined;
     {
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
@@ -576,6 +723,9 @@ export class SpawnManager {
           baseBranch,
         });
         workspacePath = provisioned.path;
+        provisionedWorkspacePath = provisioned.path;
+        provisionedBranch = provisioned.branch;
+        provisionedRepoCwd = primaryRepo.bareClonePath;
       } catch (provisionErr) {
         const reason = provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
         debugLog("spawn", `workspace provisioning failed for role=${roleId}: ${reason}`);
@@ -609,15 +759,16 @@ export class SpawnManager {
           ? (context.skills as readonly string[])
           : [];
         if (roleSkills.length > 0 && this.groveDir) {
+          const resolvedSkillCatalog = await this.resolveSkillRootForSpawn(roleSkills);
           await injectSkills({
             workspacePath,
             skills: roleSkills,
-            bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
-            workspaceOverrideRoot: join(this.groveDir, "skills"),
+            bundledSkillsRoot:
+              resolvedSkillCatalog?.root ?? resolveBundledSkillsRoot(dirname(this.groveDir)),
+            workspaceOverrideRoot: resolvedSkillCatalog ? undefined : join(this.groveDir, "skills"),
           });
         }
         // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
-        const { chmod } = await import("node:fs/promises");
         for (const protectedFile of [
           ".mcp.json",
           ".acpxrc.json",
@@ -646,7 +797,10 @@ export class SpawnManager {
         }
       } catch (configErr) {
         const reason = configErr instanceof Error ? configErr.message : String(configErr);
-        if (this.workspaceIsolationPolicy === "strict") {
+        if (
+          this.workspaceIsolationPolicy === "strict" ||
+          isRequiredSkillCatalogResolutionError(configErr)
+        ) {
           throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
         }
         this.onError(`Config write failed: ${reason}`);
@@ -749,13 +903,53 @@ export class SpawnManager {
         throw new Error("No agent runtime or tmux available for spawning");
       }
     } catch (spawnErr) {
-      // Roll back workspace on spawn failure
+      // Roll back workspace on spawn failure.
+      //
+      // `cleanWorkspace` is keyed off the workspace registry (getWorkspace
+      // returns undefined when there's no row) and the spawn record isn't
+      // persisted until after this catch, so the registry path can no-op.
+      // Explicitly remove the provisioned worktree path so failures here
+      // (e.g. codex isolation prep throw on disk-full / quota) don't strand
+      // an orphaned git worktree + branch on disk for later operators to
+      // discover. `git worktree remove` is preferred (cleans the parent
+      // repo's metadata too); fall back to `rm -rf` for non-worktree paths.
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
           this.provider.cleanWorkspace(spawnId, spawnId),
           "rollback workspace after spawn failure",
           { silent: true },
         );
+      }
+      if (provisionedWorkspacePath) {
+        // Use execFileSync with argv (NOT execSync with a shell-interpolated
+        // command string) so role names containing shell metacharacters
+        // can't escape into command substitution.
+        // Run from the owning bare-clone repo so `git worktree remove`
+        // touches the correct .git/worktrees/* metadata; the operator's
+        // current cwd may not be the repo that owns this worktree.
+        const gitOpts: { stdio: "ignore"; cwd?: string } = { stdio: "ignore" };
+        if (provisionedRepoCwd) gitOpts.cwd = provisionedRepoCwd;
+        try {
+          execFileSync("git", ["worktree", "remove", "--force", provisionedWorkspacePath], gitOpts);
+        } catch {
+          try {
+            const { rmSync } = await import("node:fs");
+            rmSync(provisionedWorkspacePath, { recursive: true, force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
+        // Always also delete the branch — `git worktree remove` skips it,
+        // and rm -rf doesn't touch repo metadata. Without this, retrying
+        // the same role/session hits "branch already exists" on the next
+        // provision attempt.
+        if (provisionedBranch) {
+          try {
+            execFileSync("git", ["branch", "-D", provisionedBranch], gitOpts);
+          } catch {
+            /* best-effort — branch may already be gone */
+          }
+        }
       }
       throw spawnErr;
     }
@@ -862,6 +1056,39 @@ export class SpawnManager {
         );
       }
     }
+  }
+
+  /**
+   * Stop all active agents for the current session while keeping the manager
+   * reusable for a subsequent TUI session.
+   */
+  async stopActiveSession(): Promise<void> {
+    this.stopLogPolling();
+    this.routableSessions.clear();
+
+    const sessions = [...this.agentSessions.entries()];
+    for (const [spawnId, session] of sessions) {
+      const record = this.spawnRecords.get(spawnId);
+      const roleKey = record?.role ?? session.role ?? spawnId;
+      this.wsBridge?.unregisterSession(roleKey, session.id);
+      this.unregisterAcpSession(session.id);
+      this.sessionStore?.remove(spawnId);
+    }
+
+    if (this.agentRuntime) {
+      await Promise.allSettled(
+        sessions.map(([, session]) =>
+          this.agentRuntime?.close(session).catch(() => {
+            /* best-effort — session may already be gone */
+          }),
+        ),
+      );
+    } else if (this.tmux) {
+      await Promise.allSettled(sessions.map(([spawnId]) => this.tmux?.kill(`grove-${spawnId}`)));
+    }
+
+    this.agentSessions.clear();
+    this.spawnRecords.clear();
   }
 
   /** Get the spawn record for an agentId (for testing). */
@@ -1381,8 +1608,8 @@ export class SpawnManager {
     const projectRoot = join(groveDir, "..");
 
     // Resolve Nexus URL: env var takes precedence (explicit override), then
-    // fall back to the nexusUrl stored in the *session*'s .grove/grove.json
-    // (set by `grove init --nexus-url` and refreshed by startServices).
+    // fall back to managed nexus.yaml or the nexusUrl stored in the session's
+    // .grove/grove.json.
     //
     // Note: `groveDir` here is the SHARED nexus-workspaces dir (parent of all
     // workspace folders), not the per-session .grove dir — so we can't read
@@ -1397,9 +1624,26 @@ export class SpawnManager {
       try {
         const configPath = join(this.groveDir, "grove.json");
         if (existsSync(configPath)) {
-          const raw = await (await import("node:fs/promises")).readFile(configPath, "utf-8");
-          const cfg = JSON.parse(raw) as { nexusUrl?: string };
-          if (cfg.nexusUrl) resolvedNexusUrl = cfg.nexusUrl;
+          const raw = await readFile(configPath, "utf-8");
+          try {
+            const config = parseGroveConfig(raw);
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          } catch {
+            const config = JSON.parse(raw) as {
+              readonly mode?: string | undefined;
+              readonly nexusManaged?: boolean | undefined;
+              readonly nexusUrl?: string | undefined;
+            };
+            resolvedNexusUrl = resolveConfiguredNexusUrl({
+              projectRoot,
+              config,
+              env: process.env,
+            });
+          }
         }
       } catch {
         /* best-effort */
@@ -1444,8 +1688,12 @@ export class SpawnManager {
       name: "grove",
       command: mcpCommand,
       args: ["run", mcpServePath],
+      startupTimeoutSec: 30,
       env: { ...mcpEnv },
     };
+    if (process.env.GROVE_CODEX_WRITE_MCP_CONFIG === "1") {
+      await this.writeCodexMcpHomeConfig(this.groveMcpServer);
+    }
 
     const mcpConfig = {
       mcpServers: {
@@ -1485,6 +1733,40 @@ export class SpawnManager {
       "utf-8",
     );
     debugLog("mcpConfig", `wrote .acpxrc.json for acpx mcpServers forwarding`);
+  }
+
+  private async writeCodexMcpHomeConfig(server: {
+    readonly name: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+  }): Promise<void> {
+    const codexHome = process.env.CODEX_HOME?.trim();
+    if (!codexHome) {
+      debugLog("mcpConfig", "GROVE_CODEX_WRITE_MCP_CONFIG set but CODEX_HOME is empty");
+      return;
+    }
+
+    await mkdir(codexHome, { recursive: true });
+    const configPath = join(codexHome, "config.toml");
+    let existing = "";
+    try {
+      existing = await readFile(configPath, "utf-8");
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+    }
+
+    const stripped = stripGeneratedCodexMcpBlock(existing);
+    const block = buildCodexMcpConfigBlock(server);
+    const next = `${stripped}${stripped.length > 0 ? "\n\n" : ""}${block}`;
+    await writeFile(configPath, next, "utf-8");
+    await chmod(configPath, 0o600).catch(() => {
+      /* best-effort */
+    });
+    debugLog(
+      "mcpConfig",
+      `wrote CODEX_HOME config.toml MCP block: path=${configPath} hasNexusUrl=${!!server.env.GROVE_NEXUS_URL} hasApiKey=${!!server.env.NEXUS_API_KEY}`,
+    );
   }
 
   private async hideBootstrapFilesFromGit(workspacePath: string): Promise<void> {

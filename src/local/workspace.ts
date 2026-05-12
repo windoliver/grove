@@ -328,9 +328,11 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       // Check if there's an active claim for this CID
       const activeClaim = this.db
         .prepare(
-          `SELECT claim_id FROM claims
-           WHERE target_ref = ? AND agent_id = ? AND status = 'active'
-           AND lease_expires_at >= ?`,
+          `SELECT s.id AS claim_id
+           FROM claim_spec s
+           JOIN claim_status st ON st.id = s.id
+           WHERE s.target_ref = ? AND s.agent_id = ? AND st.phase = 'active'
+           AND st.lease_expires_at >= ?`,
         )
         .get(cid, agentId, new Date().toISOString()) as { claim_id: string } | null;
 

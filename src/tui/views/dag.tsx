@@ -62,6 +62,8 @@ export interface DagProps {
   readonly active: boolean;
   readonly cursor: number;
   readonly onContributionsLoaded?: (contributions: readonly Contribution[]) => void;
+  /** C2 (#302): substring filter on contribution summary/kind/agent/cid. Empty / undefined = no filter. */
+  readonly filterText?: string | undefined;
 }
 
 /** Color map for contribution kinds. */
@@ -80,6 +82,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   active,
   cursor,
   onContributionsLoaded,
+  filterText,
 }: DagProps): React.ReactNode {
   const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
@@ -154,10 +157,28 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     active && !informerReady,
   );
 
-  const contributions: readonly Contribution[] = useMemo(() => {
+  const allContributions: readonly Contribution[] = useMemo(() => {
     if (informerReady) return derived.data ?? [];
     return polled.data?.contributions ?? [];
   }, [informerReady, derived.data, polled.data]);
+
+  const contributions: readonly Contribution[] = useMemo(() => {
+    const q = filterText?.trim().toLowerCase();
+    if (!q) return allContributions;
+    return allContributions.filter((c) => {
+      const haystack = [
+        c.cid,
+        c.summary ?? "",
+        c.kind,
+        c.agent?.role ?? "",
+        c.agent?.agentId ?? "",
+        c.agent?.agentName ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [allContributions, filterText]);
 
   const loading = informerReady ? false : polled.loading;
   const isStale = informerReady ? false : polled.isStale;

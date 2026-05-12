@@ -18,7 +18,8 @@ import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
-import type { McpDeps } from "./deps.js";
+import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { resolveNexusApiKey } from "./env.js";
 import { createMcpServer } from "./server.js";
 
 // --- Initialization (eager — catches config errors at startup) ------------
@@ -169,7 +170,7 @@ try {
   }
 
   const nexusUrl = process.env.GROVE_NEXUS_URL;
-  const nexusApiKey = process.env.NEXUS_API_KEY;
+  const nexusApiKey = resolveNexusApiKey(cwd);
 
   // Always create local runtime for workspace, frontier, CAS.
   //
@@ -305,6 +306,7 @@ try {
   // setSessionScope has mirrored the session. If the mirror is still in
   // flight we retry with exponential backoff before failing.
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  let nexusSessionRecord: import("../core/session.js").Session | undefined;
   if (nexusClient && !loadedContract && process.env.GROVE_SESSION_ID) {
     const sessionId = process.env.GROVE_SESSION_ID;
     const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
@@ -312,12 +314,11 @@ try {
 
     const retryDelaysMs = [0, 100, 250, 500, 1000, 2000];
     let lastErr: unknown;
-    let sessionRecord: import("../core/session.js").Session | undefined;
     for (const delay of retryDelaysMs) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       try {
-        sessionRecord = await nexusSessionStore.getSessionRecord(sessionId);
-        if (sessionRecord?.config) break;
+        nexusSessionRecord = await nexusSessionStore.getSessionRecord(sessionId);
+        if (nexusSessionRecord?.config) break;
       } catch (err) {
         lastErr = err;
       }
@@ -335,20 +336,20 @@ try {
     // session-creation path in the deployment is persisting config.
     const strictContract = process.env.GROVE_MCP_STRICT_CONTRACT === "1";
 
-    if (sessionRecord?.config) {
+    if (nexusSessionRecord?.config) {
       // Happy path: full frozen contract mirrored from the TUI's createSession.
-      loadedContract = sessionRecord.config;
+      loadedContract = nexusSessionRecord.config;
       process.stderr.write(`grove-mcp: loaded full contract from Nexus session ${sessionId}\n`);
-    } else if (sessionRecord?.topology && !strictContract) {
+    } else if (nexusSessionRecord?.topology && !strictContract) {
       // Default degraded path: the session record exists but lacks a frozen
       // config. Reconstruct a minimal contract so topology routing and
       // per-kind tool presets still work. Rate limits / enforcement / gates
       // are NOT honored; log a loud WARN so operators see the gap.
       loadedContract = {
         contractVersion: 1,
-        name: sessionRecord.presetName ?? "nexus-session",
+        name: nexusSessionRecord.presetName ?? "nexus-session",
         mode: "exploration",
-        topology: sessionRecord.topology,
+        topology: nexusSessionRecord.topology,
       };
       process.stderr.write(
         `grove-mcp: WARN: Nexus session ${sessionId} has no frozen config — ` +
@@ -356,7 +357,7 @@ try {
           `applied). Recreate the session with the current TUI to get full ` +
           `enforcement, or set GROVE_MCP_STRICT_CONTRACT=1 to fail closed here.\n`,
       );
-    } else if (sessionRecord?.topology) {
+    } else if (nexusSessionRecord?.topology) {
       // Strict mode explicitly enabled: refuse to proceed without a full
       // contract even though the session record exists.
       process.stderr.write(
@@ -401,7 +402,7 @@ try {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-      const apiKey = process.env.NEXUS_API_KEY;
+      const apiKey = nexusApiKey;
       const ipcClient =
         nexusUrl && apiKey
           ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
@@ -419,6 +420,22 @@ try {
   // tag every contribution write against the session at the MCP layer.
   // Nexus handles this via path-scoped stores; local SQLite needs the junction table.
   const envSessionId = process.env.GROVE_SESSION_ID;
+  let ownerSession: import("../core/session.js").Session | undefined;
+  if (envSessionId !== undefined) {
+    if (nexusClient !== undefined) {
+      if (nexusSessionRecord !== undefined) {
+        ownerSession = nexusSessionRecord;
+      } else {
+        const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+        ownerSession = await new NexusSessionStore(nexusClient, zoneId).getSessionRecord(
+          envSessionId,
+        );
+      }
+    } else {
+      ownerSession = await runtime.goalSessionStore.getSession(envSessionId);
+    }
+  }
+  const sessionOwnerRef = sessionToOwnerRef(ownerSession);
   const onContributionWritten =
     envSessionId && !nexusClient
       ? (cid: string) => {
@@ -650,6 +667,7 @@ try {
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
+    ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     ...(outcomeStore ? { outcomeStore } : {}),

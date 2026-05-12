@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { InMemoryClaimStore } from "../../server/test-helpers.js";
 import { claimOperation, listClaimsOperation, releaseOperation } from "./claim.js";
 import type { OperationDeps } from "./deps.js";
 import type { TestOperationDeps } from "./test-helpers.js";
@@ -39,6 +40,27 @@ describe("claimOperation", () => {
     expect(result.value.status).toBe("active");
     expect(result.value.agentId).toBe("agent-1");
     expect(result.value.renewed).toBe(false);
+  });
+
+  test("stores claimOperation output as split claim spec and active status", async () => {
+    const result = await claimOperation(
+      {
+        targetRef: "target-operation-split",
+        agent: { agentId: "agent-operation-split", role: "coder", platform: "codex" },
+        intentSummary: "operation split",
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const claimId = result.value.claimId;
+    const view = await deps.claimStore?.getClaimView(claimId);
+
+    expect(view?.spec.targetRef).toBe("target-operation-split");
+    expect(view?.spec.roleName).toBe("coder");
+    expect(view?.status.phase).toBe("active");
   });
 
   test("renews an existing claim by the same agent", async () => {
@@ -129,6 +151,25 @@ describe("claimOperation", () => {
     const lease = new Date(result.value.leaseExpiresAt).getTime();
     const expected = Date.now() + 60_000;
     expect(Math.abs(lease - expected)).toBeLessThan(10_000);
+  });
+
+  test("claimOperation stamps session ownerRef when deps provide one", async () => {
+    const claimStore = new InMemoryClaimStore();
+    const ownerRef = { kind: "session" as const, id: "s1", uid: "u1" };
+
+    const result = await claimOperation(
+      {
+        targetRef: "owned-target",
+        intentSummary: "owned work",
+        agent: { agentId: "agent-a" },
+      },
+      { claimStore, sessionOwnerRef: ownerRef },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stored = await claimStore.getClaim(result.value.claimId);
+    expect(stored?.ownerRef).toEqual(ownerRef);
   });
 });
 

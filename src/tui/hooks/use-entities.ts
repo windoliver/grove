@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Informer } from "../../core/informer.js";
+import type { EntityForKind } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
 import { useEntityStoreOptional } from "./entity-store-context.js";
 import { useInformerFactoryOptional } from "./informer-context.js";
@@ -39,12 +39,10 @@ export interface UseEntitiesResult<E> {
   readonly error: Error | null;
 }
 
-type EntityFor<K extends WatchKind> = ReturnType<Informer<K>["list"]>[number];
-
 export function useEntities<K extends WatchKind>(
   kind: K,
-  predicate?: (e: EntityFor<K>) => boolean,
-): UseEntitiesResult<EntityFor<K>> {
+  predicate?: (e: EntityForKind<K>) => boolean,
+): UseEntitiesResult<EntityForKind<K>> {
   const store = useEntityStoreOptional(kind);
   const factory = useInformerFactoryOptional();
   const predicateRef = useRef(predicate);
@@ -55,14 +53,14 @@ export function useEntities<K extends WatchKind>(
   // subscription and re-render on each store version bump.
   useSyncExternalStore(subscribe, getVersion);
 
-  const dataRef = useRef<readonly EntityFor<K>[] | null>(null);
+  const dataRef = useRef<readonly EntityForKind<K>[] | null>(null);
   const [computeError, setComputeError] = useState<Error | null>(null);
 
   // Compute the current filtered slice from the version-stable snapshot.
-  let nextData: readonly EntityFor<K>[] | null;
+  let nextData: readonly EntityForKind<K>[] | null;
   try {
     nextData = computeFilteredEntities(
-      store.list() as readonly EntityFor<K>[],
+      store.list() as readonly EntityForKind<K>[],
       predicateRef.current,
     );
     if (computeError !== null) {
@@ -76,9 +74,9 @@ export function useEntities<K extends WatchKind>(
     }
   }
 
-  let data: readonly EntityFor<K>[];
+  let data: readonly EntityForKind<K>[];
   if (nextData === null) {
-    data = dataRef.current ?? ([] as readonly EntityFor<K>[]);
+    data = dataRef.current ?? ([] as readonly EntityForKind<K>[]);
   } else if (dataRef.current && shallowArraysEqual(dataRef.current, nextData)) {
     data = dataRef.current;
   } else {
@@ -92,7 +90,7 @@ export function useEntities<K extends WatchKind>(
   if (predicateRef.current !== predicate) {
     predicateRef.current = predicate;
     try {
-      const fresh = computeFilteredEntities(store.list() as readonly EntityFor<K>[], predicate);
+      const fresh = computeFilteredEntities(store.list() as readonly EntityForKind<K>[], predicate);
       if (!dataRef.current || !shallowArraysEqual(dataRef.current, fresh)) {
         dataRef.current = fresh;
         data = fresh;

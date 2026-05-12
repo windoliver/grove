@@ -23,5 +23,5 @@ export async function batchParallel<T, R>(
 ): Promise<R[]> {
   if (items.length === 0) return [];
 
-  return mapConcurrent(items, concurrency, (item) => fn(item));
+  return mapConcurrent(items, Math.max(1, Math.floor(concurrency)), (item) => fn(item));
 }

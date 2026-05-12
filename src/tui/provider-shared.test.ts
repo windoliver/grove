@@ -71,6 +71,13 @@ function makeMockContributionStore(contributions: Contribution[] = []): Contribu
 function makeMockClaimStore(): ClaimStore {
   return {
     storeIdentity: "mock-claims",
+    putClaimSpec: async () => {
+      throw new Error("putClaimSpec not implemented by test mock");
+    },
+    getClaimView: async () => undefined,
+    patchClaimStatus: async () => {
+      throw new Error("patchClaimStatus not implemented by test mock");
+    },
     createClaim: async (claim) => claim,
     claimOrRenew: async (claim) => claim,
     getClaim: async () => undefined,
@@ -94,6 +101,7 @@ function makeMockClaimStore(): ClaimStore {
       heartbeatAt: "",
       leaseExpiresAt: "",
     }),
+    releaseOwnedBy: async () => 0,
     complete: async (id) => ({
       claimId: id,
       targetRef: "t",
@@ -104,6 +112,7 @@ function makeMockClaimStore(): ClaimStore {
       heartbeatAt: "",
       leaseExpiresAt: "",
     }),
+    deleteTerminalOwnedBy: async () => 0,
     expireStale: async () => [],
     activeClaims: async () => [],
     listClaims: async () => [],

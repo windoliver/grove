@@ -7,13 +7,14 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readSync,
   statSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AnswerStrategy, AskUserInput } from "../strategy.js";
@@ -40,6 +41,8 @@ export interface TuiStrategyConfig {
   readonly queuePath?: string | undefined;
   readonly pollIntervalMs?: number | undefined;
   readonly timeoutMs?: number | undefined;
+  /** @internal test hook invoked after the question is written, before polling starts. */
+  readonly afterQuestionWrite?: ((id: string) => void) | undefined;
 }
 
 /** Default timeout: 5 minutes. */
@@ -83,9 +86,18 @@ export function createTuiStrategy(config?: TuiStrategyConfig): AnswerStrategy {
         mkdirSync(dir, { recursive: true });
       }
 
-      // Write question to queue
-      appendFileSync(queuePath, `${JSON.stringify(entry)}\n`);
-      let readOffset = statSync(queuePath).size;
+      // Write question to queue and begin scanning from the question's offset.
+      // Starting after the write can miss an answer appended immediately after
+      // the question but before the post-write stat.
+      let readOffset: number;
+      const writeFd = openSync(queuePath, "a+");
+      try {
+        readOffset = fstatSync(writeFd).size;
+        writeSync(writeFd, `${JSON.stringify(entry)}\n`);
+      } finally {
+        closeSync(writeFd);
+      }
+      config?.afterQuestionWrite?.(id);
       let partialLine = "";
 
       // Poll for answer

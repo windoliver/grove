@@ -178,6 +178,8 @@ export class NexusOutcomeStore implements OutcomeStore {
       records.push(record);
     }
 
+    records.sort(compareOutcomeRecencyDesc);
+
     // Apply offset and limit
     const offset = query?.offset ?? 0;
     const limit = query?.limit ?? records.length;
@@ -216,4 +218,10 @@ export class NexusOutcomeStore implements OutcomeStore {
   close(): void {
     // No-op — no local state to release
   }
+}
+
+function compareOutcomeRecencyDesc(a: OutcomeRecord, b: OutcomeRecord): number {
+  const byTime = Date.parse(b.evaluatedAt) - Date.parse(a.evaluatedAt);
+  if (byTime !== 0) return byTime;
+  return a.cid.localeCompare(b.cid);
 }

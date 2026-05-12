@@ -36,6 +36,10 @@ export interface TestContext {
 export const TEST_KEY = `grv_${"c".repeat(64)}`;
 export const TEST_NAMESPACE = "test-project/main";
 export const TEST_AUTH_HEADERS = { Authorization: `Bearer ${TEST_KEY}` };
+export const TEST_CONTROLLER_TOKEN = "controller-token-test";
+export const TEST_CONTROLLER_HEADERS = {
+  "X-Grove-Controller-Token": TEST_CONTROLLER_TOKEN,
+} as const;
 const TEST_REGISTRY: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
 
 /** Create a fully wired test context with real stores in a temp directory. */
@@ -54,6 +58,7 @@ export async function createTestContext(): Promise<TestContext> {
     outcomeStore: stores.outcomeStore,
     cas,
     frontier,
+    controllerToken: TEST_CONTROLLER_TOKEN,
     watchHub: new WatchHub(),
   };
 

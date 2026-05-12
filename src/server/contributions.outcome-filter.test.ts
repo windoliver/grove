@@ -11,6 +11,7 @@ import { makeContribution } from "../core/test-helpers.js";
 import { createTestApp, TEST_AUTH_HEADERS } from "./test-helpers.js";
 
 class RecordingOutcomeStore implements OutcomeStore {
+  readonly batchCalls: string[][] = [];
   readonly listCalls: OutcomeQuery[] = [];
   private readonly records: readonly OutcomeRecord[];
 
@@ -27,6 +28,7 @@ class RecordingOutcomeStore implements OutcomeStore {
   }
 
   async getBatch(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>> {
+    this.batchCalls.push([...cids]);
     const wanted = new Set(cids);
     const result = new Map<string, OutcomeRecord>();
     for (const record of this.records) {
@@ -86,7 +88,7 @@ function outcome(cid: string, evaluatedAt: string): OutcomeRecord {
 }
 
 describe("GET /api/contributions outcome filters", () => {
-  test("pages outcome reads when contribution filters are also present", async () => {
+  test("uses batched outcome reads when contribution filters are also present", async () => {
     const matching = makeContribution({
       summary: "matching",
       tags: ["target"],
@@ -117,7 +119,8 @@ describe("GET /api/contributions outcome filters", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Array<{ cid: string }>;
     expect(body.map((row) => row.cid)).toEqual([matching.cid]);
-    expect(outcomeStore.listCalls.length).toBeGreaterThan(0);
-    expect(outcomeStore.listCalls.every((query) => query.limit !== undefined)).toBe(true);
+    expect(outcomeStore.listCalls).toEqual([]);
+    expect(outcomeStore.batchCalls.length).toBeGreaterThan(0);
+    expect(outcomeStore.batchCalls.every((cids) => cids.length <= 100)).toBe(true);
   });
 });

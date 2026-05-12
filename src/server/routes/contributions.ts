@@ -29,8 +29,6 @@ import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
 import { contributionStoreForSession } from "./shared.js";
 
-const OUTCOME_FILTER_PAGE_SIZE = 100;
-
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
 // ---------------------------------------------------------------------------
@@ -46,6 +44,8 @@ const listQuerySchema = z.object({
   outcome: z.enum(["accepted", "rejected", "crashed", "invalidated"]).optional(),
   sessionId: z.string().optional(),
 });
+
+const OUTCOME_FILTER_SCAN_PAGE_SIZE = 100;
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -160,74 +160,6 @@ function hasContributionFilters(raw: {
   );
 }
 
-function matchesContributionFilters(contribution: Contribution, query: ContributionQuery): boolean {
-  if (query.kind !== undefined && contribution.kind !== query.kind) return false;
-  if (query.mode !== undefined && contribution.mode !== query.mode) return false;
-  if (query.agentId !== undefined && contribution.agent.agentId !== query.agentId) return false;
-  if (query.agentName !== undefined && contribution.agent.agentName !== query.agentName) {
-    return false;
-  }
-  if (
-    query.tags !== undefined &&
-    query.tags.length > 0 &&
-    !query.tags.every((tag) => contribution.tags.includes(tag))
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function compareByRecencyDesc(a: Contribution, b: Contribution): number {
-  const byDate = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-  return byDate !== 0 ? byDate : b.cid.localeCompare(a.cid);
-}
-
-async function listOutcomeFilteredContributions(args: {
-  readonly outcomeStore: OutcomeStore;
-  readonly contributionStore: ContributionStore;
-  readonly status: OutcomeStatus;
-  readonly filterQuery: ContributionQuery;
-  readonly limit: number;
-  readonly offset: number;
-}): Promise<{ readonly page: readonly Contribution[]; readonly total: number }> {
-  const filtered: Contribution[] = [];
-  const seen = new Set<string>();
-  let outcomeOffset = 0;
-
-  for (;;) {
-    const outcomes = await args.outcomeStore.list({
-      status: args.status,
-      limit: OUTCOME_FILTER_PAGE_SIZE,
-      offset: outcomeOffset,
-    });
-    if (outcomes.length === 0) break;
-    outcomeOffset += outcomes.length;
-
-    const contributions = await args.contributionStore.getMany(
-      outcomes.map((outcome) => outcome.cid),
-    );
-    for (const outcome of outcomes) {
-      if (seen.has(outcome.cid)) continue;
-      seen.add(outcome.cid);
-      const contribution = contributions.get(outcome.cid);
-      if (
-        contribution !== undefined &&
-        matchesContributionFilters(contribution, args.filterQuery)
-      ) {
-        filtered.push(contribution);
-      }
-    }
-
-    if (outcomes.length < OUTCOME_FILTER_PAGE_SIZE) break;
-  }
-
-  filtered.sort(compareByRecencyDesc);
-  return {
-    page: filtered.slice(args.offset, args.offset + args.limit),
-    total: filtered.length,
-  };
-}
-
 function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): number {
   switch (status) {
     case "accepted":
@@ -238,6 +170,52 @@ function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): numb
       return stats.crashed;
     case "invalidated":
       return stats.invalidated;
+  }
+}
+
+async function listOutcomeFilteredContributions(
+  outcomeStore: OutcomeStore,
+  listStore: ContributionStore,
+  targetStatus: OutcomeStatus,
+  filterQuery: ContributionQuery,
+  limit: number,
+  offset: number,
+): Promise<{
+  readonly page: readonly Contribution[];
+  readonly total: number | undefined;
+}> {
+  const page: Contribution[] = [];
+  let matched = 0;
+  let contributionOffset = 0;
+
+  while (true) {
+    const contributions = await listStore.list({
+      ...filterQuery,
+      order: "created_at_desc",
+      limit: OUTCOME_FILTER_SCAN_PAGE_SIZE,
+      offset: contributionOffset,
+    });
+    if (contributions.length === 0) return { page, total: matched };
+
+    contributionOffset += contributions.length;
+    const outcomes = await outcomeStore.getBatch(
+      contributions.map((contribution) => contribution.cid),
+    );
+
+    for (const contribution of contributions) {
+      const outcome = outcomes.get(contribution.cid);
+      if (outcome?.status !== targetStatus) continue;
+
+      if (matched >= offset && page.length < limit) {
+        page.push(contribution);
+      }
+      matched += 1;
+    }
+
+    if (contributions.length < OUTCOME_FILTER_SCAN_PAGE_SIZE) {
+      return { page, total: matched };
+    }
+    if (page.length >= limit) return { page, total: undefined };
   }
 }
 
@@ -480,16 +458,16 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     }
 
     const filterQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const { page, total } = await listOutcomeFilteredContributions({
+    const { page, total } = await listOutcomeFilteredContributions(
       outcomeStore,
-      contributionStore: listStore,
-      status: targetStatus,
+      listStore,
+      targetStatus,
       filterQuery,
       limit,
       offset,
-    });
+    );
 
-    c.header("X-Total-Count", String(total));
+    if (total !== undefined) c.header("X-Total-Count", String(total));
     return c.json(page);
   }
 

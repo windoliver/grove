@@ -65,10 +65,12 @@ describe("createMcpServer preset scoping", () => {
     "grove_bounty_settle",
     "grove_cas_put",
     "grove_check_stop",
+    "grove_check_trajectory",
     "grove_checkout",
     "grove_claim",
     "grove_create_plan",
     "grove_create_session",
+    "grove_delete_session",
     "grove_discuss",
     "grove_done",
     "grove_frontier",
@@ -87,6 +89,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_reproduce",
     "grove_search",
     "grove_send_message",
+    "grove_session_delete_blockers",
     "grove_set_goal",
     "grove_set_outcome",
     "grove_submit_review",
@@ -187,6 +190,7 @@ describe("createMcpServer preset scoping", () => {
       "grove_tree",
       "grove_thread",
       "grove_threads",
+      "grove_check_trajectory",
     ];
     for (const t of queryTools) {
       expect(names).not.toContain(t);
@@ -231,7 +235,9 @@ describe("createMcpServer preset scoping", () => {
       "grove_goal",
       "grove_set_goal",
       "grove_create_session",
+      "grove_delete_session",
       "grove_list_sessions",
+      "grove_session_delete_blockers",
     ];
     for (const t of goalTools) {
       expect(names).not.toContain(t);

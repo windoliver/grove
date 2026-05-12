@@ -109,6 +109,7 @@ describe("COMMANDS registry", () => {
       ],
       release: ["completed", "json"],
       checkout: ["to", "frontier", "agent", "json"],
+      "check-trajectory": ["transcript", "spec", "runtime", "format", "annotated-log"],
       thread: ["depth", "n", "json"],
       ask: ["options", "context", "strategy", "config"],
       export: ["to-discussion", "to-pr", "category"],

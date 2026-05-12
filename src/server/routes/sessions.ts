@@ -3,7 +3,9 @@
  *
  * POST /api/sessions           — Create a new session.
  * GET  /api/sessions           — List sessions with optional status filter.
+ * GET  /api/sessions/:id/delete-blockers — List blockers preventing deletion.
  * GET  /api/sessions/:id       — Get a single session by ID.
+ * DELETE /api/sessions/:id     — Delete a session.
  * PUT  /api/sessions/:id/archive — Archive a session.
  * POST /api/sessions/:id/contributions — Record a contribution against a session.
  */
@@ -47,10 +49,16 @@ const addContributionSchema = z.object({
 function toSessionResponse(session: Session) {
   return {
     sessionId: session.id,
+    uid: session.uid,
     goal: session.goal,
     presetName: session.presetName,
     status: session.status,
     startedAt: session.createdAt,
+    finalizers: session.finalizers,
+    ...(session.deletionTimestamp !== undefined && {
+      deletionTimestamp: session.deletionTimestamp,
+    }),
+    ...(session.deletionAudit !== undefined && { deletionAudit: session.deletionAudit }),
     endedAt: session.completedAt,
     stopReason: session.stopReason,
     stopStatus: session.stopStatus,
@@ -206,6 +214,24 @@ sessions.get("/", async (c) => {
   return c.json({ sessions: results.map(toSessionResponse) });
 });
 
+/** GET /api/sessions/:id/delete-blockers — List blockers preventing deletion. */
+sessions.get("/:id/delete-blockers", async (c) => {
+  const { goalSessionStore } = c.get("deps");
+  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+
+  const sessionId = c.req.param("id");
+  const session = await goalSessionStore.getSession(sessionId);
+  if (!session) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+      404,
+    );
+  }
+
+  const blockers = await goalSessionStore.listSessionDeleteBlockers(sessionId);
+  return c.json({ sessionId, blockers });
+});
+
 /** GET /api/sessions/:id — Get a single session. */
 sessions.get("/:id", async (c) => {
   const { goalSessionStore } = c.get("deps");
@@ -220,6 +246,28 @@ sessions.get("/:id", async (c) => {
     );
   }
   return c.json(toSessionResponse(session));
+});
+
+/** DELETE /api/sessions/:id — Delete a session. */
+sessions.delete("/:id", async (c) => {
+  const { goalSessionStore } = c.get("deps");
+  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+
+  const sessionId = c.req.param("id");
+  const session = await goalSessionStore.getSession(sessionId);
+  if (!session) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+      404,
+    );
+  }
+
+  const result = await goalSessionStore.deleteSession(sessionId, {
+    force: c.req.query("force") === "true",
+    actor: "http",
+  });
+  const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
+  return c.json(result, status);
 });
 
 /** PUT /api/sessions/:id/archive — Archive a session. */

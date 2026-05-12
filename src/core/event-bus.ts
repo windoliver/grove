@@ -52,6 +52,13 @@ export const TUI_REFRESH_ROLE = "tui";
 export interface EventBus {
   /** Publish an event. Returns delivery result with optional IPC message ID. */
   publish(event: GroveEvent): Promise<PublishResult>;
+  /**
+   * Publish only to in-process subscribers, bypassing external transport.
+   *
+   * Use this for observer/UI notifications that must not wake peer agents
+   * through Nexus IPC.
+   */
+  publishLocal?(event: GroveEvent): Promise<PublishResult>;
   /** Subscribe to events for a specific role. */
   subscribe(role: string, handler: EventHandler): void;
   /** Unsubscribe a handler. */

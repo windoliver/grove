@@ -14,18 +14,25 @@ export async function mapConcurrent<T, R>(
 
   const results: R[] = new Array<R>(items.length);
   let nextIndex = 0;
+  let rejection: unknown;
 
   const worker = async (): Promise<void> => {
-    for (;;) {
+    while (rejection === undefined) {
       const index = nextIndex;
       nextIndex++;
       if (index >= items.length) return;
       const item = items[index] as T;
-      results[index] = await fn(item, index);
+      try {
+        results[index] = await fn(item, index);
+      } catch (err) {
+        rejection = err;
+        return;
+      }
     }
   };
 
   const workerCount = Math.min(concurrency, items.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (rejection !== undefined) throw rejection;
   return results;
 }

@@ -611,6 +611,32 @@ describe("POST /api/sessions — topology and preset", () => {
     expect(data.topology.roles[0].name).toBe("custom-worker");
   });
 
+  test("inline topology preserves explicit role skills on the stored session topology", async () => {
+    const inlineTopology = {
+      structure: "flat" as const,
+      roles: [
+        {
+          name: "custom-worker",
+          description: "Custom worker",
+          skills: ["grove", "review"],
+        },
+      ],
+    };
+
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      body: JSON.stringify({
+        preset: "review-loop",
+        topology: inlineTopology,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.topology.roles[0].skills).toEqual(["grove", "review"]);
+  });
+
   test("creates session with goal + preset", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",

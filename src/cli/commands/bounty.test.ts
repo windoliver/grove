@@ -281,6 +281,33 @@ describe("grove bounty", () => {
       expect(stdout[0]).toContain("claimer-agent");
     });
 
+    test("stamps session ownerRef on bounty claim when deps provide one", async () => {
+      const ownerRef = { kind: "session" as const, id: "session-1", uid: "uid-1" };
+      await runBounty(
+        [
+          "create",
+          "Owned claim",
+          "--amount",
+          "100",
+          "--deadline",
+          "7d",
+          "--agent-id",
+          "test-agent",
+        ],
+        deps,
+      );
+      const bounties = await bountyStore.listBounties({ status: BountyStatus.Open });
+      const bountyId = bounties[0]?.bountyId as string;
+
+      await runBounty(["claim", bountyId, "--agent-id", "claimer-agent"], {
+        ...deps,
+        sessionOwnerRef: ownerRef,
+      });
+
+      const claims = await claimStore.activeClaims(`bounty:${bountyId}`);
+      expect(claims[0]?.ownerRef).toEqual(ownerRef);
+    });
+
     test("errors when bounty-id is missing", async () => {
       await runBounty(["claim"], deps);
 
