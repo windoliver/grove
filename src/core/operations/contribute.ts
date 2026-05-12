@@ -1391,6 +1391,9 @@ export async function contributeOperation(
     // the commit from the caller's perspective.
     try {
       deps.onContributionWrite?.();
+      if (!existedBefore) {
+        await deps.frontierRewardService?.evaluateContribution(contribution);
+      }
       deps.onContributionWritten?.(contribution.cid);
       if (deps.onEntityWrite && deps.namespace && !existedBefore) {
         deps.onEntityWrite({

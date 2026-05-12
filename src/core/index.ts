@@ -154,6 +154,10 @@ export {
   getScore,
   SessionAggregatingFrontierCalculator,
 } from "./frontier.js";
+export {
+  FrontierRewardService,
+  type FrontierRewardServiceOptions,
+} from "./frontier-reward-service.js";
 export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
 export {
   canTransition,

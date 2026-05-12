@@ -144,6 +144,9 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     creditsService,
     cas,
     frontier,
+    frontierRewardService: undefined as unknown as NonNullable<
+      OperationDeps["frontierRewardService"]
+    >,
     workspace,
     handoffStore,
     idempotencyStore,
