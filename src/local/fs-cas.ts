@@ -22,10 +22,12 @@ import { createHash as createBlake3, hash } from "blake3";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import { validateMediaType } from "../core/cas.js";
 import type { Artifact } from "../core/models.js";
+import { mapConcurrent } from "../shared/concurrency.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 
 /** Prefix for BLAKE3 content hashes. */
 const HASH_PREFIX = "blake3:";
+const EXISTS_MANY_CONCURRENCY = 16;
 
 /**
  * Compute the BLAKE3 hash of a Uint8Array and return the prefixed hex string.
@@ -119,6 +121,10 @@ export class FsCas implements ContentStore {
     await atomicWrite(metaPath, JSON.stringify({ mediaType: options.mediaType }));
   }
 
+  private validatePutOptions(options?: PutOptions): void {
+    if (options?.mediaType) validateMediaType(options.mediaType);
+  }
+
   /**
    * Read a metadata sidecar JSON file.
    * Returns undefined if the sidecar is missing or corrupted (graceful degradation).
@@ -147,6 +153,7 @@ export class FsCas implements ContentStore {
    * and incremental hashing in constant memory.
    */
   async put(data: Uint8Array, options?: PutOptions): Promise<string> {
+    this.validatePutOptions(options);
     const contentHash = computeHash(data);
     const { blobPath, metaPath } = this.resolve(contentHash);
 
@@ -204,8 +211,10 @@ export class FsCas implements ContentStore {
     const result = new Map<string, boolean>();
     if (contentHashes.length === 0) return result;
 
-    const entries = await Promise.all(
-      contentHashes.map(async (hash) => [hash, await this.exists(hash)] as const),
+    const entries = await mapConcurrent(
+      contentHashes,
+      EXISTS_MANY_CONCURRENCY,
+      async (hash) => [hash, await this.exists(hash)] as const,
     );
     for (const [hash, exists] of entries) {
       result.set(hash, exists);
@@ -249,6 +258,7 @@ export class FsCas implements ContentStore {
    * its content hash — no two-pass TOCTOU window on the source.
    */
   async putFile(path: string, options?: PutOptions): Promise<string> {
+    this.validatePutOptions(options);
     // Stage: copy source to a temp file so we have an immutable snapshot.
     // We use the CAS root for temp files to ensure same-filesystem rename.
     await mkdir(this.rootPath, { recursive: true });

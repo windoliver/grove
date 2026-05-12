@@ -17,8 +17,8 @@ function keyEvent(name: string, seq?: string): KeyEvent {
     sequence: seq ?? name,
     raw: name,
     eventType: "keypress",
-    preventDefault: () => {},
-    stopPropagation: () => {},
+    preventDefault: () => undefined,
+    stopPropagation: () => undefined,
   } as unknown as KeyEvent;
 }
 

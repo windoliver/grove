@@ -39,6 +39,7 @@ export function getPresetTopologyRegistry(): Readonly<Record<string, CorePresetC
           {
             name: "coder",
             description: "Writes and iterates on code",
+            edges: [{ target: "reviewer", edgeType: "delegates", replyTimeoutSeconds: 300 }],
             maxInstances: 1,
             mode: "broadcast",
             platform: "claude-code",
@@ -61,6 +62,7 @@ export function getPresetTopologyRegistry(): Readonly<Record<string, CorePresetC
             maxInstances: 1,
             mode: "broadcast",
             platform: "claude-code",
+            endsSession: true,
             prompt:
               "You are a code reviewer. Wait for a coder contribution to arrive — do not act on the session goal yourself.\n" +
               "Your workflow:\n" +

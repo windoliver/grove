@@ -229,6 +229,7 @@ function renderTopology(topology: AgentTopology | undefined, version: 2 | 3): st
     if (role.mode) lines.push(`      mode: ${role.mode}`);
     if (role.platform) lines.push(`      platform: ${role.platform}`);
     if (role.command) lines.push(`      command: "${role.command}"`);
+    if (role.endsSession !== undefined) lines.push(`      ends_session: ${role.endsSession}`);
     if (role.skills && role.skills.length > 0) {
       lines.push(`      skills: [${role.skills.map((s) => `"${s}"`).join(", ")}]`);
     }

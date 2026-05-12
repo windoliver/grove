@@ -10,14 +10,70 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { computeContributionContentHash } from "../../../src/core/content-dedup.js";
 import { toManifest } from "../../../src/core/manifest.js";
+import type { Contribution } from "../../../src/core/models.js";
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
-import { makeContribution } from "../../../src/core/test-helpers.js";
+import { makeContribution, makeRelation } from "../../../src/core/test-helpers.js";
+import type { WriteOptions, WriteResult } from "../../../src/nexus/client.js";
+import { NexusConflictError } from "../../../src/nexus/errors.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 import {
+  contributionAgentCreatedAtIndexPath,
   contributionContentHashIndexPath,
+  contributionCreatedAtIndexPath,
   contributionPath,
+  ftsIndexPath,
+  relationIndexPath,
+  tagIndexPath,
 } from "../../../src/nexus/vfs-paths.js";
+
+class CountingNexusClient extends MockNexusClient {
+  manifestReadCount = 0;
+
+  override async read(path: string): Promise<Uint8Array | undefined> {
+    if (path.includes("/contributions/") && path.endsWith(".json")) {
+      this.manifestReadCount += 1;
+    }
+    return super.read(path);
+  }
+}
+
+class ContentHashCommitConflictClient extends MockNexusClient {
+  private conflicted = false;
+  private readonly encoder = new TextEncoder();
+
+  constructor(
+    private readonly zoneId: string,
+    private readonly contentHashPath: string,
+    private readonly winner: Contribution,
+  ) {
+    super();
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (path === this.contentHashPath && opts?.ifMatch !== undefined && !this.conflicted) {
+      this.conflicted = true;
+      await super.write(
+        contributionPath(this.zoneId, this.winner.cid),
+        this.encoder.encode(JSON.stringify(toManifest(this.winner))),
+      );
+      await super.write(
+        ftsIndexPath(this.zoneId, this.winner.cid),
+        this.encoder.encode(JSON.stringify({ cid: this.winner.cid })),
+      );
+      await super.write(this.contentHashPath, this.encoder.encode(this.winner.cid));
+      throw new NexusConflictError({
+        message: `simulated content-hash commit race for ${path}`,
+        expectedEtag: opts.ifMatch,
+      });
+    }
+    return super.write(path, content, opts);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Conformance tests
@@ -129,6 +185,24 @@ describe("NexusContributionStore adapter-specific", () => {
     tinyStore.close();
   });
 
+  test("list supports newest-first ordering before applying limit", async () => {
+    const older = makeContribution({
+      summary: "older nexus contribution",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const newer = makeContribution({
+      summary: "newer nexus contribution",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    await store.putMany([newer, older]);
+
+    const desc = await store.list({ limit: 1, order: "created_at_desc" });
+    expect(desc.map((c) => c.cid)).toEqual([newer.cid]);
+
+    const asc = await store.list({ limit: 1 });
+    expect(asc.map((c) => c.cid)).toEqual([older.cid]);
+  });
+
   // -----------------------------------------------------------------------
   // Retry on network error
   // -----------------------------------------------------------------------
@@ -231,6 +305,61 @@ describe("NexusContributionStore adapter-specific", () => {
       .filter((entry) => entry.summary === "concurrent orphan repair")
       .map((entry) => entry.cid);
     expect(new Set(visibleCids).size).toBe(1);
+  });
+
+  test("put removes loser record files when content-hash commit races", async () => {
+    const relation = makeRelation();
+    const winner = makeContribution({
+      summary: "content hash race cleanup",
+      createdAt: "2026-01-01T00:00:00Z",
+      tags: ["cleanup"],
+      relations: [relation],
+    });
+    const loser = makeContribution({
+      summary: "content hash race cleanup",
+      createdAt: "2026-01-01T00:00:01Z",
+      tags: ["cleanup"],
+      relations: [relation],
+    });
+    const contentHash = computeContributionContentHash(loser);
+    expect(computeContributionContentHash(winner)).toBe(contentHash);
+    expect(winner.cid).not.toBe(loser.cid);
+
+    const contentHashPath = contributionContentHashIndexPath("test-zone", contentHash);
+    const raceClient = new ContentHashCommitConflictClient("test-zone", contentHashPath, winner);
+    const raceStore = new NexusContributionStore({
+      client: raceClient,
+      zoneId: "test-zone",
+      retryMaxAttempts: 1,
+    });
+
+    const result = await raceStore.put(loser);
+
+    expect(result.cid).toBe(winner.cid);
+    expect(await raceClient.read(contributionPath("test-zone", loser.cid))).toBeUndefined();
+    expect(await raceClient.read(ftsIndexPath("test-zone", loser.cid))).toBeUndefined();
+    expect(await raceClient.read(tagIndexPath("test-zone", "cleanup", loser.cid))).toBeUndefined();
+    expect(
+      await raceClient.read(relationIndexPath("test-zone", relation.targetCid, loser.cid)),
+    ).toBeUndefined();
+    expect(
+      await raceClient.read(
+        contributionCreatedAtIndexPath("test-zone", loser.createdAt, loser.cid),
+      ),
+    ).toBeUndefined();
+    expect(
+      await raceClient.read(
+        contributionAgentCreatedAtIndexPath(
+          "test-zone",
+          loser.agent.agentId,
+          loser.createdAt,
+          loser.cid,
+        ),
+      ),
+    ).toBeUndefined();
+
+    raceStore.close();
+    await raceClient.close();
   });
 
   test("put resumes an abandoned repair marker for the same contribution", async () => {
@@ -353,5 +482,62 @@ describe("NexusContributionStore adapter-specific", () => {
 
   test("storeIdentity includes zone", () => {
     expect(store.storeIdentity).toBe("nexus:test-zone:contributions");
+  });
+
+  test("session-scoped storeIdentity includes session", () => {
+    const sessionStore = new NexusContributionStore({
+      client,
+      zoneId: "test-zone",
+      sessionId: "session-a",
+      retryMaxAttempts: 1,
+    });
+
+    expect(sessionStore.storeIdentity).toBe("nexus:test-zone:sessions:session-a:contributions");
+
+    sessionStore.close();
+  });
+
+  test("countSince backfills count indexes once, then avoids contribution manifest reads", async () => {
+    const countingClient = new CountingNexusClient();
+    const writeStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const recent = makeContribution({
+      summary: "recent",
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    const old = makeContribution({
+      summary: "old",
+      createdAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    await writeStore.putMany([recent, old]);
+    writeStore.close();
+
+    const freshStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const query = {
+      agentId: "agent-a",
+      since: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+
+    const count = await freshStore.countSince(query);
+
+    expect(count).toBe(1);
+    expect(countingClient.manifestReadCount).toBeGreaterThan(0);
+
+    countingClient.manifestReadCount = 0;
+    await expect(freshStore.countSince(query)).resolves.toBe(1);
+    expect(countingClient.manifestReadCount).toBe(0);
+    expect(await countingClient.read(contributionPath("count-zone", recent.cid))).toBeDefined();
+
+    freshStore.close();
+    await countingClient.close();
   });
 });

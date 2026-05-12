@@ -10,16 +10,25 @@
  *   Ctrl+A: toggle to App (advanced mode) / Ctrl+B back to RunningView
  */
 
-import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
+import {
+  applySessionSkillOverrides,
+  type SessionSkillOverrideClause,
+} from "../../core/session-skill-overrides.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
+import { PagesRouter, type PagesRouterComponentMap } from "../components/pages-router.js";
+import { DagStateStore } from "../data/dag-state-store.js";
+import { type PageKind, PagesStore } from "../data/pages-store.js";
 import { debugLog } from "../debug-log.js";
-import { useDoneDetection } from "../hooks/use-done-detection.js";
+import { DagStateProvider } from "../hooks/dag-state-context.js";
+import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
+import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
 import type { SessionRecord } from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
@@ -102,6 +111,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     resumeSessionId: resumeSessionIdFromProps,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
+    const { width: termWidth } = useTerminalDimensions();
     const { provider, topology: initialTopology, contract } = appProps;
 
     // Resolved topology — starts from GROVE.md default, or from a preset
@@ -111,6 +121,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       const presetName = initialState?.selectedPreset ?? appProps.presetName;
       return presetName ? lookupPresetTopology(presetName) : undefined;
     });
+
+    const resolveBaselineTopology = useCallback(
+      (presetName?: string): AgentTopology | undefined => {
+        if (presetName) {
+          return lookupPresetTopology(presetName) ?? initialTopology;
+        }
+        return initialTopology;
+      },
+      [initialTopology],
+    );
 
     // Capture the resume session ID for setSessionScope — written in the useState
     // initializer (runs synchronously before effects) and read in the mount effect below.
@@ -163,6 +183,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
       };
     });
+
+    // PagesStore — k9s-style navigation stack. Created once at mount and
+    // seeded with the initial screen so the router has a top page to render.
+    // Kept in sync with state.screen below: every setState that flips screen
+    // also calls the equivalent pages.{push|pop|replace|resetTo}.
+    const [pages] = useState<PagesStore>(() => {
+      const store = new PagesStore();
+      store.push({ kind: state.screen as PageKind });
+      return store;
+    });
+
+    // DagStateStore — xray DAG view UI state (#311). Constructed once at
+    // mount so expansion / focus / highlight survive DagView unmount when
+    // the user navigates between panels.
+    const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
 
     // Apply session scope on mount for resumed sessions (startOnRunning path).
     // Must fire before the first contribution poll in the reconcile effect below —
@@ -284,17 +319,27 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const sessionStartRef = useRef<number>(Date.now());
     // Track if grove_done was signaled — stops IPC routing to prevent ping-pong
     const doneSignaledRef = useRef(false);
+    const completionStartedRef = useRef(false);
 
     // ---------------------------------------------------------------------------
     // Done detection — extracted to custom hook (supports event-driven + polling)
     // ---------------------------------------------------------------------------
     const snapshotAndComplete = useCallback(
       async (reason: string) => {
-        // Save trace history before completing
+        if (completionStartedRef.current) return;
+        completionStartedRef.current = true;
+        doneSignaledRef.current = true;
+
+        // stopActiveSession synchronously unregisters IPC routes and clears
+        // active session maps before awaiting process teardown. Do not await
+        // the teardown here: a stuck adapter close must not keep the session
+        // row active after grove_done has already completed the session.
+        void spawnManager.stopActiveSession().catch(() => {
+          /* best-effort */
+        });
         await spawnManager.saveTraces().catch(() => {
           /* best-effort */
         });
-        spawnManager.stopLogPolling();
 
         let contributionCount = 0;
         try {
@@ -316,13 +361,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             completeSnapshot: { reason, contributionCount },
           };
         });
+        // Collapse wizard onto the complete page so esc on complete doesn't
+        // walk back into running/spawning history.
+        pages.replace({ kind: "complete" });
       },
-      [provider, spawnManager],
+      [provider, spawnManager, pages],
     );
     const handleDone = useCallback(() => {
-      void snapshotAndComplete("All roles signaled done");
+      void snapshotAndComplete("Session signaled done");
     }, [snapshotAndComplete]);
-    useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
+    const observeDoneContribution = useDoneDetection(
+      topology,
+      state.screen,
+      appProps.eventBus,
+      handleDone,
+    );
 
     // ---------------------------------------------------------------------------
     // Permission prompt detection — extracted to custom hook
@@ -345,7 +398,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       setState({
         screen: "preset-select",
       });
-    }, [provider, state.sessionId, spawnManager]);
+      pages.resetTo({ kind: "preset-select" });
+    }, [provider, state.sessionId, spawnManager, pages]);
 
     const handleQuit = useCallback(() => {
       spawnManager.stopLogPolling();
@@ -372,18 +426,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     }, [provider, renderer, state.sessionId, spawnManager]);
 
     // Screen 1 -> Screen 2: preset selected → resolve topology and go to goal input
-    const handlePresetSelect = useCallback((presetName: string) => {
-      // Resolve topology from preset, falling back to GROVE.md default
-      const presetTopology = lookupPresetTopology(presetName);
-      if (presetTopology) {
-        setTopology(presetTopology);
-      }
-      setState((s) => ({
-        ...s,
-        screen: "goal-input",
-        selectedPreset: presetName,
-      }));
-    }, []);
+    const handlePresetSelect = useCallback(
+      (presetName: string) => {
+        // Resolve topology from preset, falling back to GROVE.md default
+        const presetTopology = resolveBaselineTopology(presetName);
+        if (presetTopology) {
+          setTopology(presetTopology);
+        }
+        setState((s) => ({
+          ...s,
+          screen: "goal-input",
+          selectedPreset: presetName,
+        }));
+        pages.push({ kind: "goal-input" });
+      },
+      [pages, resolveBaselineTopology],
+    );
 
     // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
@@ -395,19 +453,24 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
      * would either not apply (stale closure) or mutate the shared preset.
      */
     const sessionTopologyRef = useRef<AgentTopology | undefined>(undefined);
-    const handleGoalToPreview = useCallback((goal: string) => {
-      setState((s) => ({
-        ...s,
-        screen: "launch-preview" as const,
-        goal,
-      }));
-    }, []);
+    const handleGoalToPreview = useCallback(
+      (goal: string) => {
+        setState((s) => ({
+          ...s,
+          screen: "launch-preview" as const,
+          goal,
+        }));
+        pages.push({ kind: "launch-preview" });
+      },
+      [pages],
+    );
 
     // Screen 3 -> Screen 2: back to goal input
     const handleLaunchBack = useCallback(() => {
       hasSpawnedRef.current = false; // Reset so re-entering launch preview can spawn
       setState((s) => ({ ...s, screen: "goal-input" }));
-    }, []);
+      pages.pop();
+    }, [pages]);
 
     /**
      * Spawn agents and transition to running view.
@@ -415,6 +478,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
      */
     const spawnAgents = useCallback(
       async (goal: string, roleMapping: Map<string, string>) => {
+        const resolvedTopology = sessionTopologyRef.current ?? topology;
         debugLog(
           "spawnAgents",
           `goal="${goal}" roles=[${[...roleMapping.entries()].map(([k, v]) => `${k}→${v}`).join(",")}]`,
@@ -439,7 +503,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // edited topology to createSession.
         if (isSessionProvider(provider)) {
           try {
-            const sessionTopology = sessionTopologyRef.current ?? topology;
+            const sessionTopology = resolvedTopology;
             const sessionConfig =
               contract && sessionTopology ? { ...contract, topology: sessionTopology } : contract;
             const session = await provider.createSession({
@@ -497,6 +561,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 error: `Failed to create Nexus session: ${msg}. Retry or fall back to local mode.`,
                 screen: "preset-select",
               }));
+              pages.resetTo({ kind: "preset-select" });
               return;
             }
             const fallbackId = crypto.randomUUID();
@@ -511,8 +576,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }
 
         // Transition to spawning screen with per-agent tracking
-        if (topology && topology.roles.length > 0) {
-          const initialStates: AgentSpawnState[] = topology.roles.map((role) => ({
+        if (resolvedTopology && resolvedTopology.roles.length > 0) {
+          const initialStates: AgentSpawnState[] = resolvedTopology.roles.map((role) => ({
             role: role.name,
             command: roleMapping.get(role.name) ?? role.command ?? "codex",
             status: "waiting" as const,
@@ -524,16 +589,17 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             sessionStartedAt,
             spawnStates: initialStates,
           }));
+          pages.push({ kind: "spawning" });
 
           spawnManager.setSessionGoal(goal);
           // Give SpawnManager the topology so it can resolve edge-type-aware
           // base branches (delegates/feeds/escalates → branch off source).
-          spawnManager.setTopology(topology);
+          spawnManager.setTopology(resolvedTopology);
           // Ensure log buffers exist for all topology roles BEFORE seekToEnd.
           // startLogPolling(seekToEnd=true) iterates logBuffers to record file
           // offsets; if buffers don't exist yet, the loop has nothing to iterate
           // and no positions are recorded — leaving pollLogFile() reading from 0.
-          for (const role of topology.roles) {
+          for (const role of resolvedTopology.roles) {
             spawnManager.ensureLogBuffer(role.name);
           }
           // New session — record current end-of-file for ALL existing role log
@@ -546,7 +612,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           // dependent roles try to base their worktrees on them (delegates/feeds/escalates).
           // Sequential spawning is required because provisionWorkspace happens inside spawn().
           void (async () => {
-            const orderedRoles = topologicalSortRoles(topology);
+            const orderedRoles = topologicalSortRoles(resolvedTopology);
             for (const role of orderedRoles) {
               const userOverrideCmd = roleMapping.get(role.name);
               const command = userOverrideCmd ?? role.command ?? "codex";
@@ -561,7 +627,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               // resolveAgent(). Let resolveAgent fall back to command parsing instead.
               if (!userOverrideCmd && role.platform) context.platform = role.platform;
               if (role.model) context.model = role.model;
-              if (topology) context.topology = topology;
+              context.topology = resolvedTopology;
 
               // Mark as spawning
               setState((s) => ({
@@ -596,9 +662,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         } else {
           // No topology — go straight to running
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
+          // Collapse the wizard so esc from running doesn't re-enter launch-preview.
+          // Use resetTo (not replace) for parity with the topology branch in
+          // handleSpawnComplete — both paths must collapse the entire wizard
+          // stack into a single running entry.
+          pages.resetTo({ kind: "running" });
         }
       },
-      [provider, topology, contract, state.selectedPreset, spawnManager, appProps.groveDir],
+      [provider, topology, contract, state.selectedPreset, spawnManager, appProps.groveDir, pages],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
@@ -608,6 +679,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
         edgeTimeouts: Map<string, number>,
+        roleSkills: Map<string, readonly string[]>,
       ) => {
         // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
         // hasSpawnedRef is set to true here and only reset in handleNewSession.
@@ -631,7 +703,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // spawnAgents picks it up bypassing React's async state update. Also
         // call setTopology so the UI reflects the current session's config.
         if (topology) {
-          const sessionTopology = structuredClone(topology);
+          let sessionTopology = structuredClone(topology);
           for (const role of sessionTopology.roles) {
             if (role.edges) {
               for (const edge of role.edges) {
@@ -645,6 +717,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               }
             }
           }
+          const skillClauses: SessionSkillOverrideClause[] = [...roleSkills.entries()].map(
+            ([target, skills]) => ({
+              target,
+              op: "replace",
+              skills: [...skills],
+            }),
+          );
+          sessionTopology = applySessionSkillOverrides(sessionTopology, skillClauses);
           sessionTopologyRef.current = sessionTopology;
           setTopology(sessionTopology);
         }
@@ -663,7 +743,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 3.5 -> Screen 4: all spawns resolved
     const handleSpawnComplete = useCallback(() => {
       setState((s) => ({ ...s, screen: "running" }));
-    }, []);
+      // Collapse spawning + launch-preview + goal-input + preset-select into
+      // a single running entry so esc on running doesn't walk back into
+      // wizard pages.
+      pages.resetTo({ kind: "running" });
+    }, [pages]);
 
     // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
     // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
@@ -671,15 +755,24 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       hasSpawnedRef.current = false; // Reset so fresh launch is allowed after going back
       if (presets && presets.length > 0) {
         setState((s) => ({ ...s, screen: "preset-select" }));
+        // Pop goal-input off the stack so the router lands back on
+        // preset-select. resetTo guards against the case where goal-input
+        // was the only entry (topology-first init).
+        if (pages.depth() > 1) {
+          pages.pop();
+        } else {
+          pages.resetTo({ kind: "preset-select" });
+        }
       } else {
         handleQuit();
       }
-    }, [presets, handleQuit]);
+    }, [presets, handleQuit, pages]);
 
     // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
     const handleToggleAdvanced = useCallback(() => {
       setState((s) => ({ ...s, screen: "advanced" }));
-    }, []);
+      pages.push({ kind: "advanced" });
+    }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
     const handleComplete = useCallback(
@@ -692,27 +785,31 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
+      completionStartedRef.current = false;
       hasSpawnedRef.current = false; // Reset spawn guard for new session
-      setState((s) => {
-        // If we have preset + role mapping from a prior run, skip to goal input
-        if (s.selectedPreset && s.roleMapping) {
-          // Destructure to omit session-specific fields, preserve preset/detection state
-          const {
-            goal: _g,
-            sessionId: _s,
-            sessionStartedAt: _st,
-            spawnStates: _sp,
-            completeSnapshot: _c,
-            ...preserved
-          } = s;
-          return { ...preserved, screen: "goal-input" as const };
-        }
-        // No prior preset state — fall back to preset selection
-        return {
-          screen: presets && presets.length > 0 ? ("preset-select" as const) : ("running" as const),
-        };
-      });
-    }, [presets]);
+      sessionTopologyRef.current = undefined;
+
+      let nextKind: PageKind = "preset-select";
+      if (state.selectedPreset && state.roleMapping) {
+        setTopology(resolveBaselineTopology(state.selectedPreset));
+        const {
+          goal: _g,
+          sessionId: _s,
+          sessionStartedAt: _st,
+          spawnStates: _sp,
+          completeSnapshot: _c,
+          ...preserved
+        } = state;
+        setState({ ...preserved, screen: "goal-input" as const });
+        nextKind = "goal-input";
+      } else {
+        const fallback =
+          presets && presets.length > 0 ? ("preset-select" as const) : ("running" as const);
+        setState({ screen: fallback });
+        nextKind = fallback;
+      }
+      pages.resetTo({ kind: nextKind });
+    }, [presets, pages, resolveBaselineTopology, state]);
 
     // Compute duration string
     const getDuration = useCallback(() => {
@@ -754,58 +851,67 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
 
     // Wrap screen content with global permission bar
-    const wrapWithPermissions = (content: React.ReactNode): React.ReactNode => (
-      <box flexDirection="column" width="100%" height="100%">
-        {permissionBar}
-        <box flexGrow={1}>{content}</box>
-      </box>
+    const wrapWithPermissions = useCallback(
+      (content: React.ReactNode): React.ReactNode => (
+        <box flexDirection="column" width="100%" height="100%">
+          {permissionBar}
+          <box flexGrow={1}>{content}</box>
+        </box>
+      ),
+      [permissionBar],
     );
 
-    switch (state.screen) {
-      case "preset-select":
-        return (
-          <PresetSelect
-            presets={presets ?? []}
-            sessions={sessions}
-            onSelect={handlePresetSelect}
-            onQuit={handleQuit}
-          />
-        );
+    // Advanced -> Running back handler. setState keeps state.screen in sync;
+    // pages.pop() walks back off the advanced page that was pushed on entry.
+    const handleAdvancedBack = useCallback(() => {
+      setState((s) => ({ ...s, screen: "running" }));
+      pages.pop();
+    }, [pages]);
 
-      case "agent-detect":
-      case "launch-preview":
-        return (
-          <AgentDetect
-            topology={topology}
-            goal={state.goal}
-            onContinue={handleLaunchConfirm}
-            onBack={handleLaunchBack}
-          />
-        );
-
-      case "goal-input":
-        return (
-          <GoalInput
-            presetName={state.selectedPreset ?? "default"}
-            topology={topology}
-            roleMapping={state.roleMapping}
-            onSubmit={handleGoalToPreview}
-            onBack={handleGoalBack}
-          />
-        );
-
-      case "spawning":
-        return (
-          <SpawnProgress
-            agents={state.spawnStates ?? []}
-            goal={state.goal ?? ""}
-            presetName={state.selectedPreset}
-            onAllResolved={handleSpawnComplete}
-          />
-        );
-
-      case "running":
-        return wrapWithPermissions(
+    // ---------------------------------------------------------------------------
+    // Page → component bindings for PagesRouter.
+    // ---------------------------------------------------------------------------
+    //
+    // PagesRouter calls each entry as `<Component page={top} />`. We close
+    // over the real props (handlers, topology, state) and ignore the page
+    // arg — keeping the existing wiring identical to the prior switch
+    // statement so behavior, lifecycle, and tests don't shift.
+    const components = useMemo<PagesRouterComponentMap>(() => {
+      const PresetSelectPage = (): React.ReactNode => (
+        <PresetSelect
+          presets={presets ?? []}
+          sessions={sessions}
+          onSelect={handlePresetSelect}
+          onQuit={handleQuit}
+        />
+      );
+      const GoalInputPage = (): React.ReactNode => (
+        <GoalInput
+          presetName={state.selectedPreset ?? "default"}
+          topology={topology}
+          roleMapping={state.roleMapping}
+          onSubmit={handleGoalToPreview}
+          onBack={handleGoalBack}
+        />
+      );
+      const LaunchPreviewPage = (): React.ReactNode => (
+        <AgentDetect
+          topology={topology}
+          goal={state.goal}
+          onContinue={handleLaunchConfirm}
+          onBack={handleLaunchBack}
+        />
+      );
+      const SpawningPage = (): React.ReactNode => (
+        <SpawnProgress
+          agents={state.spawnStates ?? []}
+          goal={state.goal ?? ""}
+          presetName={state.selectedPreset}
+          onAllResolved={handleSpawnComplete}
+        />
+      );
+      const RunningPage = (): React.ReactNode =>
+        wrapWithPermissions(
           <RunningView
             provider={provider}
             intervalMs={appProps.intervalMs}
@@ -822,17 +928,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 "contribution",
                 `NEW cid=${c.cid.slice(0, 12)} kind=${c.kind} role=${c.agent?.role} summary="${c.summary.slice(0, 50)}"`,
               );
-              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
-              if (doneSignaledRef.current) return;
-              const isDone =
-                c.summary.startsWith("[DONE]") ||
-                (c.context &&
-                  typeof c.context === "object" &&
-                  (c.context as Record<string, unknown>).done === true);
+              const isDone = isDoneContribution({ summary: c.summary, context: c.context });
               if (isDone) {
-                doneSignaledRef.current = true;
+                observeDoneContribution(c);
                 return;
               }
+              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
+              if (doneSignaledRef.current) return;
               // Routing is handled by the SSE push bridge — don't re-deliver here.
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
@@ -851,43 +953,92 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             onBackToMain={handleBackToMain}
           />,
         );
-
-      case "advanced":
-        return wrapWithPermissions(
+      const AdvancedPage = (): React.ReactNode =>
+        wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
               <text color={theme.secondary}>Ctrl+B:back to running view</text>
             </box>
             <box flexGrow={1}>
-              <AdvancedModeWrapper
-                appProps={appProps}
-                onBack={() => setState((s) => ({ ...s, screen: "running" }))}
-              />
+              <AdvancedModeWrapper appProps={appProps} onBack={handleAdvancedBack} />
             </box>
           </box>,
         );
+      const CompletePage = (): React.ReactNode => (
+        <CompleteView
+          reason={state.completeSnapshot?.reason ?? "Session ended"}
+          contributionCount={state.completeSnapshot?.contributionCount ?? 0}
+          duration={getDuration()}
+          presetName={state.selectedPreset}
+          metricResult={state.completeSnapshot?.metricResult}
+          cost={state.completeSnapshot?.cost}
+          onNewSession={handleNewSession}
+          onQuit={handleQuit}
+        />
+      );
+      // panel and entity-detail share the same RunningPage component reference
+      // (not wrapper functions) so React's reconciler sees the same type across
+      // running/panel/entity-detail stack pushes and preserves the mounted
+      // RunningView subtree. Distinct wrapper functions (PanelPage, EntityDetailPage)
+      // would cause React to unmount+remount on every :a/:s/:d/:t/:r push, losing
+      // feed cursor, autoFollow, traceSelectedAgent, and other local state.
+      return {
+        "preset-select": PresetSelectPage,
+        "goal-input": GoalInputPage,
+        "agent-detect": LaunchPreviewPage,
+        "launch-preview": LaunchPreviewPage,
+        spawning: SpawningPage,
+        running: RunningPage,
+        advanced: AdvancedPage,
+        complete: CompletePage,
+        panel: RunningPage,
+        "entity-detail": RunningPage,
+      };
+    }, [
+      presets,
+      sessions,
+      handlePresetSelect,
+      handleQuit,
+      state.selectedPreset,
+      state.roleMapping,
+      state.goal,
+      state.sessionId,
+      state.sessionStartedAt,
+      state.spawnStates,
+      state.completeSnapshot,
+      topology,
+      handleGoalToPreview,
+      handleGoalBack,
+      handleLaunchConfirm,
+      handleLaunchBack,
+      handleSpawnComplete,
+      handleToggleAdvanced,
+      handleComplete,
+      handleBackToMain,
+      handleAdvancedBack,
+      handleNewSession,
+      provider,
+      appProps,
+      spawnManager,
+      reconcileVersion,
+      observeDoneContribution,
+      getDuration,
+      wrapWithPermissions,
+    ]);
 
-      case "complete":
-        return (
-          <CompleteView
-            reason={state.completeSnapshot?.reason ?? "Session ended"}
-            contributionCount={state.completeSnapshot?.contributionCount ?? 0}
-            duration={getDuration()}
+    return (
+      <PagesStoreProvider store={pages}>
+        <DagStateProvider store={dagStateStore}>
+          <PagesRouter
+            store={pages}
+            components={components}
+            width={termWidth}
             presetName={state.selectedPreset}
-            metricResult={state.completeSnapshot?.metricResult}
-            cost={state.completeSnapshot?.cost}
-            onNewSession={handleNewSession}
-            onQuit={handleQuit}
+            sessionId={state.sessionId}
           />
-        );
-
-      default:
-        return (
-          <box paddingX={2} paddingTop={1}>
-            <text color={theme.error}>Unknown screen state</text>
-          </box>
-        );
-    }
+        </DagStateProvider>
+      </PagesStoreProvider>
+    );
   },
 );
 

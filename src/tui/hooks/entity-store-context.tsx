@@ -51,7 +51,14 @@ function nullStoreFor<K extends WatchKind>(kind: K): EntityStore<K> {
       list: () => FROZEN_EMPTY as never,
       getById: () => undefined,
       hasSynced: () => false,
-      getStats: () => ({ writes: 0, version: 0, lagSamples: [] }),
+      getStats: () => ({
+        writes: 0,
+        version: 0,
+        overflows: 0,
+        queueDepth: 0,
+        queueLimit: 0,
+        lagSamples: [],
+      }),
       dispose: () => undefined,
     } as unknown as EntityStore<WatchKind>;
     NULL_STORE_CACHE.set(kind, stub);

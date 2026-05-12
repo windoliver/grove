@@ -243,15 +243,16 @@ export class SessionService {
       this.emit({ type: "agent_done", role: event.sourceRole, reason });
       this.doneRoles.add(event.sourceRole);
 
-      // Check if all roles are done
-      const allDone = this.topology.roles.every((r) => this.doneRoles.has(r.name));
-      if (allDone && this.sessionStatus === "running") {
+      const requiredDoneRoles = this.doneRequiredRoleNames();
+      const requiredDone =
+        requiredDoneRoles.length > 0 && requiredDoneRoles.every((r) => this.doneRoles.has(r));
+      if (requiredDone && this.sessionStatus === "running") {
         this.sessionStatus = "complete";
-        this.stopReason = "All agents done";
+        this.stopReason = "Required agents done";
         this.stopStatus = LoopStopStatus.Achieved;
         this.emit({
           type: "session_complete",
-          reason: "All agents done",
+          reason: "Required agents done",
           stopStatus: LoopStopStatus.Achieved,
         });
       }
@@ -267,6 +268,15 @@ export class SessionService {
         /* ignore listener errors */
       }
     }
+  }
+
+  private doneRequiredRoleNames(): readonly string[] {
+    const explicitEndingRoles = this.topology.roles
+      .filter((role) => role.endsSession === true)
+      .map((role) => role.name);
+    return explicitEndingRoles.length > 0
+      ? explicitEndingRoles
+      : this.topology.roles.map((role) => role.name);
   }
 }
 

@@ -17,6 +17,7 @@ import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
+import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
 import { buildPaletteItems, CommandPalette, fuzzyMatch } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
@@ -24,6 +25,13 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { DagStateStore } from "./data/dag-state-store.js";
+import { DagStateProvider } from "./hooks/dag-state-context.js";
+
+export type { TuiAction, TuiKeyboardState } from "./app-reducer.js";
+export { tuiReducer } from "./app-reducer.js";
+
+import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
@@ -80,163 +88,6 @@ function formatTokens(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// TUI keyboard state — consolidated into a reducer for testability
-// and future session persistence support.
-// ---------------------------------------------------------------------------
-
-/** State managed by the keyboard-driven reducer. */
-export interface TuiKeyboardState {
-  readonly vfsNavigateTrigger: number;
-  readonly artifactIndex: number;
-  readonly showArtifactDiff: boolean;
-  readonly paletteIndex: number;
-  readonly paletteQuery: string;
-  readonly searchQuery: string;
-  readonly searchBuffer: string;
-  readonly messageBuffer: string;
-  readonly messageRecipients: string;
-  readonly goalBuffer: string;
-  readonly compareMode: boolean;
-  readonly compareCids: readonly string[];
-  readonly zoomLevel: ZoomLevel;
-  readonly terminalScrollOffset: number;
-  readonly layoutMode: "grid" | "tab";
-}
-
-/** Actions for the TUI keyboard state reducer. */
-export type TuiAction =
-  | { readonly type: "VFS_NAVIGATE" }
-  | { readonly type: "ARTIFACT_PREV" }
-  | { readonly type: "ARTIFACT_NEXT" }
-  | { readonly type: "ARTIFACT_DIFF_TOGGLE" }
-  | { readonly type: "PALETTE_UP" }
-  | { readonly type: "PALETTE_DOWN"; readonly maxIndex: number }
-  | { readonly type: "PALETTE_RESET" }
-  | { readonly type: "PALETTE_CHAR"; readonly char: string }
-  | { readonly type: "PALETTE_BACKSPACE" }
-  | { readonly type: "SEARCH_START"; readonly currentQuery: string }
-  | { readonly type: "SEARCH_CHAR"; readonly char: string }
-  | { readonly type: "SEARCH_BACKSPACE" }
-  | { readonly type: "SEARCH_SUBMIT" }
-  | { readonly type: "MESSAGE_CHAR"; readonly char: string }
-  | { readonly type: "MESSAGE_BACKSPACE" }
-  | { readonly type: "MESSAGE_CLEAR" }
-  | { readonly type: "BROADCAST_MODE" }
-  | { readonly type: "DIRECT_MESSAGE_MODE" }
-  | { readonly type: "GOAL_INPUT_MODE" }
-  | { readonly type: "GOAL_CHAR"; readonly char: string }
-  | { readonly type: "GOAL_BACKSPACE" }
-  | { readonly type: "GOAL_SUBMIT" }
-  | { readonly type: "COMPARE_TOGGLE" }
-  | { readonly type: "COMPARE_SELECT"; readonly cid: string }
-  | { readonly type: "COMPARE_ADOPT" }
-  | { readonly type: "ZOOM_CYCLE" }
-  | { readonly type: "ZOOM_RESET" }
-  | { readonly type: "TERMINAL_SCROLL_UP" }
-  | { readonly type: "TERMINAL_SCROLL_DOWN" }
-  | { readonly type: "TERMINAL_SCROLL_BOTTOM" }
-  | { readonly type: "LAYOUT_TOGGLE" };
-
-const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
-  vfsNavigateTrigger: 0,
-  artifactIndex: 0,
-  showArtifactDiff: false,
-  paletteIndex: 0,
-  paletteQuery: "",
-  searchQuery: "",
-  searchBuffer: "",
-  messageBuffer: "",
-  messageRecipients: "",
-  goalBuffer: "",
-  compareMode: false,
-  compareCids: [],
-  zoomLevel: "normal",
-  terminalScrollOffset: 0,
-  layoutMode: "tab",
-};
-
-/** Pure reducer for TUI keyboard state — testable and serializable. */
-export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeyboardState {
-  switch (action.type) {
-    case "VFS_NAVIGATE":
-      return { ...state, vfsNavigateTrigger: state.vfsNavigateTrigger + 1 };
-    case "ARTIFACT_PREV":
-      return { ...state, artifactIndex: Math.max(0, state.artifactIndex - 1) };
-    case "ARTIFACT_NEXT":
-      return { ...state, artifactIndex: state.artifactIndex + 1 };
-    case "ARTIFACT_DIFF_TOGGLE":
-      return { ...state, showArtifactDiff: !state.showArtifactDiff };
-    case "PALETTE_UP":
-      return { ...state, paletteIndex: Math.max(0, state.paletteIndex - 1) };
-    case "PALETTE_DOWN":
-      return { ...state, paletteIndex: Math.min(state.paletteIndex + 1, action.maxIndex) };
-    case "PALETTE_RESET":
-      return { ...state, paletteIndex: 0, paletteQuery: "" };
-    case "PALETTE_CHAR":
-      return { ...state, paletteQuery: state.paletteQuery + action.char, paletteIndex: 0 };
-    case "PALETTE_BACKSPACE":
-      return { ...state, paletteQuery: state.paletteQuery.slice(0, -1), paletteIndex: 0 };
-    case "SEARCH_START":
-      return { ...state, searchBuffer: action.currentQuery };
-    case "SEARCH_CHAR":
-      return { ...state, searchBuffer: state.searchBuffer + action.char };
-    case "SEARCH_BACKSPACE":
-      return { ...state, searchBuffer: state.searchBuffer.slice(0, -1) };
-    case "SEARCH_SUBMIT":
-      return { ...state, searchQuery: state.searchBuffer };
-    case "MESSAGE_CHAR":
-      return { ...state, messageBuffer: state.messageBuffer + action.char };
-    case "MESSAGE_BACKSPACE":
-      return { ...state, messageBuffer: state.messageBuffer.slice(0, -1) };
-    case "MESSAGE_CLEAR":
-      return { ...state, messageBuffer: "", messageRecipients: "" };
-    case "BROADCAST_MODE":
-      return { ...state, messageBuffer: "", messageRecipients: "@all" };
-    case "DIRECT_MESSAGE_MODE":
-      return { ...state, messageBuffer: "@", messageRecipients: "@direct" };
-    case "GOAL_INPUT_MODE":
-      return { ...state, goalBuffer: "" };
-    case "GOAL_CHAR":
-      return { ...state, goalBuffer: state.goalBuffer + action.char };
-    case "GOAL_BACKSPACE":
-      return { ...state, goalBuffer: state.goalBuffer.slice(0, -1) };
-    case "GOAL_SUBMIT":
-      return { ...state, goalBuffer: "" };
-    case "COMPARE_TOGGLE":
-      return {
-        ...state,
-        compareMode: !state.compareMode,
-        compareCids: state.compareMode ? state.compareCids : [],
-      };
-    case "COMPARE_SELECT": {
-      const prev = state.compareCids;
-      if (prev.includes(action.cid)) {
-        return { ...state, compareCids: prev.filter((c) => c !== action.cid) };
-      }
-      if (prev.length >= 2) {
-        const second = prev[1] ?? prev[0] ?? action.cid;
-        return { ...state, compareCids: [second, action.cid] };
-      }
-      return { ...state, compareCids: [...prev, action.cid] };
-    }
-    case "COMPARE_ADOPT":
-      return { ...state, compareMode: false, compareCids: [] };
-    case "ZOOM_CYCLE":
-      return { ...state, zoomLevel: nextZoom(state.zoomLevel) };
-    case "ZOOM_RESET":
-      return state.zoomLevel === "normal" ? state : { ...state, zoomLevel: "normal" };
-    case "TERMINAL_SCROLL_UP":
-      return { ...state, terminalScrollOffset: state.terminalScrollOffset + 5 };
-    case "TERMINAL_SCROLL_DOWN":
-      return { ...state, terminalScrollOffset: Math.max(0, state.terminalScrollOffset - 5) };
-    case "TERMINAL_SCROLL_BOTTOM":
-      return state.terminalScrollOffset === 0 ? state : { ...state, terminalScrollOffset: 0 };
-    case "LAYOUT_TOGGLE":
-      return { ...state, layoutMode: state.layoutMode === "tab" ? "grid" : "tab" };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
@@ -254,6 +105,11 @@ export function App({
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
+  // DagStateStore — xray DAG UI state (#311). Constructed once at App
+  // mount so collapse/highlight/focus survive every PanelManager
+  // re-render. ScreenManager has its own equivalent; the two providers
+  // are mounted on disjoint code paths (advanced mode vs welcome flow).
+  const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
   const fileOverrides = useKeybindingOverrides();
@@ -348,13 +204,26 @@ export function App({
     };
   }, []);
 
-  // Poll active claims for topology-aware command palette
+  // Poll active claims for topology-aware command palette.
+  // In scoped sessions, `provider.getClaims` is namespace-global (no session
+  // filter) and would surface claims from other sessions — corrupting spawn-
+  // capacity checks and parent-depth calculations. We can't just stop the
+  // fetch (the hook would retain whatever it already had); we also project
+  // the result through `useMemo` so consumers see `undefined` (= "unknown")
+  // in scoped mode rather than a stale or empty list. Spawn paths that read
+  // `activeClaims` MUST treat `undefined` as "topology validation
+  // unavailable", not as "zero claims". See `handleSpawn` below.
+  const isScopedForClaims = useProviderScoped(provider);
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: activeClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
+  const { data: rawActiveClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
     claimsFetcher,
     undefined,
     undefined,
-    topology !== undefined,
+    topology !== undefined && !isScopedForClaims,
+  );
+  const activeClaims = useMemo<readonly Claim[] | null>(
+    () => (isScopedForClaims ? null : rawActiveClaims),
+    [isScopedForClaims, rawActiveClaims],
   );
 
   // Poll tmux sessions — used by command palette, agent count, split pane,
@@ -758,12 +627,26 @@ export function App({
    */
   const handleSpawn = useCallback(
     (agentId: string, command: string, _target: string, parentAgentId?: string) => {
-      const spawnCheck = checkSpawn(topology, agentId, activeClaims ?? [], parentAgentId);
+      // In scoped sessions `activeClaims` is null because we can't see only
+      // this session's claims through the namespace-global getClaims API.
+      // Refusing to spawn here is the conservative choice — substituting
+      // an empty array would let scoped operators bypass `maxInstances`,
+      // `maxChildrenPerAgent`, and depth limits enforced by checkSpawn /
+      // checkSpawnDepth. Lift this restriction once getClaims supports
+      // session-scoped filtering.
+      if (activeClaims === null) {
+        showError(
+          "Spawn unavailable in scoped session (topology checks need session-scoped claims)",
+        );
+        return;
+      }
+
+      const spawnCheck = checkSpawn(topology, agentId, activeClaims, parentAgentId);
       if (!spawnCheck.allowed) return;
 
       let depth = 0;
       if (parentAgentId !== undefined) {
-        const parentClaim = (activeClaims ?? []).find((c) => c.agent.agentId === parentAgentId);
+        const parentClaim = activeClaims.find((c) => c.agent.agentId === parentAgentId);
         const parentDepth =
           typeof parentClaim?.context?.depth === "number" ? parentClaim.context.depth : 0;
         depth = parentDepth + 1;
@@ -1028,99 +911,103 @@ export function App({
   });
 
   return (
-    <box flexDirection="column" width="100%" height="100%">
-      <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
-      <PanelBar panelState={panels.state} />
-      <HelpOverlay
-        visible={panels.state.mode === InputMode.Help}
-        isDetailView={nav.isDetailView}
-        focusedPanel={panels.state.focused}
-        keybindingOverrides={keybindingOverrides}
-      />
-      {paletteVisible && (
-        <box
-          position="absolute"
-          top={2}
-          left={2}
-          right={2}
-          bottom={2}
-          zIndex={10}
-          backgroundColor={theme.headerBg}
-        >
-          <CommandPalette
-            visible={paletteVisible}
-            tmux={tmux}
-            onClose={handleCommandPaletteClose}
-            onSpawn={handleSpawn}
-            onKill={handleKill}
-            topology={topology}
-            activeClaims={activeClaims ?? undefined}
-            selectedIndex={ks.paletteIndex}
-            sessions={paletteSessions ?? undefined}
-            parentAgentId={paletteParentId}
-            items={paletteItems}
-            query={ks.paletteQuery}
-          />
-        </box>
-      )}
-      <InputBar
-        visible={
-          panels.state.mode === InputMode.TerminalInput ||
-          panels.state.mode === InputMode.MessageInput ||
-          panels.state.mode === InputMode.GoalInput
-        }
-        sessionName={selectedSession}
-        messageLabel={
-          panels.state.mode === InputMode.MessageInput
-            ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
-            : panels.state.mode === InputMode.GoalInput
-              ? `Goal: ${ks.goalBuffer}`
+    <DagStateProvider store={dagStateStore}>
+      <box flexDirection="column" width="100%" height="100%">
+        <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
+        <PanelBar panelState={panels.state} />
+        <HelpOverlay
+          visible={panels.state.mode === InputMode.Help}
+          isDetailView={nav.isDetailView}
+          focusedPanel={panels.state.focused}
+          keybindingOverrides={keybindingOverrides}
+        />
+        {paletteVisible && (
+          <box
+            position="absolute"
+            top={2}
+            left={2}
+            right={2}
+            bottom={2}
+            zIndex={10}
+            backgroundColor={theme.headerBg}
+          >
+            <CommandPalette
+              visible={paletteVisible}
+              tmux={tmux}
+              onClose={handleCommandPaletteClose}
+              onSpawn={handleSpawn}
+              onKill={handleKill}
+              topology={topology}
+              activeClaims={activeClaims ?? undefined}
+              selectedIndex={ks.paletteIndex}
+              sessions={paletteSessions ?? undefined}
+              parentAgentId={paletteParentId}
+              items={paletteItems}
+              query={ks.paletteQuery}
+            />
+          </box>
+        )}
+        <InputBar
+          visible={
+            panels.state.mode === InputMode.TerminalInput ||
+            panels.state.mode === InputMode.MessageInput ||
+            panels.state.mode === InputMode.GoalInput
+          }
+          sessionName={selectedSession}
+          messageLabel={
+            panels.state.mode === InputMode.MessageInput
+              ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
+              : panels.state.mode === InputMode.GoalInput
+                ? `Goal: ${ks.goalBuffer}`
+                : undefined
+          }
+        />
+        <PanelManager
+          provider={provider}
+          intervalMs={intervalMs}
+          panelState={panels.state}
+          nav={nav}
+          onContributionsLoaded={handleContributionsLoaded}
+          onRowCountChanged={handleRowCountChanged}
+          pageSize={PAGE_SIZE}
+          tmux={tmux}
+          selectedSession={selectedSession}
+          topology={topology}
+          onSelectSession={setSelectedSession}
+          vfsNavigateTrigger={ks.vfsNavigateTrigger}
+          artifactIndex={ks.artifactIndex}
+          showArtifactDiff={ks.showArtifactDiff}
+          activeClaims={activeClaims ?? undefined}
+          searchQuery={
+            panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery
+          }
+          isSearchInputMode={panels.state.mode === InputMode.SearchInput}
+          compareMode={ks.compareMode}
+          compareCids={ks.compareCids}
+          onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
+          onFrontierCidsChanged={handleFrontierCidsChanged}
+          zoomLevel={ks.zoomLevel}
+          activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+          terminalScrollOffset={ks.terminalScrollOffset}
+          terminalBuffers={terminalBuffers ?? undefined}
+          layoutMode={ks.layoutMode}
+          presetName={presetName}
+        />
+        <StatusBar
+          mode={panels.state.mode}
+          isDetailView={nav.isDetailView}
+          error={lastError}
+          focusedPanel={panels.state.focused}
+          agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
+          viewMode={panels.state.viewMode}
+          costLabel={
+            sessionCosts
+              ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
               : undefined
-        }
-      />
-      <PanelManager
-        provider={provider}
-        intervalMs={intervalMs}
-        panelState={panels.state}
-        nav={nav}
-        onContributionsLoaded={handleContributionsLoaded}
-        onRowCountChanged={handleRowCountChanged}
-        pageSize={PAGE_SIZE}
-        tmux={tmux}
-        selectedSession={selectedSession}
-        topology={topology}
-        onSelectSession={setSelectedSession}
-        vfsNavigateTrigger={ks.vfsNavigateTrigger}
-        artifactIndex={ks.artifactIndex}
-        showArtifactDiff={ks.showArtifactDiff}
-        activeClaims={activeClaims ?? undefined}
-        searchQuery={panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery}
-        isSearchInputMode={panels.state.mode === InputMode.SearchInput}
-        compareMode={ks.compareMode}
-        compareCids={ks.compareCids}
-        onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
-        onFrontierCidsChanged={handleFrontierCidsChanged}
-        zoomLevel={ks.zoomLevel}
-        activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
-        terminalScrollOffset={ks.terminalScrollOffset}
-        terminalBuffers={terminalBuffers ?? undefined}
-        layoutMode={ks.layoutMode}
-        presetName={presetName}
-      />
-      <StatusBar
-        mode={panels.state.mode}
-        isDetailView={nav.isDetailView}
-        error={lastError}
-        focusedPanel={panels.state.focused}
-        agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
-        viewMode={panels.state.viewMode}
-        costLabel={
-          sessionCosts
-            ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
-            : undefined
-        }
-        goalLabel={dashboardData?.metadata?.goal}
-      />
-    </box>
+          }
+          goalLabel={dashboardData?.metadata?.goal}
+        />
+      </box>
+    </DagStateProvider>
   );
 }

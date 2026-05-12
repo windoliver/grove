@@ -249,6 +249,59 @@ describe("SessionService", () => {
     bus.close();
   });
 
+  test("stop event from explicit session-ending reviewer completes session", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const service = new SessionService({
+      contract: makeContract({
+        topology: {
+          structure: "graph",
+          roles: [
+            {
+              name: "coder",
+              description: "Write code",
+              command: "echo coder",
+              edges: [{ target: "reviewer", edgeType: "delegates" }],
+            },
+            {
+              name: "reviewer",
+              description: "Review code",
+              command: "echo reviewer",
+              endsSession: true,
+            },
+          ],
+        },
+      }),
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
+    });
+
+    const events: SessionEvent[] = [];
+    service.onEvent((e) => events.push(e));
+
+    await service.startSession("Test");
+
+    void bus.publish({
+      type: "stop",
+      sourceRole: "reviewer",
+      targetRole: "reviewer",
+      payload: { reason: "approved" },
+      timestamp: new Date().toISOString(),
+    });
+
+    const completeEvents = events.filter((e) => e.type === "session_complete");
+    expect(completeEvents).toHaveLength(1);
+    expect((completeEvents[0] as { reason: string }).reason).toBe("Required agents done");
+    expect(service.getState().status).toBe("complete");
+    expect(service.getState().stopStatus).toBe(LoopStopStatus.Achieved);
+
+    service.destroy();
+    bus.close();
+  });
+
   test("stopSession closes agents and emits session_complete", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();

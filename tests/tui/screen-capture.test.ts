@@ -268,6 +268,49 @@ describe.skipIf(!hasTmux)("TUI screen capture verification", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Xray DAG view (#311) — verifies the visual output via tmux capture-pane:
+  // status glyphs (◐ ✓ ✗ ⊘ ? ·), tree expansion glyphs (▼ ▶ · ↪), kind
+  // tags, scoped-session banner. Echo-based smoke per the convention used
+  // by the screens above (the live mount path is covered by
+  // tests/tui/dag-xray-acceptance.test.tsx and src/tui/views/dag.test.tsx).
+  // -------------------------------------------------------------------------
+  test("Xray DAG (#311): tree rows render with status glyphs, edge tags, and crosslink marker", async () => {
+    tmuxCommand(
+      `new-session -d -s ${SESSION} -x 120 -y 30 "echo 'Contribution DAG (4 rows / 3 nodes)'; echo ''; echo '> ▼ ✓ blake3:abcd...   [work] Initial draft'; echo '    ▼ ◐ blake3:bcde... [rev] Review of abc'; echo '      · ? blake3:cdef... [discussion] Comment on def'; echo '    ↪ ⊘ blake3:bcde... [adopt] (crosslink) Reproduces abc'; echo ''; echo 'space:collapse  Shift+A:expand-all  Shift+Z:collapse-all  /foo:highlight'; sleep 5"`,
+    );
+    await sleep(500);
+    const output = capturePane();
+    expect(output).toContain("Contribution DAG");
+    expect(output).toContain("[work]");
+    expect(output).toContain("[rev]");
+    expect(output).toContain("[adopt]");
+    expect(output).toContain("[discussion]");
+    expect(output).toContain("▼"); // expanded glyph
+    expect(output).toContain("·"); // leaf glyph
+    expect(output).toContain("↪"); // crosslink glyph
+    expect(output).toContain("✓"); // done glyph
+    expect(output).toContain("◐"); // running glyph
+    expect(output).toContain("⊘"); // blocked glyph
+    expect(output).toContain("?"); // awaiting-review glyph
+    expect(output).toContain("space:collapse");
+    expect(output).toContain("/foo:highlight");
+    tmuxCommand(`kill-session -t ${SESSION}`);
+  });
+
+  test("Xray DAG (#311): scoped-session banner surfaces 'claim status unavailable'", async () => {
+    tmuxCommand(
+      `new-session -d -s ${SESSION} -x 120 -y 12 "echo 'Contribution DAG (2 rows / 2 nodes) claim status unavailable (scoped)'; echo ''; echo '> ▼ · blake3:aaaa...   [work] Session-scoped work item'; echo '    · · blake3:bbbb... [work] Child item'; sleep 5"`,
+    );
+    await sleep(500);
+    const output = capturePane();
+    expect(output).toContain("Contribution DAG");
+    expect(output).toContain("claim status unavailable");
+    expect(output).toContain("(scoped)");
+    expect(output).toContain("[work]");
+    tmuxCommand(`kill-session -t ${SESSION}`);
+  });
+
+  // -------------------------------------------------------------------------
   // KIND_ICONS rendering
   // -------------------------------------------------------------------------
   test("KIND_ICONS render correctly in terminal", async () => {

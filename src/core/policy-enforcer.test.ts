@@ -8,8 +8,7 @@
  * - Relation requirements
  * - Artifact requirements
  * - Outcome derivation (auto-accept/auto-reject)
- * - Stop condition evaluation (all 5: budget, target_metric, max_rounds_without_improvement,
- *   quorum_review_score, deliberation_limit — via canonical evaluator in stop-conditions.ts)
+ * - Stop conditions are intentionally left to post-write/lifecycle evaluators
  */
 
 import { describe, expect, test } from "bun:test";
@@ -660,11 +659,11 @@ describe("PolicyEnforcer: outcome derivation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stop condition evaluation
+// Stop conditions are not evaluated by PolicyEnforcer
 // ---------------------------------------------------------------------------
 
 describe("PolicyEnforcer: stop conditions", () => {
-  test("budget: contributions exceed limit → stopped", async () => {
+  test("budget: contributions exceed limit → no stop result", async () => {
     const items = Array.from({ length: 10 }, (_, i) =>
       makeContribution({
         createdAt: new Date(Date.now() - (10 - i) * 1000).toISOString(),
@@ -682,12 +681,10 @@ describe("PolicyEnforcer: stop conditions", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("Budget");
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("budget: contributions under limit → not stopped", async () => {
+  test("budget: contributions under limit → no stop result", async () => {
     const items = Array.from({ length: 5 }, (_, i) =>
       makeContribution({
         createdAt: new Date(Date.now() - (5 - i) * 1000).toISOString(),
@@ -705,11 +702,10 @@ describe("PolicyEnforcer: stop conditions", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("target metric reached (minimize) → stopped", async () => {
+  test("target metric reached (minimize) → no stop result", async () => {
     const existing = makeContribution({
       kind: "work",
       mode: "evaluation",
@@ -730,12 +726,10 @@ describe("PolicyEnforcer: stop conditions", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("reached target");
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("target metric not reached → not stopped", async () => {
+  test("target metric not reached → no stop result", async () => {
     const existing = makeContribution({
       kind: "work",
       mode: "evaluation",
@@ -756,8 +750,7 @@ describe("PolicyEnforcer: stop conditions", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 
   test("no stop conditions → no stop result", async () => {
@@ -772,11 +765,11 @@ describe("PolicyEnforcer: stop conditions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// max_rounds_without_improvement stop condition
+// max_rounds_without_improvement is evaluated post-write, not by PolicyEnforcer
 // ---------------------------------------------------------------------------
 
 describe("PolicyEnforcer: max_rounds_without_improvement", () => {
-  test("stagnation triggers stop when no metric improved in last N contributions", async () => {
+  test("stagnation configured → no stop result", async () => {
     const contract = makeContract({
       mode: "evaluation",
       metrics: { val_bpb: { direction: "minimize" } },
@@ -804,11 +797,10 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     });
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult?.stopped).toBe(true);
-    expect(result.stopResult?.reason).toContain("No metric improved");
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("improvement resets the counter — no stop when best score is recent", async () => {
+  test("recent improvement configured → no stop result", async () => {
     const contract = makeContract({
       mode: "evaluation",
       metrics: { val_bpb: { direction: "minimize" } },
@@ -834,10 +826,10 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     });
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult?.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("respects direction — maximize metric uses correct best", async () => {
+  test("maximize metric configured → no stop result", async () => {
     const contract = makeContract({
       mode: "evaluation",
       metrics: { accuracy: { direction: "maximize" } },
@@ -875,10 +867,10 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     });
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult?.stopped).toBe(true);
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("single contribution — not enough rounds to trigger stop", async () => {
+  test("single contribution with stop condition configured → no stop result", async () => {
     const contract = makeContract({
       mode: "evaluation",
       metrics: { val_bpb: { direction: "minimize" } },
@@ -902,7 +894,7 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     });
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult?.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 });
 
@@ -1090,9 +1082,7 @@ describe("PolicyEnforcer: per-session enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// quorum_review_score and deliberation_limit stop conditions
-// (Issue 10A: these were missing from the enforcer before the canonical
-//  evaluator was adopted in stop-conditions.ts)
+// quorum_review_score and deliberation_limit are evaluated post-write, not by PolicyEnforcer
 // ---------------------------------------------------------------------------
 
 // Helper for unique contributions with InMemoryContributionStore
@@ -1108,7 +1098,7 @@ function makeFullContribution(overrides?: Partial<ContributionInput>): Contribut
 }
 
 describe("PolicyEnforcer: quorum_review_score stop condition", () => {
-  test("stopped when quorum is met", async () => {
+  test("quorum met → no stop result", async () => {
     const target = makeFullContribution({ summary: "Work to review" });
     const review1 = makeFullContribution({
       kind: ContributionKind.Review,
@@ -1143,12 +1133,10 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("quorum_review_score");
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("skipExpensiveStopChecks=true omits quorum even when met", async () => {
+  test("quorum configured → no stop result without stop options", async () => {
     const target = makeFullContribution({ summary: "Work" });
     const r1 = makeFullContribution({
       kind: ContributionKind.Review,
@@ -1173,12 +1161,11 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
     const enforcer = new PolicyEnforcer(contract, store);
     const contribution = makeContribution();
 
-    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("not stopped when quorum is not met", async () => {
+  test("quorum not met → no stop result", async () => {
     const target = makeFullContribution({ summary: "Work" });
     const review1 = makeFullContribution({
       kind: ContributionKind.Review,
@@ -1202,13 +1189,12 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 });
 
 describe("PolicyEnforcer: deliberation_limit stop condition", () => {
-  test("stopped when thread depth exceeds limit", async () => {
+  test("thread depth exceeds limit → no stop result", async () => {
     const root = makeFullContribution({ summary: "Topic root" });
     const reply1 = makeFullContribution({
       kind: ContributionKind.Discussion,
@@ -1236,12 +1222,10 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("deliberation_limit");
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("skipExpensiveStopChecks=true omits deliberation even when exceeded", async () => {
+  test("deliberation configured → no stop result without stop options", async () => {
     const root = makeFullContribution({ summary: "Topic root" });
     const r1 = makeFullContribution({
       kind: ContributionKind.Discussion,
@@ -1264,12 +1248,11 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
     const enforcer = new PolicyEnforcer(contract, store);
     const contribution = makeContribution();
 
-    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeUndefined();
   });
 
-  test("not stopped when thread is below limit", async () => {
+  test("thread below limit → no stop result", async () => {
     const root = makeFullContribution({ summary: "Root" });
     const reply1 = makeFullContribution({
       kind: ContributionKind.Discussion,
@@ -1287,8 +1270,7 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
     const contribution = makeContribution();
 
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult).toBeUndefined();
   });
 });
 
@@ -1321,7 +1303,7 @@ describe("session config override", () => {
     expect(reviewResult.violations.filter((v) => v.type === "role_kind")).toHaveLength(0);
   });
 
-  test("session config with different stopConditions is used", async () => {
+  test("session config stopConditions are not evaluated by PolicyEnforcer", async () => {
     // Session config with a very low budget
     const sessionConfig: SessionRuntimeConfig = {
       stopConditions: { budget: { maxContributions: 1 } },
@@ -1332,6 +1314,6 @@ describe("session config override", () => {
     const enforcer = new PolicyEnforcer(sessionConfig, store);
     const contribution = makeContribution({ kind: "work" });
     const result = await enforcer.enforce(contribution, false);
-    expect(result.stopResult?.stopped).toBe(true);
+    expect(result.stopResult).toBeUndefined();
   });
 });

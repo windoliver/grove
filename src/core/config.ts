@@ -5,6 +5,7 @@
  * grove configuration file that lives alongside the SQLite database.
  */
 
+import { Buffer } from "node:buffer";
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
 
@@ -24,6 +25,23 @@ export interface GroveServices {
 
 /** Backend mode: local SQLite, nexus cluster, or remote HTTP. */
 export type GroveMode = "local" | "nexus" | "remote";
+
+/** Trust policy for signed skill catalog verification. */
+export type SkillCatalogPolicy = "warn-and-fallback" | "required";
+
+/** Trusted public key for verifying signed skill catalog indexes. */
+export interface SkillCatalogTrustedKey {
+  readonly id: string;
+  readonly algorithm: "ed25519";
+  readonly publicKeySpkiDer: string;
+}
+
+/** Signed skill catalog configuration. */
+export interface SkillCatalogConfig {
+  readonly policy: SkillCatalogPolicy;
+  readonly trustedKeys: readonly SkillCatalogTrustedKey[];
+  readonly cacheTtlSeconds?: number | undefined;
+}
 
 /** Typed grove.json configuration. */
 export interface GroveConfig {
@@ -45,6 +63,7 @@ export interface GroveConfig {
    * tag. Defaults to "edge". Only used when nexusManaged is true.
    */
   readonly nexusChannel?: string | undefined;
+  readonly skillCatalog?: SkillCatalogConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +82,39 @@ const ServicesSchema = z
 /** Backend mode: local SQLite, nexus cluster, or remote HTTP. */
 const ModeSchema = z.enum(["local", "nexus", "remote"]).default("local");
 
+const CanonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function isCanonicalBase64(value: string): boolean {
+  if (!CanonicalBase64Pattern.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, "base64").toString("base64") === value;
+}
+
+const SkillCatalogPolicySchema = z
+  .enum(["warn-and-fallback", "required"])
+  .default("warn-and-fallback");
+
+const SkillCatalogTrustedKeySchema: z.ZodType<SkillCatalogTrustedKey> = z
+  .object({
+    id: z.string().min(1).max(128),
+    algorithm: z.literal("ed25519"),
+    publicKeySpkiDer: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine(isCanonicalBase64, "publicKeySpkiDer must be canonical base64"),
+  })
+  .strict();
+
+const SkillCatalogConfigSchema: z.ZodType<SkillCatalogConfig> = z
+  .object({
+    policy: SkillCatalogPolicySchema,
+    trustedKeys: z.array(SkillCatalogTrustedKeySchema).max(20).default([]),
+    cacheTtlSeconds: z.number().int().min(1).max(31_536_000).optional(),
+  })
+  .strict();
+
 /** Full grove.json configuration schema. */
 export const GroveConfigSchema: z.ZodType<GroveConfig> = z
   .object({
@@ -75,6 +127,7 @@ export const GroveConfigSchema: z.ZodType<GroveConfig> = z
     backend: z.string().min(1).max(64).optional(),
     nexusManaged: z.boolean().optional(),
     nexusChannel: z.string().min(1).max(64).optional(),
+    skillCatalog: SkillCatalogConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -139,6 +192,7 @@ export function writeGroveConfig(config: GroveConfig, path: string): void {
   if (config.backend !== undefined) obj.backend = config.backend;
   if (config.nexusManaged !== undefined) obj.nexusManaged = config.nexusManaged;
   if (config.nexusChannel !== undefined) obj.nexusChannel = config.nexusChannel;
+  if (config.skillCatalog !== undefined) obj.skillCatalog = config.skillCatalog;
 
   writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }

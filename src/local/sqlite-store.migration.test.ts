@@ -13,6 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toManifest } from "../core/manifest.js";
+import { RelationType } from "../core/models.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import { CURRENT_SCHEMA_VERSION, initSqliteDb, SqliteStore } from "./sqlite-store.js";
 
@@ -54,9 +55,13 @@ describe("schema migration", () => {
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         .all() as readonly { name: string }[];
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        .all() as readonly { name: string }[];
       db.close();
 
       const tableNames = tables.map((t) => t.name);
+      const indexNames = indexes.map((i) => i.name);
       expect(tableNames).toContain("contributions");
       expect(tableNames).toContain("contribution_tags");
       expect(tableNames).toContain("artifacts");
@@ -64,7 +69,203 @@ describe("schema migration", () => {
       expect(tableNames).toContain("claims");
       expect(tableNames).toContain("schema_migrations");
       expect(tableNames).toContain("contributions_fts");
+      expect(tableNames).toContain("session_deletion_audits");
       expect(tableNames).toContain("workspaces");
+      expect(indexNames).toContain("idx_sessions_deletion_timestamp");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh DB creates split claim tables", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-split-"));
+    try {
+      const dbPath = join(dir, "test.db");
+      const store = new SqliteStore(dbPath);
+      store.close();
+
+      const db = new Database(dbPath);
+      const tableNames = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as readonly {
+          name: string;
+        }[]
+      ).map((r) => r.name);
+      const indexNames = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as readonly {
+          name: string;
+        }[]
+      ).map((r) => r.name);
+      expect(tableNames).toContain("claim_spec");
+      expect(tableNames).toContain("claim_status");
+      expect(indexNames).toContain("idx_claim_spec_target");
+      expect(indexNames).toContain("idx_claim_spec_agent");
+      expect(indexNames).toContain("idx_claim_status_phase");
+      expect(indexNames).toContain("idx_claim_status_phase_lease");
+      db.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy claims rows backfill into claim_spec and claim_status", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-split-legacy-"));
+    try {
+      const dbPath = join(dir, "test.db");
+      const db = new Database(dbPath);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          description TEXT,
+          agent_id TEXT NOT NULL,
+          agent_name TEXT,
+          created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          manifest_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relations (
+          source_cid TEXT NOT NULL,
+          target_cid TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          metadata_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+          claim_id TEXT PRIMARY KEY,
+          target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          intent_summary TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          heartbeat_at TEXT NOT NULL,
+          lease_expires_at TEXT NOT NULL,
+          context_json TEXT,
+          agent_json TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL DEFAULT 1
+        );
+      `);
+      db.prepare(
+        `INSERT INTO claims (
+          claim_id, target_ref, agent_id, status, intent_summary, created_at,
+          heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "legacy-split",
+        "target-legacy",
+        "agent-legacy",
+        "active",
+        "legacy intent",
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:02:00.000Z",
+        "2026-01-01T00:07:00.000Z",
+        JSON.stringify({ migrated: true }),
+        JSON.stringify({ agentId: "agent-legacy", platform: "codex", role: "coder" }),
+        2,
+        5,
+      );
+      db.close();
+
+      const contextJson = JSON.stringify({ migrated: true });
+      const agentJson = JSON.stringify({
+        agentId: "agent-legacy",
+        platform: "codex",
+        role: "coder",
+      });
+
+      const store = new SqliteStore(dbPath);
+      const claim = await store.getClaim("legacy-split");
+      const migratedDb = new Database(dbPath, { readonly: true });
+      const spec = migratedDb
+        .prepare(
+          `SELECT role_name, platform, assignee_json, lease_deadline_sec, generation,
+            target_ref, agent_id, agent_json, intent_summary, context_json, created_at
+           FROM claim_spec WHERE id = ?`,
+        )
+        .get("legacy-split") as {
+        role_name: string;
+        platform: string;
+        assignee_json: string;
+        lease_deadline_sec: number;
+        generation: number;
+        target_ref: string;
+        agent_id: string;
+        agent_json: string;
+        intent_summary: string;
+        context_json: string;
+        created_at: string;
+      };
+      const status = migratedDb
+        .prepare(
+          `SELECT phase, observed_generation, last_heartbeat_at, lease_expires_at,
+            conditions_json, last_transition_at, attempt_count, revision
+           FROM claim_status WHERE id = ?`,
+        )
+        .get("legacy-split") as {
+        phase: string;
+        observed_generation: number;
+        last_heartbeat_at: string;
+        lease_expires_at: string;
+        conditions_json: string;
+        last_transition_at: string;
+        attempt_count: number;
+        revision: number;
+      };
+      migratedDb.close();
+      const specAssignee = JSON.parse(spec.assignee_json) as {
+        agentId: string;
+        platform: string;
+        role: string;
+      };
+      const specAgent = JSON.parse(spec.agent_json) as {
+        agentId: string;
+        platform: string;
+        role: string;
+      };
+      const specContext = JSON.parse(spec.context_json) as { migrated: boolean };
+      const statusConditions = JSON.parse(status.conditions_json) as readonly unknown[];
+
+      expect(claim?.claimId).toBe("legacy-split");
+      expect(claim?.status).toBe("active");
+      expect(claim?.attemptCount).toBe(2);
+      expect(claim?.revision).toBe(5);
+      expect(spec.role_name).toBe("coder");
+      expect(spec.platform).toBe("codex");
+      expect(specAssignee).toEqual({ agentId: "agent-legacy", platform: "codex", role: "coder" });
+      expect(spec.lease_deadline_sec).toBe(420);
+      expect(spec.generation).toBe(5);
+      expect(spec.target_ref).toBe("target-legacy");
+      expect(spec.agent_id).toBe("agent-legacy");
+      expect(spec.agent_json).toBe(agentJson);
+      expect(specAgent).toEqual({ agentId: "agent-legacy", platform: "codex", role: "coder" });
+      expect(spec.intent_summary).toBe("legacy intent");
+      expect(spec.context_json).toBe(contextJson);
+      expect(specContext).toEqual({ migrated: true });
+      expect(spec.created_at).toBe("2026-01-01T00:00:00.000Z");
+      expect(status.phase).toBe("active");
+      expect(status.observed_generation).toBe(5);
+      expect(status.last_heartbeat_at).toBe("2026-01-01T00:02:00.000Z");
+      expect(status.lease_expires_at).toBe("2026-01-01T00:07:00.000Z");
+      expect(status.conditions_json).toBe("[]");
+      expect(statusConditions).toEqual([]);
+      expect(status.last_transition_at).toBe("2026-01-01T00:02:00.000Z");
+      expect(status.attempt_count).toBe(2);
+      expect(status.revision).toBe(5);
+
+      const view = await store.claims.getClaimView("legacy-split");
+      expect(view?.spec.targetRef).toBe("target-legacy");
+      expect(view?.spec.agent.platform).toBe("codex");
+      expect(view?.spec.generation).toBe(5);
+      expect(view?.status.phase).toBe("active");
+      expect(view?.status.observedGeneration).toBe(5);
+      expect(view?.status.lastHeartbeatAt).toBe("2026-01-01T00:02:00.000Z");
+
+      store.close();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -547,6 +748,71 @@ describe("schema migration", () => {
     }
   });
 
+  test("v14 migration backfills session contribution owner refs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          goal TEXT,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          started_at TEXT NOT NULL,
+          archived_at INTEGER,
+          contribution_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS session_contributions (
+          session_id TEXT NOT NULL,
+          cid TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, cid)
+        );
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (13, '2026-01-01T00:00:00Z');
+      `);
+      db.run(
+        `INSERT INTO sessions (session_id, goal, config_json, status, started_at, contribution_count)
+         VALUES (?, ?, '{}', 'active', ?, 1)`,
+        ["legacy-session", "legacy goal", new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO session_contributions (session_id, cid, added_at)
+         VALUES (?, ?, ?)`,
+        ["legacy-session", "blake3:legacy", new Date().toISOString()],
+      );
+      db.close();
+
+      const migrated = initSqliteDb(dbPath);
+      const session = migrated
+        .prepare("SELECT uid FROM sessions WHERE session_id = ?")
+        .get("legacy-session") as { uid: string } | null;
+      const link = migrated
+        .prepare(
+          "SELECT owner_ref_json FROM session_contributions WHERE session_id = ? AND cid = ?",
+        )
+        .get("legacy-session", "blake3:legacy") as { owner_ref_json: string | null } | null;
+
+      expect(session?.uid).toBeTruthy();
+      expect(link?.owner_ref_json).toBeTruthy();
+      expect(JSON.parse(link?.owner_ref_json ?? "{}")).toEqual({
+        kind: "session",
+        id: "legacy-session",
+        uid: session?.uid,
+      });
+
+      migrated.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("backfill does not duplicate tags on re-open", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");
@@ -572,6 +838,179 @@ describe("schema migration", () => {
       db.close();
       expect(row.cnt).toBe(2); // exactly 2 tags, not 4
       store2.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("content-hash dedup rewires incoming relation indexes to canonical contribution", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY, kind TEXT NOT NULL, mode TEXT NOT NULL,
+          summary TEXT NOT NULL, description TEXT, agent_id TEXT NOT NULL,
+          agent_name TEXT, created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]', manifest_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contribution_tags (
+          cid TEXT NOT NULL,
+          tag TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          contribution_cid TEXT NOT NULL,
+          name TEXT NOT NULL,
+          content_hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relations (
+          source_cid TEXT NOT NULL,
+          target_cid TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          metadata_json TEXT,
+          FOREIGN KEY (source_cid) REFERENCES contributions(cid)
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+          claim_id TEXT PRIMARY KEY, target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          heartbeat_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL,
+          intent_summary TEXT NOT NULL, agent_json TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS contributions_fts USING fts5(cid, summary, description);
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (11, '2026-01-01T00:00:00Z');
+      `);
+
+      const canonical = makeContribution({
+        summary: "dedup target",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const duplicate = makeContribution({
+        summary: "dedup target",
+        createdAt: "2026-01-01T00:01:00.000Z",
+      });
+      const child = makeContribution({
+        summary: "child of duplicate",
+        relations: [
+          {
+            targetCid: duplicate.cid,
+            relationType: RelationType.RespondsTo,
+          },
+        ],
+      });
+
+      for (const contribution of [canonical, duplicate, child]) {
+        db.run(
+          `INSERT INTO contributions (cid, kind, mode, summary, description,
+           agent_id, agent_name, created_at, tags_json, manifest_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            contribution.cid,
+            contribution.kind,
+            contribution.mode,
+            contribution.summary,
+            contribution.description ?? null,
+            contribution.agent.agentId,
+            contribution.agent.agentName ?? null,
+            contribution.createdAt,
+            JSON.stringify(contribution.tags),
+            JSON.stringify(toManifest(contribution)),
+          ],
+        );
+        db.run("INSERT INTO contributions_fts (cid, summary, description) VALUES (?, ?, ?)", [
+          contribution.cid,
+          contribution.summary,
+          contribution.description ?? "",
+        ]);
+      }
+      db.run(
+        "INSERT INTO relations (source_cid, target_cid, relation_type, metadata_json) VALUES (?, ?, ?, ?)",
+        [child.cid, duplicate.cid, RelationType.RespondsTo, null],
+      );
+      db.close();
+
+      const store = new SqliteStore(dbPath);
+
+      expect(await store.get(duplicate.cid)).toBeUndefined();
+      expect(
+        (await store.relatedTo(canonical.cid, RelationType.RespondsTo)).map((c) => c.cid),
+      ).toEqual([child.cid]);
+      expect(
+        (await store.relationsOf(child.cid, RelationType.RespondsTo)).map((r) => r.targetCid),
+      ).toEqual([canonical.cid]);
+
+      const db2 = new Database(dbPath, { readonly: true });
+      const dangling = db2
+        .prepare("SELECT COUNT(*) as cnt FROM relations WHERE target_cid = ?")
+        .get(duplicate.cid) as { cnt: number };
+      db2.close();
+      expect(dangling.cnt).toBe(0);
+
+      store.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("v14 migration backfills missing session UIDs even when uid column already exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          uid TEXT,
+          goal TEXT,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          started_at TEXT NOT NULL,
+          archived_at INTEGER,
+          contribution_count INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR REPLACE INTO schema_migrations (version, applied_at)
+        VALUES (14, '2026-01-01T00:00:00Z');
+      `);
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'null uid', '{}', 'active', ?)`,
+        ["legacy-null-uid", null, new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'empty uid', '{}', 'active', ?)`,
+        ["legacy-empty-uid", "", new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'stable uid', '{}', 'active', ?)`,
+        ["legacy-stable-uid", "stable-uid", new Date().toISOString()],
+      );
+      db.close();
+
+      const migrated = initSqliteDb(dbPath);
+      const rows = migrated
+        .prepare("SELECT session_id, uid FROM sessions ORDER BY session_id")
+        .all() as readonly { session_id: string; uid: string | null }[];
+
+      expect(rows.find((row) => row.session_id === "legacy-null-uid")?.uid).toBeTruthy();
+      expect(rows.find((row) => row.session_id === "legacy-empty-uid")?.uid).toBeTruthy();
+      expect(rows.find((row) => row.session_id === "legacy-stable-uid")?.uid).toBe("stable-uid");
+      expect(rows.find((row) => row.session_id === "legacy-null-uid")?.uid).not.toBe("stable-uid");
+      expect(rows.find((row) => row.session_id === "legacy-empty-uid")?.uid).not.toBe("stable-uid");
+
+      migrated.close();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

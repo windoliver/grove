@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import type { ContentStore, PutOptions } from "../../core/cas.js";
+import type { Artifact } from "../../core/models.js";
 import { FsCas } from "../fs-cas.js";
 import { ingestFiles } from "./files.js";
 
@@ -17,6 +18,53 @@ async function createTempDir(): Promise<string> {
   );
   await mkdir(dir, { recursive: true });
   return dir;
+}
+
+class SlowPutFileCas implements ContentStore {
+  active = 0;
+  maxActive = 0;
+  private next = 0;
+
+  async put(_data: Uint8Array, _options?: PutOptions): Promise<string> {
+    throw new Error("not implemented");
+  }
+
+  async get(_contentHash: string): Promise<Uint8Array | undefined> {
+    throw new Error("not implemented");
+  }
+
+  async exists(_contentHash: string): Promise<boolean> {
+    throw new Error("not implemented");
+  }
+
+  async existsMany(_contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
+    throw new Error("not implemented");
+  }
+
+  async delete(_contentHash: string): Promise<boolean> {
+    throw new Error("not implemented");
+  }
+
+  async putFile(_path: string, _options?: PutOptions): Promise<string> {
+    this.active++;
+    this.maxActive = Math.max(this.maxActive, this.active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    this.active--;
+    const hash = String(this.next++).padStart(64, "0");
+    return `blake3:${hash}`;
+  }
+
+  async getToFile(_contentHash: string, _path: string): Promise<boolean> {
+    throw new Error("not implemented");
+  }
+
+  async stat(_contentHash: string): Promise<Artifact | undefined> {
+    throw new Error("not implemented");
+  }
+
+  close(): void {
+    // no resources
+  }
 }
 
 describe("ingestFiles", () => {
@@ -161,6 +209,25 @@ describe("ingestFiles", () => {
 
       // Different names, same hash
       expect(artifacts["copy1.txt"]).toBe(artifacts["copy2.txt"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("limits concurrent top-level file puts", async () => {
+    const dir = await createTempDir();
+    try {
+      const cas = new SlowPutFileCas();
+      const files: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const filePath = join(dir, `file-${i}.txt`);
+        await writeFile(filePath, String(i));
+        files.push(filePath);
+      }
+
+      await ingestFiles(cas, files);
+
+      expect(cas.maxActive).toBeLessThanOrEqual(16);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

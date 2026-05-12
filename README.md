@@ -428,6 +428,62 @@ surfaces. It defines:
 - Agent topology (roles, edges, spawning rules)
 - Gossip configuration
 
+### Agent skills
+
+Spawned agents can receive workspace-local Claude/Codex skills by declaring
+skill names on their topology role. A skill is a directory containing
+`SKILL.md` plus any supporting files:
+
+```text
+.grove/skills/
+  comps-analysis/
+    SKILL.md
+    references/
+      ...
+```
+
+Then reference that directory name from `GROVE.md`:
+
+```yaml
+agent_topology:
+  roles:
+    - name: financial-analyst
+      platform: claude-code
+      skills: ["grove", "comps-analysis"]
+    - name: reviewer
+      platform: claude-code
+      skills: ["grove"]
+```
+
+When the TUI or session orchestrator spawns those roles, Grove copies each
+resolved skill directory into the agent workspace:
+
+```text
+<agent-workspace>/.claude/skills/<name>/
+<agent-workspace>/.codex/skills/<name>/
+```
+
+In local mode, resolution order is:
+
+1. Workspace overrides from `.grove/skills/<name>/`
+2. Bundled Grove skills from the installed `skills/` catalog
+
+In Nexus mode with `skillCatalog` configured, Grove tries the signed Nexus
+catalog first. `warn-and-fallback` can then use verified local cache or local
+fallback; `required` fails the spawn if Nexus catalog resolution cannot be
+trusted.
+
+The TUI currently consumes `skills:` from topology but does not yet provide a
+launch-preview editor for adding or removing skills. That session-level
+override UX is tracked in
+[#327](https://github.com/windoliver/grove/issues/327). Nexus-hosted skill
+distribution is tracked in
+[#326](https://github.com/windoliver/grove/issues/326).
+
+`grove skill install` is separate: it installs Grove's bundled `grove` skill
+into your global Claude/Codex skill directories for manual assistant use
+outside a Grove-provisioned workspace.
+
 ### Environment Variables
 
 | Variable | Purpose | Default |

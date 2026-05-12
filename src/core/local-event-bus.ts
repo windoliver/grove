@@ -15,6 +15,10 @@ export class LocalEventBus implements EventBus {
   }
 
   async publish(event: GroveEvent): Promise<PublishResult> {
+    return this.publishLocal(event);
+  }
+
+  async publishLocal(event: GroveEvent): Promise<PublishResult> {
     // Wrap each listener in try/catch so one crashed subscriber doesn't break others
     const channel = `role:${event.targetRole}`;
     for (const listener of this.emitter.listeners(channel)) {

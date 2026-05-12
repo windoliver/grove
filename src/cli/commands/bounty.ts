@@ -11,6 +11,7 @@ import { parseArgs } from "node:util";
 import type { BountyStatus } from "../../core/bounty.js";
 import type { BountyStore } from "../../core/bounty-store.js";
 import type { CreditsService } from "../../core/credits.js";
+import type { OwnerRef } from "../../core/lifecycle-metadata.js";
 import type { OperationDeps } from "../../core/operations/index.js";
 import {
   claimBountyOperation,
@@ -32,6 +33,7 @@ export interface BountyDeps {
   /** Optional — when absent, bounties work without credit enforcement (local dev). */
   readonly creditsService?: CreditsService | undefined;
   readonly claimStore: ClaimStore;
+  readonly sessionOwnerRef?: OwnerRef | undefined;
   readonly stdout: (msg: string) => void;
   readonly stderr: (msg: string) => void;
 }
@@ -41,6 +43,7 @@ function toOpDeps(deps: BountyDeps): OperationDeps {
   return {
     claimStore: deps.claimStore,
     bountyStore: deps.bountyStore,
+    ...(deps.sessionOwnerRef !== undefined ? { sessionOwnerRef: deps.sessionOwnerRef } : {}),
     ...(deps.creditsService !== undefined ? { creditsService: deps.creditsService } : {}),
   };
 }

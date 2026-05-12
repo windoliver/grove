@@ -54,6 +54,7 @@ function makeFake(): {
       hasSynced: () => true,
       getById: (id: string) => store.get(id) as never,
       list: () => Array.from(store.values()) as never,
+      getQueueStats: () => ({ depth: 0, limit: 1000, overflows: 0 }),
     } as unknown as Informer<"Contribution">,
     emit: (e: WatchEntity) => {
       store.set(e.id, e);

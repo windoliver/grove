@@ -17,6 +17,7 @@ export const reviewLoopPreset: PresetConfig = {
       {
         name: "coder",
         description: "Writes and iterates on code",
+        edges: [{ target: "reviewer", edgeType: "delegates", replyTimeoutSeconds: 300 }],
         maxInstances: 1,
         mode: "broadcast",
         platform: "claude-code",
@@ -39,6 +40,7 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         mode: "broadcast",
         platform: "claude-code",
+        endsSession: true,
         skills: ["grove"],
         prompt:
           "You are a code reviewer. Wait for a coder contribution to arrive — do not act on the session goal yourself.\n" +

@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { INITIAL_KEYBOARD_STATE, tuiReducer } from "../app-reducer.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
@@ -627,33 +628,15 @@ describe("panel registry completeness — every panel has a keybinding in routeK
 });
 
 // ---------------------------------------------------------------------------
-// TUI reducer tests (imported async because app.tsx has async deps)
+// TUI reducer tests
 // ---------------------------------------------------------------------------
 
 describe("tuiReducer", () => {
-  // biome-ignore lint/suspicious/noExplicitAny: dynamic import in test
-  let tuiReducer: any;
-
-  // Load the module once before tests
-  test("loads tuiReducer", async () => {
-    const mod = await import("../app.js");
-    tuiReducer = mod.tuiReducer;
+  test("loads tuiReducer", () => {
     expect(typeof tuiReducer).toBe("function");
   });
 
-  const initial = {
-    vfsNavigateTrigger: 0,
-    artifactIndex: 0,
-    showArtifactDiff: false,
-    paletteIndex: 0,
-    searchQuery: "",
-    searchBuffer: "",
-    messageBuffer: "",
-    messageRecipients: "",
-    compareMode: false,
-    compareCids: [] as readonly string[],
-    zoomLevel: "normal" as const,
-  };
+  const initial = INITIAL_KEYBOARD_STATE;
 
   test("ZOOM_CYCLE cycles through levels", () => {
     let state = tuiReducer(initial, { type: "ZOOM_CYCLE" });

@@ -2,12 +2,22 @@ import { expect, test } from "bun:test";
 import { parseSessionId } from "./session-id.js";
 import { SubprocessRuntime } from "./subprocess-runtime.js";
 
+async function waitForStoppedSession(runtime: SubprocessRuntime, sessionId: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const sessions = await runtime.listSessions();
+    const session = sessions.find((item) => item.id === sessionId);
+    if (session?.status === "stopped") return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for subprocess session to stop: ${sessionId}`);
+}
+
 test("SubprocessRuntime.send returns error turn when the child has already exited", async () => {
   const rt = new SubprocessRuntime();
   const session = await rt.spawn("smoke", { role: "smoke", command: "true", cwd: "/tmp" });
 
-  // `true` exits immediately — wait for proc.exited to propagate.
-  await new Promise((r) => setTimeout(r, 100));
+  await waitForStoppedSession(rt, session.id);
 
   const turn = await rt.send(session, "hello");
   const result = await turn.result;

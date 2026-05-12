@@ -50,12 +50,10 @@ export interface EvaluateStopConditionsOptions {
   /**
    * Skip the "expensive" evaluators — `quorumReviewScore` and
    * `deliberationLimit` — which require a full `store.list()` scan and
-   * per-root `store.thread()` traversals. Callers on the pre-write hot
-   * path (PolicyEnforcer.enforce inside the write mutex) pass this to
-   * avoid blocking concurrent writers on large groves (#232). The
-   * post-write recheck in contributeOperation runs with this option
-   * disabled so threshold-crossing stops are still detected outside the
-   * mutex.
+   * per-root `store.thread()` traversals. Use this only for callers that
+   * intentionally want a cheap partial stop snapshot. Contribution writes
+   * should run the full evaluator post-write so threshold-crossing stops
+   * are detected against the persisted store.
    */
   readonly skipExpensive?: boolean;
 }

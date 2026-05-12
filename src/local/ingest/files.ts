@@ -9,6 +9,9 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 
 import type { ContentStore } from "../../core/cas.js";
+import { mapConcurrent } from "../../shared/concurrency.js";
+
+const INGEST_FILE_CONCURRENCY = 16;
 
 /**
  * Normalize a relative path to use forward slashes regardless of OS.
@@ -62,11 +65,13 @@ export async function ingestFiles(
   }
 
   // Put all top-level files concurrently
-  const results = await Promise.all(
-    filePuts.map(async ({ path: filePath, name }) => {
+  const results = await mapConcurrent(
+    filePuts,
+    INGEST_FILE_CONCURRENCY,
+    async ({ path: filePath, name }) => {
       const hash = await cas.putFile(filePath);
       return { name, hash };
-    }),
+    },
   );
   for (const { name, hash } of results) {
     artifacts[name] = hash;
@@ -107,11 +112,13 @@ async function walkDirectory(
   }
 
   // Put all files in CAS concurrently
-  const results = await Promise.all(
-    fileEntries.map(async ({ fullPath, name }) => {
+  const results = await mapConcurrent(
+    fileEntries,
+    INGEST_FILE_CONCURRENCY,
+    async ({ fullPath, name }) => {
       const hash = await cas.putFile(fullPath);
       return { name, hash };
-    }),
+    },
   );
   for (const { name, hash } of results) {
     artifacts[name] = hash;
