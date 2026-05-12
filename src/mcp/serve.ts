@@ -287,6 +287,9 @@ try {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
+  const operationFrontierRewardService =
+    bountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
   // In Nexus mode we skipped the local contract parse; load the authoritative
   // contract from the Nexus session record instead. The TUI mirrors every
   // session to Nexus via NexusSessionStore.putSession with the frozen
@@ -641,6 +644,7 @@ try {
     claimStore,
     bountyStore,
     creditsService: runtime.creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined

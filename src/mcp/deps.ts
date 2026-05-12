@@ -48,6 +48,7 @@ export interface McpDeps extends ServerDeps {
   readonly namespace?: string | undefined;
   readonly bountyStore?: BountyStore;
   readonly creditsService?: ServerDeps["creditsService"];
+  readonly frontierRewardService?: ServerDeps["frontierRewardService"];
   /** Optional event bus for agent notifications. */
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */

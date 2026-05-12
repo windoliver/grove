@@ -33,6 +33,9 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
     ...(deps.bountyStore !== undefined ? { bountyStore: deps.bountyStore } : {}),
     ...(deps.creditsService !== undefined ? { creditsService: deps.creditsService } : {}),
+    ...(deps.frontierRewardService !== undefined
+      ? { frontierRewardService: deps.frontierRewardService }
+      : {}),
     ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
     onEntityWrite: (event) => {

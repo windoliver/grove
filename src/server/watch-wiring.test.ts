@@ -15,6 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { contributionToEntity } from "../core/entity.js";
+import type { FrontierRewardService } from "../core/frontier-reward-service.js";
 import type { Contribution } from "../core/models.js";
 import type { EntityWriteEvent } from "../core/watch-events.js";
 import type { ServerDeps } from "./deps.js";
@@ -68,9 +69,18 @@ describe("watch wiring (T12)", () => {
     const bountyStore = {
       close: () => undefined,
     } as unknown as NonNullable<ServerDeps["bountyStore"]>;
-    const opDepsWithCredits = toOperationDeps({ ...deps, creditsService, bountyStore });
+    const frontierRewardService = {
+      evaluateContribution: async () => undefined,
+    } as unknown as FrontierRewardService;
+    const opDepsWithCredits = toOperationDeps({
+      ...deps,
+      creditsService,
+      bountyStore,
+      frontierRewardService,
+    });
     expect(opDepsWithCredits.creditsService).toBe(creditsService);
     expect(opDepsWithCredits.bountyStore).toBe(bountyStore);
+    expect(opDepsWithCredits.frontierRewardService).toBe(frontierRewardService);
   });
 
   test("HTTP contribute increments watchHub RV for the namespace", async () => {

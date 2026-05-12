@@ -315,6 +315,9 @@ if (seedPeers.length > 0) {
   });
 }
 
+const operationFrontierRewardService =
+  serverBountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
 // Per-request session-scoped handoff store factory. The HTTP handoff
 // routes accept ?sessionId= and use this factory to build a scoped
 // SqliteHandoffStore on demand, preventing cross-session reads/mutations
@@ -345,6 +348,7 @@ const deps: ServerDeps = {
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   creditsService: runtime.creditsService,
+  frontierRewardService: operationFrontierRewardService,
   goalSessionStore: runtime.goalSessionStore,
   handoffStore: runtime.handoffStore,
   handoffStoreForSession,

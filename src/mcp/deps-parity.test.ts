@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
 import type { McpDeps } from "./deps.js";
+import { toOperationDeps } from "./operation-adapter.js";
 
 describe("MCP deps parity with LocalRuntime", () => {
   let tempDir: string;
@@ -45,6 +46,10 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(runtime.creditsService).toBeDefined();
   });
 
+  test("LocalRuntime always provides frontierRewardService", () => {
+    expect(runtime.frontierRewardService).toBeDefined();
+  });
+
   test("stdio MCP deps construction includes goalSessionStore", () => {
     // Mirror the deps construction from src/mcp/serve.ts
     const deps: McpDeps = {
@@ -52,6 +57,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       claimStore: runtime.claimStore,
       bountyStore: runtime.bountyStore,
       creditsService: runtime.creditsService,
+      frontierRewardService: runtime.frontierRewardService,
       cas: runtime.cas,
       frontier: runtime.frontier,
       workspace: runtime.workspace!,
@@ -66,6 +72,8 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
     expect(deps.creditsService).toBe(runtime.creditsService);
+    expect(deps.frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
   });
 
   test("HTTP MCP deps construction includes goalSessionStore", () => {
@@ -75,6 +83,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       claimStore: runtime.claimStore,
       bountyStore: runtime.bountyStore,
       creditsService: runtime.creditsService,
+      frontierRewardService: runtime.frontierRewardService,
       cas: runtime.cas,
       frontier: runtime.frontier,
       workspace: runtime.workspace!,
@@ -88,5 +97,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
     expect(deps.creditsService).toBe(runtime.creditsService);
+    expect(deps.frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
   });
 });

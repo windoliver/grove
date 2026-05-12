@@ -483,6 +483,9 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     }
   }
 
+  const operationFrontierRewardService =
+    bountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
   // SqliteHandoffStore bound to THIS request's session ID (not the process-
@@ -760,6 +763,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     claimStore,
     bountyStore,
     creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined

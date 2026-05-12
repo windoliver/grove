@@ -13,6 +13,8 @@ import { parseGroveContract } from "../core/contract.js";
 import type { CreditsService } from "../core/credits.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { FrontierRewardService } from "../core/frontier-reward-service.js";
+import type { ScoreDirection } from "../core/models.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "./fs-cas.js";
@@ -77,6 +79,7 @@ export interface LocalRuntime {
   readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
   readonly creditsService: CreditsService;
+  readonly frontierRewardService: FrontierRewardService;
   readonly cas: FsCas;
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
@@ -199,6 +202,13 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     throw err;
   }
 
+  const frontierRewardService = new FrontierRewardService({
+    frontier,
+    bountyStore: stores.bountyStore,
+    creditsService: stores.creditsService,
+    eligibleMetrics: eligibleMetricDirections(contract),
+  });
+
   return {
     db: stores.db,
     contributionStore: stores.contributionStore,
@@ -209,6 +219,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     handoffStore: stores.handoffStore,
     idempotencyStore: stores.idempotencyStore,
     creditsService: stores.creditsService,
+    frontierRewardService,
     cas,
     frontier,
     workspace,
@@ -221,4 +232,18 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
       stores.close();
     },
   };
+}
+
+function eligibleMetricDirections(
+  contract: GroveContract | undefined,
+): Readonly<Record<string, ScoreDirection>> | undefined {
+  if (contract?.metrics === undefined) {
+    return undefined;
+  }
+
+  const directions: Record<string, ScoreDirection> = {};
+  for (const [metric, definition] of Object.entries(contract.metrics)) {
+    directions[metric] = definition.direction;
+  }
+  return directions;
 }
