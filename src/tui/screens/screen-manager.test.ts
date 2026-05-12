@@ -675,6 +675,49 @@ describe("ScreenManager transition flow", () => {
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
   });
 
+  test("running -> complete does not wait for agent teardown to settle", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeContribution("c1")],
+    });
+    const spawnManager = makeSpawnManager();
+    let releaseStop: (() => void) | undefined;
+    spawnManager.stopAllAgents = async (reason: string) => {
+      spawnManager.stopAllAgentsCalls.push(reason);
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+    renderScreenManager({
+      provider: providerBundle.provider,
+      spawnManager,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Complete without waiting",
+        sessionId: "session-teardown-hangs",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    try {
+      await act(async () => {
+        requireRunningView().onComplete("All roles signaled done");
+        await flushAsync();
+        await flushAsync();
+      });
+
+      expect(captured.screen).toBe("complete");
+      expect(requireCompleteView().contributionCount).toBe(1);
+      expect(spawnManager.stopAllAgentsCalls).toEqual(["All roles signaled done"]);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-teardown-hangs"]);
+    } finally {
+      releaseStop?.();
+      await act(async () => {
+        await flushAsync();
+      });
+    }
+  });
+
   test("running -> complete when the terminal reviewer role signals done", async () => {
     const eventBus = new LocalEventBus();
     const providerBundle = makeProvider({

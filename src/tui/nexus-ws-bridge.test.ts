@@ -354,6 +354,59 @@ describe("NexusWsBridge", () => {
     bus.close();
   });
 
+  test("handleEvent ignores Nexus EventRecord writes outside the configured zone", async () => {
+    const runtime = makeMockRuntime();
+    const readPaths: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v2/events/stream") {
+        return new Response("", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (url.pathname === "/api/v2/files/read") {
+        readPaths.push(url.searchParams.get("path") ?? "");
+        return new Response(
+          JSON.stringify({
+            content: JSON.stringify({
+              sender: "coder",
+              payload: { cid: "blake3:foreign", kind: "work", summary: "foreign work" },
+            }),
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        getSessionId: () => "sess-123",
+        zoneId: "zone-a",
+      }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "event",
+      JSON.stringify({
+        event_id: "nexus-event-id",
+        type: "write",
+        path: "/zones/zone-b/sessions/sess-123/ipc/reviewer/inbox/msg-foreign.json",
+        agent_id: "coder",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(readPaths).toEqual([]);
+    expect(runtime.send).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
   test("handleEvent does NOT publish for non-contribution IPC (no cid+kind)", async () => {
     const runtime = makeMockRuntime();
     const bus = new LocalEventBus();

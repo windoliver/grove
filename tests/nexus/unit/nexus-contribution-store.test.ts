@@ -10,10 +10,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { computeContributionContentHash } from "../../../src/core/content-dedup.js";
 import { toManifest } from "../../../src/core/manifest.js";
-import { RelationType } from "../../../src/core/models.js";
+import { type Contribution, RelationType } from "../../../src/core/models.js";
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
 import { makeContribution } from "../../../src/core/test-helpers.js";
 import type { WriteOptions, WriteResult } from "../../../src/nexus/client.js";
+import { NexusConflictError } from "../../../src/nexus/errors.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 import {
@@ -56,6 +57,43 @@ class RecordingBatchClient extends MockNexusClient {
       results.push(await super.write(file.path, file.content, file.opts));
     }
     return results;
+  }
+}
+
+class ContentHashCommitConflictClient extends MockNexusClient {
+  private conflicted = false;
+  private readonly encoder = new TextEncoder();
+
+  constructor(
+    private readonly zoneId: string,
+    private readonly contentHashPath: string,
+    private readonly winner: Contribution,
+  ) {
+    super();
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    if (path === this.contentHashPath && opts?.ifMatch !== undefined && !this.conflicted) {
+      this.conflicted = true;
+      await super.write(
+        contributionPath(this.zoneId, this.winner.cid),
+        this.encoder.encode(JSON.stringify(toManifest(this.winner))),
+      );
+      await super.write(
+        ftsIndexPath(this.zoneId, this.winner.cid),
+        this.encoder.encode(JSON.stringify({ cid: this.winner.cid })),
+      );
+      await super.write(this.contentHashPath, this.encoder.encode(this.winner.cid));
+      throw new NexusConflictError({
+        message: `simulated content-hash commit race for ${path}`,
+        expectedEtag: opts.ifMatch,
+      });
+    }
+    return super.write(path, content, opts);
   }
 }
 
@@ -380,6 +418,42 @@ describe("NexusContributionStore adapter-specific", () => {
 
     batchStore.close();
     await batchClient.close();
+  });
+
+  test("put removes loser record files when content-hash commit races", async () => {
+    const winner = makeContribution({
+      summary: "same logical payload",
+      tags: ["race"],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const loser = makeContribution({
+      summary: "same logical payload",
+      tags: ["race"],
+      createdAt: "2026-01-02T00:00:00Z",
+    });
+    const contentHash = computeContributionContentHash(loser);
+    expect(computeContributionContentHash(winner)).toBe(contentHash);
+    expect(winner.cid).not.toBe(loser.cid);
+
+    const raceClient = new ContentHashCommitConflictClient(
+      "race-zone",
+      contributionContentHashIndexPath("race-zone", contentHash),
+      winner,
+    );
+    const raceStore = new NexusContributionStore({
+      client: raceClient,
+      zoneId: "race-zone",
+      retryMaxAttempts: 1,
+    });
+
+    const result = await raceStore.put(loser);
+
+    expect(result.cid).toBe(winner.cid);
+    expect(await raceStore.get(loser.cid)).toBeUndefined();
+    expect((await raceStore.list()).map((entry) => entry.cid)).toEqual([winner.cid]);
+
+    raceStore.close();
+    await raceClient.close();
   });
 
   test("getByContentHash ignores committed incomplete manifest records", async () => {

@@ -125,19 +125,37 @@ const INBOX_DRAIN_TIMEOUT_MS = 5000;
 const INBOX_DRAIN_LIMIT = 100;
 
 /** URL builder for the per-role inbox subscription on the new events SSE. */
-function inboxStreamUrl(nexusUrl: string, role: string, sessionId?: string | undefined): string {
+function inboxStreamUrl(
+  nexusUrl: string,
+  role: string,
+  sessionId?: string | undefined,
+  zoneId?: string | undefined,
+): string {
   // path_pattern is matched (SQL LIKE) against the stored zone-prefixed path.
   // `*/sessions/{sessionId}/ipc/{role}/inbox/*` scopes delivery to the
   // active Grove session. The legacy `/ipc/{role}/inbox/*` path remains as a
   // fallback for callers without a session.
-  const pattern = sessionId
-    ? `*/sessions/${sessionId}/ipc/${role}/inbox/*`
-    : `*/ipc/${role}/inbox/*`;
+  const encodedRole = encodeSegment(role);
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  const pattern = zoneId
+    ? `/zones/${encodeSegment(zoneId)}${sessionPrefix}/ipc/${encodedRole}/inbox/*`
+    : sessionId
+      ? `*/sessions/${encodeSegment(sessionId)}/ipc/${encodedRole}/inbox/*`
+      : `*/ipc/${encodedRole}/inbox/*`;
   const params = new URLSearchParams({
     path_pattern: pattern,
     event_types: "write",
   });
   return `${nexusUrl}/api/v2/events/stream?${params.toString()}`;
+}
+
+function pathMatchesZone(path: string, zoneId: string): boolean {
+  const encoded = encodeSegment(zoneId);
+  const plural = path.match(/^\/zones\/([^/]+)(?:\/|$)/);
+  if (plural) return plural[1] === encoded;
+  const singular = path.match(/^\/zone\/([^/]+)(?:\/|$)/);
+  if (singular) return singular[1] === encoded || singular[1] === zoneId;
+  return false;
 }
 
 /**
@@ -425,13 +443,16 @@ export class NexusWsBridge {
         const onAbort = () => ac.abort();
         deadline.addEventListener("abort", onAbort, { once: true });
         try {
-          const resp = await fetch(inboxStreamUrl(this.opts.nexusUrl, role.name), {
-            headers: {
-              Authorization: `Bearer ${this.opts.apiKey}`,
-              Accept: "text/event-stream",
+          const resp = await fetch(
+            inboxStreamUrl(this.opts.nexusUrl, role.name, undefined, this.opts.zoneId),
+            {
+              headers: {
+                Authorization: `Bearer ${this.opts.apiKey}`,
+                Accept: "text/event-stream",
+              },
+              signal: ac.signal,
             },
-            signal: ac.signal,
-          });
+          );
           if (!resp.ok) return { role: role.name, reason: `HTTP ${resp.status}` };
           // 2xx is necessary but not sufficient — a misconfigured proxy can
           // serve a success status without an actual event stream. Verify
@@ -806,7 +827,12 @@ export class NexusWsBridge {
       // and prevent onRoleUnhealthy from ever firing.
       const openMs = 15000;
       const openTimer = setTimeout(() => ac.abort(), openMs);
-      const url = inboxStreamUrl(this.opts.nexusUrl, role, this.currentSessionId());
+      const url = inboxStreamUrl(
+        this.opts.nexusUrl,
+        role,
+        this.currentSessionId(),
+        this.opts.zoneId,
+      );
 
       let resp: Response;
       try {
@@ -951,6 +977,7 @@ export class NexusWsBridge {
       // an EventRecord describing a file write — translate it to the
       // SseEvent shape the rest of the pipeline already speaks.
       let event: SseEvent;
+      let checkedZonePath = false;
       if (eventType === "message_delivered") {
         event = JSON.parse(raw) as SseEvent;
       } else if (eventType === "event") {
@@ -960,6 +987,10 @@ export class NexusWsBridge {
         // role's inbox prefix; this is belt-and-suspenders against future
         // pattern drift or shared streams.
         if (rec.type !== "write") return;
+        if (this.opts.zoneId) {
+          if (!pathMatchesZone(rec.path, this.opts.zoneId)) return;
+          checkedZonePath = true;
+        }
         const relPath = stripZonePrefix(rec.path);
         const messageId = messageIdFromInboxPath(relPath) ?? rec.event_id;
         event = {
@@ -971,6 +1002,10 @@ export class NexusWsBridge {
           path: relPath,
         };
       } else {
+        return;
+      }
+
+      if (this.opts.zoneId && !checkedZonePath && !pathMatchesZone(event.path, this.opts.zoneId)) {
         return;
       }
 

@@ -425,12 +425,19 @@ export class NexusContributionStore implements ContributionStore {
           "put:commitContentHashRepairConflictLookup",
         );
         if (latest !== undefined) {
-          return this.resolveExistingContentHash(
+          const resolved = await this.resolveExistingContentHash(
             contribution,
             contentHashPath,
             latest,
             Date.now() + CONTENT_HASH_REPAIR_WAIT_MS,
           );
+          if (resolved.cid !== contribution.cid) {
+            await this.deleteContributionRecord(
+              contribution,
+              "put:cleanupLosingContributionRecord",
+            );
+          }
+          return resolved;
         }
       }
       throw err;
@@ -464,6 +471,23 @@ export class NexusContributionStore implements ContributionStore {
   private async writeContributionRecord(contribution: Contribution): Promise<void> {
     const files = this.contributionRecordFiles(contribution);
     await withSemaphore(this.semaphore, () => this.client.writeBatch(files));
+  }
+
+  private async deleteContributionRecord(
+    contribution: Contribution,
+    context: string,
+  ): Promise<void> {
+    await withRetry(
+      async () => {
+        await batchParallel(this.contributionRecordFiles(contribution), (file) =>
+          withSemaphore(this.semaphore, () => this.client.delete(file.path)),
+        );
+      },
+      context,
+      this.config,
+    );
+    this.cache.delete(contribution.cid);
+    this.invalidateListCache();
   }
 
   private contributionRecordFiles(contribution: Contribution): readonly WriteBatchEntry[] {

@@ -295,10 +295,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         completionInFlightRef.current = true;
         doneSignaledRef.current = true;
 
-        // Stop live agents before archiving the row. Otherwise already-running
-        // Codex/Claude turns can keep reacting to IPC and publish duplicate
-        // contributions after the TUI has moved to "complete".
-        await spawnManager.stopAllAgents(reason).catch(() => {
+        // stopAllAgents synchronously unregisters IPC routes and marks runtime
+        // sessions closed before awaiting process teardown. Do not await the
+        // teardown here: a stuck adapter close must not keep the session row
+        // active after grove_done has already completed the session.
+        void spawnManager.stopAllAgents(reason).catch(() => {
           /* best-effort */
         });
 
