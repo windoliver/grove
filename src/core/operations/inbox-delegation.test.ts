@@ -42,12 +42,13 @@ function throwingStore(): ContributionStore {
     replyCounts: async () => new Map(),
     hotThreads: async () => [],
     listEntities: async () => [],
+    close: () => undefined,
   };
 }
 
 describe("readInboxWithSource", () => {
   test("recipient-filtered reads use the source without scanning the store", async () => {
-    const calls: InboxQuery[] = [];
+    const calls: (InboxQuery | undefined)[] = [];
     const inbox = await readInboxWithSource(
       throwingStore(),
       { recipient: "@bob", limit: 5 },
@@ -88,6 +89,22 @@ describe("readInboxWithSource", () => {
     expect(inbox).toEqual([]);
     expect(listCalled).toBe(true);
     expect(sourceCalled).toBe(false);
+  });
+
+  test("reads without a source use the contribution store", async () => {
+    let listCalled = false;
+    const store = {
+      ...throwingStore(),
+      list: async () => {
+        listCalled = true;
+        return [];
+      },
+    };
+
+    const inbox = await readInboxWithSource(store, { limit: 10 });
+
+    expect(inbox).toEqual([]);
+    expect(listCalled).toBe(true);
   });
 
   test("source failure falls back to contribution-store readInbox", async () => {
