@@ -417,6 +417,14 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     <box flexDirection="column">
       <box marginBottom={1} flexDirection="row">
         <text>{`Contribution DAG (${String(projection.rows.length)} rows / ${String(projection.nodes.size)} nodes${projection.truncated ? ", truncated" : ""}) `}</text>
+        {isScopedForClaims && (
+          // Surface explicitly: a scoped session can't yet pull
+          // session-filtered claims, so we drop them entirely rather than
+          // leak cross-session running/blocked icons. Without this banner
+          // operators would mistake the universal idle/awaiting-review
+          // for accurate status data.
+          <text color={theme.statusBlocked}>claim status unavailable (scoped) </text>
+        )}
         <DataStatus loading={loading} isStale={isStale} error={error?.message} />
       </box>
       {projection.rows.map((row, i) => (

@@ -52,6 +52,7 @@ const TestRendererModule = await import("react-test-renderer");
 const TestRenderer = (TestRendererModule as unknown as { default: typeof TestRendererTypes })
   .default;
 const { act } = TestRendererModule;
+const { theme } = await import("../theme.js");
 const { DagStateStore } = await import("../data/dag-state-store.js");
 const { DagStateProvider } = await import("../hooks/dag-state-context.js");
 const { DagView } = await import("./dag.js");
@@ -151,7 +152,7 @@ describe("DagView (xray)", () => {
     expect(flat).toContain("match-foo");
     expect(flat).toContain("other"); // not filtered out
     // Highlight color appears at least once.
-    expect(flat).toContain("#ffff66");
+    expect(flat).toContain(theme.highlightMatch);
     renderer.unmount();
   });
 
