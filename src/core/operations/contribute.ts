@@ -1160,23 +1160,14 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          // skipExpensiveStopChecks: true — scanning stop evaluators (quorum,
-          // deliberation) run in the post-write recheck below, outside the
-          // mutex, so they don't block concurrent writers (#232). This opt-in
-          // is ONLY for the mutex-hook path — the fallback branch below uses
-          // the default full evaluation since it isn't holding the mutex.
-          policyResult = await enforcer?.enforce(c, true, {
-            skipStopConditions,
-            skipExpensiveStopChecks: true,
-          });
+          // Stop conditions are evaluated only after the write, outside the
+          // mutex, so O(n) scans don't block concurrent writers (#235).
+          policyResult = await enforcer?.enforce(c, true);
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore).
-        // Not the write-mutex hot path that motivated skipExpensiveStopChecks,
-        // so keep full evaluation — the post-write recheck is best-effort and
-        // should not be the sole detector here.
         try {
-          policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
+          policyResult = await enforcer.enforce(contribution, true);
         } catch (policyErr) {
           if (policyErr instanceof PolicyViolationError) {
             const duplicate = await findStoredDuplicateByContentHash(
@@ -1625,16 +1616,16 @@ export async function contributeOperation(
       });
     }
 
-    // --- Post-write: re-check stop conditions (outside mutex, best-effort) ---
-    // The pre-write enforce() evaluates stop conditions before the contribution is
-    // persisted, so the threshold-crossing write (e.g., the Nth review satisfying
-    // quorum) would report stopped=false. Re-evaluate now that the store includes
-    // this contribution. This runs outside the write mutex, so it doesn't block
-    // concurrent writers. Only re-checks when the pre-write result said not stopped.
+    // --- Post-write: check stop conditions (outside mutex, best-effort) ---
+    // This is the only stop-condition evaluation for contribution writes.
+    // Running it after persistence lets threshold-crossing writes (e.g., the
+    // Nth review satisfying quorum) see the updated store, and running it
+    // outside the write mutex avoids blocking concurrent writers on O(n)
+    // scans.
     //
-    // Plans + ephemeral messages skip this recheck — they were excluded from the
-    // pre-write evaluation too (skipStopConditions), so there is no threshold-
-    // crossing semantics to recover here.
+    // Plans, done markers, and ephemeral messages skip this check; they are
+    // coordination traffic and should not count toward progress-driven stop
+    // conditions.
     //
     // Best-effort: errors here must not fail the already-committed write. A store
     // read failure during the recheck is logged but does not surface as a failed
@@ -1642,14 +1633,13 @@ export async function contributeOperation(
     if (
       !skipStopConditions &&
       policyResult !== undefined &&
-      !policyResult.stopResult?.stopped &&
       deps.contract?.stopConditions !== undefined &&
       deps.contributionStore !== undefined
     ) {
       // Bounded retry with exponential backoff — addresses Codex review r3:
-      // the scanning stop evaluators are the ONLY detector for
-      // quorum/deliberation on the mutex-hook path, so a transient
-      // store read failure must not silently drop a stop signal.
+      // the scanning stop evaluators are the stop detector for contribution
+      // writes, so a transient store read failure must not silently drop a
+      // stop signal.
       // 3 attempts × (100ms, 400ms) backoff caps at ~500ms added latency
       // in the worst case; success on attempt 1 adds zero latency.
       const { evaluateStopConditions } = await import("../stop-conditions.js");
