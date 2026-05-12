@@ -5,7 +5,7 @@ import type { BountyStore } from "./bounty-store.js";
 import type { CreditsService } from "./credits.js";
 import { FRONTIER_REWARD_TREASURY_AGENT_ID } from "./credits-constants.js";
 import type { FrontierCalculator, FrontierEntry } from "./frontier.js";
-import type { Contribution, Score } from "./models.js";
+import type { Contribution, Score, ScoreDirection } from "./models.js";
 import { ContributionMode } from "./models.js";
 
 export interface FrontierRewardServiceOptions {
@@ -13,7 +13,7 @@ export interface FrontierRewardServiceOptions {
   readonly bountyStore: BountyStore;
   readonly creditsService: CreditsService;
   readonly treasuryAgentId?: string | undefined;
-  readonly eligibleMetrics?: readonly string[] | undefined;
+  readonly eligibleMetrics?: Readonly<Record<string, ScoreDirection>> | undefined;
   readonly maxRewardAmount?: number | undefined;
 }
 
@@ -22,7 +22,7 @@ export class FrontierRewardService {
   private readonly bountyStore: BountyStore;
   private readonly creditsService: CreditsService;
   private readonly treasuryAgentId: string;
-  private readonly eligibleMetrics: ReadonlySet<string>;
+  private readonly eligibleMetrics: ReadonlyMap<string, ScoreDirection>;
   private readonly maxRewardAmount: number;
 
   constructor(options: FrontierRewardServiceOptions) {
@@ -35,7 +35,7 @@ export class FrontierRewardService {
     this.bountyStore = options.bountyStore;
     this.creditsService = options.creditsService;
     this.treasuryAgentId = options.treasuryAgentId ?? FRONTIER_REWARD_TREASURY_AGENT_ID;
-    this.eligibleMetrics = new Set(options.eligibleMetrics ?? []);
+    this.eligibleMetrics = new Map(Object.entries(options.eligibleMetrics ?? {}));
     this.maxRewardAmount = maxRewardAmount;
   }
 
@@ -81,7 +81,8 @@ export class FrontierRewardService {
 
     const candidates: RewardCandidate[] = [];
     for (const [metric, score] of Object.entries(scores)) {
-      if (!this.eligibleMetrics.has(metric)) {
+      const expectedDirection = this.eligibleMetrics.get(metric);
+      if (expectedDirection === undefined || score.direction !== expectedDirection) {
         continue;
       }
 
@@ -100,7 +101,7 @@ export class FrontierRewardService {
         continue;
       }
 
-      const improvement = this.improvement(score, previous);
+      const improvement = this.improvement(score, previous, expectedDirection);
       if (improvement <= 0) {
         continue;
       }
@@ -154,8 +155,8 @@ export class FrontierRewardService {
     return rewards.find((reward) => reward.recipient.agentId === contribution.agent.agentId);
   }
 
-  private improvement(score: Score, previous: FrontierEntry): number {
-    if (score.direction === "maximize") {
+  private improvement(score: Score, previous: FrontierEntry, direction: ScoreDirection): number {
+    if (direction === "maximize") {
       return score.value - previous.value;
     }
     return previous.value - score.value;

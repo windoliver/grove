@@ -20,7 +20,7 @@ describe("FrontierRewardService", () => {
 
   function setup(options?: {
     readonly rewardTreasuryBalance?: number | undefined;
-    readonly eligibleMetrics?: readonly string[] | undefined;
+    readonly eligibleMetrics?: Readonly<Record<string, ScoreDirection>> | undefined;
     readonly maxRewardAmount?: number | undefined;
   }): {
     readonly contributionStore: SqliteContributionStore;
@@ -48,7 +48,7 @@ describe("FrontierRewardService", () => {
 
   test("pays and records one reward when a contribution advances a minimized metric", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["val_bpb"],
+      eligibleMetrics: { val_bpb: ScoreDirection.Minimize },
     });
     const previous = makeContribution({
       summary: "previous val_bpb",
@@ -91,7 +91,7 @@ describe("FrontierRewardService", () => {
 
   test("does not reward exploration or non-improving contributions", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["accuracy"],
+      eligibleMetrics: { accuracy: ScoreDirection.Maximize },
     });
     const strong = makeContribution({
       summary: "strong accuracy",
@@ -131,7 +131,7 @@ describe("FrontierRewardService", () => {
 
   test("pays one reward for the best eligible metric when multiple metrics improve", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["accuracy", "throughput"],
+      eligibleMetrics: { accuracy: ScoreDirection.Maximize, throughput: ScoreDirection.Maximize },
       maxRewardAmount: 3,
     });
     const previous = makeContribution({
@@ -172,7 +172,7 @@ describe("FrontierRewardService", () => {
 
   test("caps eligible metric rewards to one credit by default", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["throughput"],
+      eligibleMetrics: { throughput: ScoreDirection.Maximize },
     });
     const previous = makeContribution({
       summary: "previous throughput",
@@ -208,7 +208,7 @@ describe("FrontierRewardService", () => {
           frontier: new DefaultFrontierCalculator(contributionStore),
           bountyStore,
           creditsService,
-          eligibleMetrics: ["accuracy"],
+          eligibleMetrics: { accuracy: ScoreDirection.Maximize },
           maxRewardAmount: 0,
         }),
     ).toThrow(/maxRewardAmount/);
@@ -250,7 +250,7 @@ describe("FrontierRewardService", () => {
       }),
       bountyStore,
       creditsService,
-      eligibleMetrics: ["accuracy"],
+      eligibleMetrics: { accuracy: ScoreDirection.Maximize },
     });
     const throughputService = new FrontierRewardService({
       frontier: new StaticFrontierCalculator({
@@ -267,7 +267,7 @@ describe("FrontierRewardService", () => {
       }),
       bountyStore,
       creditsService,
-      eligibleMetrics: ["throughput"],
+      eligibleMetrics: { throughput: ScoreDirection.Maximize },
       maxRewardAmount: 3,
     });
 
@@ -287,7 +287,7 @@ describe("FrontierRewardService", () => {
 
   test("does not reward a first-ever metric with no previous frontier entry", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["attacker_controlled_metric"],
+      eligibleMetrics: { attacker_controlled_metric: ScoreDirection.Maximize },
     });
     const contribution = makeContribution({
       summary: "new metric",
@@ -335,7 +335,7 @@ describe("FrontierRewardService", () => {
 
   test("does not reward an ineligible self-reported metric with a huge improvement", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
-      eligibleMetrics: ["accuracy"],
+      eligibleMetrics: { accuracy: ScoreDirection.Maximize },
       maxRewardAmount: 10,
     });
     const previous = makeContribution({
@@ -365,10 +365,42 @@ describe("FrontierRewardService", () => {
     });
   });
 
+  test("does not reward when submitted metric direction mismatches expected direction", async () => {
+    const { contributionStore, bountyStore, creditsService, service } = setup({
+      eligibleMetrics: { loss: ScoreDirection.Minimize },
+      maxRewardAmount: 10,
+    });
+    const previous = makeContribution({
+      summary: "previous loss",
+      agent: makeAgent({ agentId: "agent-old" }),
+      scores: {
+        loss: { value: 0.1, direction: ScoreDirection.Minimize },
+      },
+    });
+    const malicious = makeContribution({
+      summary: "spoofed loss",
+      agent: makeAgent({ agentId: "agent-new" }),
+      scores: {
+        loss: { value: 999, direction: ScoreDirection.Maximize },
+      },
+    });
+    await contributionStore.put(previous);
+    await contributionStore.put(malicious);
+
+    await service.evaluateContribution(malicious);
+
+    expect(await bountyStore.listRewards({ contributionCid: malicious.cid })).toHaveLength(0);
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: 0,
+      reserved: 0,
+      total: 0,
+    });
+  });
+
   test("records reward intent before transfer and retries the deterministic transfer", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup({
       rewardTreasuryBalance: 0,
-      eligibleMetrics: ["accuracy"],
+      eligibleMetrics: { accuracy: ScoreDirection.Maximize },
     });
     const previous = makeContribution({
       summary: "previous accuracy",
