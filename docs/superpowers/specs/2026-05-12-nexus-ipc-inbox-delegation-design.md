@@ -145,7 +145,9 @@ Behavior:
 - If the contribution write fails, return the original failure and do not send
   IPC envelopes.
 - If the write succeeds and Nexus delivery is configured, send one IPC envelope
-  per non-`@all` recipient. The payload includes a Grove-specific marker and
+  per recipient. The broadcast handle `@all` maps to the Nexus `all` inbox so
+  recipient readers can include broadcast messages without scanning
+  contributions. The payload includes a Grove-specific marker and
   enough data for inbox reads to project an `InboxMessage` without scanning the
   contribution store:
   - `kind: "grove.message"`
