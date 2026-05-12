@@ -38,6 +38,7 @@ const SHARED_OPERATIONS_MCP: ReadonlyArray<{
   { operation: "getOutcomeOperation", mcpTool: "grove_get_outcome" },
   { operation: "listOutcomesOperation", mcpTool: "grove_list_outcomes" },
   { operation: "outcomeStatsOperation", mcpTool: "grove_outcome_stats" },
+  { operation: "checkTrajectoryOperation", mcpTool: "grove_check_trajectory" },
 ];
 
 /**
@@ -62,6 +63,7 @@ const SHARED_OPERATIONS_CLI: ReadonlyArray<{
   { operation: "threadsOperation", cliCommand: "threads" },
   { operation: "checkoutOperation", cliCommand: "checkout" },
   { operation: "listClaimsOperation", cliCommand: "claims" },
+  { operation: "checkTrajectoryOperation", cliCommand: "check-trajectory" },
 ];
 
 describe("parity matrix: operations layer exports", () => {
@@ -93,6 +95,7 @@ describe("parity matrix: operations layer exports", () => {
       "getOutcomeOperation",
       "listOutcomesOperation",
       "outcomeStatsOperation",
+      "checkTrajectoryOperation",
     ];
 
     for (const name of expectedExports) {

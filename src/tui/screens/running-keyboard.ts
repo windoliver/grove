@@ -14,7 +14,7 @@ import type { ZoomLevel } from "../panels/panel-registry.js";
 // Running panel identifiers
 // ---------------------------------------------------------------------------
 
-/** The 6 panels available in RunningView's progressive disclosure. */
+/** The 9 panels available in RunningView's progressive disclosure. */
 export const RunningPanel = {
   Feed: 0,
   Agents: 1,
@@ -22,10 +22,13 @@ export const RunningPanel = {
   Terminal: 3,
   Trace: 4,
   Handoffs: 5,
+  Sessions: 6,
+  Tasks: 7,
+  Reviews: 8,
 } as const;
 export type RunningPanel = (typeof RunningPanel)[keyof typeof RunningPanel];
 
-export const RUNNING_PANEL_COUNT = 6;
+export const RUNNING_PANEL_COUNT = 9;
 
 export const RUNNING_PANEL_LABELS: Readonly<Record<RunningPanel, string>> = {
   [RunningPanel.Feed]: "Feed",
@@ -34,6 +37,9 @@ export const RUNNING_PANEL_LABELS: Readonly<Record<RunningPanel, string>> = {
   [RunningPanel.Terminal]: "Terminal",
   [RunningPanel.Trace]: "Trace",
   [RunningPanel.Handoffs]: "Handoffs",
+  [RunningPanel.Sessions]: "Sessions",
+  [RunningPanel.Tasks]: "Tasks",
+  [RunningPanel.Reviews]: "Reviews",
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +62,12 @@ export interface RunningKeyboardState {
   readonly promptMode: boolean;
   /** Current prompt text. */
   readonly promptText: string;
+  /** C2 cmd-mode (goto/filter) — separate from legacy message mode. */
+  readonly cmdMode: import("../components/prompt.js").PromptMode;
+  /** Current C2 cmd text. */
+  readonly cmdText: string;
+  /** C2 (#302): retained filter query after Enter exits filter mode. Esc-from-normal clears it. */
+  readonly filterQuery: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +94,17 @@ export interface RunningKeyboardActions {
   readonly deletePromptChar: () => void;
   readonly cyclePromptTarget: () => void;
   readonly submitPrompt: () => void;
+  // Cmd-mode (C2): goto + filter prompt
+  readonly enterGotoMode: () => void;
+  readonly enterFilterMode: () => void;
+  readonly cmdAppendChar: (char: string) => void;
+  readonly cmdDeleteChar: () => void;
+  readonly cmdTabComplete: () => void;
+  readonly cmdSubmit: () => void;
+  readonly cmdClearText: () => void;
+  readonly cmdExit: () => void;
+  /** C2 (#302): clear retained filter query (Esc from normal mode when filter is active). */
+  readonly clearFilterQuery: () => void;
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
@@ -165,6 +188,36 @@ export function routeRunningKey(
   const input = key.name;
   const isCtrl = key.ctrl;
 
+  // ─── C2 cmd-mode (goto/filter): swallows all keys ───
+  if (state.cmdMode !== "none") {
+    if (input === "escape") {
+      if (state.cmdText.length > 0) actions.cmdClearText();
+      else actions.cmdExit();
+      return true;
+    }
+    if (input === "return") {
+      actions.cmdSubmit();
+      return true;
+    }
+    if (input === "tab" && state.cmdMode === "goto") {
+      actions.cmdTabComplete();
+      return true;
+    }
+    if (input === "backspace") {
+      actions.cmdDeleteChar();
+      return true;
+    }
+    if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+      actions.cmdAppendChar(key.sequence);
+      return true;
+    }
+    if (input === "space") {
+      actions.cmdAppendChar(" ");
+      return true;
+    }
+    return true; // swallow unhandled keys in cmd-mode
+  }
+
   // ─── Prompt input mode (swallows all keys) ───
   if (state.promptMode) {
     if (input === "escape") {
@@ -211,8 +264,20 @@ export function routeRunningKey(
     return true;
   }
 
-  // ':' or 'm': enter prompt mode to send message to agent
-  if ((key.sequence === ":" || input === "m") && actions.hasSendToAgent && actions.hasActiveRoles) {
+  // ':' enters C2 goto/command mode
+  if (key.sequence === ":") {
+    actions.enterGotoMode();
+    return true;
+  }
+
+  // '/' enters C2 filter mode
+  if (key.sequence === "/") {
+    actions.enterFilterMode();
+    return true;
+  }
+
+  // 'm' enters message-send mode (legacy prompt flow)
+  if (input === "m" && actions.hasSendToAgent && actions.hasActiveRoles) {
     actions.enterPromptMode();
     return true;
   }
@@ -229,7 +294,7 @@ export function routeRunningKey(
     return true;
   }
 
-  // Escape: layered dismissal — overlay → panel collapse
+  // Escape: layered dismissal — overlay → filter clear → panel collapse
   if (input === "escape") {
     if (state.showVfs) {
       actions.dismissVfs();
@@ -237,6 +302,14 @@ export function routeRunningKey(
     }
     if (state.confirmQuit) {
       actions.setConfirmQuit(false);
+      return true;
+    }
+    // C2 (#302): clear retained filter query before collapsing the panel.
+    // Mirrors k9s "Esc-Esc clears filter" — first Esc exits filter prompt
+    // (handled in cmdMode block); second Esc (now in normal mode) clears
+    // the retained query.
+    if (state.filterQuery !== "") {
+      actions.clearFilterQuery();
       return true;
     }
     if (state.expandedPanel !== null) {

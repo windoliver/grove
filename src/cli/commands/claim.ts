@@ -12,6 +12,7 @@
  */
 
 import { parseArgs } from "node:util";
+import type { OwnerRef } from "../../core/lifecycle-metadata.js";
 import type { OperationDeps } from "../../core/operations/index.js";
 import { claimOperation, ErrorCode } from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
@@ -26,6 +27,7 @@ const DEFAULT_LEASE = "5m";
 
 export interface ClaimDeps {
   readonly claimStore: ClaimStore;
+  readonly sessionOwnerRef?: OwnerRef | undefined;
   readonly stdout: (msg: string) => void;
   readonly stderr: (msg: string) => void;
 }
@@ -62,6 +64,7 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
   // Build minimal OperationDeps with only what claimOperation needs
   const opDeps: OperationDeps = {
     claimStore: deps.claimStore,
+    ...(deps.sessionOwnerRef !== undefined ? { sessionOwnerRef: deps.sessionOwnerRef } : {}),
   };
 
   const result = await claimOperation(

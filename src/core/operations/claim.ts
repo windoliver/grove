@@ -131,6 +131,7 @@ export async function claimOperation(
       createdAt: now.toISOString(),
       heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
+      ...(deps.sessionOwnerRef !== undefined ? { ownerRef: deps.sessionOwnerRef } : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
     };
 

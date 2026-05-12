@@ -14,28 +14,35 @@
  * q: confirm quit (double-tap)
  */
 
+import { dirname } from "node:path";
 import { useKeyboard } from "@opentui/react";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
+import type { Handoff } from "../../core/handoff.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
 import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
+import { FlashBar } from "../components/flash-bar.js";
 import { ProgressBar } from "../components/progress-bar.js";
+import { Prompt } from "../components/prompt.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
+import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
+import { loadAliases } from "../data/aliases-loader.js";
 import { debugLog } from "../debug-log.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
+import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-stack.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
-import { isVfsProvider } from "../provider.js";
+import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { DagView } from "../views/dag.js";
@@ -43,6 +50,16 @@ import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
+import {
+  type CmdModeState,
+  appendChar as cmdAppend,
+  deleteChar as cmdDelete,
+  cycleSuggestion,
+  enterFilter,
+  enterGoto,
+  exitCmdMode,
+  initialCmdState,
+} from "./running-cmd-mode.js";
 import {
   collapsePanel,
   expandPanel as expandPanelTransition,
@@ -64,6 +81,24 @@ export interface TargetMetricInfo {
   readonly value: number;
   readonly direction: "minimize" | "maximize";
 }
+
+/**
+ * Map RunningPanel enum → the `panel` param string used in
+ * `Page.params.panel`. Inverse of the lookup in the pagesTop sync effect.
+ * Used by `keyboardActions.expandPanel` to push the matching panel page
+ * onto PagesStore when the user presses 1-4 so HintBar stays in sync.
+ */
+const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = Object.freeze({
+  [RunningPanel.Feed]: "feed",
+  [RunningPanel.Agents]: "agents",
+  [RunningPanel.Dag]: "dag",
+  [RunningPanel.Terminal]: "terminal",
+  [RunningPanel.Trace]: undefined,
+  [RunningPanel.Handoffs]: undefined,
+  [RunningPanel.Sessions]: "sessions",
+  [RunningPanel.Tasks]: "tasks",
+  [RunningPanel.Reviews]: "reviews",
+});
 
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
@@ -196,6 +231,53 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [promptText, setPromptText] = useState("");
     const [promptTarget, setPromptTarget] = useState(0);
 
+    // ─── C2 cmd-mode state (#302) ───
+    // React state drives rendering; refs mirror the latest values so the
+    // keyboard router reads them synchronously inside a single tick. Without
+    // refs, fast keystroke bursts (paste, scripted input) race React's
+    // re-render: the second key sees stale `cmdMode='none'` and falls through
+    // to the normal-mode handler.
+    const [cmdState, setCmdStateRaw] = useState<CmdModeState>(initialCmdState);
+    const cmdStateRef = useRef<CmdModeState>(initialCmdState);
+    const setCmdState = useCallback((next: CmdModeState | ((s: CmdModeState) => CmdModeState)) => {
+      cmdStateRef.current = typeof next === "function" ? next(cmdStateRef.current) : next;
+      setCmdStateRaw(cmdStateRef.current);
+    }, []);
+
+    const [aliases, setAliases] = useState<AliasMap>(DEFAULT_ALIASES);
+    const [flashError, setFlashError] = useState<string | null>(null);
+
+    const [filterQuery, setFilterQueryRaw] = useState<string>("");
+    const filterQueryRef = useRef<string>("");
+    const setFilterQuery = useCallback((next: string) => {
+      filterQueryRef.current = next;
+      setFilterQueryRaw(next);
+    }, []);
+
+    const flash = useCallback((msg: string, ms = 3000) => {
+      setFlashError(msg);
+      setTimeout(() => setFlashError((current) => (current === msg ? null : current)), ms);
+    }, []);
+
+    useEffect(() => {
+      if (!groveDir) return;
+      let cancelled = false;
+      // `groveDir` prop is the resolved `.grove/` directory (per resolveGroveDir);
+      // loadAliases expects the project root and joins `.grove/aliases.yaml` itself.
+      const projectRoot = dirname(groveDir);
+      void loadAliases(projectRoot).then((r) => {
+        if (cancelled) return;
+        setAliases(r.aliases);
+        if (r.errors.length > 0) {
+          const first = r.errors[0];
+          if (first) flash(first);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [groveDir, flash]);
+
     // ─── Feed state ───
     const [cursor, setCursor] = useState(0);
     const [autoFollow, setAutoFollow] = useState(true);
@@ -218,6 +300,68 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useEffect(() => {
       persistViewState({ expandedPanel, zoomLevel, traceSelectedAgent });
     }, [expandedPanel, zoomLevel, traceSelectedAgent, persistViewState]);
+
+    // ─── PagesStore wiring (#303): goto pushes panel pages, top→expandedPanel sync ───
+    // The store is created once at screen-manager mount and supplied via context.
+    // Each :a/:s/:d/:t/:r entry pushes a panel page; the sync effect below mirrors
+    // the visible top page back into local expandedPanel/zoomLevel state so the
+    // existing panel-render logic remains unchanged. Esc on a panel page pops
+    // the stack (handled in the useKeyboard short-circuit further below).
+    const pagesStore = usePagesStoreFromContext();
+    const { top: pagesTop } = useScreenStack(pagesStore);
+
+    // ─── Dirty-check: prompt-mode (#303) ───
+    // Registers a dirty check while prompt mode is active so hasDirtyTop()
+    // returns true when the user has typed something into the prompt bar.
+    useEffect(() => {
+      if (!promptMode) return;
+      return pagesStore.registerDirtyCheck("running", () => promptText.trim().length > 0);
+    }, [pagesStore, promptMode, promptText]);
+
+    // Mirror the latest zoomLevel into a ref so the sync effect can read it
+    // without listing it in the dep array (which would re-fire the mapping
+    // every time the zoom changes — defeating the lastAppliedTopRef guard).
+    const zoomLevelRef = useRef(zoomLevel);
+    useEffect(() => {
+      zoomLevelRef.current = zoomLevel;
+    }, [zoomLevel]);
+
+    // Track the last-applied top page (by identity) so the effect is idempotent
+    // even when expandedPanel/zoomLevel changes for unrelated reasons (1-9 keys,
+    // panel toggles). Without this, every state change would re-run the mapping.
+    const lastAppliedTopRef = useRef<typeof pagesTop>(undefined);
+    useEffect(() => {
+      if (lastAppliedTopRef.current === pagesTop) return;
+      lastAppliedTopRef.current = pagesTop;
+      if (!pagesTop) return;
+      if (pagesTop.kind === "panel") {
+        const panel = pagesTop.params?.panel ?? "";
+        const map: Record<string, RunningPanel> = {
+          agents: RunningPanel.Agents,
+          sessions: RunningPanel.Sessions,
+          dag: RunningPanel.Dag,
+          tasks: RunningPanel.Tasks,
+          reviews: RunningPanel.Reviews,
+          feed: RunningPanel.Feed,
+          terminal: RunningPanel.Terminal,
+        };
+        const target = map[panel];
+        if (target !== undefined) {
+          // SET (not toggle). expandPanelTransition would collapse the panel
+          // if local state already matches target — which happens when the
+          // user pressed a direct 1-4 shortcut: keyboardActions.expandPanel
+          // mutated local state first, then pushed onto PagesStore; this
+          // effect then runs and would toggle the just-set panel back to null.
+          // Set the panel + zoom directly so the round-trip stays stable.
+          setExpandedPanel(target);
+          if (zoomLevelRef.current === "normal") setZoomLevel("half");
+        }
+      } else if (pagesTop.kind === "running") {
+        // Back at the bottom of the stack — clear panel zoom.
+        setExpandedPanel(null);
+        setZoomLevel("normal");
+      }
+    }, [pagesTop]);
 
     // ─── Elapsed timer ───
     const [elapsed, setElapsed] = useState("0s");
@@ -386,6 +530,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       );
       return sorted.map(entityToContribution);
     }, [contribInformerReady, contribEntities.data, contributionsPoll.data, sessionStartedAt]);
+    // Session scoping is handled server-side (provider.setSessionScope).
+    // The feed already contains only this session's contributions.
+    const feed = contributions ?? [];
 
     // Aggregate poll health for the status bar: show stale/error when either
     // path is unhealthy. Informer error always surfaces (even when we're still
@@ -407,22 +554,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       contributionsPoll.error?.message,
     ]);
 
-    // Fetch handoffs once on mount; subsequent updates ride the eventBus
-    // subscription below (handoff.overdue / handoff.seen / handoff.acked).
-    const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
-      [],
-    );
-    useEffect(() => {
-      const hasMethod = "getHandoffs" in provider;
+    const [handoffs, setHandoffs] = useState<readonly Handoff[]>([]);
+    const refreshHandoffs = useCallback((): void => {
+      const hasMethod = isHandoffProvider(provider);
       debugLog(
         "handoffs",
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      const p = provider as {
-        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
-      };
-      void p
+      void provider
         .getHandoffs({ limit: 200 })
         .then((all) => {
           const cutoff =
@@ -439,31 +579,33 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         });
     }, [provider, sessionStartedAt]);
 
-    // Subscribe to handoff lifecycle events (handoff.overdue, handoff.seen,
-    // handoff.acked) for real-time panel updates. When any handoff event
-    // arrives, trigger an immediate re-fetch so the panel reflects the change
-    // without waiting for the next polling interval.
+    useEffect(() => {
+      refreshHandoffs();
+    }, [refreshHandoffs]);
+
+    const feedCidKey = useMemo(() => feed.map((c) => c.cid).join("\0"), [feed]);
+    useEffect(() => {
+      if (feedCidKey.length === 0) return;
+      refreshHandoffs();
+    }, [feedCidKey, refreshHandoffs]);
+
+    useInterval(
+      refreshHandoffs,
+      Math.max(1000, Math.min(intervalMs, 2000)),
+      expandedPanel === RunningPanel.Handoffs,
+    );
+
+    // Handoff reply transitions can be written by an MCP subprocess without a
+    // topology-route event. Refetch on route events, feed changes, and while
+    // the handoff panel is visible so the operator pane reflects replied state.
     useEffect(() => {
       if (!eventBus) return;
       const roles = topology?.roles.map((r) => r.name) ?? [];
       if (roles.length === 0) return;
-      const hasMethod = "getHandoffs" in provider;
-      if (!hasMethod) return;
-      const p = provider as {
-        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
-      };
+      if (!isHandoffProvider(provider)) return;
       const handler = () => {
-        debugLog("eventBus", "handoff event — refreshing handoffs");
-        void p
-          .getHandoffs({ limit: 200 })
-          .then((all) => {
-            const cutoff =
-              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-            setHandoffs(all.filter((h) => h.createdAt >= cutoff));
-          })
-          .catch(() => {
-            /* handoff refresh errors are non-fatal — the next bus event will retry */
-          });
+        debugLog("eventBus", "handoff event - refreshing handoffs");
+        refreshHandoffs();
       };
       for (const role of roles) {
         eventBus.subscribe(role, handler);
@@ -473,11 +615,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           eventBus.unsubscribe(role, handler);
         }
       };
-    }, [eventBus, topology, provider, sessionStartedAt]);
-
-    // Session scoping is handled server-side (provider.setSessionScope).
-    // The feed already contains only this session's contributions.
-    const feed = contributions ?? [];
+    }, [eventBus, topology, provider, refreshHandoffs]);
 
     debugLog("feed.fetch", `total=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`);
 
@@ -552,9 +690,46 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         confirmQuit,
         promptMode,
         promptText,
+        cmdMode: cmdState.mode,
+        cmdText: cmdState.text,
+        filterQuery,
       }),
-      [expandedPanel, zoomLevel, showHelp, showVfs, confirmQuit, promptMode, promptText],
+      [
+        expandedPanel,
+        zoomLevel,
+        showHelp,
+        showVfs,
+        confirmQuit,
+        promptMode,
+        promptText,
+        cmdState.mode,
+        cmdState.text,
+        filterQuery,
+      ],
     );
+
+    // ─── C2 goto dispatch table ───
+    // Each goto pushes a panel page onto the PagesStore (#303). The sync
+    // effect above translates the new top page back into expandedPanel /
+    // zoomLevel — keeping render output unchanged but routing navigation
+    // through the unified k9s-style stack.
+    const gotoDispatch = useMemo<Record<string, () => void>>(
+      () => ({
+        agents: () => pagesStore.push({ kind: "panel", params: { panel: "agents" } }),
+        dag: () => pagesStore.push({ kind: "panel", params: { panel: "dag" } }),
+        sessions: () => pagesStore.push({ kind: "panel", params: { panel: "sessions" } }),
+        tasks: () => pagesStore.push({ kind: "panel", params: { panel: "tasks" } }),
+        reviews: () => pagesStore.push({ kind: "panel", params: { panel: "reviews" } }),
+        quit: () => onQuit(),
+      }),
+      [pagesStore, onQuit],
+    );
+
+    // Tab-complete suggestions for goto mode.
+    const gotoSuggestions = useMemo<readonly string[]>(() => {
+      if (cmdState.mode !== "goto") return [];
+      return matchAliases(aliases, cmdState.text);
+    }, [cmdState.mode, cmdState.text, aliases]);
 
     const keyboardActions: RunningKeyboardActions = useMemo(
       () => ({
@@ -562,11 +737,31 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           const next = expandPanelTransition(expandedPanel, zoomLevel, panel);
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          // Mirror the panel into PagesStore so HintBar / breadcrumb stay
+          // in sync with the visible panel. Shortcut keys (1-4) are
+          // switches, not drill-down — normalize the stack by collapsing
+          // ALL trailing `panel` pages first so a prior goto history like
+          // `:agents :sessions` followed by shortcut `3` doesn't leave
+          // `panel:agents` underneath. Without this normalization, the
+          // sync effect would later restore the stale panel when the
+          // shortcut-selected page is popped (#309 round 10 fix).
+          while (pagesStore.top()?.kind === "panel") pagesStore.pop();
+          const panelName = RUNNING_PANEL_PARAM[panel];
+          if (next.expandedPanel !== null && panelName) {
+            pagesStore.push({ kind: "panel", params: { panel: panelName } });
+          }
+          // If next.expandedPanel === null we already popped to clean state.
+          // If panelName is undefined (Trace/Handoffs), we also stop at clean
+          // state — HintBar falls back to running hints; restore the panel
+          // mapping when those routes land in PANEL_HINTS.
         },
         collapsePanel: () => {
           const next = collapsePanel();
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
+          if (pagesStore.top()?.kind === "panel") {
+            pagesStore.pop();
+          }
         },
         toggleFullscreen: () => {
           const next = toggleFullscreenTransition(expandedPanel, zoomLevel);
@@ -682,6 +877,71 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         hasSendToAgent: !!onSendToAgent,
         feedLength: feed.length,
         hasAskUser: !!pendingAskUser,
+        // C2 cmd-mode (#302)
+        enterGotoMode: () => setCmdState(enterGoto),
+        enterFilterMode: () => {
+          setCmdState(enterFilter);
+          setFilterQuery("");
+        },
+        cmdAppendChar: (ch: string) =>
+          setCmdState((s) => {
+            const next = cmdAppend(s, ch);
+            if (next.mode === "filter") setFilterQuery(next.text);
+            return next;
+          }),
+        cmdDeleteChar: () =>
+          setCmdState((s) => {
+            const next = cmdDelete(s);
+            if (next.mode === "filter") setFilterQuery(next.text);
+            return next;
+          }),
+        cmdTabComplete: () =>
+          setCmdState((s) => {
+            if (s.mode !== "goto") return s;
+            const matches = matchAliases(aliases, s.text);
+            if (matches.length === 0) return s;
+            if (matches.length === 1) {
+              const only = matches[0];
+              if (!only) return s;
+              return { ...s, text: `${only} `, suggestionIndex: 0 };
+            }
+            return cycleSuggestion(s, matches.length);
+          }),
+        cmdSubmit: () =>
+          setCmdState((s) => {
+            if (s.mode === "goto") {
+              const trimmed = s.text.trim();
+              if (!trimmed) return exitCmdMode(s);
+              const r = resolveAlias(aliases, trimmed);
+              if (r.kind === "ok") {
+                const dispatch = gotoDispatch[r.command];
+                if (dispatch) dispatch();
+                else flash(`:${trimmed}: unknown command "${r.command}"`);
+              } else if (r.kind === "miss") {
+                flash(`:${r.key}: unknown alias`);
+              } else if (r.kind === "cycle") {
+                flash(`alias cycle: ${r.chain.join(" → ")}`);
+              } else if (r.kind === "depth") {
+                flash(`alias chain too deep (>${r.chain.length}): ${r.chain.join(" → ")}`);
+              }
+              return exitCmdMode(s);
+            }
+            // filter mode: Enter exits prompt; filterQuery retained
+            return exitCmdMode(s);
+          }),
+        cmdClearText: () => setCmdState((s) => ({ ...s, text: "" })),
+        cmdExit: () => {
+          // Esc on already-empty filter prompt also clears any retained filter.
+          // Read from refs (synchronous) so a same-tick burst — e.g. paste of
+          // `/foo<Esc><Esc>` — sees the latest cmdState the router applied,
+          // not the last-committed React state.
+          const live = cmdStateRef.current;
+          if (live.mode === "filter" && live.text === "" && filterQueryRef.current !== "") {
+            setFilterQuery("");
+          }
+          setCmdState(exitCmdMode);
+        },
+        clearFilterQuery: () => setFilterQuery(""),
       }),
       [
         expandedPanel,
@@ -699,6 +959,19 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         pendingAskUser,
         topology,
         dialog,
+        aliases,
+        gotoDispatch,
+        flash,
+        // pagesStore is stable across renders (returned by usePagesStoreFromContext);
+        // listing it satisfies biome's useExhaustiveDependencies for the
+        // round-7 expandPanel/collapsePanel push/pop/replace calls.
+        pagesStore,
+        // cmdState.mode/.text and filterQuery intentionally NOT listed:
+        // cmdExit reads cmdStateRef/filterQueryRef synchronously, all other
+        // cmd-mode actions go through setCmdState((s) => ...) which sees the
+        // latest value via React's reducer form.
+        setCmdState,
+        setFilterQuery,
       ],
     );
 
@@ -725,9 +998,40 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               return;
             }
           }
-          routeRunningKey(key, keyboardState, keyboardActions);
+
+          // (#303) PagesStore esc-pop short-circuit. When a panel page sits
+          // above the running root (depth > 1) and no other dismissal layer
+          // is active, esc pops the stack — the sync effect then mirrors the
+          // new top back into expandedPanel/zoomLevel. Layered dismissal
+          // (cmd-mode, prompt-mode, help, VFS, filter) takes priority and is
+          // handled by the existing routeRunningKey path (which we fall
+          // through to when the guard fails).
+          if (
+            key.name === "escape" &&
+            pagesStore.depth() > 1 &&
+            !confirmQuit &&
+            cmdStateRef.current.mode === "none" &&
+            !promptMode &&
+            !showHelp &&
+            filterQueryRef.current === ""
+          ) {
+            pagesStore.pop();
+            return;
+          }
+
+          // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
+          // because keyboardState's useMemo only re-runs after React commits,
+          // and a burst of keys arriving in a single tick would otherwise see
+          // stale state. See cmdState refs above for the race rationale.
+          const liveState: RunningKeyboardState = {
+            ...keyboardState,
+            cmdMode: cmdStateRef.current.mode,
+            cmdText: cmdStateRef.current.text,
+            filterQuery: filterQueryRef.current,
+          };
+          routeRunningKey(key, liveState, keyboardActions);
         },
-        [showVfs, keyboardState, keyboardActions],
+        [showVfs, keyboardState, keyboardActions, pagesStore, confirmQuit, promptMode, showHelp],
       ),
     );
 
@@ -855,6 +1159,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             traceScrollOffset,
             sessionStartedAt,
             handoffs,
+            filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -925,6 +1230,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 traceScrollOffset,
                 sessionStartedAt,
                 handoffs,
+                filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
               })}
             </box>
           </box>
@@ -937,6 +1243,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             promptText,
             promptTarget,
             activeRoles,
+            cmdState,
+            gotoSuggestions,
+            flashError,
           )}
           {renderStatusBar(
             expandedPanel,
@@ -988,6 +1297,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptText,
           promptTarget,
           activeRoles,
+          cmdState,
+          gotoSuggestions,
+          flashError,
         )}
 
         {/* Help overlay */}
@@ -1244,6 +1556,8 @@ interface PanelRenderContext {
   readonly traceScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
+  /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
+  readonly filterText?: string | undefined;
 }
 
 /** Render the content of an expanded panel. */
@@ -1268,6 +1582,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
+          filterText={ctx.filterText}
         />
       );
 
@@ -1278,6 +1593,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
+          filterText={ctx.filterText}
         />
       );
 
@@ -1322,6 +1638,29 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           handoffs={ctx.handoffs}
         />
       );
+
+    case RunningPanel.Sessions:
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>
+            Sessions view (stub) — wires to acp_session kind in follow-up
+          </text>
+        </box>
+      );
+
+    case RunningPanel.Tasks:
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>Tasks view (coming in C3/C4)</text>
+        </box>
+      );
+
+    case RunningPanel.Reviews:
+      return (
+        <box paddingX={2}>
+          <text color={theme.secondary}>Reviews view (coming in C3/C4)</text>
+        </box>
+      );
   }
 }
 
@@ -1335,6 +1674,9 @@ function renderBottomChrome(
   promptText: string,
   promptTarget: number,
   activeRoles: readonly string[] | undefined,
+  cmdState: CmdModeState,
+  gotoSuggestions: readonly string[],
+  flashError: string | null,
 ): React.ReactNode {
   return (
     <>
@@ -1397,7 +1739,7 @@ function renderBottomChrome(
         />
       ) : null}
 
-      {/* Prompt input */}
+      {/* Prompt input (legacy message-send mode) */}
       {promptMode ? (
         <box flexDirection="row" paddingX={2}>
           <text color={theme.focus}>
@@ -1410,6 +1752,15 @@ function renderBottomChrome(
           <text color={theme.secondary}> Tab:switch role Enter:send Esc:cancel</text>
         </box>
       ) : null}
+
+      {/* C2 cmd-mode (#302): goto/filter prompt + flash error */}
+      <Prompt
+        mode={cmdState.mode}
+        query={cmdState.text}
+        suggestions={gotoSuggestions}
+        suggestionIndex={cmdState.suggestionIndex}
+      />
+      <FlashBar message={flashError} />
     </>
   );
 }
@@ -1433,7 +1784,9 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> j/k Navigate (feed or trace agent list)</text>
       <text color={theme.text}> J/K Scroll trace output (when trace open)</text>
       <text color={theme.text}> G/g Jump to bottom/top of trace</text>
-      <text color={theme.text}> m / : Send message to agent</text>
+      <text color={theme.text}> m Send message to agent</text>
+      <text color={theme.text}> : Goto / command (alias chain)</text>
+      <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>
       <text color={theme.text}> Ctrl+A Advanced boardroom</text>

@@ -27,6 +27,7 @@ import { registerPlanTools } from "./tools/plans.js";
 import { registerQueryTools } from "./tools/queries.js";
 import { registerSessionTools } from "./tools/session.js";
 import { registerStopTools } from "./tools/stop.js";
+import { registerTrajectoryTools } from "./tools/trajectory.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 
 // ---------------------------------------------------------------------------
@@ -103,7 +104,10 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
   }
 
   if (preset?.claims !== false) registerClaimTools(server, deps);
-  if (preset?.queries !== false) registerQueryTools(server, deps);
+  if (preset?.queries !== false) {
+    registerQueryTools(server, deps);
+    registerTrajectoryTools(server, deps);
+  }
   if (preset?.workspace !== false) registerWorkspaceTools(server, deps);
   if (preset?.stop !== false) registerStopTools(server, deps);
   if (preset?.bounties !== false) registerBountyTools(server, deps);

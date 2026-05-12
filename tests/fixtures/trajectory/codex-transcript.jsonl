@@ -1,0 +1,4 @@
+{"type":"agent_start","session_id":"sess-1","agent_id":"codex-1","timestamp":"2026-05-05T00:00:00Z"}
+{"type":"tool_call","call_id":"call-1","tool_name":"apply_patch","input":{"file_path":"src/app.ts"}}
+{"type":"tool_result","call_id":"call-1","output":"ok","status":"completed"}
+{"type":"assistant_message","message":"patched"}

@@ -10,53 +10,31 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { computeContributionContentHash } from "../../../src/core/content-dedup.js";
 import { toManifest } from "../../../src/core/manifest.js";
-import { type Contribution, RelationType } from "../../../src/core/models.js";
+import type { Contribution } from "../../../src/core/models.js";
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
-import { makeContribution } from "../../../src/core/test-helpers.js";
+import { makeContribution, makeRelation } from "../../../src/core/test-helpers.js";
 import type { WriteOptions, WriteResult } from "../../../src/nexus/client.js";
 import { NexusConflictError } from "../../../src/nexus/errors.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 import {
+  contributionAgentCreatedAtIndexPath,
   contributionContentHashIndexPath,
+  contributionCreatedAtIndexPath,
   contributionPath,
   ftsIndexPath,
   relationIndexPath,
   tagIndexPath,
 } from "../../../src/nexus/vfs-paths.js";
 
-interface RecordedBatchFile {
-  readonly path: string;
-  readonly content: Uint8Array;
-  readonly opts?: WriteOptions | undefined;
-}
+class CountingNexusClient extends MockNexusClient {
+  manifestReadCount = 0;
 
-class RecordingBatchClient extends MockNexusClient {
-  readonly writeCalls: string[] = [];
-  readonly writeBatchCalls: RecordedBatchFile[][] = [];
-
-  override async write(
-    path: string,
-    content: Uint8Array,
-    opts?: WriteOptions,
-  ): Promise<WriteResult> {
-    this.writeCalls.push(path);
-    return super.write(path, content, opts);
-  }
-
-  async writeBatch(files: readonly RecordedBatchFile[]): Promise<readonly WriteResult[]> {
-    this.writeBatchCalls.push(
-      files.map((file) => ({
-        path: file.path,
-        content: new Uint8Array(file.content),
-        ...(file.opts !== undefined ? { opts: file.opts } : {}),
-      })),
-    );
-    const results: WriteResult[] = [];
-    for (const file of files) {
-      results.push(await super.write(file.path, file.content, file.opts));
+  override async read(path: string): Promise<Uint8Array | undefined> {
+    if (path.includes("/contributions/") && path.endsWith(".json")) {
+      this.manifestReadCount += 1;
     }
-    return results;
+    return super.read(path);
   }
 }
 
@@ -207,6 +185,24 @@ describe("NexusContributionStore adapter-specific", () => {
     tinyStore.close();
   });
 
+  test("list supports newest-first ordering before applying limit", async () => {
+    const older = makeContribution({
+      summary: "older nexus contribution",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const newer = makeContribution({
+      summary: "newer nexus contribution",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    await store.putMany([newer, older]);
+
+    const desc = await store.list({ limit: 1, order: "created_at_desc" });
+    expect(desc.map((c) => c.cid)).toEqual([newer.cid]);
+
+    const asc = await store.list({ limit: 1 });
+    expect(asc.map((c) => c.cid)).toEqual([older.cid]);
+  });
+
   // -----------------------------------------------------------------------
   // Retry on network error
   // -----------------------------------------------------------------------
@@ -311,6 +307,61 @@ describe("NexusContributionStore adapter-specific", () => {
     expect(new Set(visibleCids).size).toBe(1);
   });
 
+  test("put removes loser record files when content-hash commit races", async () => {
+    const relation = makeRelation();
+    const winner = makeContribution({
+      summary: "content hash race cleanup",
+      createdAt: "2026-01-01T00:00:00Z",
+      tags: ["cleanup"],
+      relations: [relation],
+    });
+    const loser = makeContribution({
+      summary: "content hash race cleanup",
+      createdAt: "2026-01-01T00:00:01Z",
+      tags: ["cleanup"],
+      relations: [relation],
+    });
+    const contentHash = computeContributionContentHash(loser);
+    expect(computeContributionContentHash(winner)).toBe(contentHash);
+    expect(winner.cid).not.toBe(loser.cid);
+
+    const contentHashPath = contributionContentHashIndexPath("test-zone", contentHash);
+    const raceClient = new ContentHashCommitConflictClient("test-zone", contentHashPath, winner);
+    const raceStore = new NexusContributionStore({
+      client: raceClient,
+      zoneId: "test-zone",
+      retryMaxAttempts: 1,
+    });
+
+    const result = await raceStore.put(loser);
+
+    expect(result.cid).toBe(winner.cid);
+    expect(await raceClient.read(contributionPath("test-zone", loser.cid))).toBeUndefined();
+    expect(await raceClient.read(ftsIndexPath("test-zone", loser.cid))).toBeUndefined();
+    expect(await raceClient.read(tagIndexPath("test-zone", "cleanup", loser.cid))).toBeUndefined();
+    expect(
+      await raceClient.read(relationIndexPath("test-zone", relation.targetCid, loser.cid)),
+    ).toBeUndefined();
+    expect(
+      await raceClient.read(
+        contributionCreatedAtIndexPath("test-zone", loser.createdAt, loser.cid),
+      ),
+    ).toBeUndefined();
+    expect(
+      await raceClient.read(
+        contributionAgentCreatedAtIndexPath(
+          "test-zone",
+          loser.agent.agentId,
+          loser.createdAt,
+          loser.cid,
+        ),
+      ),
+    ).toBeUndefined();
+
+    raceStore.close();
+    await raceClient.close();
+  });
+
   test("put resumes an abandoned repair marker for the same contribution", async () => {
     const c = makeContribution({ summary: "resume repair marker" });
     const contentHash = computeContributionContentHash(c);
@@ -382,80 +433,6 @@ describe("NexusContributionStore adapter-specific", () => {
     expect((await store.search("finish")).map((entry) => entry.cid)).toContain(c.cid);
   });
 
-  test("put writes manifest and secondary indexes in one batch", async () => {
-    const batchClient = new RecordingBatchClient();
-    const batchStore = new NexusContributionStore({
-      client: batchClient,
-      zoneId: "batch-zone",
-      retryMaxAttempts: 1,
-    });
-    const targetCid = `blake3:${"a".repeat(64)}`;
-    const c = makeContribution({
-      summary: "batch contribution record",
-      description: "batch indexed text",
-      relations: [{ targetCid, relationType: RelationType.DerivesFrom }],
-      tags: ["alpha", "beta"],
-    });
-    const expectedRecordPaths = [
-      contributionPath("batch-zone", c.cid),
-      relationIndexPath("batch-zone", targetCid, c.cid),
-      tagIndexPath("batch-zone", "alpha", c.cid),
-      tagIndexPath("batch-zone", "beta", c.cid),
-      ftsIndexPath("batch-zone", c.cid),
-    ].sort();
-
-    await batchStore.put(c);
-
-    const firstBatch = batchClient.writeBatchCalls.at(0);
-    if (firstBatch === undefined) {
-      throw new Error("expected contribution record to be written with writeBatch");
-    }
-    expect(batchClient.writeBatchCalls).toHaveLength(1);
-    expect(firstBatch.map((file) => file.path).sort()).toEqual(expectedRecordPaths);
-    for (const path of expectedRecordPaths) {
-      expect(batchClient.writeCalls).not.toContain(path);
-    }
-
-    batchStore.close();
-    await batchClient.close();
-  });
-
-  test("put removes loser record files when content-hash commit races", async () => {
-    const winner = makeContribution({
-      summary: "same logical payload",
-      tags: ["race"],
-      createdAt: "2026-01-01T00:00:00Z",
-    });
-    const loser = makeContribution({
-      summary: "same logical payload",
-      tags: ["race"],
-      createdAt: "2026-01-02T00:00:00Z",
-    });
-    const contentHash = computeContributionContentHash(loser);
-    expect(computeContributionContentHash(winner)).toBe(contentHash);
-    expect(winner.cid).not.toBe(loser.cid);
-
-    const raceClient = new ContentHashCommitConflictClient(
-      "race-zone",
-      contributionContentHashIndexPath("race-zone", contentHash),
-      winner,
-    );
-    const raceStore = new NexusContributionStore({
-      client: raceClient,
-      zoneId: "race-zone",
-      retryMaxAttempts: 1,
-    });
-
-    const result = await raceStore.put(loser);
-
-    expect(result.cid).toBe(winner.cid);
-    expect(await raceStore.get(loser.cid)).toBeUndefined();
-    expect((await raceStore.list()).map((entry) => entry.cid)).toEqual([winner.cid]);
-
-    raceStore.close();
-    await raceClient.close();
-  });
-
   test("getByContentHash ignores committed incomplete manifest records", async () => {
     const c = makeContribution({ summary: "repair content hash lookup", tags: ["lookup"] });
     const contentHash = computeContributionContentHash(c);
@@ -505,5 +482,62 @@ describe("NexusContributionStore adapter-specific", () => {
 
   test("storeIdentity includes zone", () => {
     expect(store.storeIdentity).toBe("nexus:test-zone:contributions");
+  });
+
+  test("session-scoped storeIdentity includes session", () => {
+    const sessionStore = new NexusContributionStore({
+      client,
+      zoneId: "test-zone",
+      sessionId: "session-a",
+      retryMaxAttempts: 1,
+    });
+
+    expect(sessionStore.storeIdentity).toBe("nexus:test-zone:sessions:session-a:contributions");
+
+    sessionStore.close();
+  });
+
+  test("countSince backfills count indexes once, then avoids contribution manifest reads", async () => {
+    const countingClient = new CountingNexusClient();
+    const writeStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const recent = makeContribution({
+      summary: "recent",
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    const old = makeContribution({
+      summary: "old",
+      createdAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    await writeStore.putMany([recent, old]);
+    writeStore.close();
+
+    const freshStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const query = {
+      agentId: "agent-a",
+      since: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+
+    const count = await freshStore.countSince(query);
+
+    expect(count).toBe(1);
+    expect(countingClient.manifestReadCount).toBeGreaterThan(0);
+
+    countingClient.manifestReadCount = 0;
+    await expect(freshStore.countSince(query)).resolves.toBe(1);
+    expect(countingClient.manifestReadCount).toBe(0);
+    expect(await countingClient.read(contributionPath("count-zone", recent.cid))).toBeDefined();
+
+    freshStore.close();
+    await countingClient.close();
   });
 });

@@ -13,7 +13,16 @@ import { join } from "node:path";
 
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
-import type { McpDeps } from "./deps.js";
+import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { toOperationDeps } from "./operation-adapter.js";
+import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
+
+function requireWorkspace(runtime: LocalRuntime): McpDeps["workspace"] {
+  if (runtime.workspace === undefined) {
+    throw new Error("Expected test runtime to provide a workspace");
+  }
+  return runtime.workspace;
+}
 
 describe("MCP deps parity with LocalRuntime", () => {
   let tempDir: string;
@@ -49,7 +58,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       bountyStore: runtime.bountyStore,
       cas: runtime.cas,
       frontier: runtime.frontier,
-      workspace: runtime.workspace!,
+      workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
       workspaceBoundary: runtime.groveRoot,
@@ -70,7 +79,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       bountyStore: runtime.bountyStore,
       cas: runtime.cas,
       frontier: runtime.frontier,
-      workspace: runtime.workspace!,
+      workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
       workspaceBoundary: runtime.groveRoot,
@@ -80,5 +89,36 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+  });
+
+  test("toOperationDeps forwards sessionOwnerRef", () => {
+    const ownerRef = { kind: "session" as const, id: "s1", uid: "u1" };
+    const deps: McpDeps = {
+      contributionStore: runtime.contributionStore,
+      claimStore: runtime.claimStore,
+      bountyStore: runtime.bountyStore,
+      cas: runtime.cas,
+      frontier: runtime.frontier,
+      workspace: requireWorkspace(runtime),
+      workspaceBoundary: runtime.groveRoot,
+      goalSessionStore: runtime.goalSessionStore,
+      sessionOwnerRef: ownerRef,
+      watchHub: new WatchHub(),
+    };
+
+    expect(toOperationDeps(deps).sessionOwnerRef).toEqual(ownerRef);
+  });
+
+  test("sessionToOwnerRef derives owner refs from session metadata", () => {
+    expect(sessionToOwnerRef({ id: "nexus-session", uid: "stable-uid" })).toEqual({
+      kind: "session",
+      id: "nexus-session",
+      uid: "stable-uid",
+    });
+    expect(sessionToOwnerRef(undefined)).toBeUndefined();
+  });
+
+  test("HTTP MCP stale-scope mutation guard covers session deletion", () => {
+    expect(GOAL_SESSION_MUTATION_METHODS).toContain("deleteSession");
   });
 });

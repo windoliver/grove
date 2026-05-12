@@ -6,6 +6,7 @@
  */
 
 import type { GroveContract } from "./contract.js";
+import type { DeletionAuditEvent, SessionFinalizer } from "./lifecycle-metadata.js";
 import type { LoopStopStatus } from "./loop-runner.js";
 import type { AgentTopology } from "./topology.js";
 
@@ -31,10 +32,14 @@ export type SessionStatus = "pending" | "active" | "completed" | "cancelled" | "
 /** A session instance within a grove. */
 export interface Session {
   readonly id: string;
+  readonly uid: string;
   readonly goal?: string | undefined;
   readonly presetName?: string | undefined;
   readonly status: SessionStatus;
   readonly createdAt: string;
+  readonly finalizers: readonly SessionFinalizer[];
+  readonly deletionTimestamp?: string | undefined;
+  readonly deletionAudit?: readonly DeletionAuditEvent[] | undefined;
   readonly completedAt?: string | undefined;
   readonly stopReason?: string | undefined;
   /** Machine-readable final loop status for operator UI and automation. */
@@ -84,6 +89,25 @@ export interface SessionQuery {
   readonly includeArchived?: boolean | undefined;
 }
 
+export interface SessionDeleteOptions {
+  readonly force?: boolean | undefined;
+  readonly actor?: string | undefined;
+}
+
+export interface SessionDeleteBlocker {
+  readonly finalizer: SessionFinalizer;
+  readonly message: string;
+}
+
+export interface SessionDeleteResult {
+  readonly sessionId: string;
+  readonly deleted: boolean;
+  readonly forced: boolean;
+  readonly blockers: readonly SessionDeleteBlocker[];
+  readonly warning?: string | undefined;
+  readonly cleanupErrors?: readonly string[] | undefined;
+}
+
 /**
  * Session store interface — persists session metadata.
  *
@@ -104,6 +128,10 @@ export interface SessionStore {
 
   /** List sessions with optional filters, ordered by creation time descending. */
   listSessions(query?: SessionQuery): Promise<readonly Session[]>;
+
+  deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult>;
+
+  listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]>;
 
   /** Archive a session, setting its completedAt timestamp. */
   archiveSession(id: string): Promise<void>;

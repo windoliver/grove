@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { OutcomeRecord, OutcomeStore } from "../../src/core/outcome.js";
 import type { ContributionQuery, ContributionStore } from "../../src/core/store.js";
+import { makeContribution } from "../../src/core/test-helpers.js";
+import { InMemoryContributionStore } from "../../src/core/testing.js";
 import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
 import {
@@ -478,6 +481,145 @@ describe("GET /api/contributions", () => {
     const data = (await res.json()) as readonly unknown[];
     expect(data).toHaveLength(1);
     expect(unboundedListCalls).toBe(0);
+  });
+
+  test("outcome plus contribution filters page outcomes instead of scanning with an unbounded list", async () => {
+    const created: { cid: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await ctx.app.request("/api/contributions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify(
+          validManifestBody({
+            kind: i === 2 ? "work" : "review",
+            summary: `Outcome-filtered review ${i}`,
+            createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+          }),
+        ),
+      });
+      expect(res.status).toBe(201);
+      created.push((await res.json()) as { cid: string });
+    }
+
+    for (const contribution of created) {
+      await ctx.outcomeStore.set(contribution.cid, { status: "accepted", evaluatedBy: "reviewer" });
+    }
+
+    let unboundedOutcomeListCalls = 0;
+    const guardedOutcomes = new Proxy(ctx.outcomeStore, {
+      get(target, prop, receiver) {
+        if (prop === "list") {
+          return (query?: Parameters<OutcomeStore["list"]>[0]) => {
+            if (query?.limit === undefined) unboundedOutcomeListCalls++;
+            return target.list(query);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof value === "function") return value.bind(target);
+        return value;
+      },
+    }) as OutcomeStore;
+
+    const app = createApp(
+      { ...ctx.deps, outcomeStore: guardedOutcomes },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const res = await app.request("/api/contributions?outcome=accepted&kind=review&limit=1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Total-Count")).toBe("2");
+    const data = (await res.json()) as readonly unknown[];
+    expect(data).toHaveLength(1);
+    expect(unboundedOutcomeListCalls).toBe(0);
+  });
+
+  test("outcome plus contribution filters stops after the requested page is found", async () => {
+    const contributions = Array.from({ length: 150 }, (_, i) =>
+      makeContribution({
+        kind: "review",
+        summary: `Bounded outcome-filter scan ${i}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+      }),
+    );
+    const store = new InMemoryContributionStore(contributions);
+    const listQueries: ContributionQuery[] = [];
+    const guardedStore = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop === "list") {
+          return (query?: ContributionQuery) => {
+            listQueries.push(query ?? {});
+            return target.list(query);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof value === "function") return value.bind(target);
+        return value;
+      },
+    }) as ContributionStore;
+
+    const outcomeRecords = contributions.map(
+      (contribution): OutcomeRecord => ({
+        cid: contribution.cid,
+        status: "accepted",
+        evaluatedAt: "2026-01-01T00:00:00.000Z",
+        evaluatedBy: "reviewer",
+      }),
+    );
+    let outcomeListCalls = 0;
+    const getBatchCalls: string[][] = [];
+    const outcomeStore: OutcomeStore = {
+      set: async () => {
+        throw new Error("not used");
+      },
+      get: async (cid) => outcomeRecords.find((record) => record.cid === cid),
+      getBatch: async (cids) => {
+        getBatchCalls.push([...cids]);
+        return new Map(
+          cids.flatMap((cid) => {
+            const record = outcomeRecords.find((entry) => entry.cid === cid);
+            return record === undefined ? [] : [[cid, record]];
+          }),
+        );
+      },
+      list: async (query) => {
+        outcomeListCalls++;
+        const offset = query?.offset ?? 0;
+        const limit = query?.limit ?? outcomeRecords.length;
+        return outcomeRecords.slice(offset, offset + limit);
+      },
+      getStats: async () => ({
+        total: outcomeRecords.length,
+        accepted: outcomeRecords.length,
+        rejected: 0,
+        crashed: 0,
+        invalidated: 0,
+        acceptanceRate: 1,
+      }),
+      close: () => undefined,
+    };
+
+    const app = createApp(
+      { ...ctx.deps, contributionStore: guardedStore, outcomeStore },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const res = await app.request("/api/contributions?outcome=accepted&kind=review&limit=1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as readonly { cid: string }[];
+    expect(data).toHaveLength(1);
+    expect(outcomeListCalls).toBe(0);
+    expect(getBatchCalls).toHaveLength(1);
+    expect(getBatchCalls[0]).toHaveLength(100);
+    expect(listQueries).toEqual([
+      { kind: "review", limit: 100, offset: 0, order: "created_at_desc" },
+    ]);
+    expect(res.headers.get("X-Total-Count")).toBeNull();
   });
 });
 

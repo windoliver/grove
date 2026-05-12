@@ -2,8 +2,68 @@ import { describe, expect, test } from "bun:test";
 import { Informer, InformerFactory } from "./informer.js";
 import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
-import type { WatchEntity } from "./watch-events.js";
+import type { WatchEntity, WatchKind } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
+import type { WatchStream } from "./watch-stream.js";
+
+function makeFakeStream(): {
+  stream: WatchStream;
+  emit: (e: WatchClientEvent) => Promise<void>;
+} {
+  let onEvent: ((e: WatchClientEvent) => void | Promise<void>) | null = null;
+  const stream: WatchStream = {
+    run: async (opts) => {
+      onEvent = opts.onEvent;
+      // Block until aborted; tests trigger emit() externally.
+      await new Promise<void>((resolve) => {
+        opts.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      onEvent = null;
+    },
+  };
+  return {
+    stream,
+    emit: async (e) => {
+      if (!onEvent) throw new Error("stream not running");
+      await onEvent(e);
+    },
+  };
+}
+
+function deltaEvent(
+  op: "ADDED" | "MODIFIED" | "DELETED",
+  id: string,
+  rv: string,
+): WatchClientEvent {
+  return {
+    op,
+    rv: BigInt(rv),
+    kind: "Contribution",
+    entity: {
+      kind: "Contribution",
+      namespace: "default",
+      id,
+      spec: {
+        contributionKind: "code",
+        mode: "direct",
+        summary: id,
+        artifacts: {},
+        relations: [],
+        tags: [],
+      } as never,
+      status: {},
+      conditions: [],
+      observedGeneration: 0,
+      resourceVersion: rv,
+      metadata: { generation: 1 },
+    },
+  };
+}
+
+async function drainMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 // Minimal entity shapes (WatchClient passes them through as-is)
 const E_A: WatchEntity = {
@@ -92,6 +152,7 @@ describe("Informer hasSynced", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((_op, _entity) => {
       // Only called after RELIST_END; check synced at first delta
@@ -115,6 +176,7 @@ describe("Informer hasSynced", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     expect(informer.hasSynced()).toBe(false);
     await informer.run(ac.signal);
@@ -135,6 +197,7 @@ describe("Informer cache after initial sync", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const items = informer.list();
@@ -153,6 +216,7 @@ describe("Informer cache after initial sync", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     expect((informer.getById("cid-a") as { id: string } | undefined)?.id).toBe("cid-a");
@@ -178,6 +242,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -203,6 +268,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({
@@ -234,6 +300,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -285,6 +352,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -328,6 +396,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -371,6 +440,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({
@@ -419,6 +489,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -471,6 +542,7 @@ describe("Informer RELIST_ABORTED", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
 
@@ -502,6 +574,7 @@ describe("Informer multiple handlers", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       h1Events.push(`${op}:${(entity as { id: string }).id}`);
@@ -538,6 +611,7 @@ describe("Informer handler sees post-update cache", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       if (op === "ADDED") {
@@ -651,6 +725,7 @@ describe("Informer run() safety", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     // Start first run (will block waiting for list response)
     const firstRun = informer.run(ac.signal);
@@ -675,8 +750,12 @@ describe("Informer run() safety", () => {
           sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
           fetchAc,
         ),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        // minMs:1 (not 0) so the watch loop yields to setTimeout — needed because
+        // delta enqueue is sync (B2 queue), so the loop no longer blocks on the
+        // hung handler and would otherwise starve the test's setTimeout(20).
+        backoff: { minMs: 1, maxMs: 1, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler(async () => {
       // Never resolves on its own
@@ -706,6 +785,7 @@ describe("Informer run() safety", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac1),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac1.signal);
     // First run completed — second run must be accepted (not throw)
@@ -718,6 +798,7 @@ describe("Informer run() safety", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac2),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     // Different instance, but proves the _running flag resets after completion
     await expect(informer2.run(ac2.signal)).resolves.toBeUndefined();
@@ -739,6 +820,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       informer.addEventHandler(() => {
         throw new Error("handler boom");
@@ -763,6 +845,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       informer.addEventHandler(() => {
         throw new Error("noisy handler");
@@ -788,6 +871,7 @@ describe("Informer handler isolation", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     const unsubscribe = informer.addEventHandler((op, entity) => {
       received.push(`${op}:${(entity as { id: string }).id}`);
@@ -814,6 +898,7 @@ describe("Informer handler isolation", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     unsub = informer.addEventHandler((op, entity) => {
       const id = (entity as { id: string }).id;
@@ -844,6 +929,7 @@ describe("Informer handler isolation", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     unsub = informer.addEventHandler(() => {
       unsub?.(); // self-unsubscribe during first dispatch
@@ -868,6 +954,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       // Async handler that rejects — must not propagate as unhandled rejection
       informer.addEventHandler(async () => {
@@ -885,7 +972,11 @@ describe("Informer handler isolation", () => {
   test("slow async handler delays next event delivery (serialized fanout)", async () => {
     // WatchClient's per-event ordering guarantee extends through informer fanout:
     // the second event must not be delivered before the first handler settles.
+    // Use a separate fetchAc so the watch loop's auto-abort on second watch call
+    // does not abort the run signal — otherwise the in-flight drain would race
+    // against the abort and skip cid-a's handler before resolveFirst() fires.
     const ac = new AbortController();
+    const fetchAc = new AbortController();
     const order: string[] = [];
     let resolveFirst: (() => void) | undefined;
 
@@ -897,10 +988,14 @@ describe("Informer handler isolation", () => {
         fetch: makeFetch(
           { items: [], listResourceVersion: "5" },
           `${sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6")}${sse("ADDED", { rv: "7", kind: "Contribution", entity: E_B }, "7")}`,
-          ac,
+          fetchAc,
         ),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        // minMs:1 (not 0) so the watch loop yields to setTimeout — needed because
+        // delta enqueue is sync (B2 queue), so the loop no longer blocks on the
+        // hung handler and would otherwise starve the test's setTimeout(20).
+        backoff: { minMs: 1, maxMs: 1, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler(async (_op, entity) => {
       order.push(`enter:${(entity as { id: string }).id}`);
@@ -989,6 +1084,54 @@ describe("InformerFactory lifecycle", () => {
   });
 });
 
+// ─── InformerFactory queue config ─────────────────────────────────────────────
+
+describe("InformerFactory queue config", () => {
+  test("queueLimits override applies per kind", () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+      queueLimits: { AgentSession: 5 },
+    });
+    const c = factory.informerFor("Contribution");
+    const a = factory.informerFor("AgentSession");
+    expect(c.getQueueStats().limit).toBe(1000); // default
+    expect(a.getQueueStats().limit).toBe(5); // overridden
+  });
+
+  test("overflow on a factory-created informer triggers factory.relist(kind)", async () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+      queueLimits: { Contribution: 2 },
+    });
+    // Spy on relist by wrapping the bound method.
+    const relistCalls: WatchKind[] = [];
+    const origRelist = factory.relist.bind(factory);
+    factory.relist = async (kind?: WatchKind) => {
+      if (kind) relistCalls.push(kind);
+      return origRelist(kind);
+    };
+    const informer = factory.informerFor("Contribution");
+    // Drive overflow via the private enqueue path (cast through unknown).
+    const enq = (informer as unknown as { enqueue: (e: WatchClientEvent) => void }).enqueue.bind(
+      informer,
+    );
+    enq(deltaEvent("ADDED", "a", "1"));
+    enq(deltaEvent("ADDED", "b", "2"));
+    enq(deltaEvent("ADDED", "c", "3")); // overflow
+    // relist is async (microtask) since onOverflow does void this.relist(kind)
+    await drainMicrotasks();
+    expect(relistCalls).toEqual(["Contribution"]);
+    expect(informer.getQueueStats().overflows).toBe(1);
+    await factory.stopAll();
+  });
+});
+
 // ─── Cache immutability ───────────────────────────────────────────────────────
 
 describe("Informer cache immutability", () => {
@@ -1002,6 +1145,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
@@ -1027,6 +1171,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     for (const e of informer.list()) {
@@ -1044,6 +1189,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
@@ -1069,6 +1215,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a") as unknown as { spec: object; metadata: object };
@@ -1091,11 +1238,198 @@ test("Informer.addEventHandler forwards emittedAt via optional meta arg", async 
       });
     },
   };
-  const informer = new Informer<"Contribution">(stream as never);
+  const informer = new Informer<"Contribution">(stream as never, "Contribution");
   informer.addEventHandler((_op, _entity, meta) => {
     seenMeta.push(meta);
   });
   await informer.run(new AbortController().signal);
   expect(seenMeta.length).toBe(1);
   expect(seenMeta[0]?.emittedAt).toBe("2026-05-04T12:00:00.000Z");
+});
+
+describe("Informer queue — RV-coalescing", () => {
+  test("10000 events for same id → 1 applyEvent, peak depth 1", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    const handlerCalls: string[] = [];
+    informer.addEventHandler((op, entity) => {
+      handlerCalls.push(`${op}:${(entity as { resourceVersion: string }).resourceVersion}`);
+    });
+
+    // Burst all 10k emits synchronously: enqueue runs sync inside emit's body
+    // up to its first await, so the loop never yields to microtasks. This
+    // exercises pure coalescing — a single drain microtask runs after the loop,
+    // sees the queue has one entry (RV=10000 overwrote the rest), processes it.
+    // Awaiting per-iteration would let drain run between events and defeat coalescing.
+    let peakDepth = 0;
+    const emits: Array<Promise<void>> = [];
+    for (let i = 0; i < 10_000; i += 1) {
+      emits.push(emit(deltaEvent("MODIFIED", "same", String(i + 1))));
+      const d = informer.getQueueStats().depth;
+      if (d > peakDepth) peakDepth = d;
+    }
+    await Promise.all(emits);
+    await drainMicrotasks();
+
+    expect(peakDepth).toBe(1);
+    expect(handlerCalls).toEqual(["MODIFIED:10000"]);
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("ADDED then DELETED same id within burst → final state absent", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    await emit(deltaEvent("ADDED", "x", "1"));
+    await emit(deltaEvent("DELETED", "x", "2"));
+    await drainMicrotasks();
+
+    expect(informer.getById("x")).toBeUndefined();
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("DELETED then ADDED same id within burst → final state present (recreated)", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    await emit(deltaEvent("DELETED", "x", "1"));
+    await emit(deltaEvent("ADDED", "x", "2"));
+    await drainMicrotasks();
+
+    expect(
+      (informer.getById("x") as { resourceVersion: string } | undefined)?.resourceVersion,
+    ).toBe("2");
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("RELIST_BEGIN drains queued deltas BEFORE setting staging; RELIST_END atomic-replaces", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    // Queue 5 distinct deltas (sync prefix — they enqueue but drain microtask hasn't fired).
+    const promises: Array<Promise<void> | void> = [];
+    for (let i = 0; i < 5; i += 1) {
+      promises.push(emit(deltaEvent("ADDED", `delta-${i}`, String(i + 1))));
+    }
+    // Now emit RELIST_BEGIN — control event drains pending FIRST, then sets staging.
+    await emit({ op: "RELIST_BEGIN", rv: 100n, kind: "Contribution", entity: null });
+    await Promise.all(promises);
+
+    // After RELIST_BEGIN: deltas have been applied to store (they drained before staging set).
+    for (let i = 0; i < 5; i += 1) {
+      expect(informer.getById(`delta-${i}`)?.id).toBe(`delta-${i}`);
+    }
+
+    // Emit RELIST_END with no RELIST rows → empty snapshot atomically replaces store.
+    await emit({ op: "RELIST_END", rv: 100n, kind: "Contribution", entity: null });
+
+    // After RELIST_END: store cleared by atomic replace from empty staging.
+    for (let i = 0; i < 5; i += 1) {
+      expect(informer.getById(`delta-${i}`)).toBeUndefined();
+    }
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("getQueueStats: depth visible after sync-prefix enqueue, returns to 0 after drain", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution", { queueLimit: 100 });
+    const runPromise = informer.run(ac.signal);
+
+    expect(informer.getQueueStats()).toEqual({ depth: 0, limit: 100, overflows: 0 });
+
+    // Sync-prefix enqueue 50 distinct ids (drain microtask hasn't fired yet).
+    const promises: Array<Promise<void> | void> = [];
+    for (let i = 0; i < 50; i += 1) {
+      promises.push(emit(deltaEvent("ADDED", `id-${i}`, String(i + 1))));
+    }
+    expect(informer.getQueueStats().depth).toBe(50);
+    expect(informer.getQueueStats().limit).toBe(100);
+    expect(informer.getQueueStats().overflows).toBe(0);
+
+    await Promise.all(promises);
+    await drainMicrotasks();
+
+    expect(informer.getQueueStats().depth).toBe(0);
+
+    ac.abort();
+    await runPromise;
+  });
+});
+
+describe("Informer queue — overflow", () => {
+  test("queueLimit+1 distinct ids → overflows=1, queue cleared, onOverflow fired exactly once", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const overflowKinds: WatchKind[] = [];
+    const informer = new Informer(stream, "Contribution", {
+      queueLimit: 5,
+      onOverflow: (kind) => overflowKinds.push(kind),
+    });
+    const runPromise = informer.run(ac.signal);
+
+    // Sync-prefix burst: enqueue 5 distinct ids before yielding to microtasks,
+    // so depth is observed at exactly 5 before drain runs.
+    const emits: Array<Promise<void>> = [];
+    for (let i = 0; i < 5; i += 1) {
+      emits.push(emit(deltaEvent("ADDED", `id-${i}`, String(i + 1))));
+    }
+    expect(informer.getQueueStats().depth).toBe(5);
+    expect(informer.getQueueStats().overflows).toBe(0);
+
+    // 6th distinct id (still in same sync-prefix burst) — must overflow.
+    emits.push(emit(deltaEvent("ADDED", "id-overflow", "6")));
+    expect(informer.getQueueStats().depth).toBe(0);
+    expect(informer.getQueueStats().overflows).toBe(1);
+    expect(overflowKinds).toEqual(["Contribution"]);
+
+    await Promise.all(emits);
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("onOverflow callback that throws does not corrupt queue state", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution", {
+      queueLimit: 2,
+      onOverflow: () => {
+        throw new Error("boom");
+      },
+    });
+    const runPromise = informer.run(ac.signal);
+
+    // Sync-prefix burst: keep all 3 emits in same microtask boundary so the
+    // 3rd one observes depth=2 and triggers overflow.
+    const emits: Array<Promise<void>> = [];
+    emits.push(emit(deltaEvent("ADDED", "a", "1")));
+    emits.push(emit(deltaEvent("ADDED", "b", "2")));
+    emits.push(emit(deltaEvent("ADDED", "c", "3"))); // overflows; throws inside callback
+
+    expect(informer.getQueueStats().depth).toBe(0);
+    expect(informer.getQueueStats().overflows).toBe(1);
+
+    await Promise.all(emits);
+
+    ac.abort();
+    await runPromise;
+  });
 });

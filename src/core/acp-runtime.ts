@@ -1,4 +1,7 @@
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { Readable as NodeReadable, Writable as NodeWritable } from "node:stream";
 import {
@@ -82,6 +85,164 @@ function resolveAgentFromConfig(config: AgentConfig): string {
   return "codex";
 }
 
+/**
+ * Top-level scalar keys we copy from the user's `~/.codex/config.toml` into the
+ * isolated CODEX_HOME. Restrict to safe, well-known keys: model preferences
+ * and explicit grove-relevant settings. Anything else (notify hooks pointing
+ * at desktop-app binaries, history backends, telemetry endpoints, …) is
+ * dropped because we don't want grove-spawned children running side effects
+ * the user wired into their interactive Codex.
+ *
+ * Tables (`[mcp_servers.X]`, `[projects.X]`, `[plugins]`) are always dropped
+ * — grove provides its own MCP server set via `-c` flags in
+ * `buildAcpLaunchArgs`, and per-project trust is bypassed entirely because
+ * grove-spawned workspaces are ephemeral and explicitly approved by the
+ * `GROVE_ALLOW_ALL_PERMISSIONS=1` / sandbox config the launcher passes.
+ */
+// Model-selection keys (`model`, `model_provider`) are deliberately excluded:
+// users routinely bump `model` to a value codex-acp's bundled CLI hasn't
+// caught up to yet (e.g. "gpt-5.5"), and copying it into the isolated config
+// makes every grove-spawned codex agent fail at first prompt with
+// `invalid_request_error: The '<model>' model requires a newer version of
+// Codex`. Grove instead pins `DEFAULT_CODEX_MODEL` via `-c model=...` in
+// `buildAcpLaunchArgs` so agents always run a model the launched codex CLI
+// actually supports. Set GROVE_CODEX_MODEL to override.
+const SAFE_CODEX_TOP_LEVEL_KEYS = new Set([
+  "personality",
+  "model_reasoning_effort",
+  "model_reasoning_summaries",
+  "approvals_reviewer",
+]);
+
+/**
+ * Default model passed to codex when no role-level `model` and no
+ * `GROVE_CODEX_MODEL` override is set. Pinned to a value that codex-acp
+ * 0.11.1 (and the bundled CLI) accepts; bump as the supported floor moves.
+ */
+export const DEFAULT_CODEX_MODEL = "gpt-5.4";
+
+/**
+ * Match a top-level TOML scalar assignment: `key = ...` outside any table.
+ * We bail at the first `[` line to switch to "inside-section" mode.
+ */
+const TOML_TOP_LEVEL_KEY_LINE = /^([A-Za-z0-9_-]+)\s*=/;
+const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
+const CODEX_GENERATED_MCP_END = "# END GROVE GENERATED MCP";
+
+type McpServerConfig = NonNullable<AgentConfig["mcpServers"]>[number];
+
+function buildCodexMcpConfigBlock(server: McpServerConfig, env: NodeJS.ProcessEnv): string {
+  const name = server.name.trim();
+  const command = server.command.trim();
+  if (!name || !command) return "";
+
+  const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
+  const { envEntries, envVars } = codexMcpEnvConfigEntries(server, env);
+  const lines = [
+    CODEX_GENERATED_MCP_START,
+    `[${serverKey}]`,
+    `command = ${tomlString(command)}`,
+    `args = ${tomlStringArray(server.args ?? [])}`,
+  ];
+  if (server.startupTimeoutSec !== undefined) {
+    lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+  }
+  if (envVars.length > 0) {
+    lines.push(`env_vars = ${tomlStringArray(envVars)}`);
+  }
+  if (envEntries.length > 0) {
+    lines.push("", `[${serverKey}.env]`);
+    for (const [envName, envValue] of envEntries) {
+      lines.push(`${tomlKeySegment(envName)} = ${tomlString(envValue)}`);
+    }
+  }
+  lines.push(CODEX_GENERATED_MCP_END);
+  return lines.join("\n");
+}
+
+/**
+ * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Copies the
+ * user's auth.json (so login persists), then writes a minimal config.toml
+ * containing ONLY allow-listed top-level scalars. Drops everything else —
+ * `mcp_servers` (DNS-blocked enterprise endpoints crash codex's rmcp transport
+ * on bootstrap), `projects.*` trust (grove uses its own permission gating),
+ * `notify` hooks (would invoke desktop apps for grove turns), plugins.
+ */
+export async function prepareIsolatedCodexHome(
+  env: NodeJS.ProcessEnv,
+  mcpServers: AgentConfig["mcpServers"] = [],
+): Promise<string> {
+  const userHome = env.CODEX_HOME ?? join(env.HOME ?? "/tmp", ".codex");
+  const isolated = mkdtempSync(join(tmpdir(), "grove-codex-"));
+  // Copy auth.json if present so login persists.
+  const userAuth = join(userHome, "auth.json");
+  if (existsSync(userAuth)) {
+    try {
+      copyFileSync(userAuth, join(isolated, "auth.json"));
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const userConfigPath = join(userHome, "config.toml");
+  const safeLines: string[] = [];
+  if (existsSync(userConfigPath)) {
+    try {
+      const fs = await import("node:fs/promises");
+      const text = await fs.readFile(userConfigPath, "utf8");
+      let inSection = false;
+      let currentLineKey: string | null = null;
+      // Walk lines maintaining "are we inside a [table]" mode. Carry over
+      // continuation lines for the most-recent allow-listed top-level key so
+      // multi-line array values (e.g. `notify = [\n  "x",\n  "y"\n]`) are
+      // dropped wholesale rather than half-copied. Any unknown key — even a
+      // top-level scalar — is skipped.
+      for (const raw of text.split("\n")) {
+        const line = raw.trimEnd();
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+        if (trimmed.startsWith("[")) {
+          inSection = true;
+          currentLineKey = null;
+          continue;
+        }
+        if (inSection) continue;
+        const m = TOML_TOP_LEVEL_KEY_LINE.exec(trimmed);
+        if (m) {
+          const key = m[1];
+          if (key !== undefined && SAFE_CODEX_TOP_LEVEL_KEYS.has(key)) {
+            safeLines.push(line);
+            currentLineKey = key;
+          } else {
+            currentLineKey = null;
+          }
+        } else if (currentLineKey !== null) {
+          // Continuation of a previously-allowed key (e.g. multi-line array).
+          safeLines.push(line);
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (safeLines.length === 0) {
+    // Fallback: a minimal config codex will accept. Grove's `-c model=...`
+    // flag in `buildAcpLaunchArgs` overrides this when a model is configured.
+    safeLines.push('model = "gpt-5"');
+  }
+  const mcpBlocks = (mcpServers ?? [])
+    .map((server) => buildCodexMcpConfigBlock(server, env))
+    .filter((block) => block.length > 0);
+  const configSections = [...safeLines, ...mcpBlocks.map((block) => `\n${block}`)];
+  writeFileSync(join(isolated, "config.toml"), `${configSections.join("\n")}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  // Ensure plugins dir exists empty (some codex plugins bundle MCP servers).
+  mkdirSync(join(isolated, "plugins"), { recursive: true });
+  return isolated;
+}
+
 async function launchSubprocess(
   agent: string,
   cwd: string,
@@ -93,11 +254,55 @@ async function launchSubprocess(
   } = {},
 ): Promise<LaunchResult> {
   const launch = resolveAcpLaunch(agent);
-  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, env), {
-    cwd,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-  }) as ChildProcessByStdio<Writable, Readable, Readable>;
+
+  // Codex loads MCP servers from the user's ~/.codex/config.toml at startup.
+  // If any of those servers fail to connect (e.g., DNS-blocked enterprise MCP
+  // endpoints reachable only on VPN), the codex `rmcp` worker quits fatal,
+  // which closes the entire ACP stdio connection and breaks downstream sends.
+  // Isolate codex from the user MCP config by pointing CODEX_HOME at an
+  // ephemeral directory that contains only the user's auth (so login still
+  // works), safe scalar settings, and the current Grove MCP server block.
+  // The MCP block is written to config.toml so codex loads tools at startup
+  // even when the ACP adapter does not surface session/new mcpServers.
+  const childEnv = buildAcpLaunchEnv(agent, env, opts.mcpServers);
+  let isolatedHomeForCleanup: string | undefined;
+  if (agent === "codex" && env.GROVE_CODEX_NO_ISOLATION !== "1") {
+    // Fail closed: if isolation prep throws, refuse the spawn rather than
+    // launching against the user's live ~/.codex (which would re-introduce
+    // the rmcp-fatal-on-bootstrap path this isolation exists to prevent,
+    // and run user-level notify hooks against grove turns). Operators that
+    // explicitly accept the risk can opt out with GROVE_CODEX_NO_ISOLATION=1.
+    try {
+      const isolatedHome = await prepareIsolatedCodexHome(childEnv, opts.mcpServers);
+      childEnv.CODEX_HOME = isolatedHome;
+      isolatedHomeForCleanup = isolatedHome;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `[acp-runtime] codex isolated-home prep failed: ${detail}. ` +
+          `Set GROVE_CODEX_NO_ISOLATION=1 to launch with the user's ~/.codex (NOT recommended).`,
+      );
+    }
+  }
+
+  let child: ChildProcessByStdio<Writable, Readable, Readable>;
+  try {
+    child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, childEnv), {
+      cwd,
+      env: childEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as ChildProcessByStdio<Writable, Readable, Readable>;
+  } catch (err) {
+    // Spawn itself failed — auth.json is on disk; clean up before bubbling.
+    if (isolatedHomeForCleanup) {
+      try {
+        rmSync(isolatedHomeForCleanup, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    throw err;
+  }
 
   const stdinWebWritable = NodeWritable.toWeb(child.stdin) as WritableStream<Uint8Array>;
   const stdoutWebReadable = NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
@@ -173,6 +378,27 @@ async function launchSubprocess(
     } catch {
       /* ignore */
     }
+    // Wait briefly for the child to exit so we don't `rm -rf` the isolated
+    // home out from under codex while it's still flushing session state.
+    // Bounded so a stuck child doesn't block teardown indefinitely.
+    if (isolatedHomeForCleanup) {
+      const exited = await new Promise<boolean>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+        const timer = setTimeout(() => resolve(false), 2000);
+        child.once("exit", () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      try {
+        rmSync(isolatedHomeForCleanup, { recursive: true, force: true });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[acp-runtime] codex isolated-home cleanup failed (childExited=${exited}): ${detail}\n`,
+        );
+      }
+    }
   };
   return { clientStream, dispose };
 }
@@ -194,10 +420,8 @@ export function buildAcpLaunchArgs(
   const args = [...launch.args];
   if (launch.agent !== "codex") return args;
 
-  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim();
-  if (model) {
-    args.push("-c", `model=${JSON.stringify(model)}`);
-  }
+  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim() || DEFAULT_CODEX_MODEL;
+  args.push("-c", `model=${JSON.stringify(model)}`);
 
   const allowAll =
     env.GROVE_ALLOW_ALL_PERMISSIONS === "1" ||
@@ -206,8 +430,28 @@ export function buildAcpLaunchArgs(
   if (allowAll) {
     args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"');
   }
-  appendCodexMcpServerOverrides(args, opts.mcpServers);
+  if (env.GROVE_CODEX_WRITE_MCP_CONFIG !== "1") {
+    appendCodexMcpServerOverrides(args, opts.mcpServers, env);
+  }
   return args;
+}
+
+export function buildAcpLaunchEnv(
+  agent: string,
+  env: NodeJS.ProcessEnv,
+  mcpServers: AgentConfig["mcpServers"] | undefined,
+): NodeJS.ProcessEnv {
+  const launchEnv: NodeJS.ProcessEnv = { ...env };
+  if (agent !== "codex") return launchEnv;
+
+  for (const server of mcpServers ?? []) {
+    if (server.name.trim() !== "grove") continue;
+    for (const [name, value] of Object.entries(server.env ?? {})) {
+      launchEnv[name] = value;
+    }
+  }
+
+  return launchEnv;
 }
 
 const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -231,9 +475,51 @@ function shouldPassMcpEnvViaCodexConfig(name: string, value: string): boolean {
   return !SENSITIVE_ENV_NAME.test(name) && !SENSITIVE_ENV_VALUE.test(value);
 }
 
+function isGroveMcpInheritedEnv(name: string): boolean {
+  return name.startsWith("GROVE_") || name === "NEXUS_API_KEY";
+}
+
+function stringEnvEntries(env: NodeJS.ProcessEnv): [string, string][] {
+  return Object.entries(env).filter((entry): entry is [string, string] => {
+    return typeof entry[1] === "string";
+  });
+}
+
+function mergedCodexMcpServerEnv(
+  server: NonNullable<AgentConfig["mcpServers"]>[number],
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const inherited =
+    server.name.trim() === "grove"
+      ? Object.fromEntries(stringEnvEntries(env).filter(([name]) => isGroveMcpInheritedEnv(name)))
+      : {};
+  return {
+    ...inherited,
+    ...(server.env ?? {}),
+  };
+}
+
+function codexMcpEnvConfigEntries(
+  server: NonNullable<AgentConfig["mcpServers"]>[number],
+  env: NodeJS.ProcessEnv,
+): { readonly envEntries: readonly [string, string][]; readonly envVars: readonly string[] } {
+  const envVars = new Set<string>();
+  const envEntries: [string, string][] = [];
+  for (const [envName, envValue] of Object.entries(mergedCodexMcpServerEnv(server, env))) {
+    if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) {
+      if (envName.length > 0) envVars.add(envName);
+      continue;
+    }
+    envEntries.push([envName, envValue]);
+  }
+  envEntries.sort(([left], [right]) => left.localeCompare(right));
+  return { envEntries, envVars: [...envVars].sort((left, right) => left.localeCompare(right)) };
+}
+
 function appendCodexMcpServerOverrides(
   args: string[],
   mcpServers: AgentConfig["mcpServers"] | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): void {
   for (const server of mcpServers ?? []) {
     const name = server.name.trim();
@@ -243,17 +529,17 @@ function appendCodexMcpServerOverrides(
     const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
     args.push("-c", `${serverKey}.command=${tomlString(command)}`);
     args.push("-c", `${serverKey}.args=${tomlStringArray(server.args ?? [])}`);
+    if (server.startupTimeoutSec !== undefined) {
+      args.push("-c", `${serverKey}.startup_timeout_sec=${server.startupTimeoutSec}`);
+    }
 
-    const envVars = new Set<string>();
-    for (const [envName, envValue] of Object.entries(server.env ?? {})) {
-      if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) {
-        if (envName.length > 0) envVars.add(envName);
-        continue;
-      }
+    const { envEntries, envVars } = codexMcpEnvConfigEntries(server, env);
+
+    for (const [envName, envValue] of envEntries) {
       args.push("-c", `${serverKey}.env.${tomlKeySegment(envName)}=${tomlString(envValue)}`);
     }
-    if (envVars.size > 0) {
-      args.push("-c", `${serverKey}.env_vars=${tomlStringArray([...envVars])}`);
+    if (envVars.length > 0) {
+      args.push("-c", `${serverKey}.env_vars=${tomlStringArray(envVars)}`);
     }
   }
 }
@@ -360,6 +646,7 @@ export class AcpRuntime implements AgentRuntime {
         const env = { ...inheritedEnv, ...(s.env ?? {}) };
         return {
           name: s.name,
+          type: "stdio" as const,
           command: s.command,
           args: [...(s.args ?? [])],
           env: Object.entries(env).map(([name, value]) => ({ name, value })),

@@ -23,7 +23,11 @@ import {
   ftsIndexPath,
   outcomePath,
   outcomeStatusIndexPath,
+  relationIndexDir,
   relationIndexPath,
+  skillCatalogBundlePath,
+  skillCatalogIndexPath,
+  skillCatalogSignaturePath,
   tagIndexPath,
   targetLockPath,
   workflowPath,
@@ -221,6 +225,18 @@ describe("path construction correctness", () => {
     );
   });
 
+  test("relationIndexPath scopes to session path when sessionId is provided", () => {
+    expect(relationIndexPath(zone, targetCid, sourceCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}/${sourceCid}.json`,
+    );
+  });
+
+  test("relationIndexDir scopes to session path when sessionId is provided", () => {
+    expect(relationIndexDir(zone, targetCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}`,
+    );
+  });
+
   test("claimPath returns /zones/{zone}/claims/{claimId}.json", () => {
     expect(claimPath(zone, claimId)).toBe(`/zones/${zone}/claims/${claimId}.json`);
   });
@@ -263,6 +279,23 @@ describe("path construction correctness", () => {
 
   test("workflowsDir returns /zones/{zone}/workflows", () => {
     expect(workflowsDir(zone)).toBe(`/zones/${zone}/workflows`);
+  });
+});
+
+describe("skill catalog paths", () => {
+  test("constructs zone-scoped skill catalog paths", () => {
+    expect(skillCatalogIndexPath("zone1")).toBe("/zones/zone1/skill-catalog/index.json");
+    expect(skillCatalogSignaturePath("zone1")).toBe("/zones/zone1/skill-catalog/index.sig");
+    expect(skillCatalogBundlePath("zone1", "blake3:abc123")).toBe(
+      "/zones/zone1/skill-catalog/bundles/blake3:abc123.zip",
+    );
+  });
+
+  test("encodes zone and bundle hash segments", () => {
+    expect(skillCatalogIndexPath("../zone")).toBe("/zones/..%2Fzone/skill-catalog/index.json");
+    expect(skillCatalogBundlePath("zone/one", "blake3:a/b")).toBe(
+      "/zones/zone%2Fone/skill-catalog/bundles/blake3:a%2Fb.zip",
+    );
   });
 });
 

@@ -45,14 +45,28 @@ describe("NexusHttpClient", () => {
     expect(bodies[0]).toMatchObject({ if_none_match: true });
   });
 
-  test("maps REST precondition failures to NexusConflictError", async () => {
-    setMockFetch(async () => new Response("already exists", { status: 412 }));
+  test.each([
+    409, 412,
+  ])("maps HTTP %i write preconditions to NexusConflictError", async (status) => {
+    setMockFetch(
+      async () =>
+        new Response("etag mismatch", {
+          status,
+          headers: { etag: "actual-etag" },
+        }),
+    );
 
     const client = new NexusHttpClient({ url: "http://nexus.local" });
 
-    await expect(
-      client.write("/path/file", new TextEncoder().encode("data"), { ifNoneMatch: "*" }),
-    ).rejects.toThrow(NexusConflictError);
+    let caught: unknown;
+    try {
+      await client.write("/path/file", new TextEncoder().encode("data"), { ifNoneMatch: "*" });
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(NexusConflictError);
+    expect(caught).toMatchObject({ actualEtag: "actual-etag" });
   });
 
   test("writeBatch posts wrapped bytes to the REST batch endpoint", async () => {

@@ -135,6 +135,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["from", "depth", "json"],
   },
   {
+    name: "check-trajectory",
+    description: "Check an agent transcript against trajectory rules",
+    flags: ["transcript", "spec", "runtime", "format", "annotated-log"],
+  },
+  {
     name: "thread",
     description: "View a discussion thread",
     flags: ["depth", "n", "json"],
@@ -224,7 +229,7 @@ export const COMMANDS: readonly CommandMeta[] = [
   },
   {
     name: "session",
-    description: "Manage agent sessions (start, list, status, stop)",
+    description: "Manage agent sessions (start, list, status, stop, delete)",
     flags: [],
     subcommands: [
       {
@@ -235,6 +240,7 @@ export const COMMANDS: readonly CommandMeta[] = [
       { name: "list", description: "List sessions", flags: [] },
       { name: "status", description: "Show session status", flags: [] },
       { name: "stop", description: "Stop current session", flags: ["reason"] },
+      { name: "delete", description: "Delete a session", flags: ["force"] },
     ],
   },
   {

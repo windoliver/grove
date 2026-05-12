@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { ownerRefsEqual } from "./lifecycle-metadata.js";
 import type { SessionStore } from "./session.js";
 import type { AgentTopology } from "./topology.js";
 
@@ -247,6 +248,78 @@ export function sessionStoreConformance(
       expect(cids[0]).toBe("blake3:first");
       expect(cids[1]).toBe("blake3:second");
       expect(cids[2]).toBe("blake3:third");
+    });
+
+    test("deleteSession removes an unblocked session", async () => {
+      const session = await store.createSession({ goal: "delete me" });
+
+      const result = await store.deleteSession(session.id);
+
+      expect(result).toEqual({
+        sessionId: session.id,
+        deleted: true,
+        forced: false,
+        blockers: [],
+      });
+      expect(await store.getSession(session.id)).toBeUndefined();
+    });
+
+    test("deleteSession is idempotent for a missing session", async () => {
+      const result = await store.deleteSession("missing-session");
+
+      expect(result).toEqual({
+        sessionId: "missing-session",
+        deleted: false,
+        forced: false,
+        blockers: [{ finalizer: "grove.io/release-slots", message: "session not found" }],
+      });
+    });
+
+    test("listSessionDeleteBlockers returns no blockers for existing session and release-slots blocker for missing session", async () => {
+      const session = await store.createSession({ goal: "blocker metadata" });
+
+      expect(await store.listSessionDeleteBlockers(session.id)).toEqual([]);
+      expect(await store.listSessionDeleteBlockers("missing-session")).toEqual([
+        { finalizer: "grove.io/release-slots", message: "session not found" },
+      ]);
+    });
+
+    test("deleteSession force returns forced true and warning", async () => {
+      const session = await store.createSession({ goal: "force delete me" });
+
+      const result = await store.deleteSession(session.id, {
+        force: true,
+        actor: "test-operator",
+      });
+
+      expect(result).toEqual({
+        sessionId: session.id,
+        deleted: true,
+        forced: true,
+        blockers: [],
+        warning: `force delete skipped finalizer waits for session ${session.id}`,
+      });
+      expect(await store.getSession(session.id)).toBeUndefined();
+    });
+
+    test("created sessions include uid and default finalizers", async () => {
+      const session = await store.createSession({ goal: "metadata" });
+
+      expect(session.uid).toBeTruthy();
+      expect(session.finalizers).toEqual([
+        "grove.io/release-slots",
+        "grove.io/drain-contribs",
+        "grove.io/close-runtime",
+      ]);
+    });
+
+    test("created session uid supports ownerRef equality checks", async () => {
+      const session = await store.createSession({ goal: "owner metadata" });
+      const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+
+      expect(ownerRefsEqual(ownerRef, { ...ownerRef })).toBe(true);
+      expect(ownerRefsEqual(ownerRef, { ...ownerRef, uid: `${session.uid}-other` })).toBe(false);
+      expect(ownerRefsEqual(ownerRef, undefined)).toBe(false);
     });
   });
 }

@@ -315,8 +315,6 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
   const { holder, eager, scopeAwareProvider, children } = props;
   const [factory, setFactory] = useState<InformerFactory | null>(() => holder.current());
   const [provider, setProvider] = useState<unknown>(() => holder.currentProvider());
-  const resolvedProvider = scopeAwareProvider ?? provider;
-  const [scoped, setScoped] = useState<boolean>(() => readScopeFlag(resolvedProvider));
   const lastFactory = useRef(factory);
   const lastProvider = useRef<unknown>(provider);
   lastFactory.current = factory;
@@ -351,7 +349,6 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
   // empty even for opt-in consumers.
   void scopeAwareProvider;
   void provider;
-  void setScoped;
   useEffect(() => {
     if (!factory || !eager) return;
     factory.startAll();

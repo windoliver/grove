@@ -32,6 +32,7 @@ and their classification. All `shared` capabilities use the operations layer in
 | tree | Y | Y | Y | Y | shared |
 | thread | Y | Y | Y | Y | shared |
 | threads | Y | Y | Y | Y | shared |
+| check trajectory | Y | Y | - | - | shared |
 | check stop | - | Y | - | - | transport-only |
 | bounty create | Y | Y | - | - | shared |
 | bounty list | Y | Y | Y | Y | shared |

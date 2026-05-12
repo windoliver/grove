@@ -916,6 +916,14 @@ export interface NexusRunningInfo {
   readonly url: string;
   /** API key from nexus.yaml or NEXUS_API_KEY env var (undefined for auth: none). */
   readonly apiKey: string | undefined;
+  /**
+   * True only when this call actually transitioned Nexus from stopped→running.
+   * False when ensureNexusRunning found a healthy/starting container and reused
+   * it without invoking `nexus up`. Callers use this to gate teardown:
+   * rollback after a partial-failure must NOT stop a Nexus this call only
+   * reused, because other concurrent work may depend on it.
+   */
+  readonly startedThisCall: boolean;
 }
 
 /**
@@ -1008,7 +1016,8 @@ export async function ensureNexusRunning(
   if (foundUrl) {
     const apiKey = readNexusApiKey(projectRoot);
     report("Nexus is ready (already running)");
-    return { url: foundUrl, apiKey };
+    // Reused — caller's rollback must NOT take this Nexus down.
+    return { url: foundUrl, apiKey, startedThisCall: false };
   }
 
   // -----------------------------------------------------------------------
@@ -1024,7 +1033,8 @@ export async function ensureNexusRunning(
       await waitForNexusHealth(containerUrl, 15_000);
       const apiKey = readNexusApiKey(projectRoot);
       report("Nexus is ready (already running, slow response)");
-      return { url: containerUrl, apiKey };
+      // Reused (we just waited for it to respond) — not started this call.
+      return { url: containerUrl, apiKey, startedThisCall: false };
     } catch {
       report("[ensureNexus] container unresponsive after 15s, falling through to restart...");
     }
@@ -1073,7 +1083,8 @@ export async function ensureNexusRunning(
             await waitForNexusHealth(quickRestartUrl, 30_000);
             const apiKey = readNexusApiKey(groveHomeDir);
             report("Nexus is ready (quick restart)");
-            return { url: quickRestartUrl, apiKey };
+            // We invoked `docker compose restart` — owned the transition this call.
+            return { url: quickRestartUrl, apiKey, startedThisCall: true };
           } catch {
             report("[ensureNexus] quick restart unhealthy, falling through to nexus up...");
           }
@@ -1095,7 +1106,8 @@ export async function ensureNexusRunning(
     await waitForNexusHealth(nexusUrl);
     const apiKey = readNexusApiKey(groveHomeDir);
     report("Nexus is ready");
-    return { url: nexusUrl, apiKey };
+    // Warm start: `nexus up` shelled out — we started it.
+    return { url: nexusUrl, apiKey, startedThisCall: true };
   }
 
   // -----------------------------------------------------------------------
@@ -1149,5 +1161,6 @@ export async function ensureNexusRunning(
       ? "[ensureNexus] Nexus is ready, apiKey=yes"
       : "[ensureNexus] Nexus is ready (auth: none)",
   );
-  return { url: nexusUrl, apiKey };
+  // Cold start: generated YAML + ran `nexus up` — definitively ours.
+  return { url: nexusUrl, apiKey, startedThisCall: true };
 }

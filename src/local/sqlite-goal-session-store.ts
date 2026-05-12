@@ -16,7 +16,21 @@
 
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
-import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
+import type { DeletionAuditEvent, OwnerRef, SessionFinalizer } from "../core/lifecycle-metadata.js";
+import {
+  appendDeletionAudit,
+  DEFAULT_SESSION_FINALIZERS,
+  Finalizer,
+} from "../core/lifecycle-metadata.js";
+import type { Claim } from "../core/models.js";
+import type {
+  CreateSessionInput,
+  Session,
+  SessionDeleteBlocker,
+  SessionDeleteOptions,
+  SessionDeleteResult,
+  SessionQuery,
+} from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
@@ -263,6 +277,7 @@ export const GOAL_SESSION_DDL = `
 
   CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
+    uid TEXT NOT NULL,
     goal TEXT,
     preset_name TEXT,
     topology_json TEXT,
@@ -270,6 +285,9 @@ export const GOAL_SESSION_DDL = `
     worktree_strategy_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
+    finalizers_json TEXT NOT NULL DEFAULT '[]',
+    deletion_timestamp TEXT,
+    deletion_audit_json TEXT NOT NULL DEFAULT '[]',
     ended_at TEXT,
     stop_reason TEXT,
     stop_status TEXT,
@@ -277,14 +295,28 @@ export const GOAL_SESSION_DDL = `
     contribution_count INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS session_deletion_audits (
+    session_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    force INTEGER NOT NULL,
+    warning TEXT NOT NULL,
+    event_json TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS session_contributions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     cid TEXT NOT NULL,
     added_at TEXT NOT NULL,
+    owner_ref_json TEXT,
     PRIMARY KEY (session_id, cid)
   );
 
   CREATE INDEX IF NOT EXISTS idx_session_contributions_session_id ON session_contributions(session_id);
+  CREATE INDEX IF NOT EXISTS idx_session_deletion_audits_session_id
+    ON session_deletion_audits(session_id);
+  CREATE INDEX IF NOT EXISTS idx_session_deletion_audits_at
+    ON session_deletion_audits(at);
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
   CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived_at);
 
@@ -318,6 +350,7 @@ interface GoalRow {
 
 interface SessionRow {
   session_id: string;
+  uid: string;
   goal: string | null;
   preset_name: string | null;
   topology_json: string | null;
@@ -325,6 +358,9 @@ interface SessionRow {
   worktree_strategy_json: string | null;
   status: string;
   started_at: string;
+  finalizers_json: string;
+  deletion_timestamp: string | null;
+  deletion_audit_json: string;
   ended_at: string | null;
   stop_reason: string | null;
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
@@ -338,10 +374,14 @@ interface SessionRow {
  */
 interface SessionListRow {
   session_id: string;
+  uid: string;
   goal: string | null;
   preset_name: string | null;
   status: string;
   started_at: string;
+  finalizers_json: string;
+  deletion_timestamp: string | null;
+  deletion_audit_json: string;
   ended_at: string | null;
   stop_reason: string | null;
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
@@ -383,6 +423,10 @@ export interface GoalSessionStore {
 
   /** Get all contribution CIDs for a session. */
   getSessionContributions(sessionId: string): Promise<readonly string[]>;
+
+  deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult>;
+
+  listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]>;
 
   /** Get the frozen contract config for a session by ID. */
   getSessionConfig(sessionId: string): Promise<GroveContract | undefined>;
@@ -431,10 +475,14 @@ function rowToSession(row: SessionRow): Session {
   }
   return {
     id: row.session_id,
+    uid: row.uid,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
+    finalizers: JSON.parse(row.finalizers_json) as readonly SessionFinalizer[],
+    deletionTimestamp: row.deletion_timestamp ?? undefined,
+    deletionAudit: JSON.parse(row.deletion_audit_json) as readonly DeletionAuditEvent[],
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
     stopStatus: row.stop_status ?? undefined,
@@ -451,10 +499,14 @@ function rowToSession(row: SessionRow): Session {
 function listRowToSession(row: SessionListRow): Session {
   return {
     id: row.session_id,
+    uid: row.uid,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
+    finalizers: JSON.parse(row.finalizers_json) as readonly SessionFinalizer[],
+    deletionTimestamp: row.deletion_timestamp ?? undefined,
+    deletionAudit: JSON.parse(row.deletion_audit_json) as readonly DeletionAuditEvent[],
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
     stopStatus: row.stop_status ?? undefined,
@@ -468,9 +520,81 @@ function listRowToSession(row: SessionListRow): Session {
 // Implementation
 // ---------------------------------------------------------------------------
 
+export interface SqliteGoalSessionStoreOptions {
+  readonly closeRuntime?: (session: Session) => Promise<void>;
+  readonly claimStore?:
+    | {
+        releaseOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
+        deleteTerminalOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
+      }
+    | undefined;
+}
+
+interface ClaimCleanupStore {
+  onClaimWrite?: (op: "ADDED" | "MODIFIED" | "DELETED", claim: Claim) => void;
+  releaseOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
+  deleteTerminalOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
+  releaseOwnedBySync?(ownerRef: OwnerRef): number;
+  deleteTerminalOwnedBySync?(ownerRef: OwnerRef): number;
+  releaseOwnedBySyncBuffered?(ownerRef: OwnerRef, pendingWrites: PendingClaimWrite[]): number;
+  deleteTerminalOwnedBySyncBuffered?(
+    ownerRef: OwnerRef,
+    pendingWrites: PendingClaimWrite[],
+  ): number;
+}
+
+interface PendingClaimWrite {
+  readonly op: "ADDED" | "MODIFIED" | "DELETED";
+  readonly claim: Claim;
+}
+
+interface PendingSessionDeleteState {
+  readonly deleted: boolean;
+  readonly blockers: readonly SessionDeleteBlocker[];
+}
+
+function ownerRefForSession(session: Session): OwnerRef {
+  return { kind: "session", id: session.id, uid: session.uid };
+}
+
+const OWNER_REF_PREDICATE = `json_extract(owner_ref_json, '$.kind') = ?
+  AND json_extract(owner_ref_json, '$.id') = ?
+  AND json_extract(owner_ref_json, '$.uid') = ?`;
+
+function ownerRefBindings(ownerRef: OwnerRef): readonly [string, string, string] {
+  return [ownerRef.kind, ownerRef.id, ownerRef.uid];
+}
+
+function forceWarning(sessionId: string): string {
+  return `force delete skipped finalizer waits for session ${sessionId}`;
+}
+
+function normalizeSessionFinalizers(finalizers: readonly SessionFinalizer[]): SessionFinalizer[] {
+  return finalizers.length === 0 ? [...DEFAULT_SESSION_FINALIZERS] : [...finalizers];
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof value === "object" && value !== null && "then" in value;
+}
+
+function isKnownSessionFinalizer(finalizer: string): finalizer is Finalizer {
+  return (DEFAULT_SESSION_FINALIZERS as readonly string[]).includes(finalizer);
+}
+
+class SessionDeleteFinalizerError extends Error {
+  readonly finalizer: Finalizer;
+
+  constructor(finalizer: Finalizer, message: string) {
+    super(message);
+    this.finalizer = finalizer;
+  }
+}
+
 /** SQLite-backed GoalSessionStore. */
 export class SqliteGoalSessionStore implements GoalSessionStore {
   readonly db: Database;
+  private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
+  private claimStore: ClaimCleanupStore | undefined;
 
   // Prepared statements (lazy init)
   private stmtGetGoal: Statement | undefined;
@@ -485,9 +609,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private stmtStatusOnly: Statement | undefined; // status only
   private stmtEndedAndReason: Statement | undefined; // ended_at + stop_reason only
 
-  constructor(db: Database) {
+  constructor(db: Database, options?: SqliteGoalSessionStoreOptions) {
     this.db = db;
+    this.closeRuntime = options?.closeRuntime;
+    this.claimStore = options?.claimStore;
     db.exec(GOAL_SESSION_DDL);
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp)",
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -548,8 +677,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
    */
   listSessions = async (query?: SessionQuery): Promise<readonly Session[]> => {
     const baseSelect = `
-      SELECT s.session_id, s.goal, s.preset_name, s.status, s.started_at, s.ended_at,
-             s.stop_reason, s.stop_status, s.contribution_count
+      SELECT s.session_id, s.uid, s.goal, s.preset_name, s.status, s.started_at,
+             s.finalizers_json, s.deletion_timestamp, s.deletion_audit_json,
+             s.ended_at, s.stop_reason, s.stop_status, s.contribution_count
       FROM sessions s
     `;
 
@@ -585,11 +715,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   /** Create a new session with a generated UUID. */
   createSession = async (input: CreateSessionInput): Promise<Session> => {
     this.stmtInsertSession ??= this.db.prepare(`
-      INSERT INTO sessions (session_id, goal, preset_name, topology_json, config_json, worktree_strategy_json, status, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+      INSERT INTO sessions (session_id, uid, goal, preset_name, topology_json, config_json,
+        worktree_strategy_json, status, started_at, finalizers_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     `);
 
     const sessionId = crypto.randomUUID();
+    const uid = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     const topologyJson = input.topology ? JSON.stringify(input.topology) : null;
     const configJson = input.config ? JSON.stringify(input.config) : "{}";
@@ -602,20 +734,25 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     this.stmtInsertSession.run(
       sessionId,
+      uid,
       input.goal ?? null,
       input.presetName ?? null,
       topologyJson,
       configJson,
       worktreeStrategyJson,
       startedAt,
+      JSON.stringify(DEFAULT_SESSION_FINALIZERS),
     );
 
     return {
       id: sessionId,
+      uid,
       goal: input.goal,
       presetName: input.presetName,
       status: "active",
       createdAt: startedAt,
+      finalizers: DEFAULT_SESSION_FINALIZERS,
+      deletionAudit: [],
       completedAt: undefined,
       topology: input.topology,
       contributionCount: 0,
@@ -802,12 +939,18 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   /** Record a contribution CID against a session. Ignores duplicates. */
   addContributionToSession = async (sessionId: string, cid: string): Promise<void> => {
     this.stmtInsertContribution ??= this.db.prepare(`
-      INSERT OR IGNORE INTO session_contributions (session_id, cid, added_at)
-      VALUES (?, ?, ?)
+      INSERT OR IGNORE INTO session_contributions (session_id, cid, added_at, owner_ref_json)
+      VALUES (?, ?, ?, ?)
     `);
 
+    const session = await this.getSession(sessionId);
     const addedAt = new Date().toISOString();
-    this.stmtInsertContribution.run(sessionId, cid, addedAt);
+    this.stmtInsertContribution.run(
+      sessionId,
+      cid,
+      addedAt,
+      session !== undefined ? JSON.stringify(ownerRefForSession(session)) : null,
+    );
   };
 
   /** Get all contribution CIDs for a session, ordered by when they were added. */
@@ -820,6 +963,252 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     const rows = this.stmtGetContributions.all(sessionId) as { cid: string }[];
     return rows.map((r) => r.cid);
+  };
+
+  deleteSession = async (
+    id: string,
+    options?: SessionDeleteOptions,
+  ): Promise<SessionDeleteResult> => {
+    const session = await this.getSession(id);
+    if (session === undefined) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
+      };
+    }
+
+    const ownerRef = ownerRefForSession(session);
+    const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
+    if (options?.force === true) {
+      await this.getClaimStore();
+      const warning = forceWarning(id);
+      const now = new Date().toISOString();
+      const auditTrail = appendDeletionAudit(session.deletionAudit, {
+        at: now,
+        actor: options.actor ?? "unknown",
+        warning,
+      });
+      const auditEvent = auditTrail.at(-1);
+      const cleanupErrors: string[] = [];
+      const pendingClaimWrites: PendingClaimWrite[] = [];
+
+      const forceDeleteTx = this.db.transaction(() => {
+        try {
+          this.releaseOwnedClaimsSync(ownerRef, pendingClaimWrites);
+          this.deleteTerminalOwnedClaimsSync(ownerRef, pendingClaimWrites);
+        } catch (err) {
+          cleanupErrors.push(err instanceof Error ? err.message : String(err));
+        }
+        try {
+          this.deleteSessionContributionLinks(id);
+        } catch (err) {
+          cleanupErrors.push(err instanceof Error ? err.message : String(err));
+        }
+        this.db
+          .prepare(
+            `UPDATE sessions
+             SET deletion_timestamp = COALESCE(deletion_timestamp, ?),
+                 deletion_audit_json = ?
+             WHERE session_id = ?`,
+          )
+          .run(now, JSON.stringify(auditTrail), id);
+        if (auditEvent !== undefined) {
+          this.db
+            .prepare(
+              `INSERT INTO session_deletion_audits
+               (session_id, at, actor, force, warning, event_json)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              id,
+              auditEvent.at,
+              auditEvent.actor,
+              auditEvent.force ? 1 : 0,
+              auditEvent.warning,
+              JSON.stringify(auditEvent),
+            );
+        }
+        this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+      });
+      forceDeleteTx.immediate();
+      this.flushPendingClaimWrites(pendingClaimWrites);
+      return {
+        sessionId: id,
+        deleted: true,
+        forced: true,
+        blockers: [],
+        warning,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+      };
+    }
+
+    await this.getClaimStore();
+    const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
+    const remainingFinalizers = [...startingFinalizers];
+    const pendingClaimWrites: PendingClaimWrite[] = [];
+    let pendingDeleteState: PendingSessionDeleteState = { deleted: true, blockers: [] };
+    const closeRuntimePending =
+      this.closeRuntime !== undefined && startingFinalizers.includes(Finalizer.CloseRuntime);
+    try {
+      this.runSessionDeleteTransaction(id, deletionTimestamp, remainingFinalizers, () => {
+        for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
+          if (!remainingFinalizers.includes(finalizer)) continue;
+          if (closeRuntimePending && finalizer === Finalizer.CloseRuntime) break;
+
+          try {
+            if (finalizer === Finalizer.ReleaseSlots) {
+              this.releaseOwnedClaimsSync(ownerRef, pendingClaimWrites);
+              this.deleteTerminalOwnedClaimsSync(ownerRef, pendingClaimWrites);
+            } else if (finalizer === Finalizer.DrainContribs) {
+              this.deleteSessionContributionLinks(id);
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            throw new SessionDeleteFinalizerError(finalizer, message);
+          }
+
+          this.persistSessionFinalizersSync(id, deletionTimestamp, remainingFinalizers, finalizer);
+        }
+
+        if (!closeRuntimePending && remainingFinalizers.length > 0) {
+          pendingDeleteState = {
+            deleted: false,
+            blockers: this.buildFinalizerBlockers(remainingFinalizers),
+          };
+          return;
+        }
+
+        if (!closeRuntimePending) {
+          this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+        }
+      });
+    } catch (err) {
+      if (!(err instanceof SessionDeleteFinalizerError)) throw err;
+      this.db
+        .prepare(
+          `UPDATE sessions
+           SET finalizers_json = ?, deletion_timestamp = COALESCE(deletion_timestamp, ?)
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify(startingFinalizers), deletionTimestamp, id);
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: [{ finalizer: err.finalizer, message: err.message }],
+      };
+    }
+    this.flushPendingClaimWrites(pendingClaimWrites);
+    if (!pendingDeleteState.deleted) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: pendingDeleteState.blockers,
+      };
+    }
+
+    if (closeRuntimePending) {
+      const runtimeFinalizers = [...remainingFinalizers];
+
+      try {
+        await this.closeRuntime?.({
+          ...session,
+          deletionTimestamp,
+          finalizers: runtimeFinalizers,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.db
+          .prepare(
+            `UPDATE sessions
+             SET finalizers_json = ?, deletion_timestamp = COALESCE(deletion_timestamp, ?)
+             WHERE session_id = ?`,
+          )
+          .run(JSON.stringify(runtimeFinalizers), deletionTimestamp, id);
+        return {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: [{ finalizer: Finalizer.CloseRuntime, message }],
+        };
+      }
+
+      this.runSessionDeleteTransaction(id, deletionTimestamp, remainingFinalizers, () => {
+        this.persistSessionFinalizersSync(
+          id,
+          deletionTimestamp,
+          remainingFinalizers,
+          Finalizer.CloseRuntime,
+        );
+        if (remainingFinalizers.length === 0) {
+          this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+        }
+      });
+
+      if (remainingFinalizers.length > 0) {
+        return {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: this.buildFinalizerBlockers(remainingFinalizers),
+        };
+      }
+    }
+
+    return {
+      sessionId: id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    };
+  };
+
+  listSessionDeleteBlockers = async (id: string): Promise<readonly SessionDeleteBlocker[]> => {
+    const session = await this.getSession(id);
+    if (session === undefined) {
+      return [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }];
+    }
+
+    const finalizers = normalizeSessionFinalizers(session.finalizers);
+    const ownerRef = ownerRefForSession(session);
+    const blockers: SessionDeleteBlocker[] = [];
+    const activeClaims = this.countActiveOwnedClaims(ownerRef);
+    if (activeClaims > 0) {
+      blockers.push({
+        finalizer: Finalizer.ReleaseSlots,
+        message: `${activeClaims} active owned claim${activeClaims === 1 ? "" : "s"} remain`,
+      });
+    }
+
+    const contributionLinks = this.countSessionContributionLinks(id);
+    if (contributionLinks > 0) {
+      blockers.push({
+        finalizer: Finalizer.DrainContribs,
+        message: `${contributionLinks} session contribution link${
+          contributionLinks === 1 ? "" : "s"
+        } remain`,
+      });
+    }
+
+    if (this.closeRuntime !== undefined && finalizers.includes(Finalizer.CloseRuntime)) {
+      blockers.push({
+        finalizer: Finalizer.CloseRuntime,
+        message: "runtime cleanup pending",
+      });
+    }
+
+    for (const finalizer of finalizers) {
+      if (isKnownSessionFinalizer(finalizer)) continue;
+      blockers.push({
+        finalizer,
+        message: "unknown finalizer pending",
+      });
+    }
+
+    return blockers;
   };
 
   /**
@@ -844,6 +1233,148 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       [cutoff],
     );
     return result.changes;
+  }
+
+  private releaseOwnedClaimsSync(ownerRef: OwnerRef, pendingWrites?: PendingClaimWrite[]): number {
+    return this.runClaimCleanupSync("releaseOwnedBy", ownerRef, pendingWrites);
+  }
+
+  private deleteTerminalOwnedClaimsSync(
+    ownerRef: OwnerRef,
+    pendingWrites?: PendingClaimWrite[],
+  ): number {
+    return this.runClaimCleanupSync("deleteTerminalOwnedBy", ownerRef, pendingWrites);
+  }
+
+  private deleteSessionContributionLinks(sessionId: string): number {
+    const result = this.db
+      .prepare("DELETE FROM session_contributions WHERE session_id = ?")
+      .run(sessionId);
+    return result.changes;
+  }
+
+  private countActiveOwnedClaims(ownerRef: OwnerRef): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM claims
+         WHERE status = 'active' AND ${OWNER_REF_PREDICATE}`,
+      )
+      .get(...ownerRefBindings(ownerRef)) as { count: number } | null;
+    return row?.count ?? 0;
+  }
+
+  private countSessionContributionLinks(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM session_contributions WHERE session_id = ?")
+      .get(sessionId) as { count: number } | null;
+    return row?.count ?? 0;
+  }
+
+  private async getClaimStore(): Promise<ClaimCleanupStore> {
+    if (this.claimStore !== undefined) return this.claimStore;
+    const { SqliteClaimStore } = await import("./sqlite-store.js");
+    const claimStore = new SqliteClaimStore(this.db);
+    this.claimStore = claimStore;
+    return claimStore;
+  }
+
+  private runClaimCleanupSync(
+    method: "releaseOwnedBy" | "deleteTerminalOwnedBy",
+    ownerRef: OwnerRef,
+    pendingWrites?: PendingClaimWrite[],
+  ): number {
+    if (this.claimStore === undefined) {
+      throw new Error(
+        `SqliteGoalSessionStore deleteSession() requires a shared synchronous claimStore to run ${method} atomically`,
+      );
+    }
+
+    const bufferedSyncMethod =
+      method === "releaseOwnedBy"
+        ? this.claimStore.releaseOwnedBySyncBuffered
+        : this.claimStore.deleteTerminalOwnedBySyncBuffered;
+    if (pendingWrites !== undefined && bufferedSyncMethod !== undefined) {
+      return bufferedSyncMethod.call(this.claimStore, ownerRef, pendingWrites);
+    }
+
+    const syncMethod =
+      method === "releaseOwnedBy"
+        ? this.claimStore.releaseOwnedBySync
+        : this.claimStore.deleteTerminalOwnedBySync;
+    if (syncMethod !== undefined) {
+      if (pendingWrites !== undefined) {
+        throw new Error(
+          `SqliteGoalSessionStore deleteSession() requires buffered ${method} sync cleanup to preserve atomic claim callbacks`,
+        );
+      }
+      return syncMethod.call(this.claimStore, ownerRef);
+    }
+
+    const result = this.claimStore[method](ownerRef);
+    if (isPromiseLike(result)) {
+      throw new Error(
+        `SqliteGoalSessionStore deleteSession() cannot await ${method} inside a SQLite transaction`,
+      );
+    }
+
+    return result;
+  }
+
+  private flushPendingClaimWrites(pendingWrites: readonly PendingClaimWrite[]): void {
+    if (pendingWrites.length === 0 || this.claimStore?.onClaimWrite === undefined) return;
+    for (const pendingWrite of pendingWrites) {
+      this.claimStore.onClaimWrite(pendingWrite.op, pendingWrite.claim);
+    }
+  }
+
+  private buildFinalizerBlockers(
+    finalizers: readonly SessionFinalizer[],
+  ): readonly SessionDeleteBlocker[] {
+    return finalizers.map((finalizer) => ({
+      finalizer,
+      message: isKnownSessionFinalizer(finalizer)
+        ? finalizer === Finalizer.CloseRuntime
+          ? "runtime cleanup pending"
+          : "finalizer still pending"
+        : "unknown finalizer pending",
+    }));
+  }
+
+  private persistSessionFinalizersSync(
+    sessionId: string,
+    deletionTimestamp: string,
+    currentFinalizers: SessionFinalizer[],
+    completedFinalizer: SessionFinalizer,
+  ): void {
+    const remainingFinalizers = currentFinalizers.filter((f) => f !== completedFinalizer);
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET finalizers_json = ?, deletion_timestamp = COALESCE(deletion_timestamp, ?)
+         WHERE session_id = ?`,
+      )
+      .run(JSON.stringify(remainingFinalizers), deletionTimestamp, sessionId);
+    currentFinalizers.splice(0, currentFinalizers.length, ...remainingFinalizers);
+  }
+
+  private runSessionDeleteTransaction(
+    sessionId: string,
+    deletionTimestamp: string,
+    finalizers: SessionFinalizer[],
+    action: () => void,
+  ): void {
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE sessions
+           SET deletion_timestamp = COALESCE(deletion_timestamp, ?),
+               finalizers_json = ?
+           WHERE session_id = ?`,
+        )
+        .run(deletionTimestamp, JSON.stringify(finalizers), sessionId);
+      action();
+    });
+    tx.immediate();
   }
 
   // -----------------------------------------------------------------------

@@ -1,8 +1,8 @@
 /**
- * Detects session completion by watching for done signals from required topology roles.
+ * Detects session completion by watching for explicit done signals.
  *
- * Polls contributions for [DONE] prefix or context.done flag.
- * Calls onDone when all required roles have signaled completion.
+ * Watches contribution events for [DONE] prefix or context.done flag.
+ * Calls onDone when a required session-ending role has marked the session complete.
  *
  * Extracted from ScreenManager to reduce component complexity.
  */
@@ -12,7 +12,7 @@ import type { EventBus, GroveEvent } from "../../core/event-bus.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { Screen } from "../screens/screen-manager.js";
 
-function isDoneContribution(c: { summary: string; context?: unknown }): boolean {
+export function isDoneContribution(c: { summary: string; context?: unknown }): boolean {
   return (
     c.summary.startsWith("[DONE]") ||
     (c.context !== null &&
@@ -22,13 +22,23 @@ function isDoneContribution(c: { summary: string; context?: unknown }): boolean 
   );
 }
 
-function requiredDoneRoles(topology: AgentTopology): readonly string[] {
-  const explicit = topology.roles.filter((role) => role.endsSession).map((role) => role.name);
-  return explicit.length > 0 ? explicit : topology.roles.map((role) => role.name);
+export function requiredDoneRoleNames(topology: AgentTopology | undefined): readonly string[] {
+  if (!topology) return [];
+  const explicitEndingRoles = topology.roles
+    .filter((role) => role.endsSession === true)
+    .map((role) => role.name);
+  if (explicitEndingRoles.length > 0) return explicitEndingRoles;
+
+  const terminalRoles = topology.roles
+    .filter((role) => (role.edges?.length ?? 0) === 0)
+    .map((role) => role.name);
+  return terminalRoles.length > 0 ? terminalRoles : topology.roles.map((role) => role.name);
 }
 
-function doneRoleFromEvent(event: GroveEvent, subscribedRole: string): string {
-  return event.sourceRole && event.sourceRole !== "system" ? event.sourceRole : subscribedRole;
+interface DoneContribution {
+  readonly summary: string;
+  readonly context?: unknown;
+  readonly agent?: { readonly role?: string | undefined } | undefined;
 }
 
 /**
@@ -42,34 +52,60 @@ function doneRoleFromEvent(event: GroveEvent, subscribedRole: string): string {
  * @param topology - Agent topology with role definitions
  * @param screen - Current screen state (only active on "running" or "advanced")
  * @param eventBus - Event bus for real-time done detection; without it the hook is inert
- * @param onDone - Callback when all required roles have signaled done
+ * @param onDone - Callback when the session has been explicitly signaled done
  */
 export function useDoneDetection(
   topology: AgentTopology | undefined,
   screen: Screen,
   eventBus: EventBus | undefined,
   onDone: () => void,
-): void {
+): (contribution: DoneContribution) => void {
   const doneRolesRef = useRef<Set<string>>(new Set());
+  const doneSignaledRef = useRef(false);
 
   const checkDone = useCallback(
     (role: string) => {
-      if (!topology) return;
+      if (!topology || doneSignaledRef.current) return;
       doneRolesRef.current.add(role);
-      const roleNames = requiredDoneRoles(topology);
-      const allDone = roleNames.every((r) => doneRolesRef.current.has(r));
-      if (allDone && roleNames.length > 0) {
+      const roleNames = new Set(requiredDoneRoleNames(topology));
+      const allDone = [...roleNames].every((r) => doneRolesRef.current.has(r));
+      if (allDone && roleNames.size > 0) {
+        doneSignaledRef.current = true;
         onDone();
       }
     },
     [topology, onDone],
   );
 
+  const completeNow = useCallback(() => {
+    if (!topology) return;
+    if (topology.roles.length === 0 || doneSignaledRef.current) return;
+    doneSignaledRef.current = true;
+    onDone();
+  }, [topology, onDone]);
+
+  const observeContribution = useCallback(
+    (contribution: DoneContribution) => {
+      if (!isDoneContribution(contribution)) return;
+      const role = contribution.agent?.role;
+      if (role !== undefined) checkDone(role);
+    },
+    [checkDone],
+  );
+
+  useEffect(() => {
+    if (screen !== "running" && screen !== "advanced") {
+      doneRolesRef.current.clear();
+      doneSignaledRef.current = false;
+    }
+  }, [screen]);
+
   // Event-driven mode: subscribe to EventBus for real-time done detection
   useEffect(() => {
     if (screen !== "running" && screen !== "advanced") return;
     if (!topology || !eventBus) return;
 
+    doneSignaledRef.current = false;
     const handlers: Array<{ role: string; handler: (e: GroveEvent) => void }> = [];
     for (const role of topology.roles) {
       const handler = (event: GroveEvent) => {
@@ -79,11 +115,11 @@ export function useDoneDetection(
             payload.summary &&
             isDoneContribution(payload as { summary: string; context?: unknown })
           ) {
-            checkDone(doneRoleFromEvent(event, role.name));
+            checkDone(event.sourceRole);
           }
         }
         if (event.type === "stop") {
-          checkDone(doneRoleFromEvent(event, role.name));
+          completeNow();
         }
       };
       handlers.push({ role: role.name, handler });
@@ -95,5 +131,7 @@ export function useDoneDetection(
         eventBus.unsubscribe(role, handler);
       }
     };
-  }, [screen, topology, eventBus, checkDone]);
+  }, [screen, topology, eventBus, checkDone, completeNow]);
+
+  return observeContribution;
 }
