@@ -89,16 +89,6 @@ describe("NexusInboxClient", () => {
       from: { agentId: "alice" },
     };
     await vfs.write(
-      "/ipc/bob/inbox/msg-bob.json",
-      encodeEnvelope({
-        message_id: "same",
-        sender: "alice",
-        recipient: "bob",
-        timestamp: payload.createdAt,
-        payload,
-      }),
-    );
-    await vfs.write(
       "/ipc/all/inbox/msg-all.json",
       encodeEnvelope({
         message_id: "same",
@@ -112,11 +102,28 @@ describe("NexusInboxClient", () => {
       nexusUrl: "http://nexus.test",
       apiKey: "secret",
       client: vfs,
-      fetch: async () => new Response("", { status: 404 }),
+      fetch: async (input) => {
+        if (String(input) === "http://nexus.test/api/v2/ipc/inbox/bob") {
+          return jsonResponse({
+            messages: [
+              {
+                cid,
+                from: { agentId: "alice" },
+                body: "direct",
+                recipients: ["@bob"],
+                createdAt: "2026-05-12T13:00:00.000Z",
+              },
+            ],
+            total: 1,
+          });
+        }
+        return new Response("", { status: 404 });
+      },
     });
 
     const messages = await client.readInbox({ recipients: ["@bob", "@all"] });
 
     expect(messages.map((m) => m.cid)).toEqual([cid]);
+    expect(messages.map((m) => m.body)).toEqual(["direct"]);
   });
 });
