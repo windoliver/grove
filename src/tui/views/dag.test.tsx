@@ -190,7 +190,12 @@ describe("DagView (xray)", () => {
       renderer = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={makeStubProvider([root, child]) as never} active cursor={0} />
+            <DagView
+              provider={makeStubProvider([root, child]) as never}
+              active
+              cursor={0}
+              keysEnabled
+            />
           </DagStateProvider>
         ) as React.ReactElement,
       );
@@ -225,7 +230,12 @@ describe("DagView (xray)", () => {
       renderer = TestRenderer.create(
         (
           <DagStateProvider store={store}>
-            <DagView provider={makeStubProvider([root, child]) as never} active cursor={0} />
+            <DagView
+              provider={makeStubProvider([root, child]) as never}
+              active
+              cursor={0}
+              keysEnabled
+            />
           </DagStateProvider>
         ) as React.ReactElement,
       );

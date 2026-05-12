@@ -256,6 +256,10 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               active
               cursor={isFocused(Panel.Dag) ? nav.state.cursor : -1}
               onContributionsLoaded={onContributionsLoaded}
+              // Arm DAG keybindings only when the panel is focused AND no
+              // text/modal mode is consuming keys — keeps a space typed
+              // into search/palette from toggling the focused row.
+              keysEnabled={isFocused(Panel.Dag) && panelState.mode === "normal"}
             />
           );
         case Panel.Detail:

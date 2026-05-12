@@ -19,7 +19,7 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import type { ClaimEntity, ContributionEntity } from "../../core/entity.js";
 import type { Claim, Contribution } from "../../core/models.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
@@ -77,11 +77,16 @@ function entityToContribution(e: ContributionEntity): Contribution {
  *  the lease-collapsed `phase` here instead, expired-but-not-yet-purged
  *  claims would render as `awaiting-review`/`idle` after a relist. */
 function entityToClaim(e: ClaimEntity): Claim {
-  // Server-version fallback: `persistedPhase` was added alongside the
-  // lease-aware `phase`. A one-version-behind server may emit only
-  // `phase`; treat that as the persisted state so a partial-schema
-  // payload doesn't silently drop every claim from status derivation.
-  const persisted = e.status.persistedPhase ?? e.status.phase;
+  // Server-version handling: modern payloads expose `persistedPhase`
+  // (raw store state) alongside the lease-aware `phase`. Use it
+  // directly when present. On legacy payloads (no persistedPhase) the
+  // only signal we have is `phase`; treat `phase === "expired"` as if
+  // it were a persisted-active record so `deriveDagStatus` can apply
+  // its lease check and surface `blocked`. The alternative (mapping
+  // to `expired`) drops the active claim before status derivation runs
+  // and silently regresses the blocked path.
+  const persisted =
+    e.status.persistedPhase ?? (e.status.phase === "expired" ? "active" : e.status.phase);
   return {
     claimId: e.id,
     targetRef: e.spec.targetRef,
@@ -121,6 +126,12 @@ export interface DagProps {
    *  filter non-matches. Renamed from `filterText` (C2) to reflect the
    *  new no-filter semantics in the xray view. */
   readonly highlightText?: string | undefined;
+  /** When true, DAG-local keyboard shortcuts (space / Shift+A / Shift+Z)
+   *  are armed. Parents MUST keep this false during modal input — command
+   *  palette, prompt mode, `/` filter, help overlay — so a space typed
+   *  into a text field does not silently toggle the focused DAG row.
+   *  Default `false`. */
+  readonly keysEnabled?: boolean;
 }
 
 /** Xray-style DAG view (issue #311 C5). */
@@ -130,6 +141,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   cursor,
   onContributionsLoaded,
   highlightText,
+  keysEnabled = false,
 }: DagProps): React.ReactNode {
   const { store, snapshot } = useDagState();
   const effectiveHighlight = (highlightText ?? snapshot.highlight).trim().toLowerCase();
@@ -199,13 +211,20 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const derivedClaims = useDerived<readonly Claim[]>(
     () => {
       const all = claimInformer.list() as readonly ClaimEntity[];
-      // Filter on `persistedPhase` (raw store state) — falls back to
-      // `phase` if a one-version-behind server didn't ship persistedPhase.
-      // Either way an active-with-expired-lease row reaches the projection
-      // so the status helper can flip it to `blocked`. Mirrors the polled
-      // `getClaims({ status: "all" })` path.
+      // When `persistedPhase` is present (modern server) it tells us the
+      // raw store state directly — filter on that. When absent (legacy
+      // server emits only the lease-aware `phase`), we cannot tell an
+      // active-with-expired-lease row from a truly released/expired one
+      // by phase alone, so we accept `active` AND `expired` and let
+      // `deriveDagStatus` resolve via the actual lease timestamp.
+      // Without this, a one-version-behind server silently regresses the
+      // blocked status path.
       return all
-        .filter((e) => (e.status.persistedPhase ?? e.status.phase) === "active")
+        .filter((e) => {
+          const pp = e.status.persistedPhase;
+          if (pp !== undefined) return pp === "active";
+          return e.status.phase === "active" || e.status.phase === "expired";
+        })
         .map(entityToClaim);
     },
     ["Claim"],
@@ -306,28 +325,48 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   // subtrees, and emits duplicate rows for multi-parent crosslinks. Parent
   // navigation (Enter/cursor-based actions) must index against what the
   // user actually sees so a cursor row aligns with the right cid.
+  //
+  // Focus gate: when this DAG is not the focused panel (cursor < 0) we
+  // must NOT fire — the 5s status ticker would otherwise stomp the
+  // parent's global contributionList every tick with cids from a
+  // background panel, redirecting Enter/cursor on whichever panel IS
+  // focused.
+  //
+  // Skip-if-unchanged: compare the cid sequence so a tick-driven
+  // projection rebuild with the same visible rows doesn't burn a parent
+  // setState round-trip.
+  const lastReportedCidsRef = useRef<readonly string[] | null>(null);
   useEffect(() => {
     if (!onContributionsLoaded) return;
+    if (cursor < 0) return;
     if (projection.rows.length === 0) return;
+    const cidSeq = projection.rows.map((r) => r.cid);
+    const prev = lastReportedCidsRef.current;
+    if (prev && prev.length === cidSeq.length && prev.every((c, i) => c === cidSeq[i])) {
+      return;
+    }
     const contribByCid = new Map(contributions.map((c) => [c.cid, c]));
     const visible: Contribution[] = [];
     for (const row of projection.rows) {
       const c = contribByCid.get(row.cid);
       if (c) visible.push(c);
     }
+    lastReportedCidsRef.current = cidSeq;
     onContributionsLoaded(visible);
-  }, [projection.rows, contributions, onContributionsLoaded]);
+  }, [projection.rows, contributions, onContributionsLoaded, cursor]);
 
-  // Production keybindings — only act when this panel is the focused one
-  // (cursor >= 0) so a key press routed by the parent screen reaches the
-  // DAG and doesn't double-handle from other mounted views.
+  // Production keybindings — armed only when the parent confirms (a)
+  // the DAG panel is focused AND (b) no modal/text-input mode is active.
+  // useKeyboard registers globally and fires regardless of overlay state,
+  // so the `keysEnabled` gate is the only thing keeping a space typed
+  // into the command palette or `/` filter from toggling a DAG row.
   //   space → toggle collapse on the currently-focused row
   //   shift+A → expand all
   //   shift+Z → collapse every interior (non-leaf) cid currently rendered
   useKeyboard(
     useCallback(
       (key) => {
-        if (cursor < 0) return;
+        if (!keysEnabled || cursor < 0) return;
         const name = (key as { name?: string }).name;
         const shift = (key as { shift?: boolean }).shift === true;
         if (name === "space") {
@@ -348,7 +387,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
           store.collapseAll(collapsible);
         }
       },
-      [cursor, projection.rows, store],
+      [keysEnabled, cursor, projection.rows, store],
     ),
   );
 
