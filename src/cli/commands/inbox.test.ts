@@ -19,7 +19,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
+import {
+  createSqliteStores,
+  initSqliteDb,
+  SqliteContributionStore,
+} from "../../local/sqlite-store.js";
 import { handleInbox } from "./inbox.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
@@ -248,6 +252,7 @@ describe("grove inbox — Nexus IPC delegation", () => {
   let originalNexusUrl: string | undefined;
   let originalNexusApiKey: string | undefined;
   let originalAgentId: string | undefined;
+  let originalSessionId: string | undefined;
 
   beforeEach(async () => {
     dir = await createTempDir();
@@ -255,6 +260,7 @@ describe("grove inbox — Nexus IPC delegation", () => {
     originalNexusUrl = process.env.GROVE_NEXUS_URL;
     originalNexusApiKey = process.env.NEXUS_API_KEY;
     originalAgentId = process.env.GROVE_AGENT_ID;
+    originalSessionId = process.env.GROVE_SESSION_ID;
     process.env.GROVE_NEXUS_URL = "http://nexus.test";
     process.env.NEXUS_API_KEY = "secret";
   });
@@ -267,6 +273,8 @@ describe("grove inbox — Nexus IPC delegation", () => {
     else process.env.NEXUS_API_KEY = originalNexusApiKey;
     if (originalAgentId === undefined) delete process.env.GROVE_AGENT_ID;
     else process.env.GROVE_AGENT_ID = originalAgentId;
+    if (originalSessionId === undefined) delete process.env.GROVE_SESSION_ID;
+    else process.env.GROVE_SESSION_ID = originalSessionId;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -317,6 +325,37 @@ describe("grove inbox — Nexus IPC delegation", () => {
       recipients: ["@reviewer"],
       from: { agentId: "alice" },
     });
+  });
+
+  test("send uses session-scoped Nexus IPC path when GROVE_SESSION_ID is configured", async () => {
+    await executeInit(makeInitOptions(dir));
+    await rm(join(dir, "GROVE.md"), { force: true });
+    let sessionId = "";
+    const stores = createSqliteStores(join(dir, ".grove", "grove.db"));
+    try {
+      const session = await stores.goalSessionStore.createSession({ goal: "session cli inbox" });
+      sessionId = session.id;
+      process.env.GROVE_SESSION_ID = session.id;
+    } finally {
+      stores.close();
+    }
+    const writes: unknown[] = [];
+    globalThis.fetch = async (input, init) => {
+      if (String(input) === "http://nexus.test/api/v2/files/write") {
+        writes.push(JSON.parse(String(init?.body)));
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+
+    const { exitCode } = await runInbox(
+      ["send", "session hello", "--to", "@reviewer", "--agent-id", "alice", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(writes).toHaveLength(1);
+    const write = writes[0] as { readonly path: string };
+    expect(write.path).toMatch(new RegExp(`^/sessions/${sessionId}/ipc/reviewer/inbox/.+\\.json$`));
   });
 
   test("read uses Nexus IPC inbox when Nexus env is configured", async () => {

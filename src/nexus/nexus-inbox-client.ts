@@ -130,6 +130,9 @@ export class NexusInboxClient implements InboxReadSource {
     role: string,
     query?: InboxQuery,
   ): Promise<readonly InboxMessage[] | undefined> {
+    // Session-scoped reads must use `/sessions/{sessionId}/ipc/...` VFS paths;
+    // the optional direct IPC endpoint has no session-scope contract here.
+    if (this.sessionId !== undefined) return undefined;
     if (this.directEndpointAvailable === false) return undefined;
     try {
       const params = new URLSearchParams();

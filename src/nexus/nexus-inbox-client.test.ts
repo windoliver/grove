@@ -77,6 +77,50 @@ describe("NexusInboxClient", () => {
     expect(messages[0]?.body).toBe("from file");
   });
 
+  test("session-scoped inbox reads skip direct endpoint and use session VFS path", async () => {
+    const vfs = new MockNexusClient();
+    const listedPaths: string[] = [];
+    const originalList = vfs.list.bind(vfs);
+    vfs.list = async (path, opts) => {
+      listedPaths.push(path);
+      return originalList(path, opts);
+    };
+    await vfs.write(
+      "/sessions/sess-2/ipc/bob/inbox/msg-1.json",
+      encodeEnvelope({
+        message_id: "msg-1",
+        sender: "alice",
+        recipient: "bob",
+        timestamp: "2026-05-12T12:00:00.000Z",
+        payload: {
+          kind: "grove.message",
+          cid: "blake3:abababababababababababababababababababababababababababababababab",
+          body: "session scoped",
+          recipients: ["@bob"],
+          createdAt: "2026-05-12T12:00:00.000Z",
+          from: { agentId: "alice" },
+        },
+      }),
+    );
+    const fetchCalls: string[] = [];
+    const client = new NexusInboxClient({
+      nexusUrl: "http://nexus.test",
+      apiKey: "secret",
+      sessionId: "sess-2",
+      client: vfs,
+      fetch: async (input) => {
+        fetchCalls.push(String(input));
+        throw new Error("session reads must not use direct endpoint");
+      },
+    });
+
+    const messages = await client.readInbox({ recipient: "@bob" });
+
+    expect(fetchCalls).toEqual([]);
+    expect(listedPaths).toContain("/sessions/sess-2/ipc/bob/inbox");
+    expect(messages.map((m) => m.body)).toEqual(["session scoped"]);
+  });
+
   test("falls back to inbox files when direct endpoint fetch throws", async () => {
     const vfs = new MockNexusClient();
     await vfs.write(
