@@ -46,21 +46,24 @@ describe("SqliteCreditsService persistence", () => {
       initialBalance: 0,
       rewardTreasuryBalance: 0,
     });
-    first.seed("creator", 500);
-    await first.reserve({
-      reservationId: "res-persist",
-      agentId: "creator",
-      amount: 125,
-      timeoutMs: 60_000,
-    });
-    await first.capture("res-persist", { toAgentId: "worker" });
-    await first.transfer({
-      transferId: "xfer-persist",
-      fromAgentId: "worker",
-      toAgentId: "reviewer",
-      amount: 25,
-    });
-    firstDb.close();
+    try {
+      first.seed("creator", 500);
+      await first.reserve({
+        reservationId: "res-persist",
+        agentId: "creator",
+        amount: 125,
+        timeoutMs: 60_000,
+      });
+      await first.capture("res-persist", { toAgentId: "worker" });
+      await first.transfer({
+        transferId: "xfer-persist",
+        fromAgentId: "worker",
+        toAgentId: "reviewer",
+        amount: 25,
+      });
+    } finally {
+      firstDb.close();
+    }
 
     const secondDb = initSqliteDb(dbPath);
     const second = new SqliteCreditsService(secondDb, {
@@ -94,6 +97,49 @@ describe("SqliteCreditsService persistence", () => {
         available: 100,
         reserved: 0,
         total: 100,
+      });
+    } finally {
+      secondDb.close();
+    }
+  });
+
+  test("persists pending reservations after reopen", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-pending-"));
+    const dbPath = join(tempDir, "credits.db");
+
+    const firstDb = initSqliteDb(dbPath);
+    const first = new SqliteCreditsService(firstDb, {
+      initialBalance: 0,
+      rewardTreasuryBalance: 0,
+    });
+    try {
+      first.seed("creator", 500);
+      await first.reserve({
+        reservationId: "res-pending",
+        agentId: "creator",
+        amount: 125,
+        timeoutMs: 60_000,
+      });
+    } finally {
+      firstDb.close();
+    }
+
+    const secondDb = initSqliteDb(dbPath);
+    const second = new SqliteCreditsService(secondDb, {
+      initialBalance: 0,
+      rewardTreasuryBalance: 0,
+    });
+    try {
+      expect(await second.balance("creator")).toEqual({
+        available: 375,
+        reserved: 125,
+        total: 500,
+      });
+      await second.capture("res-pending");
+      expect(await second.balance("creator")).toEqual({
+        available: 375,
+        reserved: 0,
+        total: 375,
       });
     } finally {
       secondDb.close();
@@ -147,17 +193,20 @@ describe("SqliteCreditsService persistence", () => {
     const db = initSqliteDb(dbPath);
     const service = new SqliteCreditsService(db);
 
-    expect(await service.balance("new-agent")).toEqual({
-      available: 10000,
-      reserved: 0,
-      total: 10000,
-    });
-    expect(await service.balance("system:frontier-rewards")).toEqual({
-      available: 1000000,
-      reserved: 0,
-      total: 1000000,
-    });
-    db.close();
+    try {
+      expect(await service.balance("new-agent")).toEqual({
+        available: 10000,
+        reserved: 0,
+        total: 10000,
+      });
+      expect(await service.balance("system:frontier-rewards")).toEqual({
+        available: 1000000,
+        reserved: 0,
+        total: 1000000,
+      });
+    } finally {
+      db.close();
+    }
 
     const reopened = initSqliteDb(dbPath);
     const disabled = new SqliteCreditsService(reopened, {
