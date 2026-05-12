@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createLocalRuntime } from "../local/runtime.js";
+import { BountyStatus } from "./bounty.js";
 import { BountyIndexSweep } from "./bounty-index-sweep.js";
 import { HandoffSweep } from "./handoff-sweep.js";
 import type { InMemoryCreditsService } from "./in-memory-credits.js";
@@ -23,7 +24,7 @@ import { createTestOperationDeps } from "./operations/test-helpers.js";
 import { SettlementSweep } from "./settlement-sweep.js";
 import type { SweepResult, SweepStrategy } from "./sweep-reconciler.js";
 import { SweepReconciler } from "./sweep-reconciler.js";
-import { makeContribution } from "./test-helpers.js";
+import { makeBounty, makeContribution } from "./test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // SweepReconciler framework tests
@@ -349,6 +350,29 @@ describe("SettlementSweep", () => {
     // Verify bounty is now settled
     const settled = await deps.bountyStore!.getBounty(bounty.value.bountyId);
     expect(settled?.status).toBe("settled");
+  });
+
+  test("does not complete pending_settlement bounty without fulfilledByCid", async () => {
+    await deps.bountyStore!.createBounty(
+      makeBounty({
+        bountyId: "pending-without-fulfillment",
+        status: BountyStatus.PendingSettlement,
+        claimedBy: { agentId: "worker" },
+        fulfilledByCid: undefined,
+      }),
+    );
+
+    const sweep = new SettlementSweep(deps.bountyStore!, deps.creditsService);
+    const result = await sweep.sweep();
+
+    expect(result.found).toBe(1);
+    expect(result.repaired).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.message).toContain("fulfilledByCid");
+
+    const after = await deps.bountyStore!.getBounty("pending-without-fulfillment");
+    expect(after?.status).toBe("pending_settlement");
+    expect(after?.fulfilledByCid).toBeUndefined();
   });
 
   test("reports error when resume fails", async () => {

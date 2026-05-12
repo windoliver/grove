@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,5 +101,12 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.creditsService).toBe(runtime.creditsService);
     expect(deps.frontierRewardService).toBeUndefined();
     expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
+  });
+
+  test("stdio MCP entrypoint wires settlement sweep with durable credits", () => {
+    const source = readFileSync(join(import.meta.dir, "serve.ts"), "utf-8");
+
+    expect(source).toContain("new SettlementSweep");
+    expect(source).toContain("runtime.creditsService");
   });
 });
