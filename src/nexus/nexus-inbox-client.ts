@@ -50,19 +50,35 @@ export class NexusMessageDelivery implements MessageDelivery {
 
   async deliverMessage(message: DeliveredInboxMessage): Promise<void> {
     const sender = message.from.agentId;
-    await Promise.all(
-      message.recipients.map(async (recipient) => {
-        const role = normalizeHandle(recipient);
-        await this.ipcClient.send(sender, role, {
-          kind: "grove.message",
-          cid: message.cid,
-          body: message.body,
-          recipients: [...message.recipients],
-          createdAt: message.createdAt,
-          from: message.from,
-        });
-      }),
-    );
+    const failures = (
+      await Promise.all(
+        message.recipients.map(async (recipient) => {
+          const role = normalizeHandle(recipient);
+          try {
+            const result = await this.ipcClient.send(sender, role, {
+              kind: "grove.message",
+              cid: message.cid,
+              body: message.body,
+              recipients: [...message.recipients],
+              createdAt: message.createdAt,
+              from: message.from,
+            });
+            if (result.ok) return undefined;
+            return `${role}: ${result.error ?? "IPC send failed"}`;
+          } catch (err) {
+            const failureMessage = err instanceof Error ? err.message : String(err);
+            return `${role}: ${failureMessage}`;
+          }
+        }),
+      )
+    ).filter((failure): failure is string => failure !== undefined);
+
+    if (failures.length > 0) {
+      const noun = failures.length === 1 ? "recipient" : "recipients";
+      throw new Error(
+        `Nexus IPC delivery failed for ${failures.length} ${noun}: ${failures.join("; ")}`,
+      );
+    }
   }
 }
 

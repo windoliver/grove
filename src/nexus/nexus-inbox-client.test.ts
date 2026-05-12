@@ -220,22 +220,52 @@ test("NexusMessageDelivery sends Grove-marked payloads to each recipient inbox",
     },
   });
 
-  await delivery.deliverMessage({
-    cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    body: "hello",
-    recipients: ["@bob", "@all"],
-    createdAt: "2026-05-12T12:00:00.000Z",
-    from: { agentId: "alice", agentName: "Alice" },
-  });
-
-  expect(calls.map((c) => c.recipient)).toEqual(["bob", "all"]);
-  expect(calls[0]?.sender).toBe("alice");
-  expect(calls[0]?.payload).toEqual({
+  const expectedPayload = {
     kind: "grove.message",
     cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     body: "hello",
     recipients: ["@bob", "@all"],
     createdAt: "2026-05-12T12:00:00.000Z",
     from: { agentId: "alice", agentName: "Alice" },
+  };
+
+  await delivery.deliverMessage({
+    cid: expectedPayload.cid,
+    body: expectedPayload.body,
+    recipients: expectedPayload.recipients,
+    createdAt: expectedPayload.createdAt,
+    from: expectedPayload.from,
   });
+
+  expect(calls).toHaveLength(2);
+  expect(calls.map((c) => c.recipient)).toEqual(["bob", "all"]);
+  expect(calls[0]?.sender).toBe("alice");
+  expect(calls[0]?.payload).toEqual(expectedPayload);
+  expect(calls[1]?.payload).toEqual(expectedPayload);
+});
+
+test("NexusMessageDelivery rejects failed send results after attempting all recipients", async () => {
+  const calls: string[] = [];
+  const delivery = new NexusMessageDelivery({
+    ipcClient: {
+      send: async (_sender: string, recipient: string, _payload: Record<string, unknown>) => {
+        calls.push(recipient);
+        if (recipient === "all") {
+          return { ok: false, error: "IPC failed" };
+        }
+        return { ok: true, messageId: `msg-${recipient}` };
+      },
+    },
+  });
+
+  await expect(
+    delivery.deliverMessage({
+      cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      body: "hello",
+      recipients: ["@bob", "@all"],
+      createdAt: "2026-05-12T12:00:00.000Z",
+      from: { agentId: "alice", agentName: "Alice" },
+    }),
+  ).rejects.toThrow("Nexus IPC delivery failed for 1 recipient: all: IPC failed");
+  expect(calls).toEqual(["bob", "all"]);
 });
