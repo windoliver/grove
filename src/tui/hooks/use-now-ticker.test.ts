@@ -1,7 +1,7 @@
 /**
  * Tests for useNowTicker.
  *
- * Verified via direct setInterval observation — the React side is a
+ * Verified via direct timer observation — the React side is a
  * trivial useState/useEffect wrapper, so a behavior test on the timer
  * cadence is sufficient.
  */

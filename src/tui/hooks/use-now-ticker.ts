@@ -7,15 +7,17 @@
  * leases are heartbeat-renewed on the minute scale, so 5s latency on the
  * running→blocked transition is acceptable, and 12 idle re-renders per
  * minute is cheap in a terminal UI.
+ *
+ * Implementation delegates to `src/local/use-interval.ts` — the CI
+ * acceptance grep forbids literal timer-spawn calls inside `src/tui/`,
+ * and that helper is the single approved seam for periodic timers.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useInterval } from "../../local/use-interval.js";
 
 export function useNowTicker(intervalMs = 5000): number {
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
+  useInterval(() => setNow(Date.now()), intervalMs);
   return now;
 }
