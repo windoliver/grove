@@ -9,7 +9,9 @@ import { describe, expect, test } from "bun:test";
 
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
-import { createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
+import type { DeliveredInboxMessage } from "../../src/core/operations/inbox-delegation.js";
+import { createApp } from "../../src/server/app.js";
+import { createTestContext, TEST_AUTH_HEADERS, TEST_KEY, TEST_NAMESPACE } from "./helpers.js";
 
 /** Create a valid contribution with computed CID. */
 function makeContribution(input: ContributionInput) {
@@ -179,6 +181,45 @@ describe("boardroom routes", () => {
       const body = (await resp.json()) as { cid: string; summary: string };
       expect(body.cid).toMatch(/^blake3:/);
       expect(body.summary).toContain("Team update");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("POST /api/boardroom/message delivers through injected messageDelivery", async () => {
+    const ctx = await createTestContext();
+    try {
+      const delivered: DeliveredInboxMessage[] = [];
+      const app = createApp(
+        {
+          ...ctx.deps,
+          messageDelivery: {
+            deliverMessage: async (message) => {
+              delivered.push(message);
+            },
+          },
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({
+          body: "boardroom delivery",
+          recipients: ["@bob"],
+        }),
+      });
+
+      const body = (await resp.json()) as { readonly cid: string };
+
+      expect(resp.status).toBe(200);
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]?.cid).toBe(body.cid);
+      expect(delivered[0]?.body).toBe("boardroom delivery");
+      expect(delivered[0]?.recipients).toEqual(["@bob"]);
+      expect(delivered[0]?.from).toEqual({ agentId: "tui-operator", agentName: "operator" });
+      expect(delivered[0]?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     } finally {
       await ctx.cleanup();
     }

@@ -18,7 +18,7 @@ import { contributionToEntity } from "../../core/entity.js";
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
-import { sendMessageAsDiscussion } from "../../core/operations/messaging.js";
+import { sendMessageWithDelivery } from "../../core/operations/inbox-delegation.js";
 import type { ServerEnv } from "../deps.js";
 import { toOperationDeps } from "../operation-adapter.js";
 import { contributionStoreForSession } from "./shared.js";
@@ -282,7 +282,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   // watch is tracked as a follow-up.
   const baseOpDeps = toOperationDeps({ ...deps, contributionStore: store });
   const opDeps = body.sessionId === undefined ? { ...baseOpDeps, namespace } : baseOpDeps;
-  const result = await sendMessageAsDiscussion(
+  const result = await sendMessageWithDelivery(
     {
       agent: { agentId: "tui-operator", agentName: "operator" },
       body: body.body,
@@ -290,6 +290,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
       ...(body.inReplyTo !== undefined ? { inReplyTo: body.inReplyTo } : {}),
     },
     opDeps,
+    deps.messageDelivery,
   );
 
   if (!result.ok) {

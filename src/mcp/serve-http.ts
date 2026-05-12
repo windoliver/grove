@@ -444,6 +444,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
   let topologyRouter: TopologyRouter | undefined;
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+  let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
   const mutationGuard = createScopeMutationGuard(sessionId);
 
   if (nexusClient) {
@@ -515,6 +517,20 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
         );
       }
     }
+  }
+
+  if (nexusClient && nexusUrl && nexusApiKey) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      apiKey: nexusApiKey,
+      sessionId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
+    });
   }
 
   // Build a session-scoped handoff store per request. In Nexus mode, use the
@@ -798,6 +814,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,
+    inboxReadSource,
+    messageDelivery,
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite

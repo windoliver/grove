@@ -396,6 +396,23 @@ try {
   // Wire EventBus + TopologyRouter for IPC when topology exists.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
+  let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+  let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+
+  if (nexusClient && nexusUrl && nexusApiKey) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    const sessionId = process.env.GROVE_SESSION_ID;
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      apiKey: nexusApiKey,
+      sessionId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
+    });
+  }
 
   if (loadedContract?.topology) {
     if (nexusClient) {
@@ -652,6 +669,8 @@ try {
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
+    inboxReadSource,
+    messageDelivery,
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),

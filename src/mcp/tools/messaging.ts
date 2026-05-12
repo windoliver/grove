@@ -18,7 +18,10 @@ import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
 import type { UsageReport } from "../../core/operations/cost-tracking.js";
 import { reportUsage } from "../../core/operations/cost-tracking.js";
-import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
+import {
+  readInboxWithSource,
+  sendMessageWithDelivery,
+} from "../../core/operations/inbox-delegation.js";
 import type { McpDeps } from "../deps.js";
 import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
@@ -97,7 +100,7 @@ export function registerMessagingTools(server: McpServer, deps: McpDeps): void {
       inputSchema: sendMessageInputSchema,
     },
     async (args) => {
-      const result = await sendMessageAsDiscussion(
+      const result = await sendMessageWithDelivery(
         {
           agent: args.agent as AgentOverrides | undefined,
           body: args.body,
@@ -106,6 +109,7 @@ export function registerMessagingTools(server: McpServer, deps: McpDeps): void {
           tags: args.tags,
         },
         opDeps,
+        deps.messageDelivery,
       );
       return toMcpResult(result);
     },
@@ -121,12 +125,16 @@ export function registerMessagingTools(server: McpServer, deps: McpDeps): void {
       inputSchema: readInboxInputSchema,
     },
     async (args) => {
-      const messages = await readInbox(deps.contributionStore, {
-        ...(args.recipient !== undefined ? { recipient: args.recipient } : {}),
-        ...(args.from_agent_id !== undefined ? { fromAgentId: args.from_agent_id } : {}),
-        ...(args.since !== undefined ? { since: args.since } : {}),
-        ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      });
+      const messages = await readInboxWithSource(
+        deps.contributionStore,
+        {
+          ...(args.recipient !== undefined ? { recipient: args.recipient } : {}),
+          ...(args.from_agent_id !== undefined ? { fromAgentId: args.from_agent_id } : {}),
+          ...(args.since !== undefined ? { since: args.since } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        },
+        deps.inboxReadSource,
+      );
 
       return {
         content: [

@@ -12,6 +12,7 @@ import type { FrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { IdempotencyStore } from "../core/operations/deps.js";
+import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
@@ -58,6 +59,10 @@ export interface ServerDeps {
   readonly contract?: GroveContract | undefined;
   /** Optional handoff store. Routes return 501 when not configured. */
   readonly handoffStore?: HandoffStore | undefined;
+  /** Optional source for recipient-scoped inbox reads. */
+  readonly inboxReadSource?: InboxReadSource | undefined;
+  /** Optional delivery adapter for ephemeral message sends. */
+  readonly messageDelivery?: MessageDelivery | undefined;
   /**
    * Factory for session-scoped handoff stores. Optional: when provided,
    * HTTP routes that need session isolation (e.g. GET/list under a

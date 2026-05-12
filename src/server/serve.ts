@@ -103,6 +103,8 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
+let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -265,6 +267,21 @@ if (nexusUrl) {
     process.exit(1);
   }
 
+  if (nexusApiKey !== undefined) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    const sessionId = process.env.GROVE_SESSION_ID;
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      apiKey: nexusApiKey,
+      sessionId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
+    });
+  }
+
   serverContributionStore = new NexusContributionStore({
     client: nexusClient,
     zoneId,
@@ -354,6 +371,8 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  inboxReadSource,
+  messageDelivery,
   watchHub,
   watchSubscriber,
 };

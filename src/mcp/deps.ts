@@ -14,6 +14,7 @@ import type { CreditsService } from "../core/credits.js";
 import type { DeadlineWatcher } from "../core/deadline-watcher.js";
 import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
+import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
 import type { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { ServerDeps } from "../server/deps.js";
@@ -53,6 +54,10 @@ export interface McpDeps extends ServerDeps {
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */
   readonly topologyRouter?: TopologyRouter | undefined;
+  /** Optional source for recipient-scoped inbox reads. */
+  readonly inboxReadSource?: InboxReadSource | undefined;
+  /** Optional delivery adapter for ephemeral message sends. */
+  readonly messageDelivery?: MessageDelivery | undefined;
   /** Optional handoff store for querying routing coordination records. */
   readonly handoffStore?: HandoffStore | undefined;
   /**
