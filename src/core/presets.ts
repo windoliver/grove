@@ -62,6 +62,7 @@ export function getPresetTopologyRegistry(): Readonly<Record<string, CorePresetC
             maxInstances: 1,
             mode: "broadcast",
             platform: "claude-code",
+            endsSession: true,
             prompt:
               "You are a code reviewer. Wait for a coder contribution to arrive — do not act on the session goal yourself.\n" +
               "Your workflow:\n" +

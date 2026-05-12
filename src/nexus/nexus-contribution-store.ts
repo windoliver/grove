@@ -34,7 +34,7 @@ import type {
 import { toUtcIso } from "../core/time.js";
 import { debugLog } from "../tui/debug-log.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, NexusClient, ReadResult, WriteResult } from "./client.js";
+import type { ListEntry, NexusClient, ReadResult, WriteBatchEntry, WriteResult } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
@@ -488,8 +488,8 @@ export class NexusContributionStore implements ContributionStore {
     repairClaim: WriteResult,
   ): Promise<ContributionPutResult> {
     await withRetry(
-      () => this.writeContributionManifest(contribution),
-      "put:writeContributionManifest",
+      () => this.writeContributionRecord(contribution),
+      "put:writeContributionRecord",
       this.config,
     );
     try {
@@ -510,21 +510,23 @@ export class NexusContributionStore implements ContributionStore {
           "put:commitContentHashRepairConflictLookup",
         );
         if (latest !== undefined) {
-          return this.resolveExistingContentHash(
+          const resolved = await this.resolveExistingContentHash(
             contribution,
             contentHashPath,
             latest,
             Date.now() + CONTENT_HASH_REPAIR_WAIT_MS,
           );
+          if (resolved.cid !== contribution.cid) {
+            await this.deleteContributionRecord(
+              contribution,
+              "put:cleanupLosingContributionRecord",
+            );
+          }
+          return resolved;
         }
       }
       throw err;
     }
-    await withRetry(
-      () => this.writeContributionIndexes(contribution),
-      "put:writeContributionIndexes",
-      this.config,
-    );
     this.cache.set(contribution.cid, contribution);
     this.invalidateListCache();
     this.publishContributionAdded(contribution);
@@ -552,17 +554,34 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   private async writeContributionRecord(contribution: Contribution): Promise<void> {
-    await this.writeContributionManifest(contribution);
-    await this.writeContributionIndexes(contribution);
+    await withSemaphore(this.semaphore, () =>
+      this.client.writeBatch(this.contributionRecordFiles(contribution)),
+    );
   }
 
-  private async writeContributionManifest(contribution: Contribution): Promise<void> {
+  private async deleteContributionRecord(
+    contribution: Contribution,
+    context: string,
+  ): Promise<void> {
+    await withRetry(
+      async () => {
+        await batchParallel(this.contributionRecordFiles(contribution), (file) =>
+          withSemaphore(this.semaphore, () => this.client.delete(file.path)),
+        );
+      },
+      context,
+      this.config,
+    );
+    this.cache.delete(contribution.cid);
+    this.invalidateListCache();
+  }
+
+  private contributionRecordFiles(contribution: Contribution): readonly WriteBatchEntry[] {
+    const files: WriteBatchEntry[] = [];
     const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
     const manifest = toManifest(contribution);
-    await withSemaphore(this.semaphore, () => this.client.write(manifestPath, encode(manifest)));
-  }
+    files.push({ path: manifestPath, content: encode(manifest) });
 
-  private async writeContributionIndexes(contribution: Contribution): Promise<void> {
     for (const rel of contribution.relations) {
       const relPath = relationIndexPath(
         this.zoneId,
@@ -574,55 +593,64 @@ export class NexusContributionStore implements ContributionStore {
         relationType: rel.relationType,
         ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
       });
-      await withSemaphore(this.semaphore, () => this.client.write(relPath, relData));
+      files.push({ path: relPath, content: relData });
     }
 
     for (const tag of contribution.tags) {
       const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
-      await withSemaphore(this.semaphore, () => this.client.write(tp, new Uint8Array(0)));
+      files.push({ path: tp, content: new Uint8Array(0) });
     }
 
-    await this.writeCreatedAtIndexes(contribution);
+    files.push(...this.contributionCreatedAtIndexFiles(contribution));
 
+    const createdAt = toUtcIso(contribution.createdAt);
     const ftsPath = ftsIndexPath(this.zoneId, contribution.cid, this.sessionId);
-    await withSemaphore(this.semaphore, () =>
-      this.client.write(
-        ftsPath,
-        encode({
-          cid: contribution.cid,
-          summary: contribution.summary,
-          description: contribution.description ?? "",
-          kind: contribution.kind,
-          mode: contribution.mode,
-          agentId: contribution.agent.agentId,
-          agentName: contribution.agent.agentName ?? null,
-          createdAt: toUtcIso(contribution.createdAt),
-          tags: contribution.tags,
-        }),
-      ),
-    );
+    files.push({
+      path: ftsPath,
+      content: encode({
+        cid: contribution.cid,
+        summary: contribution.summary,
+        description: contribution.description ?? "",
+        kind: contribution.kind,
+        mode: contribution.mode,
+        agentId: contribution.agent.agentId,
+        agentName: contribution.agent.agentName ?? null,
+        createdAt,
+        tags: contribution.tags,
+      }),
+    });
+    return files;
   }
 
   private async writeCreatedAtIndexes(contribution: Contribution): Promise<void> {
-    const createdAt = toUtcIso(contribution.createdAt);
     await withSemaphore(this.semaphore, () =>
-      this.client.write(
-        contributionCreatedAtIndexPath(this.zoneId, createdAt, contribution.cid, this.sessionId),
-        new Uint8Array(0),
-      ),
+      this.client.writeBatch(this.contributionCreatedAtIndexFiles(contribution)),
     );
-    await withSemaphore(this.semaphore, () =>
-      this.client.write(
-        contributionAgentCreatedAtIndexPath(
+  }
+
+  private contributionCreatedAtIndexFiles(contribution: Contribution): readonly WriteBatchEntry[] {
+    const createdAt = toUtcIso(contribution.createdAt);
+    return [
+      {
+        path: contributionCreatedAtIndexPath(
+          this.zoneId,
+          createdAt,
+          contribution.cid,
+          this.sessionId,
+        ),
+        content: new Uint8Array(0),
+      },
+      {
+        path: contributionAgentCreatedAtIndexPath(
           this.zoneId,
           contribution.agent.agentId,
           createdAt,
           contribution.cid,
           this.sessionId,
         ),
-        new Uint8Array(0),
-      ),
-    );
+        content: new Uint8Array(0),
+      },
+    ];
   }
 
   private publishContributionAdded(contribution: Contribution): void {

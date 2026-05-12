@@ -33,6 +33,7 @@ function stubClient(
     read: async () => undefined,
     readWithMeta: async () => undefined,
     write: async () => ({ bytesWritten: 0, etag: "e" }),
+    writeBatch: async () => [],
     exists: async () => false,
     stat: async () => undefined,
     delete: async () => false,

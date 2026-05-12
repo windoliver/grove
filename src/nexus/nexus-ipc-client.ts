@@ -12,6 +12,7 @@
  */
 
 import { debugLog } from "../tui/debug-log.js";
+import { encodeSegment } from "./vfs-paths.js";
 
 /** Result of an IPC send operation. */
 export interface IpcSendResult {
@@ -32,6 +33,7 @@ export interface NexusIpcClientOptions {
   readonly nexusUrl: string;
   readonly apiKey: string;
   readonly sessionId?: string | undefined;
+  readonly zoneId?: string | undefined;
 }
 
 /** How long to cache a transient IPC failure before retrying (ms). */
@@ -41,6 +43,7 @@ export class NexusIpcClient {
   private readonly nexusUrl: string;
   private readonly apiKey: string;
   private readonly sessionId: string | undefined;
+  private readonly zoneId: string | undefined;
   /**
    * Endpoint availability state:
    * - undefined: unknown (first call)
@@ -55,6 +58,13 @@ export class NexusIpcClient {
     this.nexusUrl = opts.nexusUrl;
     this.apiKey = opts.apiKey;
     this.sessionId = opts.sessionId;
+    this.zoneId = opts.zoneId;
+  }
+
+  private inboxPath(recipient: string, messageId: string): string {
+    const zonePrefix = this.zoneId ? `/zones/${encodeSegment(this.zoneId)}` : "";
+    const sessionPrefix = this.sessionId ? `/sessions/${encodeSegment(this.sessionId)}` : "";
+    return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(recipient)}/inbox/${encodeSegment(messageId)}.json`;
   }
 
   /**
@@ -108,9 +118,7 @@ export class NexusIpcClient {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          path: this.sessionId
-            ? `/sessions/${this.sessionId}/ipc/${recipient}/inbox/${messageId}.json`
-            : `/ipc/${recipient}/inbox/${messageId}.json`,
+          path: this.inboxPath(recipient, messageId),
           content,
           encoding: "base64",
         }),

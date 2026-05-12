@@ -68,4 +68,43 @@ describe("NexusHttpClient", () => {
     expect(caught).toBeInstanceOf(NexusConflictError);
     expect(caught).toMatchObject({ actualEtag: "actual-etag" });
   });
+
+  test("writeBatch posts wrapped bytes to the REST batch endpoint", async () => {
+    const bodies: unknown[] = [];
+    const urls: string[] = [];
+    setMockFetch(async (input, init) => {
+      urls.push(String(input));
+      bodies.push(parseRequestBody(init));
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              path: "/path/file",
+              content_id: "etag-1",
+              version: 2,
+              size: 4,
+              modified_at: "2026-05-11T00:00:00Z",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    });
+
+    const client = new NexusHttpClient({ url: "http://nexus.local" });
+    const results = await client.writeBatch([{ path: "/path/file", content: new Uint8Array([1]) }]);
+
+    expect(urls).toEqual(["http://nexus.local/api/v2/files/batch/write"]);
+    expect(bodies).toEqual([
+      {
+        files: [
+          {
+            path: "/path/file",
+            content_base64: Buffer.from("AQ==").toString("base64"),
+          },
+        ],
+      },
+    ]);
+    expect(results).toEqual([{ bytesWritten: 4, etag: "etag-1", version: 2 }]);
+  });
 });

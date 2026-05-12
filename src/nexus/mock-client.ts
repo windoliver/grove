@@ -15,6 +15,7 @@ import type {
   ReadResult,
   SearchOptions,
   SearchResult,
+  WriteBatchEntry,
   WriteOptions,
   WriteResult,
 } from "./client.js";
@@ -112,13 +113,17 @@ export class MockNexusClient implements NexusClient {
   // Directory helpers
   // -----------------------------------------------------------------------
 
-  private ensureParentDirs(path: string): void {
+  private addParentDirs(directories: Set<string>, path: string): void {
     const parts = path.split("/").filter(Boolean);
     let current = "";
     for (let i = 0; i < parts.length - 1; i++) {
       current += `/${parts[i]}`;
-      this.directories.add(current);
+      directories.add(current);
     }
+  }
+
+  private ensureParentDirs(path: string): void {
+    this.addParentDirs(this.directories, path);
   }
 
   private normalizeDirPath(path: string): string {
@@ -186,6 +191,41 @@ export class MockNexusClient implements NexusClient {
     });
 
     return { bytesWritten: content.byteLength, etag };
+  }
+
+  async writeBatch(files: readonly WriteBatchEntry[]): Promise<readonly WriteResult[]> {
+    this.maybeThrow();
+
+    const nextFiles = new Map(this.files);
+    const nextDirectories = new Set(this.directories);
+    const results: WriteResult[] = [];
+    const now = new Date().toISOString();
+    let nextEtagCounter = this.etagCounter;
+
+    for (const file of files) {
+      this.addParentDirs(nextDirectories, file.path);
+      const existing = nextFiles.get(file.path);
+      const etag = `etag-${++nextEtagCounter}`;
+      nextFiles.set(file.path, {
+        content: new Uint8Array(file.content),
+        etag,
+        createdAt: existing?.createdAt ?? now,
+        modifiedAt: now,
+      });
+      results.push({ bytesWritten: file.content.byteLength, etag });
+    }
+
+    this.files.clear();
+    for (const [path, file] of nextFiles) {
+      this.files.set(path, file);
+    }
+    this.directories.clear();
+    for (const directory of nextDirectories) {
+      this.directories.add(directory);
+    }
+    this.etagCounter = nextEtagCounter;
+
+    return results;
   }
 
   async exists(path: string): Promise<boolean> {

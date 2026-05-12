@@ -56,6 +56,7 @@ function createSessionWriteRecorder(
       }
       return client.write(path, content, opts);
     },
+    writeBatch: (files) => client.writeBatch(files),
     exists: (path) => client.exists(path),
     stat: (path) => client.stat(path),
     delete: (path) => client.delete(path),
@@ -315,6 +316,7 @@ describe("NexusSessionStore", () => {
         }
         return result;
       },
+      writeBatch: (files) => client.writeBatch(files),
       exists: (path) => client.exists(path),
       stat: (path) => client.stat(path),
       delete: (path) => client.delete(path),
@@ -355,6 +357,7 @@ describe("NexusSessionStore", () => {
         }
         return client.write(path, content, opts);
       },
+      writeBatch: (files) => client.writeBatch(files),
       exists: (path) => client.exists(path),
       stat: (path) => client.stat(path),
       delete: (path) => client.delete(path),
@@ -412,6 +415,7 @@ describe("NexusSessionStore", () => {
         }
         return client.write(path, content, opts);
       },
+      writeBatch: (files) => client.writeBatch(files),
       exists: (path) => client.exists(path),
       stat: (path) => client.stat(path),
       delete: (path) => client.delete(path),
@@ -462,6 +466,7 @@ describe("NexusSessionStore", () => {
         }
         return client.write(path, content, opts);
       },
+      writeBatch: (files) => client.writeBatch(files),
       exists: (path) => client.exists(path),
       stat: (path) => client.stat(path),
       delete: (path) => client.delete(path),
@@ -507,6 +512,7 @@ describe("NexusSessionStore", () => {
         }
         return client.write(path, content, opts);
       },
+      writeBatch: (files) => client.writeBatch(files),
       exists: (path) => client.exists(path),
       stat: (path) => client.stat(path),
       delete: (path) => client.delete(path),

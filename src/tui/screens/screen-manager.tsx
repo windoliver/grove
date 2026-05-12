@@ -319,9 +319,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
     const snapshotAndComplete = useCallback(
       async (reason: string) => {
-        // Stop active agents before any slower completion work so in-flight
-        // handoffs cannot keep the review loop producing contributions.
-        await spawnManager.stopActiveSession().catch(() => {
+        if (completionStartedRef.current) return;
+        completionStartedRef.current = true;
+        doneSignaledRef.current = true;
+
+        // stopActiveSession synchronously unregisters IPC routes and clears
+        // active session maps before awaiting process teardown. Do not await
+        // the teardown here: a stuck adapter close must not keep the session
+        // row active after grove_done has already completed the session.
+        void spawnManager.stopActiveSession().catch(() => {
           /* best-effort */
         });
         await spawnManager.saveTraces().catch(() => {
@@ -355,9 +361,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [provider, spawnManager, pages],
     );
     const handleDone = useCallback(() => {
-      if (completionStartedRef.current) return;
-      doneSignaledRef.current = true;
-      completionStartedRef.current = true;
       void snapshotAndComplete("Session signaled done");
     }, [snapshotAndComplete]);
     const observeDoneContribution = useDoneDetection(

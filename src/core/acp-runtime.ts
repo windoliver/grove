@@ -137,19 +137,24 @@ function buildCodexMcpConfigBlock(server: McpServerConfig, env: NodeJS.ProcessEn
   if (!name || !command) return "";
 
   const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
+  const { envEntries, envVars } = codexMcpEnvConfigEntries(server, env);
   const lines = [
     CODEX_GENERATED_MCP_START,
     `[${serverKey}]`,
     `command = ${tomlString(command)}`,
     `args = ${tomlStringArray(server.args ?? [])}`,
-    "",
-    `[${serverKey}.env]`,
   ];
-  const envEntries = Object.entries(mergedCodexMcpServerEnv(server, env)).sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
-  for (const [envName, envValue] of envEntries) {
-    lines.push(`${tomlKeySegment(envName)} = ${tomlString(envValue)}`);
+  if (server.startupTimeoutSec !== undefined) {
+    lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+  }
+  if (envVars.length > 0) {
+    lines.push(`env_vars = ${tomlStringArray(envVars)}`);
+  }
+  if (envEntries.length > 0) {
+    lines.push("", `[${serverKey}.env]`);
+    for (const [envName, envValue] of envEntries) {
+      lines.push(`${tomlKeySegment(envName)} = ${tomlString(envValue)}`);
+    }
   }
   lines.push(CODEX_GENERATED_MCP_END);
   return lines.join("\n");
@@ -494,6 +499,23 @@ function mergedCodexMcpServerEnv(
   };
 }
 
+function codexMcpEnvConfigEntries(
+  server: NonNullable<AgentConfig["mcpServers"]>[number],
+  env: NodeJS.ProcessEnv,
+): { readonly envEntries: readonly [string, string][]; readonly envVars: readonly string[] } {
+  const envVars = new Set<string>();
+  const envEntries: [string, string][] = [];
+  for (const [envName, envValue] of Object.entries(mergedCodexMcpServerEnv(server, env))) {
+    if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) {
+      if (envName.length > 0) envVars.add(envName);
+      continue;
+    }
+    envEntries.push([envName, envValue]);
+  }
+  envEntries.sort(([left], [right]) => left.localeCompare(right));
+  return { envEntries, envVars: [...envVars].sort((left, right) => left.localeCompare(right)) };
+}
+
 function appendCodexMcpServerOverrides(
   args: string[],
   mcpServers: AgentConfig["mcpServers"] | undefined,
@@ -511,12 +533,13 @@ function appendCodexMcpServerOverrides(
       args.push("-c", `${serverKey}.startup_timeout_sec=${server.startupTimeoutSec}`);
     }
 
-    const envEntries = Object.entries(mergedCodexMcpServerEnv(server, env))
-      .filter(([envName, envValue]) => shouldPassMcpEnvViaCodexConfig(envName, envValue))
-      .sort(([left], [right]) => left.localeCompare(right));
+    const { envEntries, envVars } = codexMcpEnvConfigEntries(server, env);
 
     for (const [envName, envValue] of envEntries) {
       args.push("-c", `${serverKey}.env.${tomlKeySegment(envName)}=${tomlString(envValue)}`);
+    }
+    if (envVars.length > 0) {
+      args.push("-c", `${serverKey}.env_vars=${tomlStringArray(envVars)}`);
     }
   }
 }

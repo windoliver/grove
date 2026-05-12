@@ -4,8 +4,8 @@
  * grove_done — Signal that this agent has finished its work for the session.
  *
  * When an agent calls grove_done, it creates a contribution with
- * kind=discussion and context.done=true. The session ends as soon as that
- * done marker is observed.
+ * kind=discussion and context.done=true. The session ends when a required
+ * session-ending role's done marker is observed.
  *
  * This is the explicit stop condition for review loops where there's no
  * numeric threshold — the reviewer calls grove_done when satisfied.
@@ -37,8 +37,9 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
     {
       description:
         "Signal that you have finished your work for this session. " +
-        "Call this only when the whole session is ready to end — e.g., the " +
-        "reviewer has approved the code. This done signal ends the session.",
+        "Call this only when your role is responsible for ending the session — " +
+        "for example, when the reviewer has approved the code. A required " +
+        "session-ending role's done signal ends the session.",
       inputSchema: doneInputSchema,
     },
     async (args) => {

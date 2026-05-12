@@ -1066,29 +1066,38 @@ export class SpawnManager {
     this.stopLogPolling();
     this.routableSessions.clear();
 
-    const sessions = [...this.agentSessions.entries()];
-    for (const [spawnId, session] of sessions) {
+    const spawnIds = new Set<string>([...this.spawnRecords.keys(), ...this.agentSessions.keys()]);
+    const sessions: AgentSession[] = [];
+    const tmuxSessionNames: string[] = [];
+
+    for (const spawnId of spawnIds) {
+      const session = this.agentSessions.get(spawnId);
       const record = this.spawnRecords.get(spawnId);
-      const roleKey = record?.role ?? session.role ?? spawnId;
-      this.wsBridge?.unregisterSession(roleKey, session.id);
-      this.unregisterAcpSession(session.id);
+      const roleKey = record?.role ?? session?.role ?? spawnId.replace(/-[a-z0-9]+$/i, "");
+      this.wsBridge?.unregisterSession(roleKey, session?.id);
+      this.unregisterAcpSession(session?.id ?? spawnId);
       this.sessionStore?.remove(spawnId);
+      if (session !== undefined) {
+        sessions.push(session);
+      } else {
+        tmuxSessionNames.push(`grove-${spawnId}`);
+      }
     }
+
+    this.agentSessions.clear();
+    this.spawnRecords.clear();
 
     if (this.agentRuntime) {
       await Promise.allSettled(
-        sessions.map(([, session]) =>
+        sessions.map((session) =>
           this.agentRuntime?.close(session).catch(() => {
             /* best-effort — session may already be gone */
           }),
         ),
       );
     } else if (this.tmux) {
-      await Promise.allSettled(sessions.map(([spawnId]) => this.tmux?.kill(`grove-${spawnId}`)));
+      await Promise.allSettled(tmuxSessionNames.map((sessionName) => this.tmux?.kill(sessionName)));
     }
-
-    this.agentSessions.clear();
-    this.spawnRecords.clear();
   }
 
   /** Get the spawn record for an agentId (for testing). */

@@ -322,6 +322,40 @@ describe("SpawnManager", () => {
     expect(runtime.configs[0]?.prompt).toContain("Submit work immediately");
   });
 
+  test("stopActiveSession unregisters active rows before runtime close settles", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    const closedSessions: string[] = [];
+    let releaseClose: (() => void) | undefined;
+    runtime.close = async (session: AgentSession) => {
+      closedSessions.push(session.id);
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+    };
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        // No-op for test mock.
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    const result = await manager.spawn("reviewer", "codex");
+    const stopPromise = manager.stopActiveSession();
+
+    expect(manager.getActiveRoles()).toEqual([]);
+    expect(manager.getSpawnRecord(result.spawnId)).toBeUndefined();
+    expect(closedSessions).toEqual(["session-reviewer"]);
+
+    releaseClose?.();
+    await stopPromise;
+  });
+
   test("spawn creates workspace and tmux session (no auto-claims)", async () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();

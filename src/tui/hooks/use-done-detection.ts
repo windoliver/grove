@@ -2,7 +2,7 @@
  * Detects session completion by watching for explicit done signals.
  *
  * Watches contribution events for [DONE] prefix or context.done flag.
- * Calls onDone when a required terminal role has marked the session complete.
+ * Calls onDone when a required session-ending role has marked the session complete.
  *
  * Extracted from ScreenManager to reduce component complexity.
  */
@@ -24,6 +24,11 @@ export function isDoneContribution(c: { summary: string; context?: unknown }): b
 
 export function requiredDoneRoleNames(topology: AgentTopology | undefined): readonly string[] {
   if (!topology) return [];
+  const explicitEndingRoles = topology.roles
+    .filter((role) => role.endsSession === true)
+    .map((role) => role.name);
+  if (explicitEndingRoles.length > 0) return explicitEndingRoles;
+
   const terminalRoles = topology.roles
     .filter((role) => (role.edges?.length ?? 0) === 0)
     .map((role) => role.name);

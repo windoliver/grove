@@ -86,4 +86,66 @@ describe("useDoneDetection", () => {
 
     expect(doneCalls).toBe(1);
   });
+
+  test("uses explicit session-ending roles before terminal-role fallback", async () => {
+    const bus = new LocalEventBus();
+    openBuses.push(bus);
+    const topology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          endsSession: true,
+          edges: [{ target: "reviewer", edgeType: "delegates" }],
+        },
+        {
+          name: "reviewer",
+        },
+      ],
+    };
+
+    let doneCalls = 0;
+    await act(async () => {
+      mountedRenderers.push(
+        TestRenderer.create(
+          React.createElement(Probe, {
+            topology,
+            screen: "running",
+            eventBus: bus,
+            onDone: () => {
+              doneCalls += 1;
+            },
+          }),
+        ),
+      );
+    });
+
+    await act(async () => {
+      await bus.publish({
+        type: "contribution",
+        sourceRole: "reviewer",
+        targetRole: "reviewer",
+        payload: {
+          summary: "[DONE] Reviewer done",
+          context: { done: true },
+        },
+        timestamp: "2026-05-07T00:00:00.000Z",
+      });
+    });
+    expect(doneCalls).toBe(0);
+
+    await act(async () => {
+      await bus.publish({
+        type: "contribution",
+        sourceRole: "coder",
+        targetRole: "coder",
+        payload: {
+          summary: "[DONE] Coder done",
+          context: { done: true },
+        },
+        timestamp: "2026-05-07T00:00:01.000Z",
+      });
+    });
+    expect(doneCalls).toBe(1);
+  });
 });

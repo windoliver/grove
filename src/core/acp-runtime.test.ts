@@ -155,7 +155,31 @@ describe("buildAcpLaunchArgs", () => {
       'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
       "-c",
       'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
+      "-c",
+      'mcp_servers.grove.env_vars=["GROVE_ROUTING_TOKEN", "NEXUS_API_KEY"]',
     ]);
+    expect(
+      buildAcpLaunchArgs(codexLaunch, {}, { GROVE_ROUTING_TOKEN: "routing-secret" }).join("\n"),
+    ).not.toContain("routing-secret");
+  });
+
+  test("deduplicates sensitive MCP env var names across config entries", () => {
+    const args = buildAcpLaunchArgs(codexLaunch, {
+      mcpServers: [
+        {
+          name: "grove",
+          command: "/Users/example/.bun/bin/bun",
+          env: {
+            FIRST_TOKEN: "sk-test",
+            SECOND_SECRET: "example-secret",
+          },
+        },
+      ],
+    });
+
+    expect(args).toContain('mcp_servers.grove.env_vars=["FIRST_TOKEN", "SECOND_SECRET"]');
+    expect(args.join("\n")).not.toContain("example-secret");
+    expect(args.join("\n")).not.toContain("sk-test");
   });
 
   test("puts Grove MCP env in the codex adapter process env without leaking it into argv", () => {
@@ -282,11 +306,12 @@ describe("prepareIsolatedCodexHome", () => {
       expect(config).toContain("[mcp_servers.grove]");
       expect(config).toContain('command = "/bin/bun"');
       expect(config).toContain('args = ["run", "/tmp/grove/dist/mcp/serve.js"]');
+      expect(config).toContain('env_vars = ["NEXUS_API_KEY"]');
       expect(config).toContain("[mcp_servers.grove.env]");
       expect(config).toContain('GROVE_DIR = "/tmp/project/.grove"');
       expect(config).toContain('GROVE_NEXUS_URL = "http://localhost:59588"');
-      expect(config).toContain('NEXUS_API_KEY = "secret-key"');
       expect(config).toContain('GROVE_SESSION_ID = "session-1"');
+      expect(config).not.toContain("secret-key");
       expect(existsSync(join(isolated, "auth.json"))).toBe(true);
     } finally {
       if (isolated) rmSync(isolated, { recursive: true, force: true });

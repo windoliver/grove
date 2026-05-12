@@ -134,6 +134,10 @@ export class NexusDataProvider
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
   }
 
+  getNexusZoneId(): string {
+    return this.zoneId;
+  }
+
   private get authHeaders(): Record<string, string> | undefined {
     return this.serverApiKey ? { Authorization: `Bearer ${this.serverApiKey}` } : undefined;
   }
