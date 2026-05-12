@@ -33,6 +33,11 @@ surfaces Grove can rely on today are:
   `/sessions/{sessionId}/ipc/{recipient}/inbox/...`.
 - Grove's TUI bridge already drains those inbox directories with
   `/api/v2/files/list` and file reads.
+- Grove's `sendMessageAsDiscussion` path does not currently populate those
+  inbox directories. It creates an ephemeral discussion contribution, and
+  ephemeral chat intentionally skips topology routing. Nexus inbox reads
+  therefore need a Nexus-mode send-side delivery hook as well as a read-side
+  delegation.
 - The Nexus TUI has references to `GET /api/v2/ipc/inbox/{agentId}`, but the
   current Nexus server tree also documents deletion of the old `/api/v2/ipc/*`
   router. Grove must treat that endpoint as optional.
@@ -41,9 +46,9 @@ surfaces Grove can rely on today are:
 
 - Do not add a SQLite `discussion_recipients` table in this change. That can be
   a separate local-store optimization if local inbox scans become a bottleneck.
-- Do not change message write semantics. `sendMessageAsDiscussion` still creates
-  ephemeral discussion contributions, and Nexus event delivery still writes IPC
-  envelopes.
+- Do not replace message contribution writes. `sendMessageAsDiscussion` still
+  creates ephemeral discussion contributions; Nexus mode adds a delivery
+  side-effect so the recipient IPC inbox is populated.
 - Do not make Grove depend on a Nexus API that may not be present. The direct
   IPC endpoint is capability-detected.
 - Do not remove existing `readInbox` filtering. It remains the canonical
@@ -54,6 +59,15 @@ surfaces Grove can rely on today are:
 Add a small Nexus inbox read client alongside `NexusIpcClient`.
 
 ```
+CLI / MCP / TUI message send
+          |
+          v
+  sendMessageAsDiscussion
+          |
+          +-- Nexus message delivery available
+                 |
+                 +-- NexusIpcClient.send(recipient, grove_message payload)
+
 CLI / MCP / TUI inbox read
           |
           v
@@ -72,6 +86,10 @@ CLI / MCP / TUI inbox read
 
 The new client owns Nexus-specific decoding and projection. The existing
 `readInbox` operation remains store-oriented and backend-neutral.
+
+The send-side hook is deliberately narrow: it runs only after the contribution
+write succeeds and only when Nexus IPC is configured. Local mode keeps the
+existing contribution-only behavior.
 
 ## Components
 
@@ -115,6 +133,31 @@ Behavior:
   messages, fall back to `readInbox(store, query)` so existing deployments do
   not lose inbox visibility.
 
+### Nexus message delivery
+
+Add a narrow send helper, for example
+`sendMessageWithNexusDelivery(input, deps, nexusDelivery?)`.
+
+Behavior:
+
+- Always call `sendMessageAsDiscussion` first so policy enforcement,
+  idempotency, CID generation, and contribution persistence remain canonical.
+- If the contribution write fails, return the original failure and do not send
+  IPC envelopes.
+- If the write succeeds and Nexus delivery is configured, send one IPC envelope
+  per non-`@all` recipient. The payload includes a Grove-specific marker and
+  enough data for inbox reads to project an `InboxMessage` without scanning the
+  contribution store:
+  - `kind: "grove.message"`
+  - `cid`
+  - `body`
+  - `recipients`
+  - `createdAt`
+  - `from`
+- A Nexus IPC send failure is best-effort delivery failure, not contribution
+  failure. The contribution result still returns successfully, and debug logging
+  records the failed recipient when `GROVE_DEBUG=1`.
+
 ### Wiring
 
 Use the helper in the existing entry points that currently call `readInbox`:
@@ -125,6 +168,9 @@ Use the helper in the existing entry points that currently call `readInbox`:
 
 Runtime wiring should create `NexusInboxClient` from the same `NEXUS_URL`,
 `NEXUS_API_KEY`, and `GROVE_SESSION_ID` values already used for `NexusIpcClient`.
+The same wiring should provide `NexusMessageDelivery` to the send paths so
+messages sent through CLI, MCP, and server boardroom routes populate the inbox
+source that reads consume.
 
 ## Data Flow
 
@@ -140,6 +186,14 @@ For a recipient query such as `readInbox({ recipients: ["@coder", "@all"], limit
 5. The client applies sender and timestamp filters, sorts newest first, dedupes,
    and slices to the requested limit.
 6. The contribution store is not scanned on the Nexus recipient path.
+
+For a Nexus-mode send:
+
+1. The caller reaches the send adapter.
+2. `sendMessageAsDiscussion` writes the contribution through the existing
+   operation path.
+3. The adapter sends a Grove-marked IPC payload to each recipient's Nexus inbox.
+4. Recipient inbox reads consume those IPC payloads directly.
 
 ## Error Handling
 
@@ -168,12 +222,16 @@ Required tests:
   deduped and sorted newest first.
 - A fallback test proving infrastructure failure returns to existing
   contribution-store `readInbox` behavior.
+- A send-side test proving Nexus-mode `grove_send_message` writes a Grove-marked
+  IPC payload after the contribution write succeeds.
 - Existing `src/core/operations/messaging.test.ts` behavior remains unchanged.
 
 ## Acceptance Criteria
 
 - In Nexus mode, `grove_read_inbox` with recipient filters avoids full
   contribution-table scans.
+- In Nexus mode, `grove_send_message` populates recipient IPC inbox files after
+  successful contribution writes.
 - Existing CLI, MCP, and TUI inbox output shapes remain compatible.
 - Local SQLite behavior remains unchanged.
 - Nexus deployments without `/api/v2/ipc/inbox/{recipient}` still work through
