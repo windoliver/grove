@@ -278,10 +278,14 @@ describe("FrontierRewardService", () => {
 
     const rewards = await bountyStore.listRewards({ contributionCid: improved.cid });
     expect(rewards).toHaveLength(1);
+    const [reward] = rewards;
+    if (reward === undefined) {
+      throw new Error("expected one frontier reward");
+    }
     expect(await creditsService.balance("agent-new")).toEqual({
-      available: rewards[0]?.amount,
+      available: reward.amount,
       reserved: 0,
-      total: rewards[0]?.amount,
+      total: reward.amount,
     });
   });
 
@@ -438,7 +442,11 @@ describe("FrontierRewardService", () => {
 });
 
 class StaticFrontierCalculator implements FrontierCalculator {
-  constructor(private readonly frontier: Frontier) {}
+  private readonly frontier: Frontier;
+
+  constructor(frontier: Frontier) {
+    this.frontier = frontier;
+  }
 
   async compute(): Promise<Frontier> {
     return this.frontier;
