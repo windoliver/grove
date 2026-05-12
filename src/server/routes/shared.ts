@@ -12,8 +12,11 @@ import type { Contribution, Relation } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import type {
+  ContributionPutManyOutcome,
+  ContributionPutOutcome,
   ContributionQuery,
   ContributionStore,
+  CountSinceQuery,
   HotThreadsOptions,
   ThreadNode,
   ThreadSummary,
@@ -80,14 +83,16 @@ class SessionFilteredContributionStore implements ContributionStore {
     return contributions.filter((c) => cids.has(c.cid));
   }
 
-  put = async (contribution: Contribution): Promise<void> => {
-    await this.inner.put(contribution);
+  put = async (contribution: Contribution): Promise<ContributionPutOutcome> => {
+    const result = await this.inner.put(contribution);
     this.sessionCidsPromise = undefined;
+    return result;
   };
 
-  putMany = async (contributions: readonly Contribution[]): Promise<void> => {
-    await this.inner.putMany(contributions);
+  putMany = async (contributions: readonly Contribution[]): Promise<ContributionPutManyOutcome> => {
+    const result = await this.inner.putMany(contributions);
     this.sessionCidsPromise = undefined;
+    return result;
   };
 
   get = async (cid: string): Promise<Contribution | undefined> => {
@@ -153,14 +158,8 @@ class SessionFilteredContributionStore implements ContributionStore {
   count = (query?: ContributionQuery): Promise<number> =>
     this.inner.count({ ...query, sessionId: this.sessionId });
 
-  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
-    const contributions = await this.inner.list({
-      sessionId: this.sessionId,
-      agentId: query.agentId,
-    });
-    const sinceMs = Date.parse(query.since);
-    return contributions.filter((c) => Date.parse(c.createdAt) >= sinceMs).length;
-  };
+  countSince = (query: CountSinceQuery): Promise<number> =>
+    this.inner.countSince({ ...query, sessionId: this.sessionId });
 
   thread = async (
     rootCid: string,
