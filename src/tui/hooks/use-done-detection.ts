@@ -1,8 +1,8 @@
 /**
- * Detects session completion by watching for done signals from all topology roles.
+ * Detects session completion by watching for done signals from required topology roles.
  *
  * Polls contributions for [DONE] prefix or context.done flag.
- * Calls onDone when all roles have signaled completion.
+ * Calls onDone when all required roles have signaled completion.
  *
  * Extracted from ScreenManager to reduce component complexity.
  */
@@ -22,6 +22,15 @@ function isDoneContribution(c: { summary: string; context?: unknown }): boolean 
   );
 }
 
+function requiredDoneRoles(topology: AgentTopology): readonly string[] {
+  const explicit = topology.roles.filter((role) => role.endsSession).map((role) => role.name);
+  return explicit.length > 0 ? explicit : topology.roles.map((role) => role.name);
+}
+
+function doneRoleFromEvent(event: GroveEvent, subscribedRole: string): string {
+  return event.sourceRole && event.sourceRole !== "system" ? event.sourceRole : subscribedRole;
+}
+
 /**
  * Watch for session completion via contribution done signals.
  *
@@ -33,7 +42,7 @@ function isDoneContribution(c: { summary: string; context?: unknown }): boolean 
  * @param topology - Agent topology with role definitions
  * @param screen - Current screen state (only active on "running" or "advanced")
  * @param eventBus - Event bus for real-time done detection; without it the hook is inert
- * @param onDone - Callback when all roles have signaled done
+ * @param onDone - Callback when all required roles have signaled done
  */
 export function useDoneDetection(
   topology: AgentTopology | undefined,
@@ -47,9 +56,9 @@ export function useDoneDetection(
     (role: string) => {
       if (!topology) return;
       doneRolesRef.current.add(role);
-      const roleNames = new Set(topology.roles.map((r) => r.name));
-      const allDone = [...roleNames].every((r) => doneRolesRef.current.has(r));
-      if (allDone && roleNames.size > 0) {
+      const roleNames = requiredDoneRoles(topology);
+      const allDone = roleNames.every((r) => doneRolesRef.current.has(r));
+      if (allDone && roleNames.length > 0) {
         onDone();
       }
     },
@@ -70,11 +79,11 @@ export function useDoneDetection(
             payload.summary &&
             isDoneContribution(payload as { summary: string; context?: unknown })
           ) {
-            checkDone(role.name);
+            checkDone(doneRoleFromEvent(event, role.name));
           }
         }
         if (event.type === "stop") {
-          checkDone(role.name);
+          checkDone(doneRoleFromEvent(event, role.name));
         }
       };
       handlers.push({ role: role.name, handler });

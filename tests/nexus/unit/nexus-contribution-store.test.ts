@@ -10,14 +10,54 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { computeContributionContentHash } from "../../../src/core/content-dedup.js";
 import { toManifest } from "../../../src/core/manifest.js";
+import { RelationType } from "../../../src/core/models.js";
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
 import { makeContribution } from "../../../src/core/test-helpers.js";
+import type { WriteOptions, WriteResult } from "../../../src/nexus/client.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 import {
   contributionContentHashIndexPath,
   contributionPath,
+  ftsIndexPath,
+  relationIndexPath,
+  tagIndexPath,
 } from "../../../src/nexus/vfs-paths.js";
+
+interface RecordedBatchFile {
+  readonly path: string;
+  readonly content: Uint8Array;
+  readonly opts?: WriteOptions | undefined;
+}
+
+class RecordingBatchClient extends MockNexusClient {
+  readonly writeCalls: string[] = [];
+  readonly writeBatchCalls: RecordedBatchFile[][] = [];
+
+  override async write(
+    path: string,
+    content: Uint8Array,
+    opts?: WriteOptions,
+  ): Promise<WriteResult> {
+    this.writeCalls.push(path);
+    return super.write(path, content, opts);
+  }
+
+  async writeBatch(files: readonly RecordedBatchFile[]): Promise<readonly WriteResult[]> {
+    this.writeBatchCalls.push(
+      files.map((file) => ({
+        path: file.path,
+        content: new Uint8Array(file.content),
+        ...(file.opts !== undefined ? { opts: file.opts } : {}),
+      })),
+    );
+    const results: WriteResult[] = [];
+    for (const file of files) {
+      results.push(await super.write(file.path, file.content, file.opts));
+    }
+    return results;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Conformance tests
@@ -302,6 +342,44 @@ describe("NexusContributionStore adapter-specific", () => {
     expect(result.contribution?.cid).toBe(c.cid);
     expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
     expect((await store.search("finish")).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("put writes manifest and secondary indexes in one batch", async () => {
+    const batchClient = new RecordingBatchClient();
+    const batchStore = new NexusContributionStore({
+      client: batchClient,
+      zoneId: "batch-zone",
+      retryMaxAttempts: 1,
+    });
+    const targetCid = `blake3:${"a".repeat(64)}`;
+    const c = makeContribution({
+      summary: "batch contribution record",
+      description: "batch indexed text",
+      relations: [{ targetCid, relationType: RelationType.DerivesFrom }],
+      tags: ["alpha", "beta"],
+    });
+    const expectedRecordPaths = [
+      contributionPath("batch-zone", c.cid),
+      relationIndexPath("batch-zone", targetCid, c.cid),
+      tagIndexPath("batch-zone", "alpha", c.cid),
+      tagIndexPath("batch-zone", "beta", c.cid),
+      ftsIndexPath("batch-zone", c.cid),
+    ].sort();
+
+    await batchStore.put(c);
+
+    const firstBatch = batchClient.writeBatchCalls.at(0);
+    if (firstBatch === undefined) {
+      throw new Error("expected contribution record to be written with writeBatch");
+    }
+    expect(batchClient.writeBatchCalls).toHaveLength(1);
+    expect(firstBatch.map((file) => file.path).sort()).toEqual(expectedRecordPaths);
+    for (const path of expectedRecordPaths) {
+      expect(batchClient.writeCalls).not.toContain(path);
+    }
+
+    batchStore.close();
+    await batchClient.close();
   });
 
   test("getByContentHash ignores committed incomplete manifest records", async () => {

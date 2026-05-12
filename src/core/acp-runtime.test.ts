@@ -90,24 +90,24 @@ describe("buildAcpLaunchArgs", () => {
     ]);
   });
 
-  test("passes process-local MCP config to codex-acp without secret env values", () => {
-    expect(
-      buildAcpLaunchArgs(codexLaunch, {
-        mcpServers: [
-          {
-            name: "grove",
-            command: "/Users/example/.bun/bin/bun",
-            args: ["run", "/tmp/grove/dist/mcp/serve.js"],
-            env: {
-              GROVE_DIR: "/tmp/grove/.grove",
-              GROVE_NEXUS_URL: "http://localhost:10120",
-              NEXUS_API_KEY: "example-secret",
-              GROVE_SESSION_ID: "session-1",
-            },
+  test("passes process-local MCP config to codex-acp without embedding secret env values", () => {
+    const args = buildAcpLaunchArgs(codexLaunch, {
+      mcpServers: [
+        {
+          name: "grove",
+          command: "/Users/example/.bun/bin/bun",
+          args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+          env: {
+            GROVE_DIR: "/tmp/grove/.grove",
+            GROVE_NEXUS_URL: "http://localhost:10120",
+            NEXUS_API_KEY: "example-secret",
+            GROVE_SESSION_ID: "session-1",
           },
-        ],
-      }),
-    ).toEqual([
+        },
+      ],
+    });
+
+    expect(args).toEqual([
       "codex-acp.js",
       "-c",
       'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
@@ -119,7 +119,27 @@ describe("buildAcpLaunchArgs", () => {
       'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
       "-c",
       'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
+      "-c",
+      'mcp_servers.grove.env_vars=["NEXUS_API_KEY"]',
     ]);
+    expect(args.join("\n")).not.toContain("example-secret");
+  });
+
+  test("deduplicates sensitive MCP env var names across config entries", () => {
+    const args = buildAcpLaunchArgs(codexLaunch, {
+      mcpServers: [
+        {
+          name: "grove",
+          command: "/Users/example/.bun/bin/bun",
+          env: {
+            FIRST_TOKEN: "sk-test",
+            SECOND_SECRET: "example-secret",
+          },
+        },
+      ],
+    });
+
+    expect(args).toContain('mcp_servers.grove.env_vars=["FIRST_TOKEN", "SECOND_SECRET"]');
   });
 
   test("does not pass codex config flags to non-codex adapters", () => {

@@ -397,9 +397,9 @@ export class SessionOrchestrator {
           }
         }
 
-        // Detect [DONE] signal. A single role being done is not enough to end
-        // a multi-agent session; the runner stops only after all spawned roles
-        // have signaled done.
+        // Detect [DONE] signal. Topologies can designate terminal roles that
+        // are sufficient to end the session; otherwise all spawned roles must
+        // signal completion.
         if (
           c.summary.startsWith("[DONE]") ||
           (c.context && (c.context as Record<string, unknown>).done === true)
@@ -423,6 +423,11 @@ export class SessionOrchestrator {
 
   private doneRequiredRoleNames(): readonly string[] {
     const spawnedRoleNames = new Set(this.agents.map((agent) => agent.role));
+    const explicitEndingRoles = this.config.topology.roles
+      .filter((role) => spawnedRoleNames.has(role.name) && role.endsSession === true)
+      .map((role) => role.name);
+    if (explicitEndingRoles.length > 0) return explicitEndingRoles;
+
     const terminalRoles = this.config.topology.roles
       .filter((role) => spawnedRoleNames.has(role.name) && (role.edges?.length ?? 0) === 0)
       .map((role) => role.name);

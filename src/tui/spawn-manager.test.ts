@@ -192,11 +192,16 @@ function makeMockTmux(shouldFail = false): TmuxManager & {
   };
 }
 
-function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
+function makeMockRuntime(): AgentRuntime & {
+  readonly configs: AgentConfig[];
+  readonly closedSessions: string[];
+} {
   const configs: AgentConfig[] = [];
+  const closedSessions: string[] = [];
   return {
     sendsInitialPromptOnSpawn: true,
     configs,
+    closedSessions,
     async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
       configs.push(config);
       return { id: `session-${role}`, role, status: "running", agent: "mock" };
@@ -204,8 +209,8 @@ function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
     async send(): Promise<AcpxTurn> {
       throw new Error("mock runtime send should not be called by SpawnManager.spawn");
     },
-    async close(): Promise<void> {
-      // No-op for test mock.
+    async close(session: AgentSession): Promise<void> {
+      closedSessions.push(session.id);
     },
     onIdle(): void {
       // No-op for test mock.
@@ -396,6 +401,54 @@ describe("SpawnManager", () => {
 
     expect(manager.getSpawnRecord(result1.spawnId)).toBeUndefined();
     expect(manager.getSpawnRecord(result2.spawnId)).toBeUndefined();
+  });
+
+  test("stopAllAgents closes active runtime sessions and unregisters bridge routes", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        /* noop */
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    const unregistered: { role: string; sessionId: string | undefined }[] = [];
+    const stubBridge = {
+      getProvisionedRoleNames() {
+        return [];
+      },
+      registerSession() {
+        /* spawn() calls this when the bridge is attached */
+      },
+      unregisterSession(role: string, expectedSessionId?: string) {
+        unregistered.push({ role, sessionId: expectedSessionId });
+      },
+      close() {
+        /* destroy() calls this on teardown */
+      },
+    } as unknown as Parameters<typeof manager.setWsBridge>[0];
+    manager.setWsBridge(stubBridge);
+
+    const coder = await manager.spawn("coder", "codex");
+    const reviewer = await manager.spawn("reviewer", "claude");
+
+    await manager.stopAllAgents("Session complete");
+
+    expect(runtime.closedSessions.sort()).toEqual(["session-coder", "session-reviewer"]);
+    expect(unregistered).toEqual([
+      { role: "coder", sessionId: "session-coder" },
+      { role: "reviewer", sessionId: "session-reviewer" },
+    ]);
+    expect(manager.getSpawnRecord(coder.spawnId)).toBeUndefined();
+    expect(manager.getSpawnRecord(reviewer.spawnId)).toBeUndefined();
+    expect(manager.getActiveRoles()).toEqual([]);
+    expect(provider.cleanedWorkspaces.size).toBe(0);
   });
 
   test("spawn without workspace support falls back to git worktree", async () => {

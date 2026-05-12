@@ -20,6 +20,7 @@ import type {
   ReadResult,
   SearchOptions,
   SearchResult,
+  WriteBatchEntry,
   WriteOptions,
   WriteResult,
 } from "../../../src/nexus/client.js";
@@ -48,6 +49,14 @@ class EncodedStorageSizeClient implements NexusClient {
     const etag = `etag-${String(++this.nextVersion)}`;
     this.files.set(path, { raw: new Uint8Array(content), stored, etag });
     return { bytesWritten: stored.byteLength, etag, version: this.nextVersion };
+  }
+
+  async writeBatch(files: readonly WriteBatchEntry[]): Promise<readonly WriteResult[]> {
+    const results: WriteResult[] = [];
+    for (const file of files) {
+      results.push(await this.write(file.path, file.content));
+    }
+    return results;
   }
 
   async exists(path: string): Promise<boolean> {

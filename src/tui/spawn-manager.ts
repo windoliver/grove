@@ -864,6 +864,59 @@ export class SpawnManager {
     }
   }
 
+  /**
+   * Stop every active agent for the current session without deleting their
+   * workspaces. Used by normal session completion: artifacts must remain
+   * inspectable, but live runtime sessions and IPC routes must be quiesced so
+   * agents cannot keep reacting and submit duplicate late contributions.
+   */
+  async stopAllAgents(reason: string): Promise<void> {
+    debugLog(
+      "spawn",
+      `stopAllAgents reason=${reason} sessions=${this.agentSessions.size} records=${this.spawnRecords.size}`,
+    );
+    this.stopLogPolling();
+
+    const spawnIds = new Set<string>([...this.spawnRecords.keys(), ...this.agentSessions.keys()]);
+    const stopTasks: Promise<void>[] = [];
+
+    for (const spawnId of spawnIds) {
+      const tracked = this.spawnRecords.get(spawnId);
+      const session = this.agentSessions.get(spawnId);
+      const roleKey = tracked?.role ?? session?.role ?? spawnId.replace(/-[a-z0-9]+$/i, "");
+
+      // Cut IPC delivery before closing the runtime. This closes the window
+      // where a newly written inbox message could push another turn into a
+      // session that is already logically complete.
+      this.wsBridge?.unregisterSession(roleKey, session?.id);
+      this.unregisterAcpSession(session?.id ?? spawnId);
+
+      this.spawnRecords.delete(spawnId);
+      this.agentSessions.delete(spawnId);
+      this.routableSessions.delete(spawnId);
+      this.sessionStore?.remove(spawnId);
+
+      if (session && this.agentRuntime) {
+        stopTasks.push(
+          this.agentRuntime.close(session).catch((err) => {
+            const detail = err instanceof Error ? err.message : String(err);
+            this.onError(`Failed to close agent session ${session.id}: ${detail}`);
+          }),
+        );
+      } else if (this.tmux) {
+        const sessionName = `grove-${spawnId}`;
+        stopTasks.push(
+          this.tmux.kill(sessionName).catch((err) => {
+            const detail = err instanceof Error ? err.message : String(err);
+            this.onError(`Failed to kill tmux session ${sessionName}: ${detail}`);
+          }),
+        );
+      }
+    }
+
+    await Promise.all(stopTasks);
+  }
+
   /** Get the spawn record for an agentId (for testing). */
   getSpawnRecord(agentId: string): SpawnRecord | undefined {
     return this.spawnRecords.get(agentId);

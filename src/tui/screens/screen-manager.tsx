@@ -284,17 +284,28 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const sessionStartRef = useRef<number>(Date.now());
     // Track if grove_done was signaled — stops IPC routing to prevent ping-pong
     const doneSignaledRef = useRef(false);
+    const completionInFlightRef = useRef(false);
 
     // ---------------------------------------------------------------------------
     // Done detection — extracted to custom hook (supports event-driven + polling)
     // ---------------------------------------------------------------------------
     const snapshotAndComplete = useCallback(
       async (reason: string) => {
+        if (completionInFlightRef.current) return;
+        completionInFlightRef.current = true;
+        doneSignaledRef.current = true;
+
+        // Stop live agents before archiving the row. Otherwise already-running
+        // Codex/Claude turns can keep reacting to IPC and publish duplicate
+        // contributions after the TUI has moved to "complete".
+        await spawnManager.stopAllAgents(reason).catch(() => {
+          /* best-effort */
+        });
+
         // Save trace history before completing
         await spawnManager.saveTraces().catch(() => {
           /* best-effort */
         });
-        spawnManager.stopLogPolling();
 
         let contributionCount = 0;
         try {
@@ -320,7 +331,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [provider, spawnManager],
     );
     const handleDone = useCallback(() => {
-      void snapshotAndComplete("All roles signaled done");
+      void snapshotAndComplete("Required roles signaled done");
     }, [snapshotAndComplete]);
     useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
 
@@ -692,6 +703,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
+      completionInFlightRef.current = false;
       hasSpawnedRef.current = false; // Reset spawn guard for new session
       setState((s) => {
         // If we have preset + role mapping from a prior run, skip to goal input

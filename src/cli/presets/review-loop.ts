@@ -39,6 +39,7 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         mode: "broadcast",
         platform: "claude-code",
+        endsSession: true,
         skills: ["grove"],
         prompt:
           "You are a code reviewer. Wait for a coder contribution to arrive — do not act on the session goal yourself.\n" +

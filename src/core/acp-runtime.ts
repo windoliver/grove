@@ -244,9 +244,16 @@ function appendCodexMcpServerOverrides(
     args.push("-c", `${serverKey}.command=${tomlString(command)}`);
     args.push("-c", `${serverKey}.args=${tomlStringArray(server.args ?? [])}`);
 
+    const envVars = new Set<string>();
     for (const [envName, envValue] of Object.entries(server.env ?? {})) {
-      if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) continue;
+      if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) {
+        if (envName.length > 0) envVars.add(envName);
+        continue;
+      }
       args.push("-c", `${serverKey}.env.${tomlKeySegment(envName)}=${tomlString(envValue)}`);
+    }
+    if (envVars.size > 0) {
+      args.push("-c", `${serverKey}.env_vars=${tomlStringArray([...envVars])}`);
     }
   }
 }

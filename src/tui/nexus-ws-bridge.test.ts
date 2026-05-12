@@ -200,7 +200,114 @@ describe("NexusWsBridge", () => {
       message_id: "msg-1",
       cid: "blake3:abc",
       kind: "work",
+      summary: "test contribution",
     });
+
+    bridge.close();
+    bus.close();
+  });
+
+  test("handleEvent includes done summary and context in EventBus contribution payload", async () => {
+    const runtime = makeMockRuntime();
+    const bus = new LocalEventBus();
+    const received: GroveEvent[] = [];
+    bus.subscribe("coder", (e) => received.push(e));
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime, eventBus: bus }));
+    const session = makeSession("coder");
+    bridge.registerSession("coder", session);
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          content: JSON.stringify({
+            sender: "reviewer",
+            payload: {
+              cid: "blake3:done",
+              kind: "discussion",
+              summary: "[DONE] Approved",
+              context: { done: true },
+            },
+          }),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "coder",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-done",
+        sender: "reviewer",
+        recipient: "coder",
+        type: "event",
+        path: "/inbox/msg-done",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.sourceRole).toBe("reviewer");
+    expect(received[0]!.targetRole).toBe("coder");
+    expect(received[0]!.payload).toMatchObject({
+      message_id: "msg-done",
+      cid: "blake3:done",
+      kind: "discussion",
+      summary: "[DONE] Approved",
+      context: { done: true },
+    });
+
+    bridge.close();
+    bus.close();
+  });
+
+  test("handleEvent skips runtime delivery when done handling unregisters the session", async () => {
+    const runtime = makeMockRuntime();
+    const bus = new LocalEventBus();
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime, eventBus: bus }));
+    const session = makeSession("coder");
+    const received: GroveEvent[] = [];
+    bus.subscribe("coder", (e) => {
+      received.push(e);
+      bridge.unregisterSession("coder", session.id);
+    });
+    bridge.registerSession("coder", session);
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          content: JSON.stringify({
+            sender: "reviewer",
+            payload: {
+              cid: "blake3:done",
+              kind: "discussion",
+              summary: "[DONE] Approved",
+              context: { done: true },
+            },
+          }),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "coder",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-done",
+        sender: "reviewer",
+        recipient: "coder",
+        type: "event",
+        path: "/inbox/msg-done",
+      }),
+    );
+
+    await waitFor(() => received.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(runtime.send).not.toHaveBeenCalled();
 
     bridge.close();
     bus.close();
@@ -701,6 +808,66 @@ describe("NexusWsBridge", () => {
       session_id: string;
     };
     expect(decoded.session_id).toBe("sess-123");
+    bridge.close();
+  });
+
+  test("send() scopes the inbox path under an encoded zone when provided", async () => {
+    const fetchCalls: { body: unknown }[] = [];
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({
+        body: JSON.parse(init?.body as string),
+      });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(
+      makeBridgeOpts({
+        getSessionId: () => "sess-123",
+        zoneId: "project-123/worktree-a",
+      }),
+    );
+    const ok = await bridge.send("coder", "reviewer", { summary: "test" });
+
+    expect(ok).toBe(true);
+    const body = fetchCalls[0]!.body as { path: string };
+    expect(body.path).toMatch(
+      /^\/zones\/project-123%2Fworktree-a\/sessions\/sess-123\/ipc\/reviewer\/inbox\/.+\.json$/,
+    );
+    bridge.close();
+  });
+
+  test("drainRoleInbox lists the encoded zone-scoped inbox when provided", async () => {
+    const runtime = makeMockRuntime();
+    const listPaths: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v2/events/stream") {
+        return new Response("", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (url.pathname === "/api/v2/files/list") {
+        listPaths.push(url.searchParams.get("path") ?? "");
+        return new Response(JSON.stringify({ items: [], has_more: false }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        getSessionId: () => "sess-123",
+        zoneId: "project-123/worktree-a",
+      }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    await bridge.testDrainRoleInbox("reviewer");
+
+    expect(listPaths).toContain(
+      "/zones/project-123%2Fworktree-a/sessions/sess-123/ipc/reviewer/inbox",
+    );
     bridge.close();
   });
 

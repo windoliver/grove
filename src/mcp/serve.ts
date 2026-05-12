@@ -404,7 +404,12 @@ try {
       const apiKey = process.env.NEXUS_API_KEY;
       const ipcClient =
         nexusUrl && apiKey
-          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
+          ? new NexusIpcClient({
+              nexusUrl,
+              apiKey,
+              sessionId: process.env.GROVE_SESSION_ID,
+              zoneId,
+            })
           : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);

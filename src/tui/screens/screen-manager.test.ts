@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { LocalEventBus } from "../../core/local-event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import { ContributionKind, ContributionMode } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -85,11 +86,13 @@ interface TestSpawnManager {
   readonly reconcileCalls: string[];
   readonly saveTraceCalls: string[];
   readonly stopLogPollingCalls: string[];
+  readonly stopAllAgentsCalls: string[];
   reconcile(): Promise<void>;
   ensureLogBuffer(roleName: string): void;
   getLogBuffers(): Map<string, unknown>;
   startLogPolling(intervalMs?: number, seekToEnd?: boolean): void;
   stopLogPolling(): void;
+  stopAllAgents(reason: string): Promise<void>;
   setSessionId(sessionId: string): void;
   loadTraces(sessionId: string): Promise<void>;
   saveTraces(): Promise<void>;
@@ -198,6 +201,26 @@ const TEST_TOPOLOGY: AgentTopology = {
       description: "Builds the work",
       command: "claude",
       platform: "claude-code",
+    },
+  ],
+  spawning: { dynamic: false },
+};
+
+const REVIEWER_TERMINAL_TOPOLOGY: AgentTopology = {
+  structure: "graph",
+  roles: [
+    {
+      name: "coder",
+      description: "Writes code",
+      command: "codex",
+      platform: "codex",
+    },
+    {
+      name: "reviewer",
+      description: "Reviews code",
+      command: "claude",
+      platform: "claude-code",
+      endsSession: true,
     },
   ],
   spawning: { dynamic: false },
@@ -351,6 +374,7 @@ function makeSpawnManager(): TestSpawnManager {
     reconcileCalls: [],
     saveTraceCalls: [],
     stopLogPollingCalls: [],
+    stopAllAgentsCalls: [],
     reconcile: async () => {
       manager.reconcileCalls.push("reconcile");
     },
@@ -362,6 +386,9 @@ function makeSpawnManager(): TestSpawnManager {
     startLogPolling: () => undefined,
     stopLogPolling: () => {
       manager.stopLogPollingCalls.push("stop");
+    },
+    stopAllAgents: async (reason: string) => {
+      manager.stopAllAgentsCalls.push(reason);
     },
     setSessionId: (sessionId: string) => {
       manager.sessionIds.push(sessionId);
@@ -624,7 +651,7 @@ describe("ScreenManager transition flow", () => {
     const providerBundle = makeProvider({
       contributions: [makeContribution("c1"), makeContribution("c2")],
     });
-    renderScreenManager({
+    const { spawnManager } = renderScreenManager({
       provider: providerBundle.provider,
       topology: TEST_TOPOLOGY,
       initialState: {
@@ -644,7 +671,100 @@ describe("ScreenManager transition flow", () => {
     expect(captured.screen).toBe("complete");
     expect(requireCompleteView().reason).toBe("All roles signaled done");
     expect(requireCompleteView().contributionCount).toBe(2);
+    expect(spawnManager.stopAllAgentsCalls).toEqual(["All roles signaled done"]);
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
+  });
+
+  test("running -> complete when the terminal reviewer role signals done", async () => {
+    const eventBus = new LocalEventBus();
+    const providerBundle = makeProvider({
+      contributions: [makeContribution("review-done")],
+    });
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: REVIEWER_TERMINAL_TOPOLOGY,
+      appProps: {
+        provider: providerBundle.provider,
+        intervalMs: 10,
+        topology: REVIEWER_TERMINAL_TOPOLOGY,
+        eventBus,
+      },
+      initialState: {
+        screen: "running",
+        goal: "Complete after review",
+        sessionId: "session-review-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      await eventBus.publish({
+        type: "contribution",
+        sourceRole: "reviewer",
+        targetRole: "reviewer",
+        payload: {
+          summary: "[DONE] Approved",
+          context: { done: true },
+        },
+        timestamp: "2026-03-29T00:00:01.000Z",
+      });
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Required roles signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(spawnManager.stopAllAgentsCalls).toEqual(["Required roles signaled done"]);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-review-done"]);
+
+    eventBus.close();
+  });
+
+  test("running -> complete when the terminal reviewer done event is routed to another role", async () => {
+    const eventBus = new LocalEventBus();
+    const providerBundle = makeProvider({
+      contributions: [makeContribution("review-done")],
+    });
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: REVIEWER_TERMINAL_TOPOLOGY,
+      appProps: {
+        provider: providerBundle.provider,
+        intervalMs: 10,
+        topology: REVIEWER_TERMINAL_TOPOLOGY,
+        eventBus,
+      },
+      initialState: {
+        screen: "running",
+        goal: "Complete after review",
+        sessionId: "session-review-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      await eventBus.publish({
+        type: "contribution",
+        sourceRole: "reviewer",
+        targetRole: "coder",
+        payload: {
+          summary: "[DONE] Approved",
+          context: { done: true },
+        },
+        timestamp: "2026-03-29T00:00:01.000Z",
+      });
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Required roles signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(spawnManager.stopAllAgentsCalls).toEqual(["Required roles signaled done"]);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-review-done"]);
+
+    eventBus.close();
   });
 
   test("complete -> preset-select starts a fresh session when no preset state is reusable", () => {

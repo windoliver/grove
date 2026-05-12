@@ -30,6 +30,7 @@ import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
 import { startInterval } from "../local/use-interval.js";
 import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
+import { encodeSegment } from "../nexus/vfs-paths.js";
 import { debugLog } from "./debug-log.js";
 
 export interface NexusWsBridgeOptions {
@@ -47,6 +48,8 @@ export interface NexusWsBridgeOptions {
   ipcClient?: NexusIpcClient | undefined;
   /** Returns the active Grove session ID for session-scoped IPC paths. */
   getSessionId?: (() => string | undefined) | undefined;
+  /** Encoded into IPC VFS paths so the bridge reads the same namespace agents write. */
+  zoneId?: string | undefined;
   /**
    * Forwards inner payloads whose `type` is "acp.message" or "acp.result"
    * to a typed consumer (AcpMessageSink). Called only when the event's
@@ -155,15 +158,22 @@ function inboxFilePath(
   recipient: string,
   messageId: string,
   sessionId?: string | undefined,
+  zoneId?: string | undefined,
 ): string {
-  return sessionId
-    ? `/sessions/${sessionId}/ipc/${recipient}/inbox/${messageId}.json`
-    : `/ipc/${recipient}/inbox/${messageId}.json`;
+  const zonePrefix = zoneId ? `/zones/${encodeSegment(zoneId)}` : "";
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(recipient)}/inbox/${encodeSegment(messageId)}.json`;
 }
 
 /** Build the inbox directory path for a recipient role. */
-function inboxDirPath(recipient: string, sessionId?: string | undefined): string {
-  return sessionId ? `/sessions/${sessionId}/ipc/${recipient}/inbox` : `/ipc/${recipient}/inbox`;
+function inboxDirPath(
+  recipient: string,
+  sessionId?: string | undefined,
+  zoneId?: string | undefined,
+): string {
+  const zonePrefix = zoneId ? `/zones/${encodeSegment(zoneId)}` : "";
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(recipient)}/inbox`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -202,16 +212,23 @@ function messageIdFromInboxPath(path: string): string | undefined {
   return file.endsWith(".json") ? file.slice(0, -".json".length) : file;
 }
 
+function sessionIdFromInboxPath(path: string): string | undefined {
+  const clean = stripZonePrefix(path);
+  const match = clean.match(/(?:^|\/)sessions\/([^/]+)\//);
+  return match?.[1];
+}
+
 function inboxPathFromListItem(
   role: string,
   item: Record<string, unknown>,
   sessionId?: string | undefined,
+  zoneId?: string | undefined,
 ): string | undefined {
   const path = stringField(item, "path");
   if (path) return stripZonePrefix(path);
   const name = stringField(item, "name");
   if (!name) return undefined;
-  return `${inboxDirPath(role, sessionId)}/${name}`;
+  return `${inboxDirPath(role, sessionId, zoneId)}/${name}`;
 }
 
 function modifiedMsFromListItem(item: Record<string, unknown>): number | undefined {
@@ -529,7 +546,7 @@ export class NexusWsBridge {
           Authorization: `Bearer ${this.opts.apiKey}`,
         },
         body: JSON.stringify({
-          path: inboxFilePath(recipient, messageId, sessionId),
+          path: inboxFilePath(recipient, messageId, sessionId, this.opts.zoneId),
           content,
           encoding: "base64",
         }),
@@ -573,7 +590,7 @@ export class NexusWsBridge {
         for (const item of page.items) {
           const isDirectory = booleanField(item, "is_directory", "isDirectory");
           if (isDirectory === true) continue;
-          const path = inboxPathFromListItem(role, item, sessionId);
+          const path = inboxPathFromListItem(role, item, sessionId, this.opts.zoneId);
           if (!path || !path.endsWith(".json")) continue;
           const modifiedMs = modifiedMsFromListItem(item);
           if (modifiedMs !== undefined && modifiedMs < this.bridgeStartedAtMs) continue;
@@ -599,7 +616,7 @@ export class NexusWsBridge {
     cursor?: string,
   ): Promise<InboxListPage> {
     const params = new URLSearchParams({
-      path: inboxDirPath(role, sessionId),
+      path: inboxDirPath(role, sessionId, this.opts.zoneId),
       limit: String(INBOX_DRAIN_LIMIT),
     });
     if (cursor) params.set("cursor", cursor);
@@ -1661,7 +1678,7 @@ export class NexusWsBridge {
 
       const activeSessionId = this.currentSessionId();
       if (activeSessionId) {
-        const pathSessionId = path.match(/^\/sessions\/([^/]+)\//)?.[1];
+        const pathSessionId = sessionIdFromInboxPath(path);
         const msgSessionId = msg.session_id ?? pathSessionId;
         if (msgSessionId !== activeSessionId) {
           debugLog(
@@ -1703,7 +1720,13 @@ export class NexusWsBridge {
           type: "contribution",
           sourceRole: msgSender,
           targetRole: _targetRole,
-          payload: { message_id: effectiveIpcMessageId, cid, kind },
+          payload: {
+            message_id: effectiveIpcMessageId,
+            cid,
+            kind,
+            ...(typeof payload.summary === "string" ? { summary: payload.summary } : {}),
+            ...(payload.context !== undefined ? { context: payload.context } : {}),
+          },
           timestamp: new Date().toISOString(),
         };
         void this.opts.eventBus.publish(groveEvent);

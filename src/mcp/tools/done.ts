@@ -3,14 +3,13 @@
  *
  * grove_done — Signal that this agent has finished its work for the session.
  *
- * When an agent calls grove_done, it creates a contribution with kind=work
+ * When an agent calls grove_done, it creates a contribution with kind=discussion
  * and context.done=true. Other agents see this via grove_log and know the
- * signaling agent is finished. The TUI watches for done signals from all
- * roles to transition to the Complete screen.
+ * signaling agent is finished. Topologies may mark one or more roles as
+ * session-ending; otherwise Grove falls back to requiring every role.
  *
  * This is the explicit stop condition for review loops where there's no
- * numeric threshold — the reviewer calls grove_done when satisfied, the
- * coder calls grove_done when it has no more work.
+ * numeric threshold — the reviewer calls grove_done when satisfied.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -37,10 +36,11 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
     {
       description:
         "Signal that you have finished your work for this session. " +
-        "Call this when you have no more work to do — e.g., the reviewer " +
-        "has approved the code, or the coder has addressed all feedback. " +
+        "Call this only when your role is responsible for ending the session — " +
+        "for example, when the reviewer has approved the code. " +
         "Other agents will see your done signal via grove_log and can " +
-        "finish their own work. When all agents signal done, the session ends.",
+        "finish their own work. The session ends after the topology's required " +
+        "done roles have signaled completion.",
       inputSchema: doneInputSchema,
     },
     async (args) => {

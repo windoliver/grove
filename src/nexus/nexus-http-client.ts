@@ -27,6 +27,7 @@ import type {
   ReadResult,
   SearchOptions,
   SearchResult,
+  WriteBatchEntry,
   WriteOptions,
   WriteResult,
 } from "./client.js";
@@ -60,6 +61,10 @@ function toBase64(data: Uint8Array): string {
   return Buffer.from(data).toString("base64");
 }
 
+function utf8ToBase64(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64");
+}
+
 function fromBase64(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
 }
@@ -76,6 +81,20 @@ const WriteResponseSchema = z
     modified_at: z.string().nullable().optional(),
   })
   .passthrough();
+
+const BatchWriteResponseSchema = z.object({
+  results: z.array(
+    z
+      .object({
+        path: z.string(),
+        content_id: z.string().nullable().optional(),
+        version: z.number().nullable().optional(),
+        size: z.number().nullable().optional(),
+        modified_at: z.string().nullable().optional(),
+      })
+      .passthrough(),
+  ),
+});
 
 const ReadResponseSchema = z
   .object({
@@ -298,6 +317,28 @@ export class NexusHttpClient implements NexusClient {
       etag: result.content_id ?? "",
       version: result.version ?? undefined,
     };
+  }
+
+  async writeBatch(files: readonly WriteBatchEntry[]): Promise<readonly WriteResult[]> {
+    const result = await this.request(
+      "POST",
+      "/api/v2/files/batch/write",
+      BatchWriteResponseSchema,
+      {
+        body: {
+          files: files.map((file) => ({
+            path: file.path,
+            content_base64: utf8ToBase64(toBase64(file.content)),
+          })),
+        },
+      },
+    );
+
+    return result.results.map((item, index) => ({
+      bytesWritten: item.size ?? files[index]?.content.byteLength ?? 0,
+      etag: item.content_id ?? "",
+      version: item.version ?? undefined,
+    }));
   }
 
   async exists(path: string): Promise<boolean> {

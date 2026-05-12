@@ -620,7 +620,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       const apiKey = process.env.NEXUS_API_KEY;
       const ipcClient =
         nexusUrl && apiKey
-          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
+          ? new NexusIpcClient({
+              nexusUrl,
+              apiKey,
+              sessionId,
+              zoneId,
+            })
           : undefined;
       eventBus = new NexusEventBus(ipcClient);
     } else {
