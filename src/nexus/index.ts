@@ -32,10 +32,14 @@ export { NexusClaimStore } from "./nexus-claim-store.js";
 export { NexusContributionStore } from "./nexus-contribution-store.js";
 export type { NexusHttpConfig } from "./nexus-http-client.js";
 export { NexusHttpClient } from "./nexus-http-client.js";
-export type { NexusInboxClientOptions } from "./nexus-inbox-client.js";
+export type {
+  NexusInboxClientOptions,
+  NexusMessageDeliveryOptions,
+} from "./nexus-inbox-client.js";
 export {
   NexusInboxClient,
   NexusInboxReadUnavailableError,
+  NexusMessageDelivery,
 } from "./nexus-inbox-client.js";
 export { NexusOutcomeStore } from "./nexus-outcome-store.js";
 export type { NexusWorkflowStoreConfig } from "./nexus-workflow-store.js";

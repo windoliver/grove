@@ -1,7 +1,12 @@
-import type { InboxReadSource } from "../core/operations/inbox-delegation.js";
+import type {
+  DeliveredInboxMessage,
+  InboxReadSource,
+  MessageDelivery,
+} from "../core/operations/inbox-delegation.js";
 import type { InboxMessage, InboxQuery } from "../core/operations/messaging.js";
 import type { NexusClient } from "./client.js";
 import { NexusNotFoundError } from "./errors.js";
+import type { NexusIpcClient } from "./nexus-ipc-client.js";
 
 type FetchFn = (
   input: Parameters<typeof fetch>[0],
@@ -14,6 +19,10 @@ export interface NexusInboxClientOptions {
   readonly sessionId?: string | undefined;
   readonly client?: NexusClient | undefined;
   readonly fetch?: FetchFn | undefined;
+}
+
+export interface NexusMessageDeliveryOptions {
+  readonly ipcClient: Pick<NexusIpcClient, "send">;
 }
 
 interface GroveMessagePayload {
@@ -29,6 +38,31 @@ export class NexusInboxReadUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NexusInboxReadUnavailableError";
+  }
+}
+
+export class NexusMessageDelivery implements MessageDelivery {
+  private readonly ipcClient: Pick<NexusIpcClient, "send">;
+
+  constructor(opts: NexusMessageDeliveryOptions) {
+    this.ipcClient = opts.ipcClient;
+  }
+
+  async deliverMessage(message: DeliveredInboxMessage): Promise<void> {
+    const sender = message.from.agentId;
+    await Promise.all(
+      message.recipients.map(async (recipient) => {
+        const role = normalizeHandle(recipient);
+        await this.ipcClient.send(sender, role, {
+          kind: "grove.message",
+          cid: message.cid,
+          body: message.body,
+          recipients: [...message.recipients],
+          createdAt: message.createdAt,
+          from: message.from,
+        });
+      }),
+    );
   }
 }
 

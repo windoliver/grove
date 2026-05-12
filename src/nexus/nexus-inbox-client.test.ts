@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MockNexusClient } from "./mock-client.js";
-import { NexusInboxClient } from "./nexus-inbox-client.js";
+import { NexusInboxClient, NexusMessageDelivery } from "./nexus-inbox-client.js";
 
 const encoder = new TextEncoder();
 
@@ -206,5 +206,36 @@ describe("NexusInboxClient", () => {
 
     expect(messages.map((m) => m.cid)).toEqual([cid]);
     expect(messages.map((m) => m.body)).toEqual(["direct"]);
+  });
+});
+
+test("NexusMessageDelivery sends Grove-marked payloads to each recipient inbox", async () => {
+  const calls: { sender: string; recipient: string; payload: Record<string, unknown> }[] = [];
+  const delivery = new NexusMessageDelivery({
+    ipcClient: {
+      send: async (sender: string, recipient: string, payload: Record<string, unknown>) => {
+        calls.push({ sender, recipient, payload });
+        return { ok: true, messageId: `msg-${recipient}` };
+      },
+    },
+  });
+
+  await delivery.deliverMessage({
+    cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    body: "hello",
+    recipients: ["@bob", "@all"],
+    createdAt: "2026-05-12T12:00:00.000Z",
+    from: { agentId: "alice", agentName: "Alice" },
+  });
+
+  expect(calls.map((c) => c.recipient)).toEqual(["bob", "all"]);
+  expect(calls[0]?.sender).toBe("alice");
+  expect(calls[0]?.payload).toEqual({
+    kind: "grove.message",
+    cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    body: "hello",
+    recipients: ["@bob", "@all"],
+    createdAt: "2026-05-12T12:00:00.000Z",
+    from: { agentId: "alice", agentName: "Alice" },
   });
 });
