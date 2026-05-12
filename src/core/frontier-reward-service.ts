@@ -13,6 +13,8 @@ export interface FrontierRewardServiceOptions {
   readonly bountyStore: BountyStore;
   readonly creditsService: CreditsService;
   readonly treasuryAgentId?: string | undefined;
+  readonly eligibleMetrics?: readonly string[] | undefined;
+  readonly maxRewardAmount?: number | undefined;
 }
 
 export class FrontierRewardService {
@@ -20,12 +22,21 @@ export class FrontierRewardService {
   private readonly bountyStore: BountyStore;
   private readonly creditsService: CreditsService;
   private readonly treasuryAgentId: string;
+  private readonly eligibleMetrics: ReadonlySet<string>;
+  private readonly maxRewardAmount: number;
 
   constructor(options: FrontierRewardServiceOptions) {
+    const maxRewardAmount = options.maxRewardAmount ?? 1;
+    if (!Number.isInteger(maxRewardAmount) || maxRewardAmount <= 0) {
+      throw new Error("maxRewardAmount must be a positive integer");
+    }
+
     this.frontier = options.frontier;
     this.bountyStore = options.bountyStore;
     this.creditsService = options.creditsService;
     this.treasuryAgentId = options.treasuryAgentId ?? FRONTIER_REWARD_TREASURY_AGENT_ID;
+    this.eligibleMetrics = new Set(options.eligibleMetrics ?? []);
+    this.maxRewardAmount = maxRewardAmount;
   }
 
   async evaluateContribution(contribution: Contribution): Promise<void> {
@@ -33,6 +44,9 @@ export class FrontierRewardService {
       contribution.mode === ContributionMode.Exploration ||
       contribution.context?.ephemeral === true
     ) {
+      return;
+    }
+    if (this.eligibleMetrics.size === 0) {
       return;
     }
 
@@ -67,6 +81,10 @@ export class FrontierRewardService {
 
     const candidates: RewardCandidate[] = [];
     for (const [metric, score] of Object.entries(scores)) {
+      if (!this.eligibleMetrics.has(metric)) {
+        continue;
+      }
+
       const entries = frontier.byMetric[metric];
       if (entries === undefined) {
         continue;
@@ -87,7 +105,7 @@ export class FrontierRewardService {
         continue;
       }
 
-      const amount = Math.max(1, Math.ceil(improvement));
+      const amount = Math.min(this.maxRewardAmount, Math.max(1, Math.ceil(improvement)));
       const transferId = `reward:${rewardId}`;
       candidates.push({ metric, amount, transferId });
     }
