@@ -11,7 +11,12 @@ import { parseArgs } from "node:util";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
-import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
+import type { InboxReadSource, MessageDelivery } from "../../core/operations/inbox-delegation.js";
+import {
+  readInboxWithSource,
+  sendMessageWithDelivery,
+} from "../../core/operations/inbox-delegation.js";
+import type { InboxQuery } from "../../core/operations/messaging.js";
 import { formatTable, formatTimestamp, outputJson } from "../format.js";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +39,37 @@ export async function handleInbox(args: readonly string[], groveOverride?: strin
 // ---------------------------------------------------------------------------
 // Send
 // ---------------------------------------------------------------------------
+
+interface CliNexusInboxDeps {
+  readonly inboxReadSource?: InboxReadSource | undefined;
+  readonly messageDelivery?: MessageDelivery | undefined;
+}
+
+async function createCliNexusInboxDeps(): Promise<CliNexusInboxDeps> {
+  const nexusUrl = process.env.GROVE_NEXUS_URL;
+  const apiKey = process.env.NEXUS_API_KEY;
+  if (nexusUrl === undefined || apiKey === undefined) return {};
+
+  const sessionId = process.env.GROVE_SESSION_ID;
+  const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
+  const { NexusInboxClient, NexusMessageDelivery } = await import(
+    "../../nexus/nexus-inbox-client.js"
+  );
+  const { NexusIpcClient } = await import("../../nexus/nexus-ipc-client.js");
+  const client = new NexusHttpClient({ url: nexusUrl, apiKey });
+
+  return {
+    inboxReadSource: new NexusInboxClient({
+      nexusUrl,
+      apiKey,
+      sessionId,
+      client,
+    }),
+    messageDelivery: new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({ nexusUrl, apiKey, sessionId }),
+    }),
+  };
+}
 
 async function handleSend(args: readonly string[], groveOverride?: string): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -111,7 +147,8 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
       ...(contract !== undefined ? { contract } : {}),
     };
 
-    const result = await sendMessageAsDiscussion(
+    const { messageDelivery } = await createCliNexusInboxDeps();
+    const result = await sendMessageWithDelivery(
       {
         agent: agentOverrides,
         body,
@@ -120,6 +157,7 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
         tags: (values.tag ?? []) as string[],
       },
       opDeps,
+      messageDelivery,
     );
 
     if (!result.ok) {
@@ -167,12 +205,14 @@ async function handleRead(args: readonly string[], groveOverride?: string): Prom
     if (agent.role) myHandles.push(`@${agent.role}`);
     myHandles.push("@all");
 
-    const messages = await readInbox(deps.store, {
+    const { inboxReadSource } = await createCliNexusInboxDeps();
+    const inboxQuery: InboxQuery = {
       recipients: myHandles,
       fromAgentId: values.from as string | undefined,
       since: values.since as string | undefined,
       limit: values.limit !== undefined ? Number(values.limit) : undefined,
-    });
+    };
+    const messages = await readInboxWithSource(deps.store, inboxQuery, inboxReadSource);
 
     if (values.json) {
       outputJson(messages);
