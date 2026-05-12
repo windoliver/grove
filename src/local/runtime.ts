@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { GroveContract } from "../core/contract.js";
 import { parseGroveContract } from "../core/contract.js";
+import type { CreditsService } from "../core/credits.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { WatchHub } from "../core/watch-hub.js";
@@ -75,6 +76,7 @@ export interface LocalRuntime {
   readonly goalSessionStore: SqliteGoalSessionStore;
   readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
+  readonly creditsService: CreditsService;
   readonly cas: FsCas;
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
@@ -206,6 +208,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     goalSessionStore: stores.goalSessionStore,
     handoffStore: stores.handoffStore,
     idempotencyStore: stores.idempotencyStore,
+    creditsService: stores.creditsService,
     cas,
     frontier,
     workspace,

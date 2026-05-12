@@ -8,6 +8,50 @@ import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "./runtime.js";
 
 describe("createLocalRuntime", () => {
+  test("provides durable creditsService from the local runtime", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-credits-"));
+    const groveDir = join(rootDir, ".grove");
+
+    try {
+      await mkdir(groveDir, { recursive: true });
+      const first = createLocalRuntime({
+        groveDir,
+        parseContract: false,
+      });
+      try {
+        await first.creditsService.transfer({
+          transferId: "runtime-xfer",
+          fromAgentId: "agent-a",
+          toAgentId: "agent-b",
+          amount: 50,
+        });
+      } finally {
+        first.close();
+      }
+
+      const second = createLocalRuntime({
+        groveDir,
+        parseContract: false,
+      });
+      try {
+        expect(await second.creditsService.balance("agent-a")).toEqual({
+          available: 9950,
+          reserved: 0,
+          total: 9950,
+        });
+        expect(await second.creditsService.balance("agent-b")).toEqual({
+          available: 10050,
+          reserved: 0,
+          total: 10050,
+        });
+      } finally {
+        second.close();
+      }
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   test("falls back to GROVE.md for configless sessions", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-"));
     const groveDir = join(rootDir, ".grove");
