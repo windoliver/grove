@@ -18,8 +18,7 @@ import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
-import { type McpDeps, sessionToOwnerRef } from "./deps.js";
-import { resolveNexusApiKey } from "./env.js";
+import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
 // --- Initialization (eager — catches config errors at startup) ------------
@@ -162,6 +161,10 @@ let deadlineWatcherLockToken: string | undefined;
 let deadlineWatcherLockHeartbeat: ReturnType<typeof setInterval> | undefined;
 let deadlineWatcherRebuildTimer: ReturnType<typeof setInterval> | undefined;
 let deadlineWatcherRebuildInFlight = false;
+let sweepReconciler: import("../core/sweep-reconciler.js").SweepReconciler | undefined;
+let sweepLockPath: string | undefined;
+let sweepLockToken: string | undefined;
+let sweepLockHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 try {
   const groveDir = groveOverride ?? findGroveDir(cwd);
@@ -170,7 +173,7 @@ try {
   }
 
   const nexusUrl = process.env.GROVE_NEXUS_URL;
-  const nexusApiKey = resolveNexusApiKey(cwd);
+  const nexusApiKey = process.env.NEXUS_API_KEY;
 
   // Always create local runtime for workspace, frontier, CAS.
   //
@@ -288,6 +291,9 @@ try {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
+  const operationFrontierRewardService =
+    bountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
   // In Nexus mode we skipped the local contract parse; load the authoritative
   // contract from the Nexus session record instead. The TUI mirrors every
   // session to Nexus via NexusSessionStore.putSession with the frozen
@@ -306,7 +312,6 @@ try {
   // setSessionScope has mirrored the session. If the mirror is still in
   // flight we retry with exponential backoff before failing.
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
-  let nexusSessionRecord: import("../core/session.js").Session | undefined;
   if (nexusClient && !loadedContract && process.env.GROVE_SESSION_ID) {
     const sessionId = process.env.GROVE_SESSION_ID;
     const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
@@ -314,11 +319,12 @@ try {
 
     const retryDelaysMs = [0, 100, 250, 500, 1000, 2000];
     let lastErr: unknown;
+    let sessionRecord: import("../core/session.js").Session | undefined;
     for (const delay of retryDelaysMs) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       try {
-        nexusSessionRecord = await nexusSessionStore.getSessionRecord(sessionId);
-        if (nexusSessionRecord?.config) break;
+        sessionRecord = await nexusSessionStore.getSessionRecord(sessionId);
+        if (sessionRecord?.config) break;
       } catch (err) {
         lastErr = err;
       }
@@ -336,20 +342,20 @@ try {
     // session-creation path in the deployment is persisting config.
     const strictContract = process.env.GROVE_MCP_STRICT_CONTRACT === "1";
 
-    if (nexusSessionRecord?.config) {
+    if (sessionRecord?.config) {
       // Happy path: full frozen contract mirrored from the TUI's createSession.
-      loadedContract = nexusSessionRecord.config;
+      loadedContract = sessionRecord.config;
       process.stderr.write(`grove-mcp: loaded full contract from Nexus session ${sessionId}\n`);
-    } else if (nexusSessionRecord?.topology && !strictContract) {
+    } else if (sessionRecord?.topology && !strictContract) {
       // Default degraded path: the session record exists but lacks a frozen
       // config. Reconstruct a minimal contract so topology routing and
       // per-kind tool presets still work. Rate limits / enforcement / gates
       // are NOT honored; log a loud WARN so operators see the gap.
       loadedContract = {
         contractVersion: 1,
-        name: nexusSessionRecord.presetName ?? "nexus-session",
+        name: sessionRecord.presetName ?? "nexus-session",
         mode: "exploration",
-        topology: nexusSessionRecord.topology,
+        topology: sessionRecord.topology,
       };
       process.stderr.write(
         `grove-mcp: WARN: Nexus session ${sessionId} has no frozen config — ` +
@@ -357,7 +363,7 @@ try {
           `applied). Recreate the session with the current TUI to get full ` +
           `enforcement, or set GROVE_MCP_STRICT_CONTRACT=1 to fail closed here.\n`,
       );
-    } else if (nexusSessionRecord?.topology) {
+    } else if (sessionRecord?.topology) {
       // Strict mode explicitly enabled: refuse to proceed without a full
       // contract even though the session record exists.
       process.stderr.write(
@@ -402,15 +408,10 @@ try {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-      const apiKey = nexusApiKey;
+      const apiKey = process.env.NEXUS_API_KEY;
       const ipcClient =
         nexusUrl && apiKey
-          ? new NexusIpcClient({
-              nexusUrl,
-              apiKey,
-              sessionId: process.env.GROVE_SESSION_ID,
-              zoneId,
-            })
+          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
           : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
@@ -425,22 +426,6 @@ try {
   // tag every contribution write against the session at the MCP layer.
   // Nexus handles this via path-scoped stores; local SQLite needs the junction table.
   const envSessionId = process.env.GROVE_SESSION_ID;
-  let ownerSession: import("../core/session.js").Session | undefined;
-  if (envSessionId !== undefined) {
-    if (nexusClient !== undefined) {
-      if (nexusSessionRecord !== undefined) {
-        ownerSession = nexusSessionRecord;
-      } else {
-        const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
-        ownerSession = await new NexusSessionStore(nexusClient, zoneId).getSessionRecord(
-          envSessionId,
-        );
-      }
-    } else {
-      ownerSession = await runtime.goalSessionStore.getSession(envSessionId);
-    }
-  }
-  const sessionOwnerRef = sessionToOwnerRef(ownerSession);
   const onContributionWritten =
     envSessionId && !nexusClient
       ? (cid: string) => {
@@ -536,6 +521,57 @@ try {
         deadlineWatcherLockPath = undefined;
         deadlineWatcherLockToken = undefined;
       }
+    }
+  }
+
+  // Run settlement recovery from stdio MCP without multiplying zone-wide
+  // sweep load by agent count. Every agent process tries to acquire the same
+  // process lock; only the owner starts the reconciler.
+  {
+    const sweepZoneKey = zoneId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const lockPath = join(groveDir, `.grove-mcp-sweep.${sweepZoneKey}.lock`);
+    const lockToken = crypto.randomUUID();
+    const ownsSweep = tryAcquireDeadlineWatcherLock(lockPath, lockToken);
+    if (ownsSweep) {
+      const { BountyIndexSweep } = await import("../core/bounty-index-sweep.js");
+      const { SettlementSweep } = await import("../core/settlement-sweep.js");
+      const { SweepReconciler } = await import("../core/sweep-reconciler.js");
+      sweepLockPath = lockPath;
+      sweepLockToken = lockToken;
+      sweepReconciler = new SweepReconciler({
+        intervalMs: 60_000,
+        onCycle(results) {
+          for (const r of results) {
+            if (r.found > 0 || r.errors.length > 0) {
+              process.stderr.write(
+                `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}\n`,
+              );
+            }
+          }
+        },
+      });
+      sweepReconciler.register(new BountyIndexSweep(bountyStore));
+      sweepReconciler.register(new SettlementSweep(bountyStore, runtime.creditsService));
+      sweepReconciler.start();
+      sweepLockHeartbeat = setInterval(() => {
+        try {
+          const existing = readDeadlineWatcherLock(lockPath);
+          if (existing?.token !== lockToken) {
+            sweepReconciler?.stop();
+            sweepReconciler = undefined;
+            clearInterval(sweepLockHeartbeat);
+            sweepLockHeartbeat = undefined;
+            return;
+          }
+          writeDeadlineWatcherLock(lockPath, lockToken);
+        } catch {
+          // best-effort heartbeat; lock takeover falls back to staleness TTL
+        }
+      }, DEADLINE_WATCHER_LOCK_HEARTBEAT_MS);
+      sweepLockHeartbeat.unref?.();
+      process.stderr.write("grove-mcp: sweep-reconciler started (singleton owner)\n");
+    } else {
+      process.stderr.write("grove-mcp: sweep-reconciler already owned by another MCP process\n");
     }
   }
 
@@ -662,6 +698,8 @@ try {
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService: runtime.creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined
@@ -672,7 +710,6 @@ try {
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
-    ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     ...(outcomeStore ? { outcomeStore } : {}),
@@ -724,6 +761,12 @@ try {
         };
 
   close = () => {
+    sweepReconciler?.stop();
+    if (sweepLockHeartbeat !== undefined) {
+      clearInterval(sweepLockHeartbeat);
+      sweepLockHeartbeat = undefined;
+    }
+    releaseDeadlineWatcherLock(sweepLockPath, sweepLockToken);
     deadlineWatcher?.close();
     if (deadlineWatcherRebuildTimer !== undefined) {
       clearInterval(deadlineWatcherRebuildTimer);
@@ -747,10 +790,8 @@ try {
 }
 
 // --- Server setup ---------------------------------------------------------
-// NOTE: No sweep reconciler here. The stdio MCP server (grove-mcp) is spawned
-// per-agent — running zone-wide sweeps from every agent process would cause
-// N×load and CAS conflicts. Sweeps run in the long-lived singleton processes
-// only: src/server/serve.ts (HTTP server) and src/mcp/serve-http.ts (HTTP MCP).
+// Zone-wide sweeps are lock-owned above so per-agent stdio MCP processes do
+// not all run the same reconciler.
 
 const server = await createMcpServer(deps, preset);
 const transport = new StdioServerTransport();

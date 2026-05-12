@@ -97,8 +97,15 @@ export class SettlementSweep implements SweepStrategy {
       }
     }
 
+    const fulfilledByCid = bounty.fulfilledByCid;
+    if (fulfilledByCid === undefined || fulfilledByCid.trim() === "") {
+      throw new Error(
+        `Cannot resume settlement for bounty ${bounty.bountyId}: fulfilledByCid is missing`,
+      );
+    }
+
     // Advance through completed → settled
-    await this.bountyStore.completeBounty(bounty.bountyId, bounty.fulfilledByCid ?? "");
+    await this.bountyStore.completeBounty(bounty.bountyId, fulfilledByCid);
     await this.bountyStore.settleBounty(bounty.bountyId);
   }
 }

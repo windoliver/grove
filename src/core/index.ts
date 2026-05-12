@@ -108,6 +108,11 @@ export type {
   Reservation,
   TransferResult,
 } from "./credits.js";
+export {
+  DEFAULT_CREDITS_INITIAL_BALANCE,
+  DEFAULT_CREDITS_REWARD_TREASURY_BALANCE,
+  FRONTIER_REWARD_TREASURY_AGENT_ID,
+} from "./credits-constants.js";
 export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
 export { DeadlineWatcher } from "./deadline-watcher.js";
 export { EnforcingClaimStore, EnforcingContributionStore } from "./enforcing-store.js";
@@ -154,6 +159,10 @@ export {
   getScore,
   SessionAggregatingFrontierCalculator,
 } from "./frontier.js";
+export {
+  FrontierRewardService,
+  type FrontierRewardServiceOptions,
+} from "./frontier-reward-service.js";
 export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
 export {
   canTransition,

@@ -30,6 +30,10 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../core/frontier-reward-service.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -38,6 +42,7 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
 import { resolveMcpHttpBindPolicy } from "./http-bind-policy.js";
+import { guardMutableMethods, type ScopeMutationGuard } from "./scope-guard.js";
 import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
 import { createMcpServer } from "./server.js";
 
@@ -195,7 +200,7 @@ let httpSweepReconciler: SweepReconciler | undefined;
     },
   });
   httpSweepReconciler.register(new BountyIndexSweep(reconcilerBountyStore));
-  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore));
+  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore, runtime.creditsService));
   httpSweepReconciler.start();
   process.stderr.write("grove-mcp-http: sweep-reconciler started\n");
 }
@@ -237,11 +242,6 @@ interface AcquiredScopedDeps {
   readonly scoped: ScopedDeps;
   readonly deactivate: () => void;
   readonly release: () => void;
-}
-
-interface ScopeMutationGuard {
-  deactivate(): void;
-  assertMutable(operation: string): void;
 }
 
 function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
@@ -331,36 +331,6 @@ function createScopeMutationGuard(expectedSessionId: string | undefined): ScopeM
       });
     },
   };
-}
-
-function guardMutableMethods<T extends object>(
-  target: T,
-  guard: ScopeMutationGuard,
-  mutableMethods: readonly string[],
-): T {
-  const mutable = new Set(mutableMethods);
-  return new Proxy(target, {
-    get(obj, prop, receiver) {
-      const value = Reflect.get(obj, prop, receiver);
-      if (typeof value !== "function") return value;
-      const methodName = String(prop);
-      if (mutable.has(methodName)) {
-        return (...args: readonly unknown[]) => {
-          guard.assertMutable(methodName);
-          if (methodName === "putWithCowrite" && typeof args[1] === "function") {
-            const [contribution, cowriteFn] = args as readonly [unknown, () => void];
-            const guardedCowrite = () => {
-              guard.assertMutable(`${methodName}.commit`);
-              cowriteFn();
-            };
-            return Reflect.apply(value, obj, [contribution, guardedCowrite]);
-          }
-          return Reflect.apply(value, obj, args);
-        };
-      }
-      return (...args: readonly unknown[]) => Reflect.apply(value, obj, args);
-    },
-  }) as T;
 }
 
 const scopeEntries = new Map<string, ScopeEntry>();
@@ -539,6 +509,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     }
   }
 
+  const canUseLocalFrontierRewardService = bountyStore === runtime.bountyStore;
+
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
   // SqliteHandoffStore bound to THIS request's session ID (not the process-
@@ -602,6 +574,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     "store",
     "rollback",
     "clear",
+  ]);
+  const creditsService = guardMutableMethods(runtime.creditsService, mutationGuard, [
+    "reserve",
+    "capture",
+    "void",
+    "transfer",
   ]);
   if (goalSessionStore !== undefined) {
     goalSessionStore = guardMutableMethods(
@@ -703,6 +681,15 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       "rebuildFromStore",
     ]);
   }
+
+  const operationFrontierRewardService = canUseLocalFrontierRewardService
+    ? new FrontierRewardService({
+        frontier: new DefaultFrontierCalculator(contributionStore),
+        bountyStore,
+        creditsService,
+        eligibleMetrics: frontierRewardEligibleMetrics(loadedContract),
+      })
+    : undefined;
 
   // Cross-process WatchHub bridge: when grove-server is reachable and
   // we hold a namespace key, fire entity-changed events as POSTs to
@@ -818,6 +805,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined

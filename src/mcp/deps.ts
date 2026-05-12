@@ -10,7 +10,6 @@
 
 import type { BountyStore } from "../core/bounty-store.js";
 import type { GroveContract } from "../core/contract.js";
-import type { CreditsService } from "../core/credits.js";
 import type { DeadlineWatcher } from "../core/deadline-watcher.js";
 import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
@@ -21,10 +20,10 @@ import type { WorkspaceManager } from "../core/workspace.js";
 import type { ServerDeps } from "../server/deps.js";
 
 export function sessionToOwnerRef(
-  session: Pick<Session, "id" | "uid"> | undefined,
+  session: (Pick<Session, "id"> & { readonly uid?: string | undefined }) | undefined,
 ): OwnerRef | undefined {
   return session !== undefined
-    ? { kind: "session" as const, id: session.id, uid: session.uid }
+    ? { kind: "session" as const, id: session.id, uid: session.uid ?? session.id }
     : undefined;
 }
 
@@ -60,7 +59,8 @@ export interface McpDeps extends ServerDeps {
   /** Namespace under which the MCP process serves; required to fire onEntityWrite. */
   readonly namespace?: string | undefined;
   readonly bountyStore?: BountyStore;
-  readonly creditsService?: CreditsService;
+  readonly creditsService?: ServerDeps["creditsService"];
+  readonly frontierRewardService?: ServerDeps["frontierRewardService"];
   /** Optional event bus for agent notifications. */
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */

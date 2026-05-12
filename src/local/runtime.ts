@@ -10,8 +10,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { GroveContract } from "../core/contract.js";
 import { parseGroveContract } from "../core/contract.js";
+import type { CreditsService } from "../core/credits.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../core/frontier-reward-service.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "./fs-cas.js";
@@ -75,6 +80,8 @@ export interface LocalRuntime {
   readonly goalSessionStore: SqliteGoalSessionStore;
   readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
+  readonly creditsService: CreditsService;
+  readonly frontierRewardService: FrontierRewardService;
   readonly cas: FsCas;
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
@@ -197,6 +204,13 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     throw err;
   }
 
+  const frontierRewardService = new FrontierRewardService({
+    frontier,
+    bountyStore: stores.bountyStore,
+    creditsService: stores.creditsService,
+    eligibleMetrics: frontierRewardEligibleMetrics(contract),
+  });
+
   return {
     db: stores.db,
     contributionStore: stores.contributionStore,
@@ -206,6 +220,8 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     goalSessionStore: stores.goalSessionStore,
     handoffStore: stores.handoffStore,
     idempotencyStore: stores.idempotencyStore,
+    creditsService: stores.creditsService,
+    frontierRewardService,
     cas,
     frontier,
     workspace,

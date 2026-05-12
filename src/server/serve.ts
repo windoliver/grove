@@ -14,7 +14,6 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
-import type { HandoffStore } from "../core/handoff.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { readProjectId } from "../core/project-id.js";
 import {
@@ -36,7 +35,6 @@ import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
-import { createNexusHandoffStores } from "./handoff-store-wiring.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
@@ -105,7 +103,6 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
-let serverHandoffStore: HandoffStore = runtime.handoffStore;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -116,7 +113,6 @@ let serverHandoffStore: HandoffStore = runtime.handoffStore;
 let contributionStoreForSessionFactory:
   | ((sessionId: string) => import("../core/store.js").ContributionStore)
   | undefined;
-let handoffStoreForSessionFactory: ((sessionId: string) => HandoffStore) | undefined;
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
 const nexusApiKey = process.env.NEXUS_API_KEY;
@@ -279,9 +275,6 @@ if (nexusUrl) {
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
   const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
-  const nexusHandoffStores = createNexusHandoffStores(nexusClient, zoneId);
-  serverHandoffStore = nexusHandoffStores.handoffStore;
-  handoffStoreForSessionFactory = nexusHandoffStores.handoffStoreForSession;
   const nexusContributionStoreForSession = memoizeContributionStoreForSession(
     (sessionId: string) =>
       new NexusContributionStore({
@@ -322,15 +315,18 @@ if (seedPeers.length > 0) {
   });
 }
 
+const operationFrontierRewardService =
+  serverBountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
 // Per-request session-scoped handoff store factory. The HTTP handoff
 // routes accept ?sessionId= and use this factory to build a scoped
 // SqliteHandoffStore on demand, preventing cross-session reads/mutations
 // from remote TUIs that share the same process-global runtime.
-if (handoffStoreForSessionFactory === undefined) {
-  const { SqliteHandoffStore } = await import("../local/sqlite-handoff-store.js");
-  handoffStoreForSessionFactory = (sessionId: string) =>
-    new SqliteHandoffStore(runtime.db, sessionId) as HandoffStore;
-}
+const { SqliteHandoffStore: _SqliteHandoffStore } = await import(
+  "../local/sqlite-handoff-store.js"
+);
+const handoffStoreForSession = (sessionId: string) =>
+  new _SqliteHandoffStore(runtime.db, sessionId) as import("../core/handoff.js").HandoffStore;
 
 // Subscribe to cross-process `entity.changed` envelopes (#292). Started in
 // every mode so future bus-publishers (Nexus-backed bus, other processes)
@@ -351,13 +347,14 @@ const deps: ServerDeps = {
   claimStore: serverClaimStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
+  creditsService: runtime.creditsService,
+  frontierRewardService: operationFrontierRewardService,
   goalSessionStore: runtime.goalSessionStore,
-  handoffStore: serverHandoffStore,
-  handoffStoreForSession: handoffStoreForSessionFactory,
+  handoffStore: runtime.handoffStore,
+  handoffStoreForSession,
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,
-  controllerToken: process.env.GROVE_CONTROLLER_TOKEN,
   gossipHmacSecret: gossipHmacSecret,
   topology: runtime.contract?.topology,
   contract: runtime.contract,
@@ -391,11 +388,7 @@ if (serverBountyStore) {
     },
   });
   sweepReconciler.register(new BountyIndexSweep(serverBountyStore));
-  // SettlementSweep runs without creditsService — it can recover non-escrowed
-  // bounties. Escrowed bounties (those with reservationId) will log an error
-  // and wait for a CreditsService to be available. When a production
-  // CreditsService is wired in, pass it: new SettlementSweep(store, credits).
-  sweepReconciler.register(new SettlementSweep(serverBountyStore));
+  sweepReconciler.register(new SettlementSweep(serverBountyStore, runtime.creditsService));
   sweepReconciler.start();
   console.log("sweep-reconciler started (BountyIndexSweep, SettlementSweep)");
 }
