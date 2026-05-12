@@ -17,7 +17,7 @@ describe("FrontierRewardService", () => {
     db = undefined;
   });
 
-  function setup(): {
+  function setup(options?: { readonly rewardTreasuryBalance?: number | undefined }): {
     readonly contributionStore: SqliteContributionStore;
     readonly bountyStore: SqliteBountyStore;
     readonly creditsService: SqliteCreditsService;
@@ -28,7 +28,7 @@ describe("FrontierRewardService", () => {
     const bountyStore = new SqliteBountyStore(db);
     const creditsService = new SqliteCreditsService(db, {
       initialBalance: 0,
-      rewardTreasuryBalance: 100,
+      rewardTreasuryBalance: options?.rewardTreasuryBalance ?? 100,
     });
     const service = new FrontierRewardService({
       frontier: new DefaultFrontierCalculator(contributionStore),
@@ -115,6 +115,103 @@ describe("FrontierRewardService", () => {
       available: 0,
       reserved: 0,
       total: 0,
+    });
+  });
+
+  test("pays one reward for the best eligible metric when multiple metrics improve", async () => {
+    const { contributionStore, bountyStore, creditsService, service } = setup();
+    const previous = makeContribution({
+      summary: "previous metrics",
+      agent: makeAgent({ agentId: "agent-old" }),
+      scores: {
+        accuracy: { value: 0.5, direction: ScoreDirection.Maximize },
+        throughput: { value: 5, direction: ScoreDirection.Maximize },
+      },
+    });
+    const improved = makeContribution({
+      summary: "improved metrics",
+      agent: makeAgent({ agentId: "agent-new" }),
+      scores: {
+        accuracy: { value: 0.6, direction: ScoreDirection.Maximize },
+        throughput: { value: 8, direction: ScoreDirection.Maximize },
+      },
+    });
+    await contributionStore.put(previous);
+    await contributionStore.put(improved);
+
+    await service.evaluateContribution(improved);
+
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: 3,
+      reserved: 0,
+      total: 3,
+    });
+    const rewards = await bountyStore.listRewards({ contributionCid: improved.cid });
+    expect(rewards).toHaveLength(1);
+    expect(rewards[0]).toMatchObject({
+      rewardType: RewardType.FrontierAdvance,
+      contributionCid: improved.cid,
+      amount: 3,
+      recipient: { agentId: "agent-new" },
+    });
+  });
+
+  test("does not reward a first-ever metric with no previous frontier entry", async () => {
+    const { contributionStore, bountyStore, creditsService, service } = setup();
+    const contribution = makeContribution({
+      summary: "new metric",
+      agent: makeAgent({ agentId: "agent-new" }),
+      scores: {
+        attacker_controlled_metric: { value: 1, direction: ScoreDirection.Maximize },
+      },
+    });
+    await contributionStore.put(contribution);
+
+    await service.evaluateContribution(contribution);
+
+    expect(await bountyStore.listRewards({ contributionCid: contribution.cid })).toHaveLength(0);
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: 0,
+      reserved: 0,
+      total: 0,
+    });
+  });
+
+  test("records reward intent before transfer and retries the deterministic transfer", async () => {
+    const { contributionStore, bountyStore, creditsService, service } = setup({
+      rewardTreasuryBalance: 0,
+    });
+    const previous = makeContribution({
+      summary: "previous accuracy",
+      agent: makeAgent({ agentId: "agent-old" }),
+      scores: { accuracy: { value: 0.9, direction: ScoreDirection.Maximize } },
+    });
+    const improved = makeContribution({
+      summary: "improved accuracy",
+      agent: makeAgent({ agentId: "agent-new" }),
+      scores: { accuracy: { value: 0.95, direction: ScoreDirection.Maximize } },
+    });
+    await contributionStore.put(previous);
+    await contributionStore.put(improved);
+
+    await expect(service.evaluateContribution(improved)).rejects.toThrow(/insufficient/i);
+
+    const rewardsAfterFailure = await bountyStore.listRewards({ contributionCid: improved.cid });
+    expect(rewardsAfterFailure).toHaveLength(1);
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: 0,
+      reserved: 0,
+      total: 0,
+    });
+
+    creditsService.seed("system:frontier-rewards", 100);
+    await service.evaluateContribution(improved);
+
+    expect(await bountyStore.listRewards({ contributionCid: improved.cid })).toHaveLength(1);
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: 1,
+      reserved: 0,
+      total: 1,
     });
   });
 });

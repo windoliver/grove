@@ -1,3 +1,4 @@
+import type { RewardRecord } from "./bounty.js";
 import { RewardType } from "./bounty.js";
 import { computeRewardId } from "./bounty-logic.js";
 import type { BountyStore } from "./bounty-store.js";
@@ -40,7 +41,21 @@ export class FrontierRewardService {
       return;
     }
 
+    const existingReward = await this.existingFrontierReward(contribution);
+    if (existingReward !== undefined) {
+      if (existingReward.transferId !== undefined) {
+        await this.creditsService.transfer({
+          transferId: existingReward.transferId,
+          fromAgentId: this.treasuryAgentId,
+          toAgentId: contribution.agent.agentId,
+          amount: existingReward.amount,
+        });
+      }
+      return;
+    }
+
     const frontier = await this.frontier.compute({ limit: 50 });
+    const candidates: RewardCandidate[] = [];
     for (const [metric, score] of Object.entries(scores)) {
       const entries = frontier.byMetric[metric];
       if (entries === undefined) {
@@ -53,6 +68,10 @@ export class FrontierRewardService {
       }
 
       const previous = entries.find((entry) => entry.cid !== contribution.cid);
+      if (previous === undefined) {
+        continue;
+      }
+
       const improvement = this.improvement(score, previous);
       if (improvement <= 0) {
         continue;
@@ -69,31 +88,56 @@ export class FrontierRewardService {
 
       const amount = Math.max(1, Math.ceil(improvement));
       const transferId = `reward:${rewardId}`;
-      await this.creditsService.transfer({
-        transferId,
-        fromAgentId: this.treasuryAgentId,
-        toAgentId: contribution.agent.agentId,
-        amount,
-      });
-      await this.bountyStore.recordReward({
-        rewardId,
-        rewardType: RewardType.FrontierAdvance,
-        recipient: contribution.agent,
-        contributionCid: contribution.cid,
-        amount,
-        transferId,
-        createdAt: new Date().toISOString(),
-      });
+      candidates.push({ metric, rewardId, amount, transferId });
     }
+
+    const selected = candidates.slice().sort((a, b) => {
+      const amountDiff = b.amount - a.amount;
+      if (amountDiff !== 0) return amountDiff;
+      return a.metric < b.metric ? -1 : a.metric > b.metric ? 1 : 0;
+    })[0];
+    if (selected === undefined) {
+      return;
+    }
+
+    await this.bountyStore.recordReward({
+      rewardId: selected.rewardId,
+      rewardType: RewardType.FrontierAdvance,
+      recipient: contribution.agent,
+      contributionCid: contribution.cid,
+      amount: selected.amount,
+      transferId: selected.transferId,
+      createdAt: new Date().toISOString(),
+    });
+    await this.creditsService.transfer({
+      transferId: selected.transferId,
+      fromAgentId: this.treasuryAgentId,
+      toAgentId: contribution.agent.agentId,
+      amount: selected.amount,
+    });
   }
 
-  private improvement(score: Score, previous: FrontierEntry | undefined): number {
-    if (previous === undefined) {
-      return 1;
-    }
+  private async existingFrontierReward(
+    contribution: Contribution,
+  ): Promise<RewardRecord | undefined> {
+    const rewards = await this.bountyStore.listRewards({
+      rewardType: RewardType.FrontierAdvance,
+      contributionCid: contribution.cid,
+    });
+    return rewards.find((reward) => reward.recipient.agentId === contribution.agent.agentId);
+  }
+
+  private improvement(score: Score, previous: FrontierEntry): number {
     if (score.direction === "maximize") {
       return score.value - previous.value;
     }
     return previous.value - score.value;
   }
+}
+
+interface RewardCandidate {
+  readonly metric: string;
+  readonly rewardId: string;
+  readonly amount: number;
+  readonly transferId: string;
 }

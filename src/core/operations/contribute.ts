@@ -1392,7 +1392,15 @@ export async function contributeOperation(
     try {
       deps.onContributionWrite?.();
       if (!existedBefore) {
-        await deps.frontierRewardService?.evaluateContribution(contribution);
+        try {
+          await deps.frontierRewardService?.evaluateContribution(contribution);
+        } catch (rewardErr) {
+          process.stderr.write(
+            `[grove] Warning: frontier reward evaluation failed after contribution commit: ${
+              rewardErr instanceof Error ? rewardErr.message : String(rewardErr)
+            }\n`,
+          );
+        }
       }
       deps.onContributionWritten?.(contribution.cid);
       if (deps.onEntityWrite && deps.namespace && !existedBefore) {
