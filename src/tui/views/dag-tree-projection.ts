@@ -77,10 +77,30 @@ export function projectDagTree(input: ProjectInput): ProjectResult {
   const { contributions, outcomes, claims, now, options } = input;
   const cidSet = new Set(contributions.map((c) => c.cid));
 
+  // Per-target claim index — prefer active claims over terminal ones
+  // (released/expired/completed) so the polled fallback's `status: "all"`
+  // payload cannot let a stale completed row mask a live active claim
+  // and silently regress running/blocked icons. Among multiple active
+  // claims, keep the one with the latest lease so the newest holder wins.
   const claimByTarget = new Map<string, Claim>();
   for (const claim of claims) {
-    if (!claimByTarget.has(claim.targetRef)) {
+    const existing = claimByTarget.get(claim.targetRef);
+    if (!existing) {
       claimByTarget.set(claim.targetRef, claim);
+      continue;
+    }
+    const existingActive = existing.status === "active";
+    const incomingActive = claim.status === "active";
+    if (incomingActive && !existingActive) {
+      claimByTarget.set(claim.targetRef, claim);
+      continue;
+    }
+    if (incomingActive && existingActive) {
+      const a = Date.parse(claim.leaseExpiresAt);
+      const b = Date.parse(existing.leaseExpiresAt);
+      if (Number.isFinite(a) && (!Number.isFinite(b) || a > b)) {
+        claimByTarget.set(claim.targetRef, claim);
+      }
     }
   }
 

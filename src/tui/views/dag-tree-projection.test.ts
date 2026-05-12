@@ -142,6 +142,34 @@ describe("projectDagTree", () => {
     expect(r.rows[0]?.node.status).toBe("running");
   });
 
+  test("active claim wins over earlier completed claim for the same target", () => {
+    // Under polled status:"all", a stale completed/released row can be
+    // listed before the live active one. The projection must NOT let
+    // the terminal claim mask the active one — otherwise running/blocked
+    // icons silently regress.
+    const c = makeContribution({ summary: "x" });
+    const completed = makeClaim({
+      claimId: "claim-completed",
+      status: ClaimStatus.Completed,
+      leaseExpiresAt: FUTURE,
+      targetRef: c.cid,
+    });
+    const active = makeClaim({
+      claimId: "claim-active",
+      status: ClaimStatus.Active,
+      leaseExpiresAt: FUTURE,
+      targetRef: c.cid,
+    });
+    const r = projectDagTree({
+      contributions: [c],
+      outcomes: new Map(),
+      claims: [completed, active],
+      now: NOW,
+      options: { collapsed: new Set(), focusCid: null, maxNodes: 500 },
+    });
+    expect(r.rows[0]?.node.status).toBe("running");
+  });
+
   test("respects maxNodes cap with truncated=true", () => {
     const root = makeContribution({ summary: "root" });
     const children = Array.from({ length: 10 }, (_, i) =>
