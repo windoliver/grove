@@ -12,6 +12,7 @@ import { pickDefined } from "../../shared/pick-defined.js";
 import { computeContributionContentHash } from "../content-dedup.js";
 import { contributionToEntity } from "../entity.js";
 import { PolicyViolationError } from "../errors.js";
+import type { EventBus, GroveEvent, PublishResult } from "../event-bus.js";
 import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
@@ -827,6 +828,16 @@ async function writeContributionWithHandoffs(
   );
 }
 
+async function publishLocalContributionEvent(
+  eventBus: EventBus,
+  event: GroveEvent,
+): Promise<PublishResult> {
+  if (eventBus.publishLocal !== undefined) {
+    return eventBus.publishLocal(event);
+  }
+  return eventBus.publish(event);
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -1108,21 +1119,17 @@ export async function contributeOperation(
     // context.done) is background noise that should be invisible to the
     // routing layer entirely.
     //
-    //   kind                   | handoffs | route event | stop conditions
-    //   plan                   |    no    |     yes     |       no
-    //   discussion (done)      |    no    |     yes     |       no
-    //   discussion (chat)      |    no    |     no      |       no
-    //   discussion (plain)     |    yes   |     yes     |       yes
-    //   work / review / etc    |    yes   |     yes     |       yes
+    //   kind                   | handoffs | agent route | local observer | stop conditions
+    //   plan                   |    no    |     yes     |       no       |       no
+    //   discussion (done)      |    no    |     no      |       yes      |       no
+    //   discussion (chat)      |    no    |     no      |       no       |       no
+    //   discussion (plain)     |    yes   |     yes     |       no       |       yes
+    //   work / review / etc    |    yes   |     yes     |       no       |       yes
     //
-    // Earlier versions of this branch collapsed done markers into the
-    // "ephemeral discussion" row, which suppressed the route event too.
-    // That turned out to strand event-driven done detection: when an
-    // EventBus is present, useDoneDetection disables polling and waits
-    // exclusively for contribution events on the bus. Without a route
-    // event for the done marker, the UI never advanced out of "running"
-    // after all roles signaled done. The two discussion rows must remain
-    // distinct.
+    // Done markers need an in-process observer event so event-driven done
+    // detection can advance. They must not use the topology route, because
+    // Nexus-backed routing also sends an IPC message to peer agents and can
+    // wake them into an "already approved" response loop.
     const isPlan = contribution.kind === CK.Plan;
     const isDoneMarker = contribution.kind === CK.Discussion && contribution.context?.done === true;
     const isEphemeralChat =
@@ -1133,9 +1140,9 @@ export async function contributeOperation(
     // A done marker is "session over — no work to pick up"; a chat message
     // is noise; a plan is coordination metadata.
     const skipHandoffs = isPlan || isDoneMarker || isEphemeralChat;
-    // ONLY ephemeral chat skips the route event. Plans and done markers
-    // still publish so downstream UIs / observers can react.
-    const skipRouteEvent = isEphemeralChat;
+    // Done markers and ephemeral chat skip agent routing. Done markers still
+    // publish a local-only observer event after commit.
+    const skipRouteEvent = isDoneMarker || isEphemeralChat;
     // None of these three count toward budget / quorum / deliberation
     // stop conditions.
     const skipStopConditions = isPlan || isDoneMarker || isEphemeralChat;
@@ -1153,23 +1160,14 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          // skipExpensiveStopChecks: true — scanning stop evaluators (quorum,
-          // deliberation) run in the post-write recheck below, outside the
-          // mutex, so they don't block concurrent writers (#232). This opt-in
-          // is ONLY for the mutex-hook path — the fallback branch below uses
-          // the default full evaluation since it isn't holding the mutex.
-          policyResult = await enforcer?.enforce(c, true, {
-            skipStopConditions,
-            skipExpensiveStopChecks: true,
-          });
+          // Stop conditions are evaluated only after the write, outside the
+          // mutex, so O(n) scans don't block concurrent writers (#235).
+          policyResult = await enforcer?.enforce(c, true);
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore).
-        // Not the write-mutex hot path that motivated skipExpensiveStopChecks,
-        // so keep full evaluation — the post-write recheck is best-effort and
-        // should not be the sole detector here.
         try {
-          policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
+          policyResult = await enforcer.enforce(contribution, true);
         } catch (policyErr) {
           if (policyErr instanceof PolicyViolationError) {
             const duplicate = await findStoredDuplicateByContentHash(
@@ -1419,6 +1417,24 @@ export async function contributeOperation(
       );
     }
 
+    if (isDoneMarker && deps.eventBus !== undefined && agentRole !== undefined) {
+      const eventBus = deps.eventBus;
+      const event: GroveEvent = {
+        type: "contribution",
+        sourceRole: agentRole,
+        targetRole: agentRole,
+        payload: {
+          cid: contribution.cid,
+          kind: contribution.kind,
+          summary: contribution.summary,
+          agentId: contribution.agent.agentId,
+          ...(contribution.context !== undefined ? { context: contribution.context } : {}),
+        },
+        timestamp: new Date().toISOString(),
+      };
+      fireAndForget("done observer event", () => publishLocalContributionEvent(eventBus, event));
+    }
+
     // --- Post-write: register deadline timers for new handoffs ---
     if (
       deps.deadlineWatcher !== undefined &&
@@ -1611,16 +1627,16 @@ export async function contributeOperation(
       });
     }
 
-    // --- Post-write: re-check stop conditions (outside mutex, best-effort) ---
-    // The pre-write enforce() evaluates stop conditions before the contribution is
-    // persisted, so the threshold-crossing write (e.g., the Nth review satisfying
-    // quorum) would report stopped=false. Re-evaluate now that the store includes
-    // this contribution. This runs outside the write mutex, so it doesn't block
-    // concurrent writers. Only re-checks when the pre-write result said not stopped.
+    // --- Post-write: check stop conditions (outside mutex, best-effort) ---
+    // This is the only stop-condition evaluation for contribution writes.
+    // Running it after persistence lets threshold-crossing writes (e.g., the
+    // Nth review satisfying quorum) see the updated store, and running it
+    // outside the write mutex avoids blocking concurrent writers on O(n)
+    // scans.
     //
-    // Plans + ephemeral messages skip this recheck — they were excluded from the
-    // pre-write evaluation too (skipStopConditions), so there is no threshold-
-    // crossing semantics to recover here.
+    // Plans, done markers, and ephemeral messages skip this check; they are
+    // coordination traffic and should not count toward progress-driven stop
+    // conditions.
     //
     // Best-effort: errors here must not fail the already-committed write. A store
     // read failure during the recheck is logged but does not surface as a failed
@@ -1628,14 +1644,13 @@ export async function contributeOperation(
     if (
       !skipStopConditions &&
       policyResult !== undefined &&
-      !policyResult.stopResult?.stopped &&
       deps.contract?.stopConditions !== undefined &&
       deps.contributionStore !== undefined
     ) {
       // Bounded retry with exponential backoff — addresses Codex review r3:
-      // the scanning stop evaluators are the ONLY detector for
-      // quorum/deliberation on the mutex-hook path, so a transient
-      // store read failure must not silently drop a stop signal.
+      // the scanning stop evaluators are the stop detector for contribution
+      // writes, so a transient store read failure must not silently drop a
+      // stop signal.
       // 3 attempts × (100ms, 400ms) backoff caps at ~500ms added latency
       // in the worst case; success on attempt 1 adds zero latency.
       const { evaluateStopConditions } = await import("../stop-conditions.js");

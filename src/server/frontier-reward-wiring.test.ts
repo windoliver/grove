@@ -102,8 +102,10 @@ function rewardProbe(onEvaluate?: (contribution: Contribution) => void): Frontie
 class StubGoalSessionStore {
   private readonly session: Session = {
     id: SESSION_ID,
+    uid: SESSION_ID,
     status: "active",
     createdAt: new Date().toISOString(),
+    finalizers: [],
     contributionCount: 0,
     config: SESSION_CONFIG,
   };
@@ -134,6 +136,14 @@ class StubGoalSessionStore {
 
   async archiveSession(): Promise<void> {
     throw new Error("archiveSession is not used by this test");
+  }
+
+  async deleteSession(): Promise<never> {
+    throw new Error("deleteSession is not used by this test");
+  }
+
+  async listSessionDeleteBlockers(): Promise<readonly []> {
+    return [];
   }
 
   async addContributionToSession(): Promise<void> {

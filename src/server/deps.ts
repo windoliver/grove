@@ -46,6 +46,8 @@ export interface ServerDeps {
   readonly frontierForSession?: ((sessionId: string) => FrontierCalculator) | undefined;
   /** Optional gossip service. Routes return 501 when not configured. */
   readonly gossip?: GossipService | undefined;
+  /** Optional token required for controller-owned status writes. */
+  readonly controllerToken?: string | undefined;
   /** HMAC secret for gossip route verification (required when gossip is configured). */
   readonly gossipHmacSecret?: string | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */
