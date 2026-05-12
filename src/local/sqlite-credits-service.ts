@@ -337,7 +337,17 @@ export class SqliteCreditsService implements CreditsService {
 
   private ensureAccount(agentId: string, bootstrapBalance: number): void {
     const timestamp = nowIso();
-    this.insertAccountStmt.run(agentId, bootstrapBalance, timestamp, timestamp);
+    const result = this.insertAccountStmt.run(agentId, bootstrapBalance, timestamp, timestamp);
+    if (result.changes === 1 && bootstrapBalance > 0) {
+      this.insertTransferStmt.run(
+        `bootstrap:${agentId}`,
+        "system:bootstrap",
+        agentId,
+        bootstrapBalance,
+        "bootstrap",
+        timestamp,
+      );
+    }
   }
 
   private accountBalance(agentId: string): number {

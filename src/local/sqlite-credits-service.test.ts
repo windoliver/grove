@@ -7,6 +7,14 @@ import { runCreditsServiceTests } from "../core/credits.conformance.js";
 import { SqliteCreditsService } from "./sqlite-credits-service.js";
 import { initSqliteDb } from "./sqlite-store.js";
 
+interface CreditTransferRow {
+  readonly transfer_id: string;
+  readonly from_agent_id: string;
+  readonly to_agent_id: string;
+  readonly amount: number;
+  readonly transfer_type: string;
+}
+
 runCreditsServiceTests(async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-"));
   const db = initSqliteDb(join(tempDir, "credits.db"));
@@ -205,6 +213,30 @@ describe("SqliteCreditsService persistence", () => {
         reserved: 0,
         total: 1000000,
       });
+      const bootstrapRows = db
+        .prepare(
+          `SELECT transfer_id, from_agent_id, to_agent_id, amount, transfer_type
+           FROM credit_transfers
+           WHERE transfer_id IN ('bootstrap:new-agent', 'bootstrap:system:frontier-rewards')
+           ORDER BY transfer_id`,
+        )
+        .all() as readonly CreditTransferRow[];
+      expect(bootstrapRows).toEqual([
+        {
+          transfer_id: "bootstrap:new-agent",
+          from_agent_id: "system:bootstrap",
+          to_agent_id: "new-agent",
+          amount: 10000,
+          transfer_type: "bootstrap",
+        },
+        {
+          transfer_id: "bootstrap:system:frontier-rewards",
+          from_agent_id: "system:bootstrap",
+          to_agent_id: "system:frontier-rewards",
+          amount: 1000000,
+          transfer_type: "bootstrap",
+        },
+      ]);
     } finally {
       db.close();
     }
@@ -225,6 +257,10 @@ describe("SqliteCreditsService persistence", () => {
         reserved: 0,
         total: 0,
       });
+      const row = reopened.prepare("SELECT COUNT(*) AS count FROM credit_transfers").get() as {
+        readonly count: number;
+      };
+      expect(row.count).toBe(2);
     } finally {
       reopened.close();
     }
