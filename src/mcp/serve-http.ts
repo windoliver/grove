@@ -36,6 +36,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import type { McpDeps } from "./deps.js";
+import { guardMutableMethods, type ScopeMutationGuard } from "./scope-guard.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -220,11 +221,6 @@ interface AcquiredScopedDeps {
   readonly release: () => void;
 }
 
-interface ScopeMutationGuard {
-  deactivate(): void;
-  assertMutable(operation: string): void;
-}
-
 function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
   const fromEnv = process.env.GROVE_SESSION_ID;
   if (fromEnv) return fromEnv;
@@ -312,36 +308,6 @@ function createScopeMutationGuard(expectedSessionId: string | undefined): ScopeM
       });
     },
   };
-}
-
-function guardMutableMethods<T extends object>(
-  target: T,
-  guard: ScopeMutationGuard,
-  mutableMethods: readonly string[],
-): T {
-  const mutable = new Set(mutableMethods);
-  return new Proxy(target, {
-    get(obj, prop, receiver) {
-      const value = Reflect.get(obj, prop, receiver);
-      if (typeof value !== "function") return value;
-      const methodName = String(prop);
-      if (mutable.has(methodName)) {
-        return (...args: readonly unknown[]) => {
-          guard.assertMutable(methodName);
-          if (methodName === "putWithCowrite" && typeof args[1] === "function") {
-            const [contribution, cowriteFn] = args as readonly [unknown, () => void];
-            const guardedCowrite = () => {
-              guard.assertMutable(`${methodName}.commit`);
-              cowriteFn();
-            };
-            return Reflect.apply(value, obj, [contribution, guardedCowrite]);
-          }
-          return Reflect.apply(value, obj, args);
-        };
-      }
-      return (...args: readonly unknown[]) => Reflect.apply(value, obj, args);
-    },
-  }) as T;
 }
 
 const scopeEntries = new Map<string, ScopeEntry>();
@@ -574,6 +540,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     "rollback",
     "clear",
   ]);
+  const creditsService = guardMutableMethods(runtime.creditsService, mutationGuard, [
+    "reserve",
+    "capture",
+    "void",
+    "transfer",
+  ]);
   if (goalSessionStore !== undefined) {
     goalSessionStore = guardMutableMethods(goalSessionStore, mutationGuard, [
       "setGoal",
@@ -787,7 +759,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contributionStore,
     claimStore,
     bountyStore,
-    creditsService: runtime.creditsService,
+    creditsService,
     cas,
     frontier:
       nexusClient !== undefined
