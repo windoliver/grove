@@ -11,8 +11,13 @@ describe("createLocalRuntime", () => {
   test("provides durable creditsService from the local runtime", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-credits-"));
     const groveDir = join(rootDir, ".grove");
+    const previousInitialBalance = process.env.GROVE_CREDITS_INITIAL_BALANCE;
+    const previousTreasuryBalance = process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
 
     try {
+      delete process.env.GROVE_CREDITS_INITIAL_BALANCE;
+      delete process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+
       await mkdir(groveDir, { recursive: true });
       const first = createLocalRuntime({
         groveDir,
@@ -48,6 +53,16 @@ describe("createLocalRuntime", () => {
         second.close();
       }
     } finally {
+      if (previousInitialBalance === undefined) {
+        delete process.env.GROVE_CREDITS_INITIAL_BALANCE;
+      } else {
+        process.env.GROVE_CREDITS_INITIAL_BALANCE = previousInitialBalance;
+      }
+      if (previousTreasuryBalance === undefined) {
+        delete process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+      } else {
+        process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE = previousTreasuryBalance;
+      }
       await rm(rootDir, { recursive: true, force: true });
     }
   });
