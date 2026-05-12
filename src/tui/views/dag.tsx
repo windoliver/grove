@@ -69,15 +69,19 @@ function entityToContribution(e: ContributionEntity): Contribution {
 }
 
 /** Project a ClaimEntity back to the flat Claim shape that
- *  `projectDagTree` consumes. ClaimEntity.spec lacks the `status` and
- *  lease fields — pull them from `status` (the lease-aware view) and
- *  fall back to `metadata.creationTimestamp` for the createdAt. */
+ *  `projectDagTree` consumes. Uses `persistedPhase` (raw store state)
+ *  rather than the lease-aware `phase` so a still-persisted-active claim
+ *  whose lease has just expired reaches `deriveDagStatus` as
+ *  `status: "active"` — the status helper itself then compares
+ *  `leaseExpiresAt` against `now` and returns `blocked`. If we mapped
+ *  the lease-collapsed `phase` here instead, expired-but-not-yet-purged
+ *  claims would render as `awaiting-review`/`idle` after a relist. */
 function entityToClaim(e: ClaimEntity): Claim {
   return {
     claimId: e.id,
     targetRef: e.spec.targetRef,
     agent: e.spec.agent,
-    status: e.status.phase,
+    status: e.status.persistedPhase,
     intentSummary: e.spec.intentSummary,
     createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
     heartbeatAt: e.status.heartbeatAt,
@@ -190,7 +194,11 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const derivedClaims = useDerived<readonly Claim[]>(
     () => {
       const all = claimInformer.list() as readonly ClaimEntity[];
-      return all.filter((e) => e.status.phase === "active").map(entityToClaim);
+      // Filter on `persistedPhase` rather than the lease-aware `phase` so
+      // active-with-expired-lease rows still reach the projection — the
+      // status helper then flips them to `blocked` based on the lease
+      // timestamp. Mirrors the polled `getClaims({ status: "all" })` path.
+      return all.filter((e) => e.status.persistedPhase === "active").map(entityToClaim);
     },
     ["Claim"],
     shallowArraysEqual,
@@ -244,7 +252,11 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const isStale = contribInformerReady ? false : polledDag.isStale;
   // Surface informer errors even while the polled fallback runs so
   // operators see watch-pipeline failures alongside polled data.
-  const error = derivedContributions.error ?? polledDag.error;
+  // Claim-source failures matter too — without them, status icons
+  // silently disappear and an upstream `/api/claims` outage looks
+  // identical to "no active claims".
+  const error =
+    derivedContributions.error ?? polledDag.error ?? derivedClaims.error ?? polledClaims.error;
 
   // Outcome batch fetch — kept so done/failed icons remain accurate.
   const outcomeProvider = provider.capabilities.outcomes
@@ -345,8 +357,13 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
         <DataStatus loading={loading} isStale={isStale} error={error?.message} />
       </box>
       {projection.rows.map((row, i) => (
+        // Multi-parent rows emit the same cid multiple times (one primary +
+        // one crosslink per extra incoming edge), so the cid alone is not a
+        // unique React key. Compose with row index + incoming-edge type so
+        // every occurrence reconciles against the right slot when the
+        // projection updates.
         <DagRowView
-          key={`dag-${row.cid}`}
+          key={`dag-${row.cid}-${String(i)}-${row.incomingEdge ?? "root"}`}
           row={row}
           isSelected={i === cursor}
           highlight={effectiveHighlight}
