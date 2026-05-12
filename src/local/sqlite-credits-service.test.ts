@@ -15,6 +15,14 @@ interface CreditTransferRow {
   readonly transfer_type: string;
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
+
 runCreditsServiceTests(async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-"));
   const db = initSqliteDb(join(tempDir, "credits.db"));
@@ -257,10 +265,14 @@ describe("SqliteCreditsService persistence", () => {
   test("default bootstrap grants are durable and can be disabled", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-bootstrap-"));
     const dbPath = join(tempDir, "credits.db");
+    const previousInitialBalance = process.env.GROVE_CREDITS_INITIAL_BALANCE;
+    const previousRewardTreasuryBalance = process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
     const db = initSqliteDb(dbPath);
-    const service = new SqliteCreditsService(db);
 
     try {
+      delete process.env.GROVE_CREDITS_INITIAL_BALANCE;
+      delete process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+      const service = new SqliteCreditsService(db);
       expect(await service.balance("new-agent")).toEqual({
         available: 10000,
         reserved: 0,
@@ -297,6 +309,8 @@ describe("SqliteCreditsService persistence", () => {
       ]);
     } finally {
       db.close();
+      restoreEnv("GROVE_CREDITS_INITIAL_BALANCE", previousInitialBalance);
+      restoreEnv("GROVE_CREDITS_REWARD_TREASURY_BALANCE", previousRewardTreasuryBalance);
     }
 
     const reopened = initSqliteDb(dbPath);
