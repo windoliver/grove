@@ -412,6 +412,8 @@ export class SessionOrchestrator {
     // Notify all agents
     await this.router.broadcastStop(reason);
 
+    this.unsubscribeEventHandlers();
+
     // Close all agent sessions
     for (const agent of this.agents) {
       await this.config.runtime.close(agent.session);
@@ -733,13 +735,13 @@ export class SessionOrchestrator {
   }
 
   private async handleEvent(agent: AgentSessionInfo, event: GroveEvent): Promise<void> {
+    if (this.stopped) return;
+
     if (event.type === "stop") {
       // Auto-close session on stop event
-      if (!this.stopped) {
-        const reason =
-          typeof event.payload.reason === "string" ? event.payload.reason : "Stop condition met";
-        void this.stop(reason, LoopStopStatus.Achieved);
-      }
+      const reason =
+        typeof event.payload.reason === "string" ? event.payload.reason : "Stop condition met";
+      void this.stop(reason, LoopStopStatus.Achieved);
       return;
     }
 
@@ -760,6 +762,14 @@ export class SessionOrchestrator {
     const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
     const turn = await this.config.runtime.send(agent.session, message);
     this.watchTurn(agent.role, turn);
+  }
+
+  private unsubscribeEventHandlers(): void {
+    if (!this.eventHandlers) return;
+    for (const [role, handler] of this.eventHandlers) {
+      this.config.eventBus.unsubscribe(role, handler);
+    }
+    this.eventHandlers.clear();
   }
 
   private handleAgentIdle(_agent: AgentSessionInfo): void {

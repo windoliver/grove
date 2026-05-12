@@ -27,6 +27,7 @@ import { createHash as createBlake3, hash } from "blake3";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import { validateMediaType } from "../core/cas.js";
 import type { Artifact } from "../core/models.js";
+import { mapConcurrent } from "../shared/concurrency.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
@@ -220,8 +221,10 @@ export class NexusCas implements ContentStore {
   async existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
     const result = new Map<string, boolean>();
     if (contentHashes.length === 0) return result;
-    const entries = await Promise.all(
-      contentHashes.map(async (hash) => [hash, await this.exists(hash)] as const),
+    const entries = await mapConcurrent(
+      contentHashes,
+      this.config.maxConcurrency,
+      async (hash) => [hash, await this.exists(hash)] as const,
     );
     for (const [hash, exists] of entries) {
       result.set(hash, exists);

@@ -24,6 +24,7 @@ import type {
   ContributionInput,
 } from "../core/models.js";
 import { claimToSpecRecord, claimToStatusRecord, claimViewToClaim } from "../core/models.js";
+import type { OutcomeStore } from "../core/outcome.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,
@@ -540,6 +541,7 @@ export interface TestContext {
 export interface CreateTestAppOptions {
   readonly watchHubOptions?: WatchHubOptions;
   readonly eventBus?: EventBus;
+  readonly outcomeStore?: OutcomeStore | undefined;
   readonly goalSessionStore?: GoalSessionStore;
 }
 
@@ -587,6 +589,7 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     goalSessionStore: opts.goalSessionStore,
     watchHub,
     watchSubscriber,
+    ...(opts.outcomeStore !== undefined ? { outcomeStore: opts.outcomeStore } : {}),
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);

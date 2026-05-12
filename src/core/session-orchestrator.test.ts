@@ -21,6 +21,7 @@ import { canonicalJson } from "./skill-catalog.js";
 import { makeContribution } from "./test-helpers.js";
 import type { AgentTopology } from "./topology.js";
 
+const GIT_INTEGRATION_TIMEOUT_MS = 60_000;
 const encoder = new TextEncoder();
 
 /**
@@ -31,12 +32,15 @@ function makeFixtureBareRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "grove-so-fx-"));
   execSync("git -c init.defaultBranch=main init --bare", { cwd: dir, stdio: "pipe" });
   const scratch = mkdtempSync(join(tmpdir(), "grove-so-scratch-"));
-  execSync(`git clone "${dir}" "${scratch}"`, { stdio: "pipe" });
-  execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
-  execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
-  execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
-  execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
-  rmSync(scratch, { recursive: true, force: true });
+  try {
+    execSync("git -c init.defaultBranch=main init", { cwd: scratch, stdio: "pipe" });
+    execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
+    execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
+    execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
+    execSync(`git push "${dir}" main`, { cwd: scratch, stdio: "pipe" });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
   return dir;
 }
 
@@ -323,6 +327,26 @@ describe("SessionOrchestrator", () => {
     expect(status.stopped).toBe(true);
     expect(status.stopReason).toBe("Budget exceeded");
     expect(runtime.closeCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("stop unsubscribes event handlers so later events are ignored", async () => {
+    const contract = makeContract();
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract);
+
+    await orchestrator.start();
+    await orchestrator.stop("Operator stopped");
+
+    const sendsAfterStop = runtime.sendCalls.length;
+    await bus.publish({
+      type: "contribution",
+      sourceRole: "coder",
+      targetRole: "reviewer",
+      payload: { cid: "blake3:abc", summary: "late event" },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(runtime.sendCalls).toHaveLength(sendsAfterStop);
     bus.close();
   });
 
@@ -1367,98 +1391,106 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
     bus.close();
   });
 
-  test("allow-fallback policy: successful worktree produces isolated_worktree mode", async () => {
-    const { rmSync } = await import("node:fs");
+  test(
+    "allow-fallback policy: successful worktree produces isolated_worktree mode",
+    async () => {
+      const { rmSync } = await import("node:fs");
 
-    // Create a bare clone — matches the new workspace-provisioner contract.
-    const bareRepo = makeFixtureBareRepo();
-    try {
-      const runtime = new MockRuntime();
-      const bus = new LocalEventBus();
-      const contract = makeContract({
-        topology: {
-          structure: "flat",
-          roles: [{ name: "worker", description: "Do the work", command: "echo worker" }],
-        },
-      });
-
-      const orchestrator = new SessionOrchestrator({
-        goal: "Test isolated",
-        contract,
-        topology: contract.topology!,
-        runtime,
-        eventBus: bus,
-        projectRoot: bareRepo,
-        repos: [{ kind: "local", path: bareRepo }],
-        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
-        workspaceIsolationPolicy: "allow-fallback",
-        sessionId: "testsessionid12345678",
-      });
-
-      const status = await orchestrator.start();
-
-      expect(status.agents).toHaveLength(1);
-      const agent = status.agents[0]!;
-
-      // Worktree succeeded → isolated_worktree or bootstrap_failed
-      // (bootstrap may fail if MCP serve.ts isn't found, but worktree should succeed)
-      expect(["isolated_worktree", "bootstrap_failed"]).toContain(agent.workspaceMode.status);
-
-      // In either case, the agent cwd is inside the repo, NOT the repo root itself
-      expect(agent.workspaceMode.path).not.toBe(bareRepo);
-      bus.close();
-    } finally {
+      // Create a bare clone — matches the new workspace-provisioner contract.
+      const bareRepo = makeFixtureBareRepo();
       try {
-        rmSync(bareRepo, { recursive: true, force: true });
-      } catch {
-        // best-effort
+        const runtime = new MockRuntime();
+        const bus = new LocalEventBus();
+        const contract = makeContract({
+          topology: {
+            structure: "flat",
+            roles: [{ name: "worker", description: "Do the work", command: "echo worker" }],
+          },
+        });
+
+        const orchestrator = new SessionOrchestrator({
+          goal: "Test isolated",
+          contract,
+          topology: contract.topology!,
+          runtime,
+          eventBus: bus,
+          projectRoot: bareRepo,
+          repos: [{ kind: "local", path: bareRepo }],
+          workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+          workspaceIsolationPolicy: "allow-fallback",
+          sessionId: "testsessionid12345678",
+        });
+
+        const status = await orchestrator.start();
+
+        expect(status.agents).toHaveLength(1);
+        const agent = status.agents[0]!;
+
+        // Worktree succeeded → isolated_worktree or bootstrap_failed
+        // (bootstrap may fail if MCP serve.ts isn't found, but worktree should succeed)
+        expect(["isolated_worktree", "bootstrap_failed"]).toContain(agent.workspaceMode.status);
+
+        // In either case, the agent cwd is inside the repo, NOT the repo root itself
+        expect(agent.workspaceMode.path).not.toBe(bareRepo);
+        bus.close();
+      } finally {
+        try {
+          rmSync(bareRepo, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
       }
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
-  test("bootstrap failure with allow-fallback produces bootstrap_failed mode", async () => {
-    const { rmSync } = await import("node:fs");
+  test(
+    "bootstrap failure with allow-fallback produces bootstrap_failed mode",
+    async () => {
+      const { rmSync } = await import("node:fs");
 
-    const bareRepo = makeFixtureBareRepo();
-    try {
-      const runtime = new MockRuntime();
-      const bus = new LocalEventBus();
-      const contract = makeContract({
-        topology: {
-          structure: "flat",
-          roles: [{ name: "worker", description: "Do the work", command: "echo worker" }],
-        },
-      });
-
-      // We just need the worktree creation to succeed and bootstrap to at least attempt.
-      const orchestrator = new SessionOrchestrator({
-        goal: "Test bootstrap mode",
-        contract,
-        topology: contract.topology!,
-        runtime,
-        eventBus: bus,
-        projectRoot: bareRepo,
-        repos: [{ kind: "local", path: bareRepo }],
-        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
-        workspaceIsolationPolicy: "allow-fallback",
-        sessionId: "bootsessionid12345678",
-      });
-
-      const status = await orchestrator.start();
-      expect(status.agents).toHaveLength(1);
-
-      // The agent workspace mode must be one of the typed values
-      const mode = status.agents[0]!.workspaceMode.status;
-      expect(["isolated_worktree", "bootstrap_failed"]).toContain(mode);
-      bus.close();
-    } finally {
+      const bareRepo = makeFixtureBareRepo();
       try {
-        rmSync(bareRepo, { recursive: true, force: true });
-      } catch {
-        // best-effort
+        const runtime = new MockRuntime();
+        const bus = new LocalEventBus();
+        const contract = makeContract({
+          topology: {
+            structure: "flat",
+            roles: [{ name: "worker", description: "Do the work", command: "echo worker" }],
+          },
+        });
+
+        // We just need the worktree creation to succeed and bootstrap to at least attempt.
+        const orchestrator = new SessionOrchestrator({
+          goal: "Test bootstrap mode",
+          contract,
+          topology: contract.topology!,
+          runtime,
+          eventBus: bus,
+          projectRoot: bareRepo,
+          repos: [{ kind: "local", path: bareRepo }],
+          workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+          workspaceIsolationPolicy: "allow-fallback",
+          sessionId: "bootsessionid12345678",
+        });
+
+        const status = await orchestrator.start();
+        expect(status.agents).toHaveLength(1);
+
+        // The agent workspace mode must be one of the typed values
+        const mode = status.agents[0]!.workspaceMode.status;
+        expect(["isolated_worktree", "bootstrap_failed"]).toContain(mode);
+        bus.close();
+      } finally {
+        try {
+          rmSync(bareRepo, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
       }
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
   test("allow-fallback worktree failure fails closed when required Nexus skill catalog applies", async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "grove-so-required-prebootstrap-"));
@@ -1513,131 +1545,139 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
     }
   });
 
-  test("required Nexus skill catalog uses managed nexus.yaml URL", async () => {
-    const repo = makeFixtureLocalRepo();
-    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
-    process.env.GROVE_NEXUS_URL = "";
+  test(
+    "required Nexus skill catalog uses managed nexus.yaml URL",
+    async () => {
+      const repo = makeFixtureLocalRepo();
+      const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+      process.env.GROVE_NEXUS_URL = "";
 
-    const client = new MockNexusClient();
-    const keys = signingFixture();
-    const server = serveMockNexusReadApi(client);
-    try {
-      await seedNexusSkill({
-        client,
-        zoneId: "default",
-        privateKey: keys.privateKey,
-        keyId: keys.keyId,
-      });
-      writeNexusGroveConfig(join(repo, ".grove"), {
-        policy: "required",
-        nexusManaged: true,
-        trustedKey: {
-          id: keys.keyId,
-          publicKeySpkiDer: keys.publicKeySpkiDer,
-        },
-      });
-      writeFileSync(join(repo, "nexus.yaml"), `ports:\n  http: ${server.port}\n`, "utf-8");
+      const client = new MockNexusClient();
+      const keys = signingFixture();
+      const server = serveMockNexusReadApi(client);
+      try {
+        await seedNexusSkill({
+          client,
+          zoneId: "default",
+          privateKey: keys.privateKey,
+          keyId: keys.keyId,
+        });
+        writeNexusGroveConfig(join(repo, ".grove"), {
+          policy: "required",
+          nexusManaged: true,
+          trustedKey: {
+            id: keys.keyId,
+            publicKeySpkiDer: keys.publicKeySpkiDer,
+          },
+        });
+        writeFileSync(join(repo, "nexus.yaml"), `ports:\n  http: ${server.port}\n`, "utf-8");
 
-      const runtime = new MockRuntime();
-      const bus = new LocalEventBus();
-      const contract = makeContract({
-        topology: {
-          structure: "flat",
-          roles: [
-            {
-              name: "worker",
-              description: "Do the work",
-              command: "echo worker",
-              skills: ["grove"],
-            },
-          ],
-        },
-      });
-      const topology = contract.topology;
-      if (!topology) {
-        throw new Error("test contract must include topology");
+        const runtime = new MockRuntime();
+        const bus = new LocalEventBus();
+        const contract = makeContract({
+          topology: {
+            structure: "flat",
+            roles: [
+              {
+                name: "worker",
+                description: "Do the work",
+                command: "echo worker",
+                skills: ["grove"],
+              },
+            ],
+          },
+        });
+        const topology = contract.topology;
+        if (!topology) {
+          throw new Error("test contract must include topology");
+        }
+
+        const orchestrator = new SessionOrchestrator({
+          goal: "Test managed Nexus skill catalog",
+          contract,
+          topology,
+          runtime,
+          eventBus: bus,
+          projectRoot: repo,
+          repos: [{ kind: "local", path: repo }],
+          workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+          workspaceIsolationPolicy: "strict",
+          sessionId: "managedskillcatalog1",
+        });
+
+        const status = await orchestrator.start();
+
+        expect(status.agents).toHaveLength(1);
+        expect(runtime.spawnCalls).toHaveLength(1);
+        expect(runtime.spawnCalls[0]?.config.mcpServers?.[0]?.env?.GROVE_NEXUS_URL).toBe(
+          `http://localhost:${server.port}`,
+        );
+        bus.close();
+      } finally {
+        server.stop(true);
+        restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+        rmSync(repo, { recursive: true, force: true });
       }
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
-      const orchestrator = new SessionOrchestrator({
-        goal: "Test managed Nexus skill catalog",
-        contract,
-        topology,
-        runtime,
-        eventBus: bus,
-        projectRoot: repo,
-        repos: [{ kind: "local", path: repo }],
-        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
-        workspaceIsolationPolicy: "strict",
-        sessionId: "managedskillcatalog1",
-      });
+  test(
+    "allow-fallback still fails closed when required Nexus skill catalog is unreachable",
+    async () => {
+      const bareRepo = makeFixtureBareRepo();
+      const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+      process.env.GROVE_NEXUS_URL = "";
 
-      const status = await orchestrator.start();
+      try {
+        writeNexusGroveConfig(join(bareRepo, ".grove"), {
+          policy: "required",
+          nexusUrl: "http://127.0.0.1:1",
+        });
 
-      expect(status.agents).toHaveLength(1);
-      expect(runtime.spawnCalls).toHaveLength(1);
-      expect(runtime.spawnCalls[0]?.config.mcpServers?.[0]?.env?.GROVE_NEXUS_URL).toBe(
-        `http://localhost:${server.port}`,
-      );
-      bus.close();
-    } finally {
-      server.stop(true);
-      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
+        const runtime = new MockRuntime();
+        const bus = new LocalEventBus();
+        const contract = makeContract({
+          topology: {
+            structure: "flat",
+            roles: [
+              {
+                name: "worker",
+                description: "Do the work",
+                command: "echo worker",
+                skills: ["grove"],
+              },
+            ],
+          },
+        });
+        const topology = contract.topology;
+        if (!topology) {
+          throw new Error("test contract must include topology");
+        }
 
-  test("allow-fallback still fails closed when required Nexus skill catalog is unreachable", async () => {
-    const bareRepo = makeFixtureBareRepo();
-    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
-    process.env.GROVE_NEXUS_URL = "";
+        const orchestrator = new SessionOrchestrator({
+          goal: "Test required skill catalog",
+          contract,
+          topology,
+          runtime,
+          eventBus: bus,
+          projectRoot: bareRepo,
+          repos: [{ kind: "local", path: bareRepo }],
+          workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+          workspaceIsolationPolicy: "allow-fallback",
+          sessionId: "requiredcatalog123456",
+        });
 
-    try {
-      writeNexusGroveConfig(join(bareRepo, ".grove"), {
-        policy: "required",
-        nexusUrl: "http://127.0.0.1:1",
-      });
-
-      const runtime = new MockRuntime();
-      const bus = new LocalEventBus();
-      const contract = makeContract({
-        topology: {
-          structure: "flat",
-          roles: [
-            {
-              name: "worker",
-              description: "Do the work",
-              command: "echo worker",
-              skills: ["grove"],
-            },
-          ],
-        },
-      });
-      const topology = contract.topology;
-      if (!topology) {
-        throw new Error("test contract must include topology");
+        await expect(orchestrator.start()).rejects.toThrow("Nexus skill catalog required");
+        expect(runtime.spawnCalls).toHaveLength(0);
+        bus.close();
+      } finally {
+        restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+        rmSync(bareRepo, { recursive: true, force: true });
       }
-
-      const orchestrator = new SessionOrchestrator({
-        goal: "Test required skill catalog",
-        contract,
-        topology,
-        runtime,
-        eventBus: bus,
-        projectRoot: bareRepo,
-        repos: [{ kind: "local", path: bareRepo }],
-        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
-        workspaceIsolationPolicy: "allow-fallback",
-        sessionId: "requiredcatalog123456",
-      });
-
-      await expect(orchestrator.start()).rejects.toThrow("Nexus skill catalog required");
-      expect(runtime.spawnCalls).toHaveLength(0);
-      bus.close();
-    } finally {
-      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
-      rmSync(bareRepo, { recursive: true, force: true });
-    }
-  });
+    },
+    GIT_INTEGRATION_TIMEOUT_MS,
+  );
 
   test("workspaceMode.status is visible on each agent in getStatus()", async () => {
     const contract = makeContract();

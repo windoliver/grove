@@ -5,6 +5,8 @@
  * preserving result ordering.
  */
 
+import { mapConcurrent } from "../shared/concurrency.js";
+
 /**
  * Map over `items` calling `fn` for each, with at most `concurrency`
  * invocations in flight at once. Results are returned in the same order
@@ -21,30 +23,5 @@ export async function batchParallel<T, R>(
 ): Promise<R[]> {
   if (items.length === 0) return [];
 
-  const results = new Array<R>(items.length);
-  const workerCount = Math.min(Math.max(1, Math.floor(concurrency)), items.length);
-  let nextIndex = 0;
-  let rejection: unknown;
-
-  const worker = async (): Promise<void> => {
-    while (rejection === undefined) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) return;
-
-      const item = items[index];
-      if (item === undefined) return;
-
-      try {
-        results[index] = await fn(item);
-      } catch (err) {
-        rejection = err;
-        return;
-      }
-    }
-  };
-
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  if (rejection !== undefined) throw rejection;
-  return results;
+  return mapConcurrent(items, Math.max(1, Math.floor(concurrency)), (item) => fn(item));
 }
