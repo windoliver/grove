@@ -18,6 +18,7 @@
  * provider.getDag() / provider.getClaims({ status: "active" }).
  */
 
+import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo } from "react";
 import type { ClaimEntity, ContributionEntity } from "../../core/entity.js";
 import type { Claim, Contribution } from "../../core/models.js";
@@ -27,7 +28,11 @@ import { DagStatusIcon } from "../components/dag-status-icon.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { useDagState } from "../hooks/dag-state-context.js";
-import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
+import {
+  useEntityWatchEnabled,
+  useInformerOptional,
+  useProviderScoped,
+} from "../hooks/informer-context.js";
 import { useDerived } from "../hooks/use-derived.js";
 import { shallowArraysEqual } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
@@ -130,6 +135,12 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
 
   const useContribWatch = useEntityWatchEnabled(provider, "Contribution");
   const useClaimWatch = useEntityWatchEnabled(provider, "Claim");
+  // Scoped sessions: `provider.getClaims` is namespace-global (no session
+  // filter), so unconditionally feeding it into status derivation would
+  // surface running/blocked icons sourced from OTHER sessions' claims.
+  // Mirror the agent-list/claims-view short-circuit until session-scoped
+  // claim filtering lands.
+  const isScopedForClaims = useProviderScoped(provider);
 
   const contribInformer = useInformerOptional("Contribution");
   const claimInformer = useInformerOptional("Claim");
@@ -199,13 +210,24 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   );
 
   // Polled claim fallback — same `active` gate as contributions so the
-  // panel keeps a consistent freshness story.
-  const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
+  // panel keeps a consistent freshness story. Fetches `status: "all"`
+  // (not `"active"`) because the local store's `activeClaims()` filter
+  // drops leases whose `lease_expires_at` is already in the past — and
+  // that is exactly the state `deriveDagStatus` needs to surface
+  // `blocked`. `deriveDagStatus` independently filters to active claims,
+  // so the extra rows are harmless.
+  const claimsFetcher = useCallback(
+    () =>
+      isScopedForClaims
+        ? Promise.resolve([] as readonly Claim[])
+        : provider.getClaims({ status: "all" }),
+    [provider, isScopedForClaims],
+  );
   const polledClaims = useEventDrivenData<readonly Claim[]>(
     claimsFetcher,
     undefined,
     undefined,
-    active && !claimInformerReady,
+    active && !claimInformerReady && !isScopedForClaims,
   );
 
   const contributions: readonly Contribution[] = useMemo(() => {
@@ -265,6 +287,40 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     [contributions, outcomes, claims, now, snapshot.collapsed, snapshot.focusCid],
   );
 
+  // Production keybindings — only act when this panel is the focused one
+  // (cursor >= 0) so a key press routed by the parent screen reaches the
+  // DAG and doesn't double-handle from other mounted views.
+  //   space → toggle collapse on the currently-focused row
+  //   shift+A → expand all
+  //   shift+Z → collapse every interior (non-leaf) cid currently rendered
+  useKeyboard(
+    useCallback(
+      (key) => {
+        if (cursor < 0) return;
+        const name = (key as { name?: string }).name;
+        const shift = (key as { shift?: boolean }).shift === true;
+        if (name === "space") {
+          const row = projection.rows[cursor];
+          if (row && row.expander !== "leaf" && row.expander !== "crosslink") {
+            store.toggleCollapsed(row.cid);
+          }
+          return;
+        }
+        if (shift && name === "a") {
+          store.expandAll();
+          return;
+        }
+        if (shift && name === "z") {
+          const collapsible = projection.rows
+            .filter((r) => r.expander === "expanded" || r.expander === "collapsed")
+            .map((r) => r.cid);
+          store.collapseAll(collapsible);
+        }
+      },
+      [cursor, projection.rows, store],
+    ),
+  );
+
   if (loading && contributions.length === 0) {
     return (
       <box>
@@ -314,7 +370,17 @@ interface DagRowProps {
 function DagRowView({ row, isSelected, highlight }: DagRowProps): React.ReactNode {
   const { node, depth, expander, incomingEdge } = row;
   const indent = "  ".repeat(depth);
-  const expanderGlyph = expander === "expanded" ? "▼" : expander === "collapsed" ? "▶" : "·";
+  // `↪` marks a crosslink — a second incoming edge to a node whose subtree
+  // was already rendered elsewhere. Distinct from `·` (leaf) so operators
+  // can tell "no children" from "children already shown above".
+  const expanderGlyph =
+    expander === "expanded"
+      ? "▼"
+      : expander === "collapsed"
+        ? "▶"
+        : expander === "crosslink"
+          ? "↪"
+          : "·";
   const cidShort = `${node.cid.slice(0, 14)}…`;
   const edgeLabel =
     incomingEdge && incomingEdge !== "derives_from"

@@ -44,7 +44,7 @@ export interface DagNode {
 export interface RenderRow {
   readonly cid: string;
   readonly depth: number;
-  readonly expander: "expanded" | "collapsed" | "leaf";
+  readonly expander: "expanded" | "collapsed" | "leaf" | "crosslink";
   readonly incomingEdge: RelationType | null;
   readonly node: DagNode;
 }
@@ -147,10 +147,27 @@ export function projectDagTree(input: ProjectInput): ProjectResult {
     rootCids.sort((a, b) =>
       compareTimestampsDesc(contribByCid.get(a)?.createdAt, contribByCid.get(b)?.createdAt),
     );
-    roots = rootCids.map((cid) => ({ cid, relationType: null }));
+    // Rootless graph (every node has an in-set parent → must be a cycle).
+    // Fall back to seeding traversal from every node in newest-first order so
+    // the operator still sees a bounded projection of the cycle's contents
+    // rather than an empty render.
+    if (rootCids.length === 0 && nodes.size > 0) {
+      const allCids = [...nodes.keys()];
+      allCids.sort((a, b) =>
+        compareTimestampsDesc(contribByCid.get(a)?.createdAt, contribByCid.get(b)?.createdAt),
+      );
+      roots = allCids.map((cid) => ({ cid, relationType: null }));
+    } else {
+      roots = rootCids.map((cid) => ({ cid, relationType: null }));
+    }
   }
 
-  const visited = new Set<string>();
+  // `renderedFull` tracks cids whose subtree has already been emitted as a
+  // primary (descendable) row. A subsequent encounter via a different parent
+  // renders a `crosslink` row (visible but non-descending) so multi-parent
+  // edges (e.g. a node referenced by both reviews and adopts relations) stay
+  // surfaced without duplicating the entire subtree.
+  const renderedFull = new Set<string>();
   const rows: RenderRow[] = [];
   let truncated = false;
 
@@ -158,47 +175,78 @@ export function projectDagTree(input: ProjectInput): ProjectResult {
     readonly cid: string;
     readonly depth: number;
     readonly incomingEdge: RelationType | null;
+    readonly ancestors: ReadonlySet<string>;
   };
 
   const stack: Frame[] = [];
   for (let i = roots.length - 1; i >= 0; i--) {
     const root = roots[i];
-    if (root) stack.push({ cid: root.cid, depth: 0, incomingEdge: root.relationType });
+    if (root)
+      stack.push({
+        cid: root.cid,
+        depth: 0,
+        incomingEdge: root.relationType,
+        ancestors: new Set(),
+      });
   }
 
   while (stack.length > 0) {
     const frame = stack.pop();
     if (!frame) continue;
-    if (visited.has(frame.cid)) continue;
+    // Cycle guard: per-path ancestor set. A cid appearing in its own ancestry
+    // is a true back-edge — skip silently to avoid infinite descent.
+    if (frame.ancestors.has(frame.cid)) continue;
     const node = nodes.get(frame.cid);
     if (!node) continue;
-    visited.add(frame.cid);
 
     if (rows.length >= options.maxNodes) {
       truncated = true;
       break;
     }
 
+    const alreadyRendered = renderedFull.has(frame.cid);
+    // Suppress duplicate root-level entries — when a rootless cycle forces
+    // every node to be seeded as a root, only the first encounter emits a
+    // row. Crosslinks only carry information when they expose a *new*
+    // parent edge (`incomingEdge !== null`).
+    if (alreadyRendered && frame.incomingEdge === null) continue;
+
     const isLeaf = node.children.length === 0;
     const isCollapsed = !isLeaf && options.collapsed.has(frame.cid);
+
+    const expander: RenderRow["expander"] = alreadyRendered
+      ? "crosslink"
+      : isLeaf
+        ? "leaf"
+        : isCollapsed
+          ? "collapsed"
+          : "expanded";
+
     rows.push({
       cid: frame.cid,
       depth: frame.depth,
-      expander: isLeaf ? "leaf" : isCollapsed ? "collapsed" : "expanded",
+      expander,
       incomingEdge: frame.incomingEdge,
       node,
     });
 
-    if (!isLeaf && !isCollapsed) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        const child = node.children[i];
-        if (child)
-          stack.push({
-            cid: child.cid,
-            depth: frame.depth + 1,
-            incomingEdge: child.relationType,
-          });
-      }
+    // Mark every emitted cid so subsequent encounters via a different
+    // parent render as crosslinks (works for leaves and internal nodes alike).
+    renderedFull.add(frame.cid);
+
+    if (alreadyRendered || isLeaf || isCollapsed) continue;
+
+    const nextAncestors = new Set(frame.ancestors);
+    nextAncestors.add(frame.cid);
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      const child = node.children[i];
+      if (child)
+        stack.push({
+          cid: child.cid,
+          depth: frame.depth + 1,
+          incomingEdge: child.relationType,
+          ancestors: nextAncestors,
+        });
     }
   }
 

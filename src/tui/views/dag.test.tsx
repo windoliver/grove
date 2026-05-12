@@ -14,8 +14,14 @@ import type * as TestRendererTypes from "react-test-renderer";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { makeContribution, makeRelation } from "../../core/test-helpers.js";
 
+// Captured useKeyboard handler — tests fire synthetic key events through
+// this reference to exercise the production keybinding path.
+const capturedKeyHandlers: ((key: { name?: string; shift?: boolean }) => void)[] = [];
+
 mock.module("@opentui/react", () => ({
-  useKeyboard: (): void => undefined,
+  useKeyboard: (handler: (key: { name?: string; shift?: boolean }) => void): void => {
+    capturedKeyHandlers.push(handler);
+  },
   useRenderer: (): { destroy: () => void } => ({ destroy: () => undefined }),
   useTerminalDimensions: (): { width: number; height: number } => ({ width: 120, height: 40 }),
   useTimeline: (): unknown => ({}),
@@ -32,6 +38,15 @@ mock.module("@opentui/react", () => ({
   TimeToFirstDraw: (): null => null,
   AppContext: {},
 }));
+
+function fireKey(key: { name?: string; shift?: boolean }): void {
+  // Only fire the most-recently-registered handler. useKeyboard's mock
+  // accumulates handlers across renders; the latest closes over the freshest
+  // state and is the one that would have replaced its predecessor inside a
+  // real opentui mount.
+  const latest = capturedKeyHandlers[capturedKeyHandlers.length - 1];
+  if (latest) latest(key);
+}
 
 const TestRendererModule = await import("react-test-renderer");
 const TestRenderer = (TestRendererModule as unknown as { default: typeof TestRendererTypes })
@@ -158,6 +173,71 @@ describe("DagView (xray)", () => {
     });
     const flat = JSON.stringify(renderer.toJSON());
     expect(flat).toContain("?"); // awaiting-review glyph
+    renderer.unmount();
+  });
+
+  test("space keybinding toggles collapse on the focused row in production path", async () => {
+    const root = makeContribution({ summary: "root-kb" });
+    const child = makeContribution({
+      summary: "child-kb",
+      createdAt: "2026-05-11T11:30:00Z",
+      relations: [makeRelation({ targetCid: root.cid, relationType: RelationType.DerivesFrom })],
+    });
+    const store = new DagStateStore();
+    capturedKeyHandlers.length = 0;
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <DagStateProvider store={store}>
+            <DagView provider={makeStubProvider([root, child]) as never} active cursor={0} />
+          </DagStateProvider>
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(store.snapshot().collapsed.has(root.cid)).toBe(false);
+    await act(async () => {
+      fireKey({ name: "space" });
+    });
+    expect(store.snapshot().collapsed.has(root.cid)).toBe(true);
+    await act(async () => {
+      fireKey({ name: "space" });
+    });
+    expect(store.snapshot().collapsed.has(root.cid)).toBe(false);
+    renderer.unmount();
+  });
+
+  test("Shift+A expands all collapsed cids in production path", async () => {
+    const root = makeContribution({ summary: "root-kb-A" });
+    const child = makeContribution({
+      summary: "child-kb-A",
+      createdAt: "2026-05-11T11:30:00Z",
+      relations: [makeRelation({ targetCid: root.cid, relationType: RelationType.DerivesFrom })],
+    });
+    const store = new DagStateStore();
+    store.toggleCollapsed(root.cid);
+    capturedKeyHandlers.length = 0;
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <DagStateProvider store={store}>
+            <DagView provider={makeStubProvider([root, child]) as never} active cursor={0} />
+          </DagStateProvider>
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(store.snapshot().collapsed.size).toBe(1);
+    await act(async () => {
+      fireKey({ name: "a", shift: true });
+    });
+    expect(store.snapshot().collapsed.size).toBe(0);
     renderer.unmount();
   });
 });

@@ -211,4 +211,68 @@ describe("projectDagTree", () => {
     });
     expect(Object.isFrozen(r.rows)).toBe(true);
   });
+
+  test("shared child with multiple parent edges surfaces under each parent", () => {
+    // A work contribution adopted by two different work parents — the
+    // shared child must appear under BOTH parents so reviewers see every
+    // incoming edge, not just the first DFS path.
+    const parentA = makeContribution({
+      summary: "parent-A",
+      createdAt: "2026-05-11T11:00:00Z",
+    });
+    const parentB = makeContribution({
+      summary: "parent-B",
+      createdAt: "2026-05-11T11:05:00Z",
+    });
+    const child = makeContribution({
+      summary: "shared-child",
+      createdAt: "2026-05-11T11:30:00Z",
+      relations: [
+        makeRelation({ targetCid: parentA.cid, relationType: RelationType.Reviews }),
+        makeRelation({ targetCid: parentB.cid, relationType: RelationType.Adopts }),
+      ],
+    });
+    const r = projectDagTree({
+      contributions: [parentA, parentB, child],
+      outcomes: new Map(),
+      claims: [],
+      now: NOW,
+      options: { collapsed: new Set(), focusCid: null, maxNodes: 500 },
+    });
+    const childRows = r.rows.filter((row) => row.cid === child.cid);
+    expect(childRows.length).toBe(2);
+    const edges = childRows.map((row) => row.incomingEdge);
+    expect(edges).toContain(RelationType.Reviews);
+    expect(edges).toContain(RelationType.Adopts);
+    // First emission is a full subtree, second is a non-descending crosslink.
+    const expanders = childRows.map((row) => row.expander).sort();
+    expect(expanders).toEqual(["crosslink", "leaf"]);
+  });
+
+  test("rootless cycle still renders each reachable cid (no empty projection)", () => {
+    // Forge a closed cycle a→b→a so no node has zero in-set parents.
+    // The projection must NOT return an empty rows array — every cid
+    // should still be visible to the operator.
+    const a = makeContribution({ summary: "cycle-a" });
+    const b = makeContribution({
+      summary: "cycle-b",
+      createdAt: "2026-05-11T11:30:00Z",
+      relations: [makeRelation({ targetCid: a.cid, relationType: RelationType.DerivesFrom })],
+    });
+    const aWithCycle: Contribution = {
+      ...a,
+      relations: [{ targetCid: b.cid, relationType: RelationType.DerivesFrom }],
+    };
+    const r = projectDagTree({
+      contributions: [aWithCycle, b],
+      outcomes: new Map(),
+      claims: [],
+      now: NOW,
+      options: { collapsed: new Set(), focusCid: null, maxNodes: 500 },
+    });
+    expect(r.rows.length).toBeGreaterThan(0);
+    const cids = new Set(r.rows.map((row) => row.cid));
+    expect(cids.has(a.cid)).toBe(true);
+    expect(cids.has(b.cid)).toBe(true);
+  });
 });
