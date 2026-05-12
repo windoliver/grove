@@ -29,6 +29,10 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../core/frontier-reward-service.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -483,8 +487,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     }
   }
 
-  const operationFrontierRewardService =
-    bountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+  const canUseLocalFrontierRewardService = bountyStore === runtime.bountyStore;
 
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
@@ -647,6 +650,15 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       "rebuildFromStore",
     ]);
   }
+
+  const operationFrontierRewardService = canUseLocalFrontierRewardService
+    ? new FrontierRewardService({
+        frontier: new DefaultFrontierCalculator(contributionStore),
+        bountyStore,
+        creditsService,
+        eligibleMetrics: frontierRewardEligibleMetrics(loadedContract),
+      })
+    : undefined;
 
   // Cross-process WatchHub bridge: when grove-server is reachable and
   // we hold a namespace key, fire entity-changed events as POSTs to

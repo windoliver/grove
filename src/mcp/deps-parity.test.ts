@@ -77,13 +77,14 @@ describe("MCP deps parity with LocalRuntime", () => {
   });
 
   test("HTTP MCP deps construction includes goalSessionStore", () => {
-    // Mirror the deps construction from src/mcp/serve-http.ts buildScopedDeps
+    // Mirror the stable runtime deps forwarded from src/mcp/serve-http.ts
+    // buildScopedDeps. Frontier rewards are built from scoped, guarded stores
+    // in that entry point and intentionally do not reuse the runtime singleton.
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
       bountyStore: runtime.bountyStore,
       creditsService: runtime.creditsService,
-      frontierRewardService: runtime.frontierRewardService,
       cas: runtime.cas,
       frontier: runtime.frontier,
       workspace: runtime.workspace!,
@@ -97,7 +98,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
     expect(deps.creditsService).toBe(runtime.creditsService);
-    expect(deps.frontierRewardService).toBe(runtime.frontierRewardService);
-    expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(deps.frontierRewardService).toBeUndefined();
+    expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
   });
 });

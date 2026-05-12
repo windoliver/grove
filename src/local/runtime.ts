@@ -13,8 +13,10 @@ import { parseGroveContract } from "../core/contract.js";
 import type { CreditsService } from "../core/credits.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
-import { FrontierRewardService } from "../core/frontier-reward-service.js";
-import type { ScoreDirection } from "../core/models.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../core/frontier-reward-service.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "./fs-cas.js";
@@ -206,7 +208,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     frontier,
     bountyStore: stores.bountyStore,
     creditsService: stores.creditsService,
-    eligibleMetrics: eligibleMetricDirections(contract),
+    eligibleMetrics: frontierRewardEligibleMetrics(contract),
   });
 
   return {
@@ -232,18 +234,4 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
       stores.close();
     },
   };
-}
-
-function eligibleMetricDirections(
-  contract: GroveContract | undefined,
-): Readonly<Record<string, ScoreDirection>> | undefined {
-  if (contract?.metrics === undefined) {
-    return undefined;
-  }
-
-  const directions: Record<string, ScoreDirection> = {};
-  for (const [metric, definition] of Object.entries(contract.metrics)) {
-    directions[metric] = definition.direction;
-  }
-  return directions;
 }

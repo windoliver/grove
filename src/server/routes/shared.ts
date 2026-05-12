@@ -289,6 +289,7 @@ export function operationDepsForSession(
   deps: ServerDeps,
   sessionId: string | undefined,
 ): OperationDeps {
+  const baseDeps = toOperationDeps(deps);
   const scopedContributionStore = contributionStoreForSession(deps, sessionId);
   const scopedFrontier =
     sessionId !== undefined && deps.frontierForSession !== undefined
@@ -298,9 +299,10 @@ export function operationDepsForSession(
         : deps.frontier;
 
   return {
-    ...toOperationDeps(deps),
+    ...baseDeps,
     contributionStore: scopedContributionStore,
     frontier: scopedFrontier,
+    frontierRewardService: sessionId === undefined ? baseDeps.frontierRewardService : undefined,
   };
 }
 

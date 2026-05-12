@@ -2,6 +2,7 @@ import type { RewardRecord } from "./bounty.js";
 import { RewardType } from "./bounty.js";
 import { computeRewardId } from "./bounty-logic.js";
 import type { BountyStore } from "./bounty-store.js";
+import type { GroveContract } from "./contract.js";
 import type { CreditsService } from "./credits.js";
 import { FRONTIER_REWARD_TREASURY_AGENT_ID } from "./credits-constants.js";
 import type { FrontierCalculator, FrontierEntry } from "./frontier.js";
@@ -15,6 +16,20 @@ export interface FrontierRewardServiceOptions {
   readonly treasuryAgentId?: string | undefined;
   readonly eligibleMetrics?: Readonly<Record<string, ScoreDirection>> | undefined;
   readonly maxRewardAmount?: number | undefined;
+}
+
+export function frontierRewardEligibleMetrics(
+  contract: GroveContract | undefined,
+): Readonly<Record<string, ScoreDirection>> | undefined {
+  if (contract?.metrics === undefined) {
+    return undefined;
+  }
+
+  const directions: Record<string, ScoreDirection> = {};
+  for (const [metric, definition] of Object.entries(contract.metrics)) {
+    directions[metric] = definition.direction;
+  }
+  return directions;
 }
 
 export class FrontierRewardService {

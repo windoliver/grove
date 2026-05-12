@@ -27,7 +27,7 @@ import type { ContributionQuery } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
-import { contributionStoreForSession } from "./shared.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -317,7 +317,10 @@ contributions.post("/", async (c) => {
       : {}),
   };
 
-  let opDeps = toOperationDeps(serverDeps);
+  let opDeps =
+    parsed.sessionId === undefined
+      ? toOperationDeps(serverDeps)
+      : operationDepsForSession(serverDeps, parsed.sessionId);
   // Inject namespace only for non-session writes (#292). When sessionId
   // is set, the write lands in the session-scoped store but /api/list
   // reads the process-global store, so emitting a watch event the lister
