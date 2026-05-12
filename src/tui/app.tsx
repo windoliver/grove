@@ -25,6 +25,8 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { DagStateStore } from "./data/dag-state-store.js";
+import { DagStateProvider } from "./hooks/dag-state-context.js";
 
 export type { TuiAction, TuiKeyboardState } from "./app-reducer.js";
 export { tuiReducer } from "./app-reducer.js";
@@ -103,6 +105,11 @@ export function App({
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
+  // DagStateStore — xray DAG UI state (#311). Constructed once at App
+  // mount so collapse/highlight/focus survive every PanelManager
+  // re-render. ScreenManager has its own equivalent; the two providers
+  // are mounted on disjoint code paths (advanced mode vs welcome flow).
+  const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
   const fileOverrides = useKeybindingOverrides();
@@ -904,99 +911,103 @@ export function App({
   });
 
   return (
-    <box flexDirection="column" width="100%" height="100%">
-      <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
-      <PanelBar panelState={panels.state} />
-      <HelpOverlay
-        visible={panels.state.mode === InputMode.Help}
-        isDetailView={nav.isDetailView}
-        focusedPanel={panels.state.focused}
-        keybindingOverrides={keybindingOverrides}
-      />
-      {paletteVisible && (
-        <box
-          position="absolute"
-          top={2}
-          left={2}
-          right={2}
-          bottom={2}
-          zIndex={10}
-          backgroundColor={theme.headerBg}
-        >
-          <CommandPalette
-            visible={paletteVisible}
-            tmux={tmux}
-            onClose={handleCommandPaletteClose}
-            onSpawn={handleSpawn}
-            onKill={handleKill}
-            topology={topology}
-            activeClaims={activeClaims ?? undefined}
-            selectedIndex={ks.paletteIndex}
-            sessions={paletteSessions ?? undefined}
-            parentAgentId={paletteParentId}
-            items={paletteItems}
-            query={ks.paletteQuery}
-          />
-        </box>
-      )}
-      <InputBar
-        visible={
-          panels.state.mode === InputMode.TerminalInput ||
-          panels.state.mode === InputMode.MessageInput ||
-          panels.state.mode === InputMode.GoalInput
-        }
-        sessionName={selectedSession}
-        messageLabel={
-          panels.state.mode === InputMode.MessageInput
-            ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
-            : panels.state.mode === InputMode.GoalInput
-              ? `Goal: ${ks.goalBuffer}`
+    <DagStateProvider store={dagStateStore}>
+      <box flexDirection="column" width="100%" height="100%">
+        <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
+        <PanelBar panelState={panels.state} />
+        <HelpOverlay
+          visible={panels.state.mode === InputMode.Help}
+          isDetailView={nav.isDetailView}
+          focusedPanel={panels.state.focused}
+          keybindingOverrides={keybindingOverrides}
+        />
+        {paletteVisible && (
+          <box
+            position="absolute"
+            top={2}
+            left={2}
+            right={2}
+            bottom={2}
+            zIndex={10}
+            backgroundColor={theme.headerBg}
+          >
+            <CommandPalette
+              visible={paletteVisible}
+              tmux={tmux}
+              onClose={handleCommandPaletteClose}
+              onSpawn={handleSpawn}
+              onKill={handleKill}
+              topology={topology}
+              activeClaims={activeClaims ?? undefined}
+              selectedIndex={ks.paletteIndex}
+              sessions={paletteSessions ?? undefined}
+              parentAgentId={paletteParentId}
+              items={paletteItems}
+              query={ks.paletteQuery}
+            />
+          </box>
+        )}
+        <InputBar
+          visible={
+            panels.state.mode === InputMode.TerminalInput ||
+            panels.state.mode === InputMode.MessageInput ||
+            panels.state.mode === InputMode.GoalInput
+          }
+          sessionName={selectedSession}
+          messageLabel={
+            panels.state.mode === InputMode.MessageInput
+              ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
+              : panels.state.mode === InputMode.GoalInput
+                ? `Goal: ${ks.goalBuffer}`
+                : undefined
+          }
+        />
+        <PanelManager
+          provider={provider}
+          intervalMs={intervalMs}
+          panelState={panels.state}
+          nav={nav}
+          onContributionsLoaded={handleContributionsLoaded}
+          onRowCountChanged={handleRowCountChanged}
+          pageSize={PAGE_SIZE}
+          tmux={tmux}
+          selectedSession={selectedSession}
+          topology={topology}
+          onSelectSession={setSelectedSession}
+          vfsNavigateTrigger={ks.vfsNavigateTrigger}
+          artifactIndex={ks.artifactIndex}
+          showArtifactDiff={ks.showArtifactDiff}
+          activeClaims={activeClaims ?? undefined}
+          searchQuery={
+            panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery
+          }
+          isSearchInputMode={panels.state.mode === InputMode.SearchInput}
+          compareMode={ks.compareMode}
+          compareCids={ks.compareCids}
+          onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
+          onFrontierCidsChanged={handleFrontierCidsChanged}
+          zoomLevel={ks.zoomLevel}
+          activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+          terminalScrollOffset={ks.terminalScrollOffset}
+          terminalBuffers={terminalBuffers ?? undefined}
+          layoutMode={ks.layoutMode}
+          presetName={presetName}
+        />
+        <StatusBar
+          mode={panels.state.mode}
+          isDetailView={nav.isDetailView}
+          error={lastError}
+          focusedPanel={panels.state.focused}
+          agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
+          viewMode={panels.state.viewMode}
+          costLabel={
+            sessionCosts
+              ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
               : undefined
-        }
-      />
-      <PanelManager
-        provider={provider}
-        intervalMs={intervalMs}
-        panelState={panels.state}
-        nav={nav}
-        onContributionsLoaded={handleContributionsLoaded}
-        onRowCountChanged={handleRowCountChanged}
-        pageSize={PAGE_SIZE}
-        tmux={tmux}
-        selectedSession={selectedSession}
-        topology={topology}
-        onSelectSession={setSelectedSession}
-        vfsNavigateTrigger={ks.vfsNavigateTrigger}
-        artifactIndex={ks.artifactIndex}
-        showArtifactDiff={ks.showArtifactDiff}
-        activeClaims={activeClaims ?? undefined}
-        searchQuery={panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery}
-        isSearchInputMode={panels.state.mode === InputMode.SearchInput}
-        compareMode={ks.compareMode}
-        compareCids={ks.compareCids}
-        onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
-        onFrontierCidsChanged={handleFrontierCidsChanged}
-        zoomLevel={ks.zoomLevel}
-        activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
-        terminalScrollOffset={ks.terminalScrollOffset}
-        terminalBuffers={terminalBuffers ?? undefined}
-        layoutMode={ks.layoutMode}
-        presetName={presetName}
-      />
-      <StatusBar
-        mode={panels.state.mode}
-        isDetailView={nav.isDetailView}
-        error={lastError}
-        focusedPanel={panels.state.focused}
-        agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
-        viewMode={panels.state.viewMode}
-        costLabel={
-          sessionCosts
-            ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
-            : undefined
-        }
-        goalLabel={dashboardData?.metadata?.goal}
-      />
-    </box>
+          }
+          goalLabel={dashboardData?.metadata?.goal}
+        />
+      </box>
+    </DagStateProvider>
   );
 }

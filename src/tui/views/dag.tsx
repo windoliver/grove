@@ -77,11 +77,16 @@ function entityToContribution(e: ContributionEntity): Contribution {
  *  the lease-collapsed `phase` here instead, expired-but-not-yet-purged
  *  claims would render as `awaiting-review`/`idle` after a relist. */
 function entityToClaim(e: ClaimEntity): Claim {
+  // Server-version fallback: `persistedPhase` was added alongside the
+  // lease-aware `phase`. A one-version-behind server may emit only
+  // `phase`; treat that as the persisted state so a partial-schema
+  // payload doesn't silently drop every claim from status derivation.
+  const persisted = e.status.persistedPhase ?? e.status.phase;
   return {
     claimId: e.id,
     targetRef: e.spec.targetRef,
     agent: e.spec.agent,
-    status: e.status.persistedPhase,
+    status: persisted,
     intentSummary: e.spec.intentSummary,
     createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
     heartbeatAt: e.status.heartbeatAt,
@@ -194,11 +199,14 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const derivedClaims = useDerived<readonly Claim[]>(
     () => {
       const all = claimInformer.list() as readonly ClaimEntity[];
-      // Filter on `persistedPhase` rather than the lease-aware `phase` so
-      // active-with-expired-lease rows still reach the projection — the
-      // status helper then flips them to `blocked` based on the lease
-      // timestamp. Mirrors the polled `getClaims({ status: "all" })` path.
-      return all.filter((e) => e.status.persistedPhase === "active").map(entityToClaim);
+      // Filter on `persistedPhase` (raw store state) — falls back to
+      // `phase` if a one-version-behind server didn't ship persistedPhase.
+      // Either way an active-with-expired-lease row reaches the projection
+      // so the status helper can flip it to `blocked`. Mirrors the polled
+      // `getClaims({ status: "all" })` path.
+      return all
+        .filter((e) => (e.status.persistedPhase ?? e.status.phase) === "active")
+        .map(entityToClaim);
     },
     ["Claim"],
     shallowArraysEqual,
@@ -274,12 +282,6 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     active && cids.length > 0,
   );
 
-  useEffect(() => {
-    if (contributions.length > 0 && onContributionsLoaded) {
-      onContributionsLoaded(contributions);
-    }
-  }, [contributions, onContributionsLoaded]);
-
   // Ticking clock so an active claim whose lease expires between data
   // events flips running → blocked without waiting for the next push.
   const now = useNowTicker();
@@ -298,6 +300,23 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
       }),
     [contributions, outcomes, claims, now, snapshot.collapsed, snapshot.focusCid],
   );
+
+  // Report the *rendered* row order to the parent, NOT the raw contribution
+  // list — the projection reorders root-to-descendant, can hide collapsed
+  // subtrees, and emits duplicate rows for multi-parent crosslinks. Parent
+  // navigation (Enter/cursor-based actions) must index against what the
+  // user actually sees so a cursor row aligns with the right cid.
+  useEffect(() => {
+    if (!onContributionsLoaded) return;
+    if (projection.rows.length === 0) return;
+    const contribByCid = new Map(contributions.map((c) => [c.cid, c]));
+    const visible: Contribution[] = [];
+    for (const row of projection.rows) {
+      const c = contribByCid.get(row.cid);
+      if (c) visible.push(c);
+    }
+    onContributionsLoaded(visible);
+  }, [projection.rows, contributions, onContributionsLoaded]);
 
   // Production keybindings — only act when this panel is the focused one
   // (cursor >= 0) so a key press routed by the parent screen reaches the
