@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runCreditsServiceTests } from "../core/credits.conformance.js";
-import { initSqliteDb } from "./sqlite-store.js";
 import { SqliteCreditsService } from "./sqlite-credits-service.js";
+import { initSqliteDb } from "./sqlite-store.js";
 
 runCreditsServiceTests(async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-"));
@@ -18,6 +18,7 @@ runCreditsServiceTests(async () => {
   return {
     service,
     seedBalance: async (agentId: string, amount: number) => {
+      if (amount === 0) return;
       service.seed(agentId, amount);
     },
     cleanup: async () => {

@@ -38,6 +38,7 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
+import { SQLITE_CREDITS_DDL, SqliteCreditsService } from "./sqlite-credits-service.js";
 import { GOAL_SESSION_DDL, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
@@ -265,6 +266,7 @@ export function initSqliteDb(dbPath: string): Database {
     }
 
     db.exec(HANDOFF_DDL);
+    db.exec(SQLITE_CREDITS_DDL);
 
     // Check current schema version for migrations
     const currentVersion = (
@@ -694,6 +696,7 @@ export function createSqliteStores(
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
   bountyStore: SqliteBountyStore;
+  creditsService: SqliteCreditsService;
   outcomeStore: SqliteOutcomeStore;
   goalSessionStore: SqliteGoalSessionStore;
   handoffStore: SqliteHandoffStore;
@@ -706,6 +709,7 @@ export function createSqliteStores(
     contributionStore: new SqliteContributionStore(db),
     claimStore: new SqliteClaimStore(db),
     bountyStore: new SqliteBountyStore(db),
+    creditsService: new SqliteCreditsService(db),
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db),
     handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
