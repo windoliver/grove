@@ -105,6 +105,11 @@ let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
 let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
 let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+let messageDeliveryForSession:
+  | ((
+      sessionId: string | undefined,
+    ) => import("../core/operations/inbox-delegation.js").MessageDelivery | undefined)
+  | undefined;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -280,6 +285,14 @@ if (nexusUrl) {
     messageDelivery = new NexusMessageDelivery({
       ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
     });
+    messageDeliveryForSession = (requestedSessionId) =>
+      new NexusMessageDelivery({
+        ipcClient: new NexusIpcClient({
+          nexusUrl,
+          apiKey: nexusApiKey,
+          sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
+        }),
+      });
   }
 
   serverContributionStore = new NexusContributionStore({
@@ -373,6 +386,7 @@ const deps: ServerDeps = {
   idempotencyStore: runtime.idempotencyStore,
   inboxReadSource,
   messageDelivery,
+  messageDeliveryForSession,
   watchHub,
   watchSubscriber,
 };

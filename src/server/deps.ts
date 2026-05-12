@@ -63,6 +63,10 @@ export interface ServerDeps {
   readonly inboxReadSource?: InboxReadSource | undefined;
   /** Optional delivery adapter for ephemeral message sends. */
   readonly messageDelivery?: MessageDelivery | undefined;
+  /** Optional factory for request/session-scoped message delivery. */
+  readonly messageDeliveryForSession?:
+    | ((sessionId: string | undefined) => MessageDelivery | undefined)
+    | undefined;
   /**
    * Factory for session-scoped handoff stores. Optional: when provided,
    * HTTP routes that need session isolation (e.g. GET/list under a

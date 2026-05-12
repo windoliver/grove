@@ -225,6 +225,56 @@ describe("boardroom routes", () => {
     }
   });
 
+  test("POST /api/boardroom/message uses session-scoped delivery factory", async () => {
+    const ctx = await createTestContext();
+    try {
+      const delivered: DeliveredInboxMessage[] = [];
+      let capturedSessionId: string | undefined;
+      const app = createApp(
+        {
+          ...ctx.deps,
+          messageDelivery: {
+            deliverMessage: async () => {
+              throw new Error("default delivery should not run");
+            },
+          },
+          messageDeliveryForSession: (sessionId) => {
+            capturedSessionId = sessionId;
+            return {
+              deliverMessage: async (message) => {
+                delivered.push(message);
+              },
+            };
+          },
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({
+          body: "session delivery",
+          recipients: ["@bob"],
+          sessionId: "session-123",
+        }),
+      });
+
+      const body = (await resp.json()) as { readonly cid: string };
+
+      expect(resp.status).toBe(200);
+      expect(capturedSessionId).toBe("session-123");
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]?.cid).toBe(body.cid);
+      expect(delivered[0]?.body).toBe("session delivery");
+      expect(delivered[0]?.recipients).toEqual(["@bob"]);
+      expect(delivered[0]?.from).toEqual({ agentId: "tui-operator", agentName: "operator" });
+      expect(delivered[0]?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test("POST /api/boardroom/message rejects missing fields", async () => {
     const ctx = await createTestContext();
     try {

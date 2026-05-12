@@ -282,6 +282,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   // watch is tracked as a follow-up.
   const baseOpDeps = toOperationDeps({ ...deps, contributionStore: store });
   const opDeps = body.sessionId === undefined ? { ...baseOpDeps, namespace } : baseOpDeps;
+  const messageDelivery = deps.messageDeliveryForSession?.(body.sessionId) ?? deps.messageDelivery;
   const result = await sendMessageWithDelivery(
     {
       agent: { agentId: "tui-operator", agentName: "operator" },
@@ -290,7 +291,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
       ...(body.inReplyTo !== undefined ? { inReplyTo: body.inReplyTo } : {}),
     },
     opDeps,
-    deps.messageDelivery,
+    messageDelivery,
   );
 
   if (!result.ok) {
