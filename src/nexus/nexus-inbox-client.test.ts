@@ -77,6 +77,87 @@ describe("NexusInboxClient", () => {
     expect(messages[0]?.body).toBe("from file");
   });
 
+  test("falls back to inbox files when direct endpoint fetch throws", async () => {
+    const vfs = new MockNexusClient();
+    await vfs.write(
+      "/ipc/bob/inbox/msg-1.json",
+      encodeEnvelope({
+        message_id: "msg-1",
+        sender: "alice",
+        recipient: "bob",
+        timestamp: "2026-05-12T12:00:00.000Z",
+        payload: {
+          kind: "grove.message",
+          cid: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          body: "after fetch failure",
+          recipients: ["@bob"],
+          createdAt: "2026-05-12T12:00:00.000Z",
+          from: { agentId: "alice" },
+        },
+      }),
+    );
+    const client = new NexusInboxClient({
+      nexusUrl: "http://nexus.test",
+      apiKey: "secret",
+      client: vfs,
+      fetch: async () => {
+        throw new Error("network unavailable");
+      },
+    });
+
+    const messages = await client.readInbox({ recipient: "@bob" });
+
+    expect(messages.map((m) => m.body)).toEqual(["after fetch failure"]);
+  });
+
+  test("filters misfiled inbox payloads while keeping broadcast messages", async () => {
+    const vfs = new MockNexusClient();
+    await vfs.write(
+      "/ipc/bob/inbox/msg-charlie.json",
+      encodeEnvelope({
+        message_id: "msg-charlie",
+        sender: "alice",
+        recipient: "bob",
+        timestamp: "2026-05-12T12:00:00.000Z",
+        payload: {
+          kind: "grove.message",
+          cid: "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          body: "misfiled",
+          recipients: ["@charlie"],
+          createdAt: "2026-05-12T12:00:00.000Z",
+          from: { agentId: "alice" },
+        },
+      }),
+    );
+    await vfs.write(
+      "/ipc/bob/inbox/msg-all.json",
+      encodeEnvelope({
+        message_id: "msg-all",
+        sender: "alice",
+        recipient: "bob",
+        timestamp: "2026-05-12T13:00:00.000Z",
+        payload: {
+          kind: "grove.message",
+          cid: "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          body: "broadcast",
+          recipients: ["@all"],
+          createdAt: "2026-05-12T13:00:00.000Z",
+          from: { agentId: "alice" },
+        },
+      }),
+    );
+    const client = new NexusInboxClient({
+      nexusUrl: "http://nexus.test",
+      apiKey: "secret",
+      client: vfs,
+      fetch: async () => new Response("", { status: 404 }),
+    });
+
+    const messages = await client.readInbox({ recipient: "@bob" });
+
+    expect(messages.map((m) => m.body)).toEqual(["broadcast"]);
+  });
+
   test("dedupes direct and broadcast messages newest first", async () => {
     const vfs = new MockNexusClient();
     const cid = "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";

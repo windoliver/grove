@@ -81,23 +81,27 @@ export class NexusInboxClient implements InboxReadSource {
     query?: InboxQuery,
   ): Promise<readonly InboxMessage[] | undefined> {
     if (this.directEndpointAvailable === false) return undefined;
-    const params = new URLSearchParams();
-    if (query?.limit !== undefined) params.set("limit", String(query.limit));
-    const suffix = params.size > 0 ? `?${params.toString()}` : "";
-    const resp = await this.fetchFn(
-      `${this.nexusUrl}/api/v2/ipc/inbox/${encodeURIComponent(role)}${suffix}`,
-      {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
-      },
-    );
-    if (resp.status === 404 || resp.status === 405) {
-      this.directEndpointAvailable = false;
+    try {
+      const params = new URLSearchParams();
+      if (query?.limit !== undefined) params.set("limit", String(query.limit));
+      const suffix = params.size > 0 ? `?${params.toString()}` : "";
+      const resp = await this.fetchFn(
+        `${this.nexusUrl}/api/v2/ipc/inbox/${encodeURIComponent(role)}${suffix}`,
+        {
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+        },
+      );
+      if (resp.status === 404 || resp.status === 405) {
+        this.directEndpointAvailable = false;
+        return undefined;
+      }
+      if (!resp.ok) return undefined;
+      this.directEndpointAvailable = true;
+      const body = (await resp.json()) as { readonly messages?: readonly unknown[] };
+      return (body.messages ?? []).flatMap(messageFromDirect);
+    } catch {
       return undefined;
     }
-    if (!resp.ok) return undefined;
-    this.directEndpointAvailable = true;
-    const body = (await resp.json()) as { readonly messages?: readonly unknown[] };
-    return (body.messages ?? []).flatMap(messageFromDirect);
   }
 
   private async readFiles(role: string): Promise<readonly InboxMessage[] | undefined> {
@@ -197,6 +201,12 @@ function filterSortLimit(
   query?: InboxQuery,
 ): readonly InboxMessage[] {
   let result = [...messages];
+  const requestedRecipients = queryRecipients(query);
+  if (requestedRecipients !== undefined) {
+    result = result.filter(
+      (m) => m.recipients.includes("@all") || m.recipients.some((r) => requestedRecipients.has(r)),
+    );
+  }
   if (query?.fromAgentId !== undefined)
     result = result.filter((m) => m.from.agentId === query.fromAgentId);
   if (query?.since !== undefined) {
@@ -205,4 +215,11 @@ function filterSortLimit(
   }
   result.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   return result.slice(0, query?.limit ?? 50);
+}
+
+function queryRecipients(query?: InboxQuery): ReadonlySet<string> | undefined {
+  const recipients = new Set<string>();
+  if (query?.recipient !== undefined) recipients.add(query.recipient);
+  for (const r of query?.recipients ?? []) recipients.add(r);
+  return recipients.size === 0 ? undefined : recipients;
 }
