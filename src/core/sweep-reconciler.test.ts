@@ -3,7 +3,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { createLocalRuntime } from "../local/runtime.js";
 import { BountyIndexSweep } from "./bounty-index-sweep.js";
 import { HandoffSweep } from "./handoff-sweep.js";
 import type { InMemoryCreditsService } from "./in-memory-credits.js";
@@ -19,6 +23,7 @@ import { createTestOperationDeps } from "./operations/test-helpers.js";
 import { SettlementSweep } from "./settlement-sweep.js";
 import type { SweepResult, SweepStrategy } from "./sweep-reconciler.js";
 import { SweepReconciler } from "./sweep-reconciler.js";
+import { makeContribution } from "./test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // SweepReconciler framework tests
@@ -194,6 +199,101 @@ describe("SettlementSweep", () => {
     expect(result.found).toBe(0);
     expect(result.repaired).toBe(0);
     expect(result.errors).toHaveLength(0);
+  });
+
+  test("recovers escrowed pending_settlement bounties after runtime restart", async () => {
+    const previousInitialBalance = process.env.GROVE_CREDITS_INITIAL_BALANCE;
+    const previousTreasuryBalance = process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+    const rootDir = await mkdtemp(join(tmpdir(), "grove-settlement-restart-"));
+    const groveDir = join(rootDir, ".grove");
+
+    try {
+      delete process.env.GROVE_CREDITS_INITIAL_BALANCE;
+      delete process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+
+      await mkdir(groveDir, { recursive: true });
+      const first = createLocalRuntime({
+        groveDir,
+        frontierCacheTtlMs: 0,
+        workspace: false,
+        parseContract: false,
+      });
+      let bountyId = "";
+      try {
+        const contribution = makeContribution({
+          summary: "Restart-settlement fulfillment",
+          agent: { agentId: "worker" },
+        });
+        await first.contributionStore.put(contribution);
+        const created = await createBountyOperation(
+          {
+            title: "Restart settlement bounty",
+            amount: 100,
+            criteria: { description: "any work" },
+            agent: { agentId: "creator" },
+          },
+          {
+            contributionStore: first.contributionStore,
+            claimStore: first.claimStore,
+            bountyStore: first.bountyStore,
+            creditsService: first.creditsService,
+          },
+        );
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        bountyId = created.value.bountyId;
+        const claimed = await claimBountyOperation(
+          { bountyId, agent: { agentId: "worker" } },
+          {
+            claimStore: first.claimStore,
+            bountyStore: first.bountyStore,
+          },
+        );
+        expect(claimed.ok).toBe(true);
+        await first.bountyStore.beginSettlement(bountyId, contribution.cid);
+      } finally {
+        first.close();
+      }
+
+      const second = createLocalRuntime({
+        groveDir,
+        frontierCacheTtlMs: 0,
+        workspace: false,
+        parseContract: false,
+      });
+      try {
+        const sweep = new SettlementSweep(second.bountyStore, second.creditsService);
+        const result = await sweep.sweep();
+        expect(result.found).toBe(1);
+        expect(result.repaired).toBe(1);
+        expect(result.errors).toEqual([]);
+        expect((await second.bountyStore.getBounty(bountyId))?.status).toBe("settled");
+        expect(await second.creditsService.balance("creator")).toEqual({
+          available: 9900,
+          reserved: 0,
+          total: 9900,
+        });
+        expect(await second.creditsService.balance("worker")).toEqual({
+          available: 10100,
+          reserved: 0,
+          total: 10100,
+        });
+      } finally {
+        second.close();
+      }
+    } finally {
+      if (previousInitialBalance === undefined) {
+        delete process.env.GROVE_CREDITS_INITIAL_BALANCE;
+      } else {
+        process.env.GROVE_CREDITS_INITIAL_BALANCE = previousInitialBalance;
+      }
+      if (previousTreasuryBalance === undefined) {
+        delete process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE;
+      } else {
+        process.env.GROVE_CREDITS_REWARD_TREASURY_BALANCE = previousTreasuryBalance;
+      }
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("resumes a pending_settlement bounty to settled", async () => {
