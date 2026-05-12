@@ -237,19 +237,14 @@ export class SqliteCreditsService implements CreditsService {
         nowIso(),
         reservationId,
       );
-      this.db
-        .prepare(
-          `INSERT OR IGNORE INTO credit_transfers
-             (transfer_id, from_agent_id, to_agent_id, amount, transfer_type, created_at)
-           VALUES (?, ?, ?, ?, 'capture', ?)`,
-        )
-        .run(
-          `capture:${reservationId}`,
-          reservation.agent_id,
-          requestedTo ?? "system:captured-credits",
-          reservation.amount,
-          nowIso(),
-        );
+      this.insertTransferStmt.run(
+        `capture:${reservationId}`,
+        reservation.agent_id,
+        requestedTo ?? "system:captured-credits",
+        reservation.amount,
+        "capture",
+        nowIso(),
+      );
     });
     tx.immediate();
   }

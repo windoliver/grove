@@ -155,6 +155,64 @@ describe("SqliteCreditsService persistence", () => {
     }
   });
 
+  test("capture transfer id collision rolls back balances and reservation state", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-capture-collision-"));
+    const db = initSqliteDb(join(tempDir, "credits.db"));
+    const service = new SqliteCreditsService(db, {
+      initialBalance: 0,
+      rewardTreasuryBalance: 0,
+    });
+
+    try {
+      service.seed("creator", 500);
+      await service.reserve({
+        reservationId: "res-collision",
+        agentId: "creator",
+        amount: 125,
+        timeoutMs: 60_000,
+      });
+      db.prepare(
+        `INSERT INTO credit_transfers
+          (transfer_id, from_agent_id, to_agent_id, amount, transfer_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "capture:res-collision",
+        "other-agent",
+        "other-recipient",
+        1,
+        "transfer",
+        new Date().toISOString(),
+      );
+
+      await expect(service.capture("res-collision", { toAgentId: "worker" })).rejects.toThrow();
+
+      expect(await service.balance("creator")).toEqual({
+        available: 375,
+        reserved: 125,
+        total: 500,
+      });
+      expect(await service.balance("worker")).toEqual({
+        available: 0,
+        reserved: 0,
+        total: 0,
+      });
+      const reservation = db
+        .prepare(
+          "SELECT status, captured_to_agent_id FROM credit_reservations WHERE reservation_id = ?",
+        )
+        .get("res-collision") as {
+        readonly status: string;
+        readonly captured_to_agent_id: string | null;
+      };
+      expect(reservation).toEqual({
+        status: "pending",
+        captured_to_agent_id: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   test("two service instances sharing one database cannot overdraw reservations", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "grove-sqlite-credits-contention-"));
     const dbPath = join(tempDir, "credits.db");
