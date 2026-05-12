@@ -77,14 +77,13 @@ function entityToContribution(e: ContributionEntity): Contribution {
  *  the lease-collapsed `phase` here instead, expired-but-not-yet-purged
  *  claims would render as `awaiting-review`/`idle` after a relist. */
 function entityToClaim(e: ClaimEntity): Claim {
-  // Modern payloads expose `persistedPhase` (raw store state). When
-  // present, we use it directly so the lease-aware `phase` collapse
-  // doesn't hide blocked claims. On legacy payloads (no persistedPhase),
-  // we don't try to disambiguate truly-terminal expired records from
-  // active-with-lease-expired records — the filter above drops everything
-  // except phase === "active", and we pass `phase` through here so any
-  // active row that does come through is correctly classified.
-  const persisted = e.status.persistedPhase ?? e.status.phase;
+  // Always uses `persistedPhase` (raw store state); the derivedClaims
+  // projector throws when the field is missing so this helper only
+  // runs on modern payloads. Mapping `persistedPhase` ensures an active
+  // claim whose lease just expired reaches `deriveDagStatus` with
+  // `status: "active"`, which then flips it to `blocked` via the lease
+  // check.
+  const persisted = e.status.persistedPhase;
   return {
     claimId: e.id,
     targetRef: e.spec.targetRef,
@@ -209,16 +208,21 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   const derivedClaims = useDerived<readonly Claim[]>(
     () => {
       const all = claimInformer.list() as readonly ClaimEntity[];
-      // Modern payloads carry `persistedPhase` (raw store state) — filter
-      // on that so an active claim whose lease just expired still reaches
-      // `deriveDagStatus` and surfaces as `blocked`. Legacy payloads only
-      // expose lease-aware `phase`, which collapses such rows to
-      // "expired"; we accept this loss rather than falsely classify every
-      // terminal expired claim as blocked. The polled `status: "all"`
-      // fallback covers the blocked path under version skew.
-      return all
-        .filter((e) => (e.status.persistedPhase ?? e.status.phase) === "active")
-        .map(entityToClaim);
+      // Version-skew guard: if any payload lacks `persistedPhase`, we
+      // cannot tell an active-with-expired-lease row from a truly
+      // terminal expired row using `phase` alone, so the blocked status
+      // path would silently degrade. Throw to mark the informer as
+      // unhealthy — `claimInformerReady` flips false, polled
+      // `getClaims({ status: "all" })` takes over, and the projection
+      // gets the raw active claims it needs.
+      for (const e of all) {
+        if (e.status.persistedPhase === undefined) {
+          throw new Error(
+            "ClaimEntity payload missing persistedPhase — falling back to polled claims",
+          );
+        }
+      }
+      return all.filter((e) => e.status.persistedPhase === "active").map(entityToClaim);
     },
     ["Claim"],
     shallowArraysEqual,
