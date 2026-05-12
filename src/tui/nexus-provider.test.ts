@@ -79,6 +79,40 @@ describe("NexusDataProvider lifecycle", () => {
     return { provider, client, workspace };
   }
 
+  test("NexusDataProvider reads recipient inbox from Nexus IPC source", async () => {
+    const client = new MockNexusClient();
+    await client.write(
+      "/sessions/sess-1/ipc/bob/inbox/msg-1.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          message_id: "msg-1",
+          sender: "alice",
+          recipient: "bob",
+          timestamp: "2026-05-12T12:00:00.000Z",
+          payload: {
+            kind: "grove.message",
+            cid: "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            body: "provider inbox",
+            recipients: ["@bob"],
+            createdAt: "2026-05-12T12:00:00.000Z",
+            from: { agentId: "alice" },
+          },
+        }),
+      ),
+    );
+
+    const provider = new NexusDataProvider({
+      nexusConfig: { client, zoneId: "zone-1" },
+      nexusUrl: "http://nexus.test",
+      apiKey: "secret",
+    });
+    provider.setSessionScope("sess-1");
+
+    const messages = await provider.getInboxMessages({ recipient: "@bob" });
+
+    expect(messages.map((m) => m.body)).toEqual(["provider inbox"]);
+  });
+
   test("createClaim creates a claim via NexusClaimStore", async () => {
     const { provider } = createProvider();
 

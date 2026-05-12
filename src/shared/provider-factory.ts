@@ -212,6 +212,8 @@ async function createNexusProvider(
 
   return new NexusDataProvider({
     nexusConfig: { client, zoneId: nexusZoneId },
+    nexusUrl: backend.url,
+    apiKey,
     workspaceManager,
     backendLabel: label,
     serverUrl,
