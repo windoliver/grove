@@ -15,6 +15,7 @@ import type { FrontierCalculator } from "../frontier.js";
 import type { FrontierRewardService } from "../frontier-reward-service.js";
 import type { HandoffStore } from "../handoff.js";
 import type { HookRunner } from "../hooks.js";
+import type { OwnerRef } from "../lifecycle-metadata.js";
 import type { OutcomeStore } from "../outcome.js";
 import type { ClaimStore, ContributionStore } from "../store.js";
 import type { TopologyRouter } from "../topology-router.js";
@@ -72,6 +73,8 @@ export interface OperationDeps {
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly bountyStore?: BountyStore | undefined;
   readonly creditsService?: CreditsService | undefined;
+  /** Owner stamped onto session-scoped claims created by operations. */
+  readonly sessionOwnerRef?: OwnerRef | undefined;
   /** Optional automatic reward evaluator invoked after new contribution commits. */
   readonly frontierRewardService?: FrontierRewardService | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
