@@ -55,6 +55,16 @@ export class FrontierRewardService {
     }
 
     const frontier = await this.frontier.compute({ limit: 50 });
+    const rewardId = computeRewardId(
+      RewardType.FrontierAdvance,
+      `frontier:${contribution.agent.agentId}`,
+      contribution.cid,
+    );
+    if (await this.bountyStore.hasReward(rewardId)) {
+      await this.transferExistingReward(contribution);
+      return;
+    }
+
     const candidates: RewardCandidate[] = [];
     for (const [metric, score] of Object.entries(scores)) {
       const entries = frontier.byMetric[metric];
@@ -77,18 +87,9 @@ export class FrontierRewardService {
         continue;
       }
 
-      const rewardId = computeRewardId(
-        RewardType.FrontierAdvance,
-        `frontier:${metric}:${contribution.agent.agentId}`,
-        contribution.cid,
-      );
-      if (await this.bountyStore.hasReward(rewardId)) {
-        continue;
-      }
-
       const amount = Math.max(1, Math.ceil(improvement));
       const transferId = `reward:${rewardId}`;
-      candidates.push({ metric, rewardId, amount, transferId });
+      candidates.push({ metric, amount, transferId });
     }
 
     const selected = candidates.slice().sort((a, b) => {
@@ -101,7 +102,7 @@ export class FrontierRewardService {
     }
 
     await this.bountyStore.recordReward({
-      rewardId: selected.rewardId,
+      rewardId,
       rewardType: RewardType.FrontierAdvance,
       recipient: contribution.agent,
       contributionCid: contribution.cid,
@@ -109,11 +110,19 @@ export class FrontierRewardService {
       transferId: selected.transferId,
       createdAt: new Date().toISOString(),
     });
+    await this.transferExistingReward(contribution);
+  }
+
+  private async transferExistingReward(contribution: Contribution): Promise<void> {
+    const reward = await this.existingFrontierReward(contribution);
+    if (reward?.transferId === undefined) {
+      return;
+    }
     await this.creditsService.transfer({
-      transferId: selected.transferId,
+      transferId: reward.transferId,
       fromAgentId: this.treasuryAgentId,
       toAgentId: contribution.agent.agentId,
-      amount: selected.amount,
+      amount: reward.amount,
     });
   }
 
@@ -137,7 +146,6 @@ export class FrontierRewardService {
 
 interface RewardCandidate {
   readonly metric: string;
-  readonly rewardId: string;
   readonly amount: number;
   readonly transferId: string;
 }

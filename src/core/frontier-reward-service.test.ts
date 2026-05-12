@@ -4,6 +4,7 @@ import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { SqliteCreditsService } from "../local/sqlite-credits-service.js";
 import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
 import { RewardType } from "./bounty.js";
+import type { Frontier, FrontierCalculator } from "./frontier.js";
 import { DefaultFrontierCalculator } from "./frontier.js";
 import { FrontierRewardService } from "./frontier-reward-service.js";
 import { ContributionMode, ScoreDirection } from "./models.js";
@@ -156,6 +157,74 @@ describe("FrontierRewardService", () => {
     });
   });
 
+  test("concurrent metric-specific evaluators share one contribution-level reward", async () => {
+    const { contributionStore, bountyStore, creditsService } = setup();
+    const previous = makeContribution({
+      summary: "previous metrics",
+      agent: makeAgent({ agentId: "agent-old" }),
+      scores: {
+        accuracy: { value: 0.5, direction: ScoreDirection.Maximize },
+        throughput: { value: 5, direction: ScoreDirection.Maximize },
+      },
+    });
+    const improved = makeContribution({
+      summary: "improved metrics",
+      agent: makeAgent({ agentId: "agent-new" }),
+      scores: {
+        accuracy: { value: 1.5, direction: ScoreDirection.Maximize },
+        throughput: { value: 8, direction: ScoreDirection.Maximize },
+      },
+    });
+    await contributionStore.put(previous);
+    await contributionStore.put(improved);
+
+    const accuracyService = new FrontierRewardService({
+      frontier: new StaticFrontierCalculator({
+        byMetric: {
+          accuracy: [
+            { cid: improved.cid, summary: improved.summary, value: 1.5, contribution: improved },
+            { cid: previous.cid, summary: previous.summary, value: 0.5, contribution: previous },
+          ],
+        },
+        byAdoption: [],
+        byRecency: [],
+        byReviewScore: [],
+        byReproduction: [],
+      }),
+      bountyStore,
+      creditsService,
+    });
+    const throughputService = new FrontierRewardService({
+      frontier: new StaticFrontierCalculator({
+        byMetric: {
+          throughput: [
+            { cid: improved.cid, summary: improved.summary, value: 8, contribution: improved },
+            { cid: previous.cid, summary: previous.summary, value: 5, contribution: previous },
+          ],
+        },
+        byAdoption: [],
+        byRecency: [],
+        byReviewScore: [],
+        byReproduction: [],
+      }),
+      bountyStore,
+      creditsService,
+    });
+
+    await Promise.all([
+      accuracyService.evaluateContribution(improved),
+      throughputService.evaluateContribution(improved),
+    ]);
+
+    const rewards = await bountyStore.listRewards({ contributionCid: improved.cid });
+    expect(rewards).toHaveLength(1);
+    expect(await creditsService.balance("agent-new")).toEqual({
+      available: rewards[0]?.amount,
+      reserved: 0,
+      total: rewards[0]?.amount,
+    });
+  });
+
   test("does not reward a first-ever metric with no previous frontier entry", async () => {
     const { contributionStore, bountyStore, creditsService, service } = setup();
     const contribution = makeContribution({
@@ -215,3 +284,11 @@ describe("FrontierRewardService", () => {
     });
   });
 });
+
+class StaticFrontierCalculator implements FrontierCalculator {
+  constructor(private readonly frontier: Frontier) {}
+
+  async compute(): Promise<Frontier> {
+    return this.frontier;
+  }
+}
