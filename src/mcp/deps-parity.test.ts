@@ -41,12 +41,17 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(runtime.goalSessionStore).toBeDefined();
   });
 
+  test("LocalRuntime always provides creditsService", () => {
+    expect(runtime.creditsService).toBeDefined();
+  });
+
   test("stdio MCP deps construction includes goalSessionStore", () => {
     // Mirror the deps construction from src/mcp/serve.ts
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
       bountyStore: runtime.bountyStore,
+      creditsService: runtime.creditsService,
       cas: runtime.cas,
       frontier: runtime.frontier,
       workspace: runtime.workspace!,
@@ -60,6 +65,7 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+    expect(deps.creditsService).toBe(runtime.creditsService);
   });
 
   test("HTTP MCP deps construction includes goalSessionStore", () => {
@@ -68,6 +74,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
       bountyStore: runtime.bountyStore,
+      creditsService: runtime.creditsService,
       cas: runtime.cas,
       frontier: runtime.frontier,
       workspace: runtime.workspace!,
@@ -80,5 +87,6 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+    expect(deps.creditsService).toBe(runtime.creditsService);
   });
 });

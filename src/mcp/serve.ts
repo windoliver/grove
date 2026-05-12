@@ -640,6 +640,7 @@ try {
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService: runtime.creditsService,
     cas,
     frontier:
       nexusClient !== undefined

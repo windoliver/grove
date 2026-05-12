@@ -176,7 +176,7 @@ let httpSweepReconciler: SweepReconciler | undefined;
     },
   });
   httpSweepReconciler.register(new BountyIndexSweep(reconcilerBountyStore));
-  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore));
+  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore, runtime.creditsService));
   httpSweepReconciler.start();
   process.stderr.write("grove-mcp-http: sweep-reconciler started\n");
 }
@@ -787,6 +787,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService: runtime.creditsService,
     cas,
     frontier:
       nexusClient !== undefined

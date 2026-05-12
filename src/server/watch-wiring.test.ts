@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { contributionToEntity } from "../core/entity.js";
 import type { Contribution } from "../core/models.js";
 import type { EntityWriteEvent } from "../core/watch-events.js";
+import type { ServerDeps } from "./deps.js";
 import { toOperationDeps } from "./operation-adapter.js";
 import {
   createTestApp,
@@ -60,6 +61,16 @@ describe("watch wiring (T12)", () => {
 
     const after = deps.watchHub.currentRv("ns/wt", "Contribution");
     expect(after).toBeGreaterThan(before);
+
+    const creditsService = {
+      close: () => undefined,
+    } as unknown as NonNullable<ServerDeps["creditsService"]>;
+    const bountyStore = {
+      close: () => undefined,
+    } as unknown as NonNullable<ServerDeps["bountyStore"]>;
+    const opDepsWithCredits = toOperationDeps({ ...deps, creditsService, bountyStore });
+    expect(opDepsWithCredits.creditsService).toBe(creditsService);
+    expect(opDepsWithCredits.bountyStore).toBe(bountyStore);
   });
 
   test("HTTP contribute increments watchHub RV for the namespace", async () => {
