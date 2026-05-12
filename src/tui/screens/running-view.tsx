@@ -1160,6 +1160,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             sessionStartedAt,
             handoffs,
             filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
+            dagKeysEnabled:
+              expandedPanel === RunningPanel.Dag &&
+              cmdState.mode === "none" &&
+              !promptMode &&
+              !showHelp &&
+              !showVfs,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -1231,6 +1237,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 sessionStartedAt,
                 handoffs,
                 filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
+                dagKeysEnabled:
+                  expandedPanel === RunningPanel.Dag &&
+                  cmdState.mode === "none" &&
+                  !promptMode &&
+                  !showHelp &&
+                  !showVfs,
               })}
             </box>
           </box>
@@ -1558,6 +1570,9 @@ interface PanelRenderContext {
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
   /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
   readonly filterText?: string | undefined;
+  /** #311: true when DAG-local keyboard shortcuts may fire (DAG focused and
+   *  no modal/text mode is consuming keys). */
+  readonly dagKeysEnabled?: boolean;
 }
 
 /** Render the content of an expanded panel. */
@@ -1590,10 +1605,10 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
       return (
         <DagView
           provider={ctx.provider}
-          intervalMs={ctx.intervalMs}
           active={true}
           cursor={ctx.cursor}
-          filterText={ctx.filterText}
+          highlightText={ctx.filterText}
+          keysEnabled={ctx.dagKeysEnabled ?? false}
         />
       );
 

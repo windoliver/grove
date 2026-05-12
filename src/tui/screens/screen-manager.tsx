@@ -22,8 +22,10 @@ import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { PagesRouter, type PagesRouterComponentMap } from "../components/pages-router.js";
+import { DagStateStore } from "../data/dag-state-store.js";
 import { type PageKind, PagesStore } from "../data/pages-store.js";
 import { debugLog } from "../debug-log.js";
+import { DagStateProvider } from "../hooks/dag-state-context.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
@@ -191,6 +193,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       store.push({ kind: state.screen as PageKind });
       return store;
     });
+
+    // DagStateStore — xray DAG view UI state (#311). Constructed once at
+    // mount so expansion / focus / highlight survive DagView unmount when
+    // the user navigates between panels.
+    const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
 
     // Apply session scope on mount for resumed sessions (startOnRunning path).
     // Must fire before the first contribution poll in the reconcile effect below —
@@ -1021,13 +1028,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
     return (
       <PagesStoreProvider store={pages}>
-        <PagesRouter
-          store={pages}
-          components={components}
-          width={termWidth}
-          presetName={state.selectedPreset}
-          sessionId={state.sessionId}
-        />
+        <DagStateProvider store={dagStateStore}>
+          <PagesRouter
+            store={pages}
+            components={components}
+            width={termWidth}
+            presetName={state.selectedPreset}
+            sessionId={state.sessionId}
+          />
+        </DagStateProvider>
       </PagesStoreProvider>
     );
   },
