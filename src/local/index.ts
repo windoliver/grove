@@ -18,6 +18,7 @@ export { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 export {
   createSqliteStores,
   initSqliteDb,
+  SqliteAgentTaskStore,
   SqliteClaimStore,
   SqliteContributionStore,
   SqliteStore,

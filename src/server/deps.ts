@@ -16,7 +16,7 @@ import type { HandoffStore } from "../core/handoff.js";
 import type { IdempotencyStore } from "../core/operations/deps.js";
 import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
 import type { OutcomeStore } from "../core/outcome.js";
-import type { ClaimStore, ContributionStore } from "../core/store.js";
+import type { AgentTaskStore, ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
@@ -37,6 +37,8 @@ export interface ServerDeps {
    */
   readonly contributionStoreForSession?: ((sessionId: string) => ContributionStore) | undefined;
   readonly claimStore: ClaimStore;
+  /** Optional agent task lifecycle store. Routes return 501 when not configured. */
+  readonly agentTaskStore?: AgentTaskStore | undefined;
   readonly cas: ContentStore;
   readonly frontier: FrontierCalculator;
   /**

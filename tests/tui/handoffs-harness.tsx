@@ -182,7 +182,7 @@ async function main() {
     screen: "running",
     goal: "Review PR #42 — test handoffs panel (press 5)",
     sessionId: "test-handoffs-session",
-    sessionStartedAt: new Date().toISOString(),
+    sessionStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
   };
 
   const appProps = {

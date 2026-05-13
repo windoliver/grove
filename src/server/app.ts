@@ -16,6 +16,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
 import { type KeyRegistry, namespaceAuth } from "./middleware/namespace-auth.js";
+import { agentTasks } from "./routes/agent-tasks.js";
 import { agents } from "./routes/agents.js";
 import { boardroom } from "./routes/boardroom.js";
 import { bounties } from "./routes/bounties.js";
@@ -105,6 +106,7 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
 
   // Mount route groups
   app.route("/api/agents", agents);
+  app.route("/api/agent-tasks", agentTasks);
   app.route("/api/boardroom", boardroom);
   app.route("/api/contributions", contributions);
   app.route("/api/frontier", frontier);

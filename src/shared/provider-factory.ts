@@ -252,6 +252,7 @@ async function createLocalProvider(
   return new LocalDataProvider({
     contributionStore: deps.store,
     claimStore: stores.claimStore,
+    agentTaskStore: stores.agentTaskStore,
     frontier: deps.frontier,
     groveName,
     outcomeStore: stores.outcomeStore,

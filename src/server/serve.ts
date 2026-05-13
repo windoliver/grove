@@ -380,6 +380,7 @@ const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
+  agentTaskStore: runtime.agentTaskStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   creditsService: runtime.creditsService,
