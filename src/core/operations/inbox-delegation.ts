@@ -37,8 +37,10 @@ export interface DeliveredInboxMessage {
   readonly cid: string;
   readonly body: string;
   readonly recipients: readonly string[];
+  readonly inReplyTo?: string | undefined;
   readonly createdAt: string;
   readonly from: AgentIdentity;
+  readonly tags?: readonly string[] | undefined;
 }
 
 export interface MessageDelivery {
@@ -59,8 +61,10 @@ export async function sendMessageWithDelivery(
       cid: result.value.cid,
       body: input.body,
       recipients: [...input.recipients],
+      ...(input.inReplyTo !== undefined ? { inReplyTo: input.inReplyTo } : {}),
       createdAt: result.value.createdAt,
       from,
+      tags: [...(input.tags ?? []), "message"],
     });
   } catch {
     // Best-effort Nexus delivery must not roll back the canonical contribution.

@@ -6,6 +6,7 @@ import type {
 import type { InboxMessage, InboxQuery } from "../core/operations/messaging.js";
 import type { NexusClient } from "./client.js";
 import { NexusNotFoundError } from "./errors.js";
+import { normalizeIpcRoleHandle } from "./ipc-roles.js";
 import type { NexusIpcClient } from "./nexus-ipc-client.js";
 
 type FetchFn = (
@@ -30,8 +31,10 @@ interface GroveMessagePayload {
   readonly cid: string;
   readonly body: string;
   readonly recipients: readonly string[];
+  readonly inReplyTo?: string | undefined;
   readonly createdAt: string;
   readonly from: { readonly agentId: string; readonly agentName?: string | undefined };
+  readonly tags?: readonly string[] | undefined;
 }
 
 export class NexusInboxReadUnavailableError extends Error {
@@ -53,15 +56,17 @@ export class NexusMessageDelivery implements MessageDelivery {
     const failures = (
       await Promise.all(
         message.recipients.map(async (recipient) => {
-          const role = normalizeHandle(recipient);
+          const role = normalizeIpcRoleHandle(recipient);
           try {
             const result = await this.ipcClient.send(sender, role, {
               kind: "grove.message",
               cid: message.cid,
               body: message.body,
               recipients: [...message.recipients],
+              ...(message.inReplyTo !== undefined ? { inReplyTo: message.inReplyTo } : {}),
               createdAt: message.createdAt,
               from: message.from,
+              tags: [...(message.tags ?? ["message"])],
             });
             if (result.ok) return undefined;
             return `${role}: ${result.error ?? "IPC send failed"}`;
@@ -104,7 +109,7 @@ export class NexusInboxClient implements InboxReadSource {
     let sawSuccessfulRead = false;
 
     for (const handle of recipients) {
-      const role = normalizeHandle(handle);
+      const role = normalizeIpcRoleHandle(handle);
       const direct = await this.readDirect(role, query);
       if (direct !== undefined) {
         sawSuccessfulRead = true;
@@ -137,6 +142,8 @@ export class NexusInboxClient implements InboxReadSource {
     try {
       const params = new URLSearchParams();
       if (query?.limit !== undefined) params.set("limit", String(query.limit));
+      if (query?.fromAgentId !== undefined) params.set("from_agent_id", query.fromAgentId);
+      if (query?.since !== undefined) params.set("since", query.since);
       const suffix = params.size > 0 ? `?${params.toString()}` : "";
       const resp = await this.fetchFn(
         `${this.nexusUrl}/api/v2/ipc/inbox/${encodeURIComponent(role)}${suffix}`,
@@ -159,20 +166,65 @@ export class NexusInboxClient implements InboxReadSource {
 
   private async readFiles(role: string): Promise<readonly InboxMessage[] | undefined> {
     if (this.client === undefined) return undefined;
-    const client = this.client;
     const dir = this.sessionId
       ? `/sessions/${this.sessionId}/ipc/${role}/inbox`
       : `/ipc/${role}/inbox`;
+    const files = await this.listInboxFiles(dir);
+    if (files === undefined) return undefined;
+
+    const decoded = await Promise.all(
+      files.map(async (entry) => this.readEnvelopeFile(entry.path)),
+    );
+    return decoded.flatMap((data) => (data === undefined ? [] : messageFromEnvelope(data)));
+  }
+
+  private async listInboxFiles(
+    dir: string,
+  ): Promise<readonly { readonly path: string }[] | undefined> {
+    const client = this.client;
+    if (client === undefined) return undefined;
+    const files: { readonly path: string }[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
     try {
-      const listed = await client.list(dir, { limit: 100 });
-      const files = listed.files.filter(
-        (entry) => !entry.isDirectory && entry.path.endsWith(".json"),
-      );
-      const decoded = await Promise.all(files.map(async (entry) => client.read(entry.path)));
-      return decoded.flatMap((data) => (data === undefined ? [] : messageFromEnvelope(data)));
+      while (hasMore) {
+        const listed = await client.list(dir, {
+          limit: 100,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        files.push(
+          ...listed.files
+            .filter((entry) => !entry.isDirectory && entry.path.endsWith(".json"))
+            .map((entry) => ({ path: entry.path })),
+        );
+        cursor = listed.nextCursor;
+        hasMore = listed.hasMore && cursor !== undefined;
+      }
+      return files;
     } catch (err) {
-      if (err instanceof NexusNotFoundError) return [];
+      if (err instanceof NexusNotFoundError) return undefined;
       throw err;
+    }
+  }
+
+  private async readEnvelopeFile(path: string): Promise<Uint8Array | undefined> {
+    const raw = await this.readRawRestFile(path);
+    if (raw !== undefined) return raw;
+    return this.client?.read(path);
+  }
+
+  private async readRawRestFile(path: string): Promise<Uint8Array | undefined> {
+    try {
+      const url = `${this.nexusUrl}/api/v2/files/read?path=${encodeURIComponent(path)}`;
+      const resp = await this.fetchFn(url, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+      });
+      if (!resp.ok) return undefined;
+      const body = (await resp.json()) as { readonly content?: unknown };
+      if (typeof body.content !== "string") return undefined;
+      return new TextEncoder().encode(body.content);
+    } catch {
+      return undefined;
     }
   }
 }
@@ -184,10 +236,6 @@ function recipientHandles(query?: InboxQuery): readonly string[] {
   if (handles.size === 0) handles.add("@all");
   if (![...handles].includes("@all")) handles.add("@all");
   return [...handles];
-}
-
-function normalizeHandle(handle: string): string {
-  return handle.startsWith("@") ? handle.slice(1) : handle;
 }
 
 function messageFromDirect(value: unknown): InboxMessage[] {
@@ -202,15 +250,35 @@ function messageFromDirect(value: unknown): InboxMessage[] {
       from: m.from,
       body: m.body,
       recipients: m.recipients,
+      ...(typeof m.inReplyTo === "string" ? { inReplyTo: m.inReplyTo } : {}),
       createdAt: m.createdAt,
-      tags: ["message"],
+      tags: messageTags(m.tags),
     },
   ];
 }
 
 function messageFromEnvelope(data: Uint8Array): InboxMessage[] {
+  const decoded = decodeEnvelopeText(new TextDecoder().decode(data));
+  if (decoded === undefined) return [];
+  return messageFromEnvelopeObject(decoded);
+}
+
+function decodeEnvelopeText(text: string): { readonly payload?: unknown } | undefined {
   try {
-    const envelope = JSON.parse(new TextDecoder().decode(data)) as { payload?: unknown };
+    return JSON.parse(text) as { readonly payload?: unknown };
+  } catch {
+    try {
+      return JSON.parse(Buffer.from(text, "base64").toString("utf8")) as {
+        readonly payload?: unknown;
+      };
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function messageFromEnvelopeObject(envelope: { readonly payload?: unknown }): InboxMessage[] {
+  try {
     const payload = envelope.payload as Partial<GroveMessagePayload> | undefined;
     if (payload?.kind !== "grove.message") return [];
     if (
@@ -229,13 +297,20 @@ function messageFromEnvelope(data: Uint8Array): InboxMessage[] {
         from: payload.from,
         body: payload.body,
         recipients: payload.recipients,
+        ...(typeof payload.inReplyTo === "string" ? { inReplyTo: payload.inReplyTo } : {}),
         createdAt: payload.createdAt,
-        tags: ["message"],
+        tags: messageTags(payload.tags),
       },
     ];
   } catch {
     return [];
   }
+}
+
+function messageTags(tags: unknown): readonly string[] {
+  if (!Array.isArray(tags)) return ["message"];
+  const filtered = tags.filter((tag): tag is string => typeof tag === "string");
+  return filtered.length > 0 ? filtered : ["message"];
 }
 
 function dedupe(messages: readonly InboxMessage[]): readonly InboxMessage[] {

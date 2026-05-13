@@ -98,6 +98,7 @@ describe("messaging tools", () => {
         recipients: ["@bob"],
         createdAt: JSON.parse(result.text).createdAt,
         from: { agentId: "alice", agentName: "Alice" },
+        tags: ["message"],
       },
     ]);
   });

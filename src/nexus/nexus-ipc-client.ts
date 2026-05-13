@@ -12,6 +12,7 @@
  */
 
 import { debugLog } from "../tui/debug-log.js";
+import { normalizeIpcRoleHandle } from "./ipc-roles.js";
 
 /** Result of an IPC send operation. */
 export interface IpcSendResult {
@@ -72,6 +73,16 @@ export class NexusIpcClient {
     recipient: string,
     payload: Record<string, unknown>,
   ): Promise<IpcSendResult> {
+    let recipientRole: string;
+    try {
+      recipientRole = normalizeIpcRoleHandle(recipient);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
     // Skip if we've determined the endpoint permanently doesn't exist (404/405).
     if (this.endpointAvailable === false) {
       return {
@@ -94,7 +105,7 @@ export class NexusIpcClient {
       const envelope = JSON.stringify({
         message_id: messageId,
         sender,
-        recipient,
+        recipient: recipientRole,
         type: "event",
         ...(this.sessionId ? { session_id: this.sessionId } : {}),
         payload,
@@ -109,8 +120,8 @@ export class NexusIpcClient {
         },
         body: JSON.stringify({
           path: this.sessionId
-            ? `/sessions/${this.sessionId}/ipc/${recipient}/inbox/${messageId}.json`
-            : `/ipc/${recipient}/inbox/${messageId}.json`,
+            ? `/sessions/${this.sessionId}/ipc/${recipientRole}/inbox/${messageId}.json`
+            : `/ipc/${recipientRole}/inbox/${messageId}.json`,
           content,
           encoding: "base64",
         }),
@@ -120,7 +131,7 @@ export class NexusIpcClient {
         const error = `IPC send failed: HTTP ${resp.status}`;
         debugLog(
           "nexus-ipc",
-          `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`,
+          `SEND FAIL sender=${sender} recipient=${recipientRole} status=${resp.status}`,
         );
         // 404/405 = endpoint doesn't exist on this Nexus version → permanent disable
         const isPermanent = resp.status === 404 || resp.status === 405;
@@ -143,12 +154,12 @@ export class NexusIpcClient {
 
       debugLog(
         "nexus-ipc",
-        `SEND OK sender=${sender} recipient=${recipient} messageId=${messageId}`,
+        `SEND OK sender=${sender} recipient=${recipientRole} messageId=${messageId}`,
       );
       return { ok: true, messageId };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      debugLog("nexus-ipc", `SEND ERROR sender=${sender} recipient=${recipient} err=${error}`);
+      debugLog("nexus-ipc", `SEND ERROR sender=${sender} recipient=${recipientRole} err=${error}`);
       // Network errors (connection refused, DNS failure) = transient infrastructure
       this.transientFailureAt = Date.now();
       return { ok: false, error, infrastructureError: true };

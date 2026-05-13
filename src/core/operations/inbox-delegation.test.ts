@@ -158,6 +158,49 @@ test("successful sends deliver a Grove message payload after contribution write"
       recipients: ["@bob"],
       createdAt: result.value.createdAt,
       from: { agentId: "alice", agentName: "Alice" },
+      tags: ["message"],
+    },
+  ]);
+});
+
+test("delivery payload preserves reply metadata and message tags", async () => {
+  const contributionStore = makeInMemoryContributionStore();
+  const delivered: unknown[] = [];
+  const parent = await sendMessageWithDelivery(sendInput, {
+    contributionStore,
+    frontier: new DefaultFrontierCalculator(contributionStore),
+  });
+  expect(parent.ok).toBe(true);
+  if (!parent.ok) throw new Error("parent send unexpectedly failed");
+
+  const result = await sendMessageWithDelivery(
+    {
+      ...sendInput,
+      inReplyTo: parent.value.cid,
+      tags: ["handoff"],
+    },
+    {
+      contributionStore,
+      frontier: new DefaultFrontierCalculator(contributionStore),
+    },
+    {
+      deliverMessage: async (message) => {
+        delivered.push(message);
+      },
+    },
+  );
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("send unexpectedly failed");
+  expect(delivered).toEqual([
+    {
+      cid: result.value.cid,
+      body: "hello bob",
+      recipients: ["@bob"],
+      inReplyTo: parent.value.cid,
+      createdAt: result.value.createdAt,
+      from: { agentId: "alice", agentName: "Alice" },
+      tags: ["handoff", "message"],
     },
   ]);
 });
