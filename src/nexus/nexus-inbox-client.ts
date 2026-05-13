@@ -8,6 +8,7 @@ import type { NexusClient } from "./client.js";
 import { NexusNotFoundError } from "./errors.js";
 import { normalizeIpcRoleHandle } from "./ipc-roles.js";
 import type { NexusIpcClient } from "./nexus-ipc-client.js";
+import { encodeSegment } from "./vfs-paths.js";
 
 type FetchFn = (
   input: Parameters<typeof fetch>[0],
@@ -18,6 +19,7 @@ export interface NexusInboxClientOptions {
   readonly nexusUrl: string;
   readonly apiKey?: string | undefined;
   readonly sessionId?: string | undefined;
+  readonly zoneId?: string | undefined;
   readonly client?: NexusClient | undefined;
   readonly fetch?: FetchFn | undefined;
 }
@@ -91,6 +93,7 @@ export class NexusInboxClient implements InboxReadSource {
   private readonly nexusUrl: string;
   private readonly apiKey: string | undefined;
   private readonly sessionId: string | undefined;
+  private readonly zoneId: string | undefined;
   private readonly client: NexusClient | undefined;
   private readonly fetchFn: FetchFn;
   private directEndpointAvailable: boolean | undefined;
@@ -99,6 +102,7 @@ export class NexusInboxClient implements InboxReadSource {
     this.nexusUrl = opts.nexusUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
     this.sessionId = opts.sessionId;
+    this.zoneId = opts.zoneId;
     this.client = opts.client;
     this.fetchFn = opts.fetch ?? fetch;
   }
@@ -135,9 +139,9 @@ export class NexusInboxClient implements InboxReadSource {
     role: string,
     query?: InboxQuery,
   ): Promise<readonly InboxMessage[] | undefined> {
-    // Session-scoped reads must use `/sessions/{sessionId}/ipc/...` VFS paths;
-    // the optional direct IPC endpoint has no session-scope contract here.
-    if (this.sessionId !== undefined) return undefined;
+    // Scoped reads must use VFS paths. The optional direct IPC endpoint has no
+    // session/zone-scope contract here.
+    if (this.sessionId !== undefined || this.zoneId !== undefined) return undefined;
     if (this.directEndpointAvailable === false) return undefined;
     try {
       const params = new URLSearchParams();
@@ -165,9 +169,7 @@ export class NexusInboxClient implements InboxReadSource {
 
   private async readFiles(role: string): Promise<readonly InboxMessage[] | undefined> {
     if (this.client === undefined) return undefined;
-    const dir = this.sessionId
-      ? `/sessions/${this.sessionId}/ipc/${role}/inbox`
-      : `/ipc/${role}/inbox`;
+    const dir = inboxDirPath(role, this.sessionId, this.zoneId);
     const files = await this.listInboxFiles(dir);
     if (files === undefined) return undefined;
 
@@ -224,6 +226,16 @@ export class NexusInboxClient implements InboxReadSource {
       return undefined;
     }
   }
+}
+
+function inboxDirPath(
+  role: string,
+  sessionId?: string | undefined,
+  zoneId?: string | undefined,
+): string {
+  const zonePrefix = zoneId ? `/zones/${encodeSegment(zoneId)}` : "";
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(role)}/inbox`;
 }
 
 function requestInit(apiKey: string | undefined): RequestInit {

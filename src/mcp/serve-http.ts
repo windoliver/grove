@@ -8,9 +8,10 @@
  * responses via Server-Sent Events (SSE).
  *
  * Usage:
- *   grove-mcp-http                          # listen on 0.0.0.0:4015
+ *   grove-mcp-http                          # listen on localhost:4015
  *   PORT=8080 grove-mcp-http                # custom port
  *   GROVE_DIR=/path grove-mcp-http          # explicit grove directory
+ *   MCP_HOST=0.0.0.0 GROVE_MCP_ALLOW_REMOTE=true GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *
  * Endpoints:
  *   POST /mcp   — JSON-RPC requests (initialize, tool calls, etc.)
@@ -29,13 +30,20 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../core/frontier-reward-service.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
-import type { McpDeps } from "./deps.js";
+import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { resolveMcpHttpBindPolicy } from "./http-bind-policy.js";
+import { guardMutableMethods, type ScopeMutationGuard } from "./scope-guard.js";
+import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -48,13 +56,29 @@ const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
  * When set, every request must include `Authorization: Bearer <token>`.
  * When unset, auth is skipped (backward compatible for local-only use).
  */
-const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
+const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN?.trim() || undefined;
 
 // --- Initialization ---------------------------------------------------------
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
 const port = parsePort(process.env.PORT, 4015);
+const bindPolicy = resolveMcpHttpBindPolicy({
+  host: process.env.MCP_HOST,
+  authToken: AUTH_TOKEN,
+  allowRemote: process.env.GROVE_MCP_ALLOW_REMOTE,
+});
+
+if (!bindPolicy.allowed) {
+  process.stderr.write(`grove-mcp-http: FATAL: ${bindPolicy.reason}\n`);
+  process.exit(1);
+}
+
+if (bindPolicy.remote) {
+  process.stderr.write(
+    "grove-mcp-http: WARN: binding MCP HTTP to a non-localhost address with bearer auth enabled\n",
+  );
+}
 
 let groveDir!: string;
 let runtime!: ReturnType<typeof createLocalRuntime>;
@@ -176,7 +200,7 @@ let httpSweepReconciler: SweepReconciler | undefined;
     },
   });
   httpSweepReconciler.register(new BountyIndexSweep(reconcilerBountyStore));
-  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore));
+  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore, runtime.creditsService));
   httpSweepReconciler.start();
   process.stderr.write("grove-mcp-http: sweep-reconciler started\n");
 }
@@ -218,11 +242,6 @@ interface AcquiredScopedDeps {
   readonly scoped: ScopedDeps;
   readonly deactivate: () => void;
   readonly release: () => void;
-}
-
-interface ScopeMutationGuard {
-  deactivate(): void;
-  assertMutable(operation: string): void;
 }
 
 function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
@@ -312,36 +331,6 @@ function createScopeMutationGuard(expectedSessionId: string | undefined): ScopeM
       });
     },
   };
-}
-
-function guardMutableMethods<T extends object>(
-  target: T,
-  guard: ScopeMutationGuard,
-  mutableMethods: readonly string[],
-): T {
-  const mutable = new Set(mutableMethods);
-  return new Proxy(target, {
-    get(obj, prop, receiver) {
-      const value = Reflect.get(obj, prop, receiver);
-      if (typeof value !== "function") return value;
-      const methodName = String(prop);
-      if (mutable.has(methodName)) {
-        return (...args: readonly unknown[]) => {
-          guard.assertMutable(methodName);
-          if (methodName === "putWithCowrite" && typeof args[1] === "function") {
-            const [contribution, cowriteFn] = args as readonly [unknown, () => void];
-            const guardedCowrite = () => {
-              guard.assertMutable(`${methodName}.commit`);
-              cowriteFn();
-            };
-            return Reflect.apply(value, obj, [contribution, guardedCowrite]);
-          }
-          return Reflect.apply(value, obj, args);
-        };
-      }
-      return (...args: readonly unknown[]) => Reflect.apply(value, obj, args);
-    },
-  }) as T;
 }
 
 const scopeEntries = new Map<string, ScopeEntry>();
@@ -446,6 +435,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
   let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
   let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+  let sessionRecord: import("../core/session.js").Session | undefined;
   const mutationGuard = createScopeMutationGuard(sessionId);
 
   if (nexusClient) {
@@ -461,17 +451,19 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     cas = new NexusCas({ client: nexusClient, zoneId });
     nexusHandoffStore = new NexusHandoffStore(nexusClient, sessionId, zoneId);
 
-    if (sessionId && !loadedContract) {
+    if (sessionId) {
       const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
       const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
       // Retry briefly in case the TUI session mirror is still in flight.
       const retryDelaysMs = [0, 100, 250, 500, 1000];
-      let sessionRecord: import("../core/session.js").Session | undefined;
       for (const delay of retryDelaysMs) {
         if (delay > 0) await new Promise((r) => setTimeout(r, delay));
         sessionRecord = await nexusSessionStore.getSessionRecord(sessionId).catch(() => undefined);
         if (sessionRecord?.config) break;
       }
+    }
+
+    if (sessionId && !loadedContract) {
       // Policy matches serve.ts: default to weak (compatible) fallback,
       // opt into strict via GROVE_MCP_STRICT_CONTRACT=1. See serve.ts for
       // rationale — legacy sessions created without a frozen contract
@@ -526,6 +518,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       nexusUrl,
       ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       sessionId,
+      zoneId,
       client: nexusClient,
     });
     messageDelivery = new NexusMessageDelivery({
@@ -533,9 +526,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
         nexusUrl,
         ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
         sessionId,
+        zoneId,
       }),
     });
   }
+
+  const canUseLocalFrontierRewardService = bountyStore === runtime.bountyStore;
 
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
@@ -555,6 +551,13 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     // Bootstrap/pre-session: no session to scope to — fall back to unscoped
     activeHandoffStore = runtime.handoffStore;
   }
+
+  const localSession =
+    sessionId !== undefined && nexusClient === undefined
+      ? await goalSessionStore.getSession(sessionId)
+      : undefined;
+  const ownerSession = nexusClient !== undefined ? sessionRecord : localSession;
+  const sessionOwnerRef = sessionToOwnerRef(ownerSession);
 
   const contributionMutations = ["put", "putMany", "putWithCowrite"] as const;
   contributionStore = guardMutableMethods(contributionStore, mutationGuard, contributionMutations);
@@ -594,15 +597,18 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     "rollback",
     "clear",
   ]);
+  const creditsService = guardMutableMethods(runtime.creditsService, mutationGuard, [
+    "reserve",
+    "capture",
+    "void",
+    "transfer",
+  ]);
   if (goalSessionStore !== undefined) {
-    goalSessionStore = guardMutableMethods(goalSessionStore, mutationGuard, [
-      "setGoal",
-      "createSession",
-      "updateSession",
-      "archiveSession",
-      "addContributionToSession",
-      "gcStaleSessions",
-    ]);
+    goalSessionStore = guardMutableMethods(
+      goalSessionStore,
+      mutationGuard,
+      GOAL_SESSION_MUTATION_METHODS,
+    );
   }
   if (activeHandoffStore !== undefined) {
     activeHandoffStore = guardMutableMethods(activeHandoffStore, mutationGuard, [
@@ -642,7 +648,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
         ? new NexusIpcClient({
             nexusUrl,
             ...(apiKey ? { apiKey } : {}),
-            sessionId: process.env.GROVE_SESSION_ID,
+            sessionId,
+            zoneId,
           })
         : undefined;
       eventBus = new NexusEventBus(ipcClient);
@@ -695,6 +702,15 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       "rebuildFromStore",
     ]);
   }
+
+  const operationFrontierRewardService = canUseLocalFrontierRewardService
+    ? new FrontierRewardService({
+        frontier: new DefaultFrontierCalculator(contributionStore),
+        bountyStore,
+        creditsService,
+        eligibleMetrics: frontierRewardEligibleMetrics(loadedContract),
+      })
+    : undefined;
 
   // Cross-process WatchHub bridge: when grove-server is reachable and
   // we hold a namespace key, fire entity-changed events as POSTs to
@@ -810,6 +826,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined
@@ -818,6 +836,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     workspace,
     contract: loadedContract,
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
+    ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,
@@ -1454,8 +1473,8 @@ const httpServer = createServer((req, res) => {
   });
 });
 
-httpServer.listen(port, () => {
-  process.stderr.write(`grove-mcp-http: listening on http://0.0.0.0:${port}/mcp\n`);
+httpServer.listen(port, bindPolicy.host, () => {
+  process.stderr.write(`grove-mcp-http: listening on http://${bindPolicy.host}:${port}/mcp\n`);
 });
 
 // Graceful shutdown

@@ -17,10 +17,8 @@
  * tasks of the B1 plan.
  */
 
-import type { Informer, InformerFactory, InformerOp } from "../../core/informer.js";
+import type { EntityForKind, Informer, InformerFactory, InformerOp } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-
-type EntityFor<K extends WatchKind> = ReturnType<Informer<K>["list"]>[number];
 
 export class EntityStore<K extends WatchKind> {
   private readonly informer: Informer<K>;
@@ -30,7 +28,7 @@ export class EntityStore<K extends WatchKind> {
   private version = 0;
   private writeCounter = 0;
   private flushScheduled = false;
-  private snapshotCache: readonly EntityFor<K>[] | null = null;
+  private snapshotCache: readonly EntityForKind<K>[] | null = null;
   private snapshotVersion = -1;
   private static readonly LAG_RING_SIZE = 1024;
   private readonly lagRing: number[] = [];
@@ -55,33 +53,33 @@ export class EntityStore<K extends WatchKind> {
     return this.version;
   }
 
-  list(): readonly EntityFor<K>[] {
+  list(): readonly EntityForKind<K>[] {
     if (this.snapshotCache !== null && this.snapshotVersion === this.version) {
       return this.snapshotCache;
     }
     this.snapshotCache = Object.freeze(
-      Array.from(this.informer.list()) as EntityFor<K>[],
-    ) as readonly EntityFor<K>[];
+      Array.from(this.informer.list()) as EntityForKind<K>[],
+    ) as readonly EntityForKind<K>[];
     this.snapshotVersion = this.version;
     return this.snapshotCache;
   }
 
-  getById(id: string): EntityFor<K> | undefined {
-    return this.informer.getById(id) as EntityFor<K> | undefined;
+  getById(id: string): EntityForKind<K> | undefined {
+    return this.informer.getById(id) as EntityForKind<K> | undefined;
   }
 
   hasSynced(): boolean {
     return this.informer.hasSynced();
   }
 
-  getStats(): {
-    readonly writes: number;
-    readonly version: number;
-    readonly lagSamples: readonly number[];
-  } {
+  getStats(): EntityStoreStats {
+    const q = this.informer.getQueueStats();
     return {
       writes: this.writeCounter,
       version: this.version,
+      overflows: q.overflows,
+      queueDepth: q.depth,
+      queueLimit: q.limit,
       lagSamples: [...this.lagRing],
     };
   }
@@ -100,7 +98,7 @@ export class EntityStore<K extends WatchKind> {
 
   private onEvent = (
     _op: InformerOp,
-    _entity: EntityFor<K>,
+    _entity: EntityForKind<K>,
     meta?: { readonly emittedAt?: string },
   ): void => {
     this.writeCounter += 1;
@@ -147,6 +145,9 @@ export class EntityStore<K extends WatchKind> {
 export interface EntityStoreStats {
   readonly writes: number;
   readonly version: number;
+  readonly overflows: number;
+  readonly queueDepth: number;
+  readonly queueLimit: number;
   readonly lagSamples: readonly number[];
 }
 

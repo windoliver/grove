@@ -6,6 +6,11 @@ export { ingestGitTree } from "./ingest/git-tree.js";
 export { ingestReport } from "./ingest/report.js";
 export { createLocalRuntime, type LocalRuntime, type LocalRuntimeOptions } from "./runtime.js";
 export {
+  SQLITE_CREDITS_DDL,
+  SqliteCreditsService,
+  type SqliteCreditsServiceOptions,
+} from "./sqlite-credits-service.js";
+export {
   type GoalSessionStore,
   SqliteGoalSessionStore,
 } from "./sqlite-goal-session-store.js";

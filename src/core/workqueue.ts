@@ -28,6 +28,38 @@ const DEFAULT_BASE_DELAY_MS = 5;
 const DEFAULT_MAX_DELAY_MS = 1_000_000;
 const DEFAULT_GLOBAL_RATE_PER_SEC = 50;
 const DEFAULT_GLOBAL_BURST = 300;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function validatePositiveFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be a finite positive number`);
+  }
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(`${name} must be no greater than ${MAX_TIMER_DELAY_MS}`);
+  }
+}
+
+function validateGlobalRatePerSec(value: number): void {
+  validatePositiveFiniteOption("globalRatePerSec", value);
+  if (value < 1000 / MAX_TIMER_DELAY_MS) {
+    throw new RangeError("globalRatePerSec would produce an out-of-range timer delay");
+  }
+}
+
+function validateAtLeastOneFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 1) {
+    throw new RangeError(`${name} must be a finite number greater than or equal to 1`);
+  }
+}
+
+function validateNonNegativeFiniteOption(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a finite non-negative number`);
+  }
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(`${name} must be no greater than ${MAX_TIMER_DELAY_MS}`);
+  }
+}
 
 export class QueueClosedError extends Error {
   constructor() {
@@ -63,6 +95,13 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
     this.maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
     this.globalRatePerSec = options.globalRatePerSec ?? DEFAULT_GLOBAL_RATE_PER_SEC;
     this.globalBurst = options.globalBurst ?? DEFAULT_GLOBAL_BURST;
+    validatePositiveFiniteOption("baseDelayMs", this.baseDelayMs);
+    validateNonNegativeFiniteOption("maxDelayMs", this.maxDelayMs);
+    validateGlobalRatePerSec(this.globalRatePerSec);
+    validateAtLeastOneFiniteOption("globalBurst", this.globalBurst);
+    if (this.maxDelayMs < this.baseDelayMs) {
+      throw new RangeError("maxDelayMs must be greater than or equal to baseDelayMs");
+    }
     this.now = options.now ?? Date.now;
     this.setTimer =
       options.setTimer ??
@@ -144,6 +183,11 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
       this.clearTimer(this.paceTimer);
       this.paceTimer = undefined;
     }
+    this.readyKeys.splice(0);
+    this.readySet.clear();
+    this.inFlight.clear();
+    this.dirty.clear();
+    this.attempts.clear();
     const error = new QueueClosedError();
     for (const waiter of this.waiters.splice(0)) {
       waiter.reject(error);
@@ -165,23 +209,19 @@ export class KeyedWorkQueue<TTimer = DefaultTimerHandle> {
       const key = this.readyKeys.shift();
       if (key === undefined) break;
       const attempt = this.attempts.get(key) ?? 0;
-      if (attempt === 0 && this.tokens < 1) {
+      if (this.tokens < 1) {
         this.readyKeys.unshift(key);
         break;
       }
       this.readySet.delete(key);
-      if (attempt === 0) {
-        this.tokens -= 1;
-      }
+      this.tokens -= 1;
       this.inFlight.add(key);
       const waiter = this.waiters.shift();
       if (waiter === undefined) {
         this.inFlight.delete(key);
         this.readyKeys.unshift(key);
         this.readySet.add(key);
-        if (attempt === 0) {
-          this.tokens += 1;
-        }
+        this.tokens += 1;
         break;
       }
       waiter.resolve({ key, attempt });

@@ -34,6 +34,12 @@ export class NexusEventBus implements EventBus {
     }
 
     // Also notify local handlers (for in-process subscribers)
+    await this.publishLocal(event);
+
+    return result;
+  }
+
+  async publishLocal(event: GroveEvent): Promise<PublishResult> {
     const handlers = this.handlers.get(event.targetRole);
     if (handlers) {
       for (const handler of handlers) {
@@ -45,7 +51,7 @@ export class NexusEventBus implements EventBus {
       }
     }
 
-    return result;
+    return { ok: true };
   }
 
   subscribe(role: string, handler: EventHandler): void {

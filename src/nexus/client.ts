@@ -33,6 +33,12 @@ export interface WriteResult {
   readonly version?: number | undefined;
 }
 
+/** A single file entry in an atomic batch write. */
+export interface WriteBatchEntry {
+  readonly path: string;
+  readonly content: Uint8Array;
+}
+
 // ---------------------------------------------------------------------------
 // File metadata
 // ---------------------------------------------------------------------------
@@ -136,6 +142,9 @@ export interface NexusClient {
 
   /** Write a file. Supports conditional writes via ETags. */
   write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult>;
+
+  /** Write multiple files atomically. */
+  writeBatch(files: readonly WriteBatchEntry[]): Promise<readonly WriteResult[]>;
 
   /** Check if a file or directory exists. */
   exists(path: string): Promise<boolean>;

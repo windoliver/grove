@@ -279,6 +279,7 @@ if (nexusUrl) {
     nexusUrl,
     ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
     sessionId,
+    zoneId,
     client: nexusClient,
   });
   messageDelivery = new NexusMessageDelivery({
@@ -286,6 +287,7 @@ if (nexusUrl) {
       nexusUrl,
       ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       sessionId,
+      zoneId,
     }),
   });
   messageDeliveryForSession = (requestedSessionId) =>
@@ -294,6 +296,7 @@ if (nexusUrl) {
         nexusUrl,
         ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
         sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
+        zoneId,
       }),
     });
 
@@ -347,6 +350,9 @@ if (seedPeers.length > 0) {
   });
 }
 
+const operationFrontierRewardService =
+  serverBountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
 // Per-request session-scoped handoff store factory. The HTTP handoff
 // routes accept ?sessionId= and use this factory to build a scoped
 // SqliteHandoffStore on demand, preventing cross-session reads/mutations
@@ -376,6 +382,8 @@ const deps: ServerDeps = {
   claimStore: serverClaimStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
+  creditsService: runtime.creditsService,
+  frontierRewardService: operationFrontierRewardService,
   goalSessionStore: runtime.goalSessionStore,
   handoffStore: runtime.handoffStore,
   handoffStoreForSession,
@@ -418,11 +426,7 @@ if (serverBountyStore) {
     },
   });
   sweepReconciler.register(new BountyIndexSweep(serverBountyStore));
-  // SettlementSweep runs without creditsService — it can recover non-escrowed
-  // bounties. Escrowed bounties (those with reservationId) will log an error
-  // and wait for a CreditsService to be available. When a production
-  // CreditsService is wired in, pass it: new SettlementSweep(store, credits).
-  sweepReconciler.register(new SettlementSweep(serverBountyStore));
+  sweepReconciler.register(new SettlementSweep(serverBountyStore, runtime.creditsService));
   sweepReconciler.start();
   console.log("sweep-reconciler started (BountyIndexSweep, SettlementSweep)");
 }

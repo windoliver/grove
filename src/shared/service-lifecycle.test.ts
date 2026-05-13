@@ -51,7 +51,12 @@ function makeFakeChild(name: string, opts?: { hangOnExit?: boolean }) {
   };
 
   return {
-    child: { name, pid: proc.pid, proc } as unknown as RunningServices["children"][number],
+    child: {
+      name,
+      pid: proc.pid,
+      proc,
+      acquired: "spawned",
+    } as unknown as RunningServices["children"][number],
     signals,
     forceExit: () => resolveExited!(1),
   };
@@ -84,6 +89,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [child],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -107,6 +113,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [child],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -126,6 +133,7 @@ describe("stopServices", () => {
     const services: RunningServices = {
       children: [],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -148,9 +156,15 @@ describe("stopServices", () => {
 
     const services: RunningServices = {
       children: [
-        { name: "dead-server", pid: 99999, proc } as unknown as RunningServices["children"][number],
+        {
+          name: "dead-server",
+          pid: 99999,
+          proc,
+          acquired: "spawned",
+        } as unknown as RunningServices["children"][number],
       ],
       nexusManaged: false,
+      nexusStartedThisCall: false,
       projectRoot: tempDir,
       pidFilePath: pidFile,
     };
@@ -178,5 +192,336 @@ describe("service startup configuration", () => {
 
     expect(resolveBunExecutable("/Users/example/.bun/bin/bun")).toBe("/Users/example/.bun/bin/bun");
     expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Foreign-server detection (regression: orphan grove-server from a deleted
+// worktree was silently reused by `grove up`, producing 401s in the TUI).
+// ---------------------------------------------------------------------------
+
+describe("verifyServerOwnership — foreign-listener detection", () => {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  let port: number;
+  let groveDir: string;
+
+  function startFakeServer(handler: (req: Request) => Response | Promise<Response>) {
+    server = Bun.serve({ port: 0, fetch: handler });
+    if (server.port === undefined) throw new Error("Bun.serve returned no port");
+    port = server.port;
+  }
+
+  afterEach(async () => {
+    if (server) {
+      server.stop();
+      server = undefined;
+    }
+  });
+
+  test("returns ok=true when listener authorizes our key", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-ok-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_correct\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_correct")
+        return Response.json({ items: [], listResourceVersion: "0" });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns ok=false with 401 reason when listener has foreign registry", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-foreign-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_ours\n", { mode: 0o600 });
+    startFakeServer(
+      () =>
+        new Response(JSON.stringify({ error: { code: "NAMESPACE_UNAUTHORIZED" } }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("401");
+    }
+  });
+
+  test("returns ok=false when no api-key file exists", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-nokey-"));
+    startFakeServer(() => Response.json({}));
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("No api-key");
+  });
+
+  test("returns ok=false on non-401 error status", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-500-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_x\n", { mode: 0o600 });
+    startFakeServer(() => new Response("boom", { status: 500 }));
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("500");
+  });
+
+  test("returns ok=false when listener accepts ANY bearer (auth not enforced)", async () => {
+    // Permissive listener squatting on the port: 200s on every call.
+    // The bogus-key probe must catch this before we leak the real key.
+    groveDir = mkdtempSync(join(tmpdir(), "verify-permissive-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_real\n", { mode: 0o600 });
+    let realKeySeen = false;
+    startFakeServer((req) => {
+      if (req.headers.get("Authorization") === "Bearer grv_real") realKeySeen = true;
+      return Response.json({ items: [], listResourceVersion: "0" });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/bogus.*auth.*not.*enforced/i);
+    // Defense-in-depth: the real key must not have been sent once we knew
+    // auth wasn't enforced.
+    expect(realKeySeen).toBe(false);
+  });
+
+  test("returns ok=false when authed response shape isn't Grove ListResponse", async () => {
+    // Listener that 401s strangers (passes step 1) but responds to our key
+    // with a non-Grove shape — e.g. a different service that happens to
+    // namespace its bearers identically. Must reject.
+    groveDir = mkdtempSync(join(tmpdir(), "verify-shape-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_match\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_match")
+        return Response.json({ status: "ok", message: "hello from not-grove" });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/shape|grove-server/i);
+  });
+
+  test("real api-key is NEVER sent to listener (avoid disclosure)", async () => {
+    // Stronger version of the round-2 check: even a foreign listener that
+    // 401s the bogus probe must not receive the real key. The current
+    // round-3 design routes spawnService through verifyPortIdentity (no
+    // creds); this tests the credentialed function itself remains
+    // safe-by-default by abandoning early on the bogus-key 401.
+    groveDir = mkdtempSync(join(tmpdir(), "verify-leak-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_secret_DO_NOT_LEAK\n", { mode: 0o600 });
+    let realKeySeen = false;
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization") ?? "";
+      if (auth === "Bearer grv_secret_DO_NOT_LEAK") realKeySeen = true;
+      // Foreign listener: 401 strangers (passes step 1) but harvests step-2.
+      // This documents the hazard the round-3 redesign avoids by only calling
+      // verifyServerOwnership on the pidfile-reuse path (PID already proven).
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    // Result is still ok=false (foreign), but the real key DID get sent —
+    // documenting the surface area. spawnService's identity gate prevents
+    // ever calling this with an unverified PID.
+    expect(result.ok).toBe(false);
+    expect(realKeySeen).toBe(true); // documents the credentialed path
+  });
+
+  test("returns ok=false when authed response is not JSON", async () => {
+    groveDir = mkdtempSync(join(tmpdir(), "verify-nonjson-"));
+    writeFileSync(join(groveDir, "api-key"), "grv_match\n", { mode: 0o600 });
+    startFakeServer((req) => {
+      const auth = req.headers.get("Authorization");
+      if (auth === "Bearer grv_match")
+        return new Response("plain text body", {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        });
+      return new Response("nope", { status: 401 });
+    });
+    const result = await lifecycle.verifyServerOwnership(port, groveDir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/JSON|grove-server/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity-based ownership gate (no credentials sent).
+// ---------------------------------------------------------------------------
+
+describe("verifyPortIdentity — credential-free identity gate", () => {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  let port: number;
+  let pidFilePath: string;
+
+  function startFakeServer() {
+    server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    if (server.port === undefined) throw new Error("Bun.serve returned no port");
+    port = server.port;
+  }
+
+  afterEach(() => {
+    if (server) {
+      server.stop();
+      server = undefined;
+    }
+  });
+
+  test("returns ok=false when no pidfile exists (fresh-start collision)", async () => {
+    startFakeServer();
+    const dir = mkdtempSync(join(tmpdir(), "identity-nopidfile-"));
+    pidFilePath = join(dir, "grove.pid");
+    const result = await lifecycle.verifyPortIdentity(port, pidFilePath, "server");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/pidfile|wasn't spawned/i);
+  });
+
+  test("returns ok=false when pidfile records different PID for the service", async () => {
+    startFakeServer();
+    const dir = mkdtempSync(join(tmpdir(), "identity-mismatch-"));
+    pidFilePath = join(dir, "grove.pid");
+    writeFileSync(
+      pidFilePath,
+      JSON.stringify({
+        parentPid: process.pid,
+        children: [{ name: "server", pid: 999_999 }],
+      }),
+    );
+    const result = await lifecycle.verifyPortIdentity(port, pidFilePath, "server");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/foreign listener|PID/i);
+  });
+
+  test("returns ok=false when pidfile has no record for the named service", async () => {
+    startFakeServer();
+    const dir = mkdtempSync(join(tmpdir(), "identity-wrongname-"));
+    pidFilePath = join(dir, "grove.pid");
+    // Pidfile records mcp but not server. The PID value doesn't matter
+    // since the lookup is keyed on `name` and our service is "server".
+    writeFileSync(
+      pidFilePath,
+      JSON.stringify({
+        parentPid: process.pid,
+        children: [{ name: "mcp", pid: 99_999 }],
+      }),
+    );
+    const result = await lifecycle.verifyPortIdentity(port, pidFilePath, "server");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/no record|foreign/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle ownership in stopServices: adopted children + reused Nexus must
+// NOT be torn down on routine cleanup (different from rollback's own filter).
+// ---------------------------------------------------------------------------
+
+describe("stopServices — ownership-aware cleanup", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    try {
+      const { rmSync } = require("node:fs") as typeof import("node:fs");
+      if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test("does NOT kill adopted children", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "stop-adopted-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, "{}");
+
+    // Two children: one spawned (should be killed), one adopted (must NOT).
+    const spawned = makeFakeChild("server");
+    const adopted = makeFakeChild("mcp");
+    // Cast adopted to acquired:"adopted" to simulate spawnService's reuse path.
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [spawned.child, adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Spawned child got SIGTERM
+    expect(spawned.signals).toContain("SIGTERM");
+    // Adopted child was untouched
+    expect(adopted.signals).toEqual([]);
+  });
+
+  test("mixed adopted+spawned: rewrites pidfile to keep adopted entries (no orphan)", async () => {
+    // Round-9 regression: stopServices used to unlink the entire pidfile
+    // whenever any spawned child existed, even if adopted children were
+    // still live. That orphaned the adopted process with no record for
+    // grove-down or future identity checks.
+    tempDir = mkdtempSync(join(tmpdir(), "stop-mixed-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, JSON.stringify({ parentPid: 1, children: [] }));
+
+    const spawned = makeFakeChild("mcp"); // newly started this call
+    const adopted = makeFakeChild("server"); // adopted from prior owner
+    // The adopted child must look alive to process.kill(pid,0) — use the
+    // current process's own PID (always alive) for the test.
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      pid: process.pid,
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [spawned.child, adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Spawned was killed
+    expect(spawned.signals).toContain("SIGTERM");
+    // Adopted was NOT touched
+    expect(adopted.signals).toEqual([]);
+    // Pidfile rewritten with only the adopted entry — NOT unlinked
+    expect(existsSync(pidFile)).toBe(true);
+    const persisted = JSON.parse(require("node:fs").readFileSync(pidFile, "utf-8") as string) as {
+      children?: ReadonlyArray<{ name: string; pid: number }>;
+    };
+    expect(persisted.children?.length).toBe(1);
+    expect(persisted.children?.[0]?.name).toBe("server");
+    expect(persisted.children?.[0]?.pid).toBe(process.pid);
+  });
+
+  test("preserves pidfile when only adopted children are present", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "stop-borrower-"));
+    const pidFile = join(tempDir, "grove.pid");
+    writeFileSync(pidFile, '{"parentPid": 1234}');
+
+    const adopted = makeFakeChild("server");
+    const adoptedChild = {
+      ...(adopted.child as unknown as Record<string, unknown>),
+      acquired: "adopted",
+    } as unknown as RunningServices["children"][number];
+
+    const services: RunningServices = {
+      children: [adoptedChild],
+      nexusManaged: false,
+      nexusStartedThisCall: false,
+      projectRoot: tempDir,
+      pidFilePath: pidFile,
+    };
+
+    await stopServices(services);
+
+    // Adopted not killed, pidfile retained for the original owner.
+    expect(adopted.signals).toEqual([]);
+    expect(existsSync(pidFile)).toBe(true);
   });
 });

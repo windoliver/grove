@@ -60,6 +60,8 @@ const TopologyRoleWithEdgesSchema = z
     mode: RoleModeEnum.optional(),
     edges: z.array(RoleEdgeSchema).max(50).optional(),
     command: z.string().max(512).optional(),
+    /** When true, this role's grove_done signal completes the session. */
+    ends_session: z.boolean().optional(),
     // Profile fields — runtime agent configuration (boardroom)
     platform: z.enum(["claude-code", "codex", "gemini", "custom"]).optional(),
     model: z.string().max(128).optional(),
@@ -98,6 +100,7 @@ interface WireAgentTopology {
         }[]
       | undefined;
     readonly command?: string | undefined;
+    readonly ends_session?: boolean | undefined;
     readonly platform?: "claude-code" | "codex" | "gemini" | "custom" | undefined;
     readonly model?: string | undefined;
     readonly color?: string | undefined;
@@ -333,6 +336,8 @@ export interface AgentRole {
   readonly edges?: readonly RoleEdge[] | undefined;
   /** Shell command to run when spawning this role (defaults to $SHELL). */
   readonly command?: string | undefined;
+  /** True when this role's grove_done signal is sufficient to complete the session. */
+  readonly endsSession?: boolean | undefined;
   /** Agent platform identifier (boardroom). */
   readonly platform?: AgentPlatformType | undefined;
   /** Model identifier, e.g. "claude-opus-4-6" (boardroom). */
@@ -395,6 +400,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
           ),
         }),
         ...(role.command !== undefined && { command: role.command }),
+        ...(role.ends_session !== undefined && { endsSession: role.ends_session }),
         ...(role.platform !== undefined && { platform: role.platform as AgentPlatformType }),
         ...(role.model !== undefined && { model: role.model }),
         ...(role.color !== undefined && { color: role.color }),

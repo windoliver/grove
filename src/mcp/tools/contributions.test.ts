@@ -299,6 +299,36 @@ describe("grove_submit_review", () => {
     expect(data.kind).toBe("review");
   });
 
+  test("binds review identity to the MCP process env", async () => {
+    const originalAgentId = process.env.GROVE_AGENT_ID;
+    const originalRole = process.env.GROVE_AGENT_ROLE;
+    process.env.GROVE_AGENT_ID = "reviewer-runtime";
+    process.env.GROVE_AGENT_ROLE = "reviewer";
+
+    try {
+      const target = makeContribution({ summary: "Target" });
+      await deps.contributionStore.put(target);
+
+      const result = await callTool(server, "grove_submit_review", {
+        targetCid: target.cid,
+        summary: "LGTM",
+        scores: { approval: { value: 1, direction: "maximize" } },
+        agent: { agentId: "coder-spoof", role: "coder" },
+      });
+
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.text) as { cid: string };
+      const stored = await deps.contributionStore.get(data.cid);
+      expect(stored?.agent.agentId).toBe("reviewer-runtime");
+      expect(stored?.agent.role).toBe("reviewer");
+    } finally {
+      if (originalAgentId === undefined) delete process.env.GROVE_AGENT_ID;
+      else process.env.GROVE_AGENT_ID = originalAgentId;
+      if (originalRole === undefined) delete process.env.GROVE_AGENT_ROLE;
+      else process.env.GROVE_AGENT_ROLE = originalRole;
+    }
+  });
+
   test("rejects review with empty scores — error names field and gives example", async () => {
     const target = makeContribution({ summary: "Target" });
     await deps.contributionStore.put(target);

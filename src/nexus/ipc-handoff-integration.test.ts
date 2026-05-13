@@ -381,4 +381,32 @@ describe("IPC handoff integration", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("NexusIpcClient writes session IPC messages under the encoded zone", async () => {
+    const { NexusIpcClient: RealIpcClient } = await import("./nexus-ipc-client.js");
+    const originalFetch = globalThis.fetch;
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new RealIpcClient({
+        nexusUrl: "http://localhost:9999",
+        apiKey: "test",
+        sessionId: "sess-123",
+        zoneId: "project-123/worktree-a",
+      });
+
+      const result = await client.send("coder", "reviewer", { kind: "work" });
+      expect(result.ok).toBe(true);
+      const body = bodies[0] as { path: string };
+      expect(body.path).toMatch(
+        /^\/zones\/project-123%2Fworktree-a\/sessions\/sess-123\/ipc\/reviewer\/inbox\/.+\.json$/,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

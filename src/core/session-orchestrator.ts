@@ -6,11 +6,19 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AcpxTurn } from "../acp/types.js";
 import { watchTurnError } from "../acp/watch-turn.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import {
+  resolveNexusSkillCatalogRoot,
+  type SkillResolutionWarning,
+} from "../nexus/nexus-skill-catalog.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { type GroveConfig, parseGroveConfig } from "./config.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import { LoopStopStatus, type LoopStopStatus as LoopStopStatusValue } from "./loop-runner.js";
@@ -21,7 +29,7 @@ import { hasValidRoutingSignature } from "./routing-provenance.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
-import { bootstrapWorkspace } from "./workspace-bootstrap.js";
+import { bootstrapWorkspace, type SkillCatalogResolver } from "./workspace-bootstrap.js";
 import {
   type ProvisionedWorkspace,
   provisionWorkspace,
@@ -32,6 +40,28 @@ import {
 export type { WorkspaceIsolationPolicy, WorkspaceMode };
 
 const CONTRIBUTION_POLL_LIMIT = 200;
+
+class RequiredSkillCatalogResolutionError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "RequiredSkillCatalogResolutionError";
+  }
+}
+
+function isRequiredSkillCatalogResolutionError(
+  error: unknown,
+): error is RequiredSkillCatalogResolutionError {
+  return error instanceof RequiredSkillCatalogResolutionError;
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatSkillCatalogWarning(warning: SkillResolutionWarning): string {
+  const fallback = warning.fallbackSource ? ` fallback: ${warning.fallbackSource};` : "";
+  return `Nexus skill catalog warning for '${warning.skillName}': attempted ${warning.attemptedSource};${fallback} ${warning.reason}`;
+}
 
 /** Configuration for starting a session. */
 export interface SessionConfig {
@@ -145,6 +175,7 @@ export class SessionOrchestrator {
   private readonly doneRoles = new Set<string>();
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
+  private resolvedNexusUrl: string | undefined;
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
   private contributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
   private resolvedRepos: readonly ResolvedRepo[] = [];
@@ -168,6 +199,94 @@ export class SessionOrchestrator {
    */
   private watchTurn(role: string, turn: AcpxTurn): void {
     watchTurnError(turn, `SessionOrchestrator agent='${role}'`);
+  }
+
+  private readGroveConfig(): GroveConfig | undefined {
+    const groveDir = join(this.config.projectRoot, ".grove");
+    const configPath = join(groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    return parseGroveConfig(readFileSync(configPath, "utf-8"));
+  }
+
+  private resolveNexusUrl(config: GroveConfig | undefined): string | undefined {
+    const nexusUrl = resolveConfiguredNexusUrl({
+      projectRoot: this.config.projectRoot,
+      config,
+      env: process.env,
+    });
+    this.resolvedNexusUrl = nexusUrl;
+    return nexusUrl;
+  }
+
+  private reportSkillCatalogWarnings(warnings: readonly SkillResolutionWarning[]): void {
+    for (const warning of warnings) {
+      process.stderr.write(`[SessionOrchestrator] ${formatSkillCatalogWarning(warning)}\n`);
+    }
+  }
+
+  private createSkillCatalogResolver(
+    config: GroveConfig | undefined,
+    nexusUrl: string | undefined,
+  ): SkillCatalogResolver | undefined {
+    if (config === undefined) return undefined;
+    const groveDir = join(this.config.projectRoot, ".grove");
+    const skillCatalog = config.skillCatalog;
+    if (config.mode !== "nexus" || skillCatalog === undefined) return undefined;
+    if (!nexusUrl) {
+      if (skillCatalog.policy !== "required") return undefined;
+      return async () => {
+        throw new RequiredSkillCatalogResolutionError(
+          "Nexus skill catalog required but no Nexus URL is configured",
+          undefined,
+        );
+      };
+    }
+
+    const client = new NexusHttpClient({
+      url: nexusUrl,
+      apiKey: process.env.NEXUS_API_KEY || undefined,
+    });
+    const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+    const cacheRoot = join(groveDir, "cache", "skills");
+    const bundledRoot = resolveBundledSkillsRoot(this.config.projectRoot);
+    const overrideRoot = join(groveDir, "skills");
+
+    return async (skills) => {
+      try {
+        const result = await resolveNexusSkillCatalogRoot({
+          client,
+          zoneId,
+          cacheRoot,
+          skills,
+          policy: skillCatalog.policy,
+          trustedKeys: skillCatalog.trustedKeys,
+          localFallbackRoots: [overrideRoot, bundledRoot],
+        });
+        this.reportSkillCatalogWarnings(result.warnings);
+        return { root: result.root, warnings: result.warnings };
+      } catch (error) {
+        if (skillCatalog.policy === "required") {
+          throw new RequiredSkillCatalogResolutionError(
+            `Nexus skill catalog required but resolution failed: ${messageFromError(error)}`,
+            error,
+          );
+        }
+        throw error;
+      }
+    };
+  }
+
+  private failIfRequiredSkillCatalogWouldBeSkipped(role: AgentRole, reason: string): void {
+    if (!role.skills || role.skills.length === 0) return;
+
+    const config = this.readGroveConfig();
+    const skillCatalog = config?.skillCatalog;
+    if (config?.mode !== "nexus" || skillCatalog?.policy !== "required") return;
+
+    throw new RequiredSkillCatalogResolutionError(
+      `Nexus skill catalog required but workspace provisioning failed for role '${role.name}' before skills could be resolved: ${reason}`,
+      undefined,
+    );
   }
 
   /** Start the session: spawn all agents and send goals. */
@@ -293,6 +412,8 @@ export class SessionOrchestrator {
     // Notify all agents
     await this.router.broadcastStop(reason);
 
+    this.unsubscribeEventHandlers();
+
     // Close all agent sessions
     for (const agent of this.agents) {
       await this.config.runtime.close(agent.session);
@@ -397,9 +518,9 @@ export class SessionOrchestrator {
           }
         }
 
-        // Detect [DONE] signal. A single role being done is not enough to end
-        // a multi-agent session; the runner stops only after all spawned roles
-        // have signaled done.
+        // Detect [DONE] signal. Topologies can designate terminal roles that
+        // are sufficient to end the session; otherwise all spawned roles must
+        // signal completion.
         if (
           c.summary.startsWith("[DONE]") ||
           (c.context && (c.context as Record<string, unknown>).done === true)
@@ -423,6 +544,11 @@ export class SessionOrchestrator {
 
   private doneRequiredRoleNames(): readonly string[] {
     const spawnedRoleNames = new Set(this.agents.map((agent) => agent.role));
+    const explicitEndingRoles = this.config.topology.roles
+      .filter((role) => spawnedRoleNames.has(role.name) && role.endsSession === true)
+      .map((role) => role.name);
+    if (explicitEndingRoles.length > 0) return explicitEndingRoles;
+
     const terminalRoles = this.config.topology.roles
       .filter((role) => spawnedRoleNames.has(role.name) && (role.edges?.length ?? 0) === 0)
       .map((role) => role.name);
@@ -502,7 +628,8 @@ export class SessionOrchestrator {
       GROVE_AGENT_ROLE: roleName,
       GROVE_SESSION_ID: this.sessionId,
     };
-    if (process.env.GROVE_NEXUS_URL) env.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    const nexusUrl = process.env.GROVE_NEXUS_URL || this.resolvedNexusUrl;
+    if (nexusUrl) env.GROVE_NEXUS_URL = nexusUrl;
     if (process.env.NEXUS_API_KEY) env.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
     return {
       name: "grove",
@@ -560,6 +687,7 @@ export class SessionOrchestrator {
       if (policy === "strict") {
         throw new Error(`Workspace provisioning failed for role '${role.name}': ${reason}`);
       }
+      this.failIfRequiredSkillCatalogWouldBeSkipped(role, reason);
       return {
         cwd: this.config.projectRoot,
         workspaceMode: {
@@ -572,6 +700,9 @@ export class SessionOrchestrator {
 
     // Step 2: Bootstrap (write .mcp.json + CLAUDE.md)
     try {
+      const groveConfig = this.readGroveConfig();
+      const nexusUrl = this.resolveNexusUrl(groveConfig);
+      const skillCatalogResolver = this.createSkillCatalogResolver(groveConfig, nexusUrl);
       await bootstrapWorkspace({
         workspacePath: provisioned.path,
         roleId: role.name,
@@ -580,15 +711,16 @@ export class SessionOrchestrator {
         roleDescription: role.description,
         groveDir: join(this.config.projectRoot, ".grove"),
         mcpServePath: resolveMcpServePath(this.config.projectRoot),
-        nexusUrl: process.env.GROVE_NEXUS_URL,
+        nexusUrl,
         nexusApiKey: process.env.NEXUS_API_KEY,
         skills: role.skills,
         bundledSkillsRoot: resolveBundledSkillsRoot(this.config.projectRoot),
         workspaceOverrideRoot: join(this.config.projectRoot, ".grove", "skills"),
+        skillCatalogResolver,
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      if (policy === "strict") {
+      if (policy === "strict" || isRequiredSkillCatalogResolutionError(err)) {
         throw new Error(`Bootstrap failed for role '${role.name}': ${reason}`);
       }
       return {
@@ -608,13 +740,13 @@ export class SessionOrchestrator {
   }
 
   private async handleEvent(agent: AgentSessionInfo, event: GroveEvent): Promise<void> {
+    if (this.stopped) return;
+
     if (event.type === "stop") {
       // Auto-close session on stop event
-      if (!this.stopped) {
-        const reason =
-          typeof event.payload.reason === "string" ? event.payload.reason : "Stop condition met";
-        void this.stop(reason, LoopStopStatus.Achieved);
-      }
+      const reason =
+        typeof event.payload.reason === "string" ? event.payload.reason : "Stop condition met";
+      void this.stop(reason, LoopStopStatus.Achieved);
       return;
     }
 
@@ -635,6 +767,14 @@ export class SessionOrchestrator {
     const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
     const turn = await this.config.runtime.send(agent.session, message);
     this.watchTurn(agent.role, turn);
+  }
+
+  private unsubscribeEventHandlers(): void {
+    if (!this.eventHandlers) return;
+    for (const [role, handler] of this.eventHandlers) {
+      this.config.eventBus.unsubscribe(role, handler);
+    }
+    this.eventHandlers.clear();
   }
 
   private handleAgentIdle(_agent: AgentSessionInfo): void {

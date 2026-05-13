@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
+import { FrontierRewardService } from "../frontier-reward-service.js";
 import { LocalEventBus } from "../local-event-bus.js";
 import type { Contribution } from "../models.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
@@ -1692,6 +1693,45 @@ describe("contribute → onEntityWrite", () => {
     expect(ev?.entity.namespace).toBe("ns/wt");
     expect(ev?.entity.id).toBe(result.value.cid);
     expect(ev?.entity.id).toMatch(/^blake3:/);
+  });
+
+  test("reward service failure does not suppress contribution-written or entity notifications", async () => {
+    const writtenCids: string[] = [];
+    const events: EntityWriteEvent[] = [];
+    const throwingRewardService = new FrontierRewardService({
+      frontier: testDeps.deps.frontier,
+      bountyStore: testDeps.deps.bountyStore,
+      creditsService: testDeps.deps.creditsService,
+    });
+    throwingRewardService.evaluateContribution = async () => {
+      throw new Error("simulated reward failure");
+    };
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      frontierRewardService: throwingRewardService,
+      onContributionWritten: (cid: string) => {
+        writtenCids.push(cid);
+      },
+      onEntityWrite: (e: EntityWriteEvent) => {
+        events.push(e);
+      },
+      namespace: "ns/wt",
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "reward failure notification test",
+        agent: { agentId: "a1" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(writtenCids).toEqual([result.value.cid]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.entity.id).toBe(result.value.cid);
   });
 
   test("skips onEntityWrite when namespace is missing", async () => {

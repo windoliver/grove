@@ -7,6 +7,10 @@
  */
 
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // spawn() does real work: git worktree add into the current repo, writeFile
 // for config artifacts, chmod, and writeMcpConfig. Individual spawns routinely
@@ -192,6 +196,63 @@ function makeMockTmux(shouldFail = false): TmuxManager & {
   };
 }
 
+function makeTempGitProject(prefix: string): {
+  readonly projectRoot: string;
+  readonly groveDir: string;
+} {
+  const projectRoot = mkdtempSync(join(tmpdir(), prefix));
+  execSync("git init -q", { cwd: projectRoot });
+  execSync("git config user.email test@grove.test", { cwd: projectRoot });
+  execSync("git config user.name Grove-Test", { cwd: projectRoot });
+  execSync("git commit --allow-empty -q -m init", { cwd: projectRoot });
+
+  const groveDir = join(projectRoot, ".grove");
+  mkdirSync(groveDir, { recursive: true });
+  return { projectRoot, groveDir };
+}
+
+function writeNexusGroveConfig(
+  groveDir: string,
+  opts: {
+    readonly policy: "required" | "warn-and-fallback";
+    readonly nexusUrl?: string | undefined;
+    readonly nexusManaged?: boolean | undefined;
+  },
+): void {
+  writeFileSync(
+    join(groveDir, "grove.json"),
+    `${JSON.stringify(
+      {
+        name: "test",
+        mode: "nexus",
+        ...(opts.nexusUrl !== undefined ? { nexusUrl: opts.nexusUrl } : {}),
+        ...(opts.nexusManaged === true ? { nexusManaged: true } : {}),
+        skillCatalog: {
+          policy: opts.policy,
+          trustedKeys: [
+            {
+              id: "test-key",
+              algorithm: "ed25519",
+              publicKeySpkiDer: "AA==",
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
 function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
   const configs: AgentConfig[] = [];
   return {
@@ -259,6 +320,40 @@ describe("SpawnManager", () => {
     expect(runtime.configs).toHaveLength(1);
     expect(runtime.configs[0]?.waitForPush).toBe(false);
     expect(runtime.configs[0]?.prompt).toContain("Submit work immediately");
+  });
+
+  test("stopActiveSession unregisters active rows before runtime close settles", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    const closedSessions: string[] = [];
+    let releaseClose: (() => void) | undefined;
+    runtime.close = async (session: AgentSession) => {
+      closedSessions.push(session.id);
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+    };
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        // No-op for test mock.
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    const result = await manager.spawn("reviewer", "codex");
+    const stopPromise = manager.stopActiveSession();
+
+    expect(manager.getActiveRoles()).toEqual([]);
+    expect(manager.getSpawnRecord(result.spawnId)).toBeUndefined();
+    expect(closedSessions).toEqual(["session-reviewer"]);
+
+    releaseClose?.();
+    await stopPromise;
   });
 
   test("spawn creates workspace and tmux session (no auto-claims)", async () => {
@@ -473,6 +568,186 @@ describe("SpawnManager", () => {
 // ---------------------------------------------------------------------------
 
 describe("SpawnManager — per-role skill injection", () => {
+  test("allow-fallback still fails closed when required Nexus skill catalog is unreachable", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-required-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    delete process.env.GROVE_NEXUS_URL;
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "required",
+        nexusUrl: "http://127.0.0.1:1",
+      });
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      const errors: string[] = [];
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        (msg) => errors.push(msg),
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("allow-fallback");
+
+      await expect(
+        manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] }),
+      ).rejects.toThrow("Nexus skill catalog required");
+      expect(tmux.spawnedSessions).toHaveLength(0);
+      expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("empty GROVE_NEXUS_URL falls back to grove.json nexusUrl for required skill catalogs", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-empty-env-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "required",
+        nexusUrl: "http://127.0.0.1:1",
+      });
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      const errors: string[] = [];
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        (msg) => errors.push(msg),
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("allow-fallback");
+
+      await expect(
+        manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] }),
+      ).rejects.toThrow("http://127.0.0.1:1");
+      expect(tmux.spawnedSessions).toHaveLength(0);
+      expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("empty GROVE_NEXUS_URL falls back to managed nexus.yaml for required skill catalogs", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-managed-env-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "required",
+        nexusManaged: true,
+      });
+      writeFileSync(join(projectRoot, "nexus.yaml"), "ports:\n  http: 1\n", "utf-8");
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      const errors: string[] = [];
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        (msg) => errors.push(msg),
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("allow-fallback");
+
+      await expect(
+        manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] }),
+      ).rejects.toThrow("http://localhost:1");
+      expect(tmux.spawnedSessions).toHaveLength(0);
+      expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("managed nexus.yaml URL is written to MCP config", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-managed-mcp-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "warn-and-fallback",
+        nexusManaged: true,
+      });
+      writeFileSync(join(projectRoot, "nexus.yaml"), "ports:\n  http: 23456\n", "utf-8");
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        () => undefined,
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+
+      const result = await manager.spawn("coder", "bash");
+      const mcpConfig = JSON.parse(
+        readFileSync(join(result.workspacePath, ".mcp.json"), "utf-8"),
+      ) as {
+        readonly mcpServers?: {
+          readonly grove?: { readonly env?: { readonly GROVE_NEXUS_URL?: string | undefined } };
+        };
+      };
+
+      expect(mcpConfig.mcpServers?.grove?.env?.GROVE_NEXUS_URL).toBe("http://localhost:23456");
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("warn-and-fallback Nexus skill catalog warnings are surfaced during spawn", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-skill-warning-");
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "warn-and-fallback",
+        nexusUrl: "http://127.0.0.1:1",
+      });
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      const errors: string[] = [];
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        (msg) => errors.push(msg),
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("strict");
+
+      const result = await manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] });
+
+      expect(result.workspaceMode.status).toBe("isolated_worktree");
+      expect(errors.some((e) => e.includes("Nexus skill catalog warning"))).toBe(true);
+      expect(errors.some((e) => e.includes("fallback: local"))).toBe(true);
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("spawn injects declared 'grove' skill into .claude/skills and .codex/skills", async () => {
     const { execSync } = await import("node:child_process");
     const { existsSync, mkdirSync, mkdtempSync, readFileSync } = await import("node:fs");
@@ -542,6 +817,71 @@ describe("SpawnManager — per-role skill injection", () => {
     expect(execSync("git status --short", { cwd: result.workspacePath, encoding: "utf-8" })).toBe(
       "",
     );
+  });
+
+  test("spawn writes Codex home MCP config when opt-in flag is set", async () => {
+    const { execSync } = await import("node:child_process");
+    const { mkdirSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousCodexWriteMcpConfig = process.env.GROVE_CODEX_WRITE_MCP_CONFIG;
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    const previousNexusApiKey = process.env.NEXUS_API_KEY;
+
+    try {
+      const projectRoot = mkdtempSync(join(tmpdir(), "grove-codex-home-e2e-"));
+      execSync("git init -q", { cwd: projectRoot });
+      execSync("git config user.email test@grove.test", { cwd: projectRoot });
+      execSync("git config user.name Grove-Test", { cwd: projectRoot });
+      execSync("git commit --allow-empty -q -m init", { cwd: projectRoot });
+
+      const groveDir = join(projectRoot, ".grove");
+      mkdirSync(groveDir, { recursive: true });
+
+      const codexHome = mkdtempSync(join(tmpdir(), "grove-codex-home-"));
+      writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.4-mini"\n', "utf-8");
+      process.env.CODEX_HOME = codexHome;
+      process.env.GROVE_CODEX_WRITE_MCP_CONFIG = "1";
+      process.env.GROVE_NEXUS_URL = "http://localhost:4515";
+      process.env.NEXUS_API_KEY = "grv_test_key";
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        () => {
+          /* ignore */
+        },
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      manager.setIsolationPolicy("strict");
+
+      await manager.spawn("coder", "bash");
+
+      const config = readFileSync(join(codexHome, "config.toml"), "utf-8");
+      expect(config).toContain('model = "gpt-5.4-mini"');
+      expect(config).toContain("# BEGIN GROVE GENERATED MCP");
+      expect(config).toContain("[mcp_servers.grove]");
+      expect(config).toContain('NEXUS_API_KEY = "grv_test_key"');
+      expect(config).toContain('GROVE_NEXUS_URL = "http://localhost:4515"');
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousCodexWriteMcpConfig === undefined) {
+        delete process.env.GROVE_CODEX_WRITE_MCP_CONFIG;
+      } else {
+        process.env.GROVE_CODEX_WRITE_MCP_CONFIG = previousCodexWriteMcpConfig;
+      }
+      if (previousNexusUrl === undefined) delete process.env.GROVE_NEXUS_URL;
+      else process.env.GROVE_NEXUS_URL = previousNexusUrl;
+      if (previousNexusApiKey === undefined) delete process.env.NEXUS_API_KEY;
+      else process.env.NEXUS_API_KEY = previousNexusApiKey;
+    }
   });
 
   test("two roles in the same session each get their own skill-injected workspace", async () => {

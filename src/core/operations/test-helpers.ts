@@ -136,6 +136,11 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
 
   const handoffStore = new InMemoryHandoffStore();
   const idempotencyStore = new SqliteIdempotencyStore(db);
+  const sessionOwnerRef = {
+    kind: "session",
+    id: "test-session",
+    uid: "test-session-uid",
+  } as const;
 
   const deps: FullOperationDeps = {
     contributionStore,
@@ -144,6 +149,10 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     creditsService,
     cas,
     frontier,
+    sessionOwnerRef,
+    frontierRewardService: undefined as unknown as NonNullable<
+      OperationDeps["frontierRewardService"]
+    >,
     workspace,
     handoffStore,
     idempotencyStore,

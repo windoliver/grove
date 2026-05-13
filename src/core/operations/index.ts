@@ -25,6 +25,8 @@ export {
   listBountiesOperation,
   settleBountyOperation,
 } from "./bounty.js";
+export type { CheckTrajectoryInput, CheckTrajectoryResult } from "./check-trajectory.js";
+export { checkTrajectoryOperation } from "./check-trajectory.js";
 // Checkout operation
 export type { CheckoutInput, CheckoutResult } from "./checkout.js";
 export { checkoutOperation } from "./checkout.js";

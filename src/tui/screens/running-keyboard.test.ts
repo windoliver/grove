@@ -17,6 +17,7 @@ import type { KeyEvent } from "@opentui/core";
 import {
   collapsePanel,
   expandPanel,
+  RUNNING_PANEL_LABELS,
   type RunningKeyboardActions,
   type RunningKeyboardState,
   RunningPanel,
@@ -65,6 +66,9 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     confirmQuit: false,
     promptMode: false,
     promptText: "",
+    cmdMode: "none",
+    cmdText: "",
+    filterQuery: "",
     ...overrides,
   };
 }
@@ -98,6 +102,15 @@ function mockActions(overrides?: {
     deletePromptChar: () => record("deletePromptChar"),
     cyclePromptTarget: () => record("cyclePromptTarget"),
     submitPrompt: () => record("submitPrompt"),
+    enterGotoMode: () => record("enterGotoMode"),
+    enterFilterMode: () => record("enterFilterMode"),
+    cmdAppendChar: (c: string) => record("cmdAppendChar", c),
+    cmdDeleteChar: () => record("cmdDeleteChar"),
+    cmdTabComplete: () => record("cmdTabComplete"),
+    cmdSubmit: () => record("cmdSubmit"),
+    cmdClearText: () => record("cmdClearText"),
+    cmdExit: () => record("cmdExit"),
+    clearFilterQuery: () => record("clearFilterQuery"),
     feedCursorDown: () => record("feedCursorDown"),
     feedCursorUp: () => record("feedCursorUp"),
     feedScrollToBottom: () => record("feedScrollToBottom"),
@@ -466,10 +479,11 @@ describe("routeRunningKey — prompt entry", () => {
     expect(log.calls).toContain("enterPromptMode");
   });
 
-  test(": enters prompt mode when agent messaging available", () => {
+  test(": enters goto mode (C2)", () => {
     const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
     routeRunningKey(keyEvent(":", { sequence: ":" }), defaultState(), actions);
-    expect(log.calls).toContain("enterPromptMode");
+    expect(log.calls).toContain("enterGotoMode");
+    expect(log.calls).not.toContain("enterPromptMode");
   });
 
   test("m does NOT enter prompt when no sendToAgent", () => {
@@ -508,6 +522,18 @@ describe("routeRunningKey — Escape layered dismissal", () => {
     });
     routeRunningKey(keyEvent("escape"), state, actions);
     expect(log.args.setConfirmQuit).toEqual([false]);
+    expect(log.calls).not.toContain("collapsePanel");
+  });
+
+  test("Escape clears retained filterQuery before collapsing panel", () => {
+    const { actions, log } = mockActions();
+    const state = defaultState({
+      filterQuery: "foo",
+      expandedPanel: RunningPanel.Agents,
+      zoomLevel: "half",
+    });
+    routeRunningKey(keyEvent("escape"), state, actions);
+    expect(log.calls).toContain("clearFilterQuery");
     expect(log.calls).not.toContain("collapsePanel");
   });
 
@@ -800,6 +826,89 @@ describe("Trace panel mode", () => {
 });
 
 // ===========================================================================
+// C2 keyboard routing (Task 11)
+// ===========================================================================
+
+describe("C2 keyboard routing", () => {
+  test("':' enters goto mode (NOT message mode)", () => {
+    const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
+    routeRunningKey(keyEvent(":", { sequence: ":" }), defaultState(), actions);
+    expect(log.calls).toContain("enterGotoMode");
+    expect(log.calls).not.toContain("enterPromptMode");
+  });
+
+  test("'m' still enters message mode", () => {
+    const { actions, log } = mockActions({ hasSendToAgent: true, hasActiveRoles: true });
+    routeRunningKey(keyEvent("m"), defaultState(), actions);
+    expect(log.calls).toContain("enterPromptMode");
+  });
+
+  test("'/' enters filter mode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("/", { sequence: "/" }), defaultState(), actions);
+    expect(log.calls).toContain("enterFilterMode");
+  });
+});
+
+// ===========================================================================
+// C2 prompt-mode key routing (Task 12)
+// ===========================================================================
+
+describe("C2 prompt-mode key routing", () => {
+  test("typing in cmdMode appends char", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(
+      keyEvent("a", { sequence: "a" }),
+      defaultState({ cmdMode: "goto", cmdText: "" }),
+      actions,
+    );
+    expect(log.calls).toContain("cmdAppendChar");
+  });
+
+  test("Tab in goto mode triggers cmdTabComplete", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("tab"), defaultState({ cmdMode: "goto", cmdText: "a" }), actions);
+    expect(log.calls).toContain("cmdTabComplete");
+  });
+
+  test("Enter in cmdMode triggers cmdSubmit", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("return"), defaultState({ cmdMode: "goto", cmdText: "a" }), actions);
+    expect(log.calls).toContain("cmdSubmit");
+  });
+
+  test("Esc with non-empty text clears text", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("escape"), defaultState({ cmdMode: "goto", cmdText: "abc" }), actions);
+    expect(log.calls).toContain("cmdClearText");
+    expect(log.calls).not.toContain("cmdExit");
+  });
+
+  test("Esc with empty text exits cmdMode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("escape"), defaultState({ cmdMode: "goto", cmdText: "" }), actions);
+    expect(log.calls).toContain("cmdExit");
+    expect(log.calls).not.toContain("cmdClearText");
+  });
+
+  test("backspace in cmdMode triggers cmdDeleteChar", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(
+      keyEvent("backspace"),
+      defaultState({ cmdMode: "goto", cmdText: "ab" }),
+      actions,
+    );
+    expect(log.calls).toContain("cmdDeleteChar");
+  });
+
+  test("Tab does NOT trigger cmdTabComplete in filter mode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("tab"), defaultState({ cmdMode: "filter", cmdText: "" }), actions);
+    expect(log.calls).not.toContain("cmdTabComplete");
+  });
+});
+
+// ===========================================================================
 // stripAnsi (shared utility)
 // ===========================================================================
 
@@ -817,5 +926,23 @@ describe("stripAnsi", () => {
   test("handles plain text", async () => {
     const { stripAnsi } = await import("../../shared/format.js");
     expect(stripAnsi("plain text")).toBe("plain text");
+  });
+});
+
+// ===========================================================================
+// RunningPanel new entries
+// ===========================================================================
+
+describe("RunningPanel new entries", () => {
+  test("Sessions/Tasks/Reviews panels are defined", () => {
+    expect(RunningPanel.Sessions).toBe(6);
+    expect(RunningPanel.Tasks).toBe(7);
+    expect(RunningPanel.Reviews).toBe(8);
+  });
+
+  test("RUNNING_PANEL_LABELS includes new panels", () => {
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Sessions]).toBe("Sessions");
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Tasks]).toBe("Tasks");
+    expect(RUNNING_PANEL_LABELS[RunningPanel.Reviews]).toBe("Reviews");
   });
 });

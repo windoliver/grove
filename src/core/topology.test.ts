@@ -59,6 +59,7 @@ describe("AgentTopologySchema", () => {
           description: "writes code",
           max_instances: 3,
           command: "claude --role coder",
+          ends_session: true,
           edges: [{ target: "reviewer", edge_type: "delegates" }],
         },
         { name: "reviewer" },
@@ -221,6 +222,7 @@ describe("wireToTopology", () => {
         {
           name: "coder",
           max_instances: 3,
+          ends_session: true,
           edges: [{ target: "reviewer", edge_type: "delegates" as const }],
           command: "claude --role coder",
         },
@@ -246,6 +248,7 @@ describe("wireToTopology", () => {
     const coder = topology.roles[0]!;
     expect(coder.name).toBe("coder");
     expect(coder.maxInstances).toBe(3);
+    expect(coder.endsSession).toBe(true);
     expect(coder.edges).toHaveLength(1);
     expect(coder.edges?.[0]?.edgeType).toBe("delegates");
     expect(coder.command).toBe("claude --role coder");

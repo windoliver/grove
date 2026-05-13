@@ -135,6 +135,8 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         const ac = new AbortController();
         let bookmarkTimer: ReturnType<typeof setInterval> | null = null;
         let closed = false;
+        let reqSignal: AbortSignal | null = null;
+        let onReqAbort: (() => void) | null = null;
 
         const isOverflowed = (): boolean => {
           const ds = controller.desiredSize;
@@ -181,6 +183,10 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
           closed = true;
           if (bookmarkTimer) clearInterval(bookmarkTimer);
           bookmarkTimer = null;
+          if (reqSignal !== null && onReqAbort !== null) {
+            reqSignal.removeEventListener("abort", onReqAbort);
+            onReqAbort = null;
+          }
           ac.abort();
           try {
             controller.close();
@@ -217,14 +223,17 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         // hub.subscribe() leaves a window where the client can disconnect
         // and the subscription/timer would leak until later overflow or
         // process exit.
-        const reqSignal = c.req.raw.signal;
+        reqSignal = c.req.raw.signal;
         if (reqSignal.aborted) {
           // Already disconnected before we got here. Don't subscribe.
           cleanup();
           return;
         }
-        const onReqAbort = (): void => {
-          reqSignal.removeEventListener("abort", onReqAbort);
+        onReqAbort = (): void => {
+          if (reqSignal !== null && onReqAbort !== null) {
+            reqSignal.removeEventListener("abort", onReqAbort);
+            onReqAbort = null;
+          }
           cleanup();
         };
         reqSignal.addEventListener("abort", onReqAbort, { once: true });

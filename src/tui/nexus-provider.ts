@@ -106,6 +106,7 @@ export class NexusDataProvider
             ...(config.apiKey ? { apiKey: config.apiKey } : {}),
             client: resolved.client,
             sessionId: resolved.sessionId,
+            zoneId: resolved.zoneId,
           })
         : undefined;
     super({
@@ -151,6 +152,10 @@ export class NexusDataProvider
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
   }
 
+  getNexusZoneId(): string {
+    return this.zoneId;
+  }
+
   private get authHeaders(): Record<string, string> | undefined {
     return this.serverApiKey ? { Authorization: `Bearer ${this.serverApiKey}` } : undefined;
   }
@@ -186,6 +191,7 @@ export class NexusDataProvider
             ...(this.apiKey ? { apiKey: this.apiKey } : {}),
             client: this.client,
             sessionId,
+            zoneId: this.zoneId,
           })
         : undefined,
     );

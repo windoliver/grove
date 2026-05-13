@@ -44,4 +44,20 @@ describe("createTuiStrategy", () => {
       });
     }
   });
+
+  test("observes answers appended immediately after the question write", async () => {
+    const queuePath = makeQueuePath();
+    const strategy = createTuiStrategy({
+      queuePath,
+      pollIntervalMs: 5,
+      timeoutMs: 50,
+      afterQuestionWrite: (id) => {
+        appendFileSync(queuePath, `${JSON.stringify({ type: "answer", id, answer: "ready" })}\n`);
+      },
+    });
+
+    const answer = await strategy.answer({ question: "Ready?", options: ["default"] });
+
+    expect(answer).toBe("ready");
+  });
 });

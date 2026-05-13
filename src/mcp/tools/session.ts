@@ -3,6 +3,8 @@
  *
  * grove_list_sessions   — List sessions with optional status filter
  * grove_create_session  — Create a new session
+ * grove_delete_session  — Delete a session
+ * grove_session_delete_blockers — List blockers preventing session deletion
  *
  * Accesses the GoalSessionStore directly via McpDeps.
  */
@@ -38,6 +40,16 @@ const createSessionInputSchema = z.object({
     .string()
     .optional()
     .describe("Optional goal description to associate with the new session"),
+});
+
+const deleteSessionInputSchema = z.object({
+  sessionId: z.string().min(1).describe("Session ID to delete"),
+  force: z.boolean().optional().default(false).describe("Force deletion past pending finalizers"),
+  actor: z.string().optional().default("mcp").describe("Actor recorded in deletion audit events"),
+});
+
+const sessionDeleteBlockersInputSchema = z.object({
+  sessionId: z.string().min(1).describe("Session ID to inspect for delete blockers"),
 });
 
 // ---------------------------------------------------------------------------
@@ -105,6 +117,73 @@ export function registerSessionTools(server: McpServer, deps: McpDeps): void {
           {
             type: "text" as const,
             text: JSON.stringify(session),
+          },
+        ],
+      };
+    },
+  );
+
+  // --- grove_delete_session -----------------------------------------------
+  server.registerTool(
+    "grove_delete_session",
+    {
+      description:
+        "Delete a session. Normal deletion runs session finalizers and returns blockers " +
+        "when deletion cannot complete. Set force=true to remove sessions with pending finalizers.",
+      inputSchema: deleteSessionInputSchema,
+    },
+    async (args) => {
+      const store = deps.goalSessionStore;
+      if (!store) {
+        return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
+      }
+
+      const session = await store.getSession(args.sessionId);
+      if (!session) {
+        return toolError("NOT_FOUND", `Session not found: ${args.sessionId}`);
+      }
+
+      const result = await store.deleteSession(args.sessionId, {
+        force: args.force ?? false,
+        actor: args.actor ?? "mcp",
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  // --- grove_session_delete_blockers --------------------------------------
+  server.registerTool(
+    "grove_session_delete_blockers",
+    {
+      description: "List blockers that currently prevent a session from being deleted.",
+      inputSchema: sessionDeleteBlockersInputSchema,
+    },
+    async (args) => {
+      const store = deps.goalSessionStore;
+      if (!store) {
+        return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
+      }
+
+      const session = await store.getSession(args.sessionId);
+      if (!session) {
+        return toolError("NOT_FOUND", `Session not found: ${args.sessionId}`);
+      }
+
+      const blockers = await store.listSessionDeleteBlockers(args.sessionId);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ sessionId: args.sessionId, blockers }),
           },
         ],
       };

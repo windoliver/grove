@@ -8,7 +8,9 @@
 import type { BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
 import type { GroveContract } from "../core/contract.js";
+import type { CreditsService } from "../core/credits.js";
 import type { FrontierCalculator } from "../core/frontier.js";
+import type { FrontierRewardService } from "../core/frontier-reward-service.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { IdempotencyStore } from "../core/operations/deps.js";
@@ -45,12 +47,18 @@ export interface ServerDeps {
   readonly frontierForSession?: ((sessionId: string) => FrontierCalculator) | undefined;
   /** Optional gossip service. Routes return 501 when not configured. */
   readonly gossip?: GossipService | undefined;
+  /** Optional token required for controller-owned status writes. */
+  readonly controllerToken?: string | undefined;
   /** HMAC secret for gossip route verification (required when gossip is configured). */
   readonly gossipHmacSecret?: string | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */
   readonly outcomeStore?: OutcomeStore | undefined;
   /** Optional bounty store. Routes return 501 when not configured. */
   readonly bountyStore?: BountyStore | undefined;
+  /** Optional credits service for bounty escrow and reward transfers. */
+  readonly creditsService?: CreditsService | undefined;
+  /** Optional reward evaluator for frontier-advance credits. */
+  readonly frontierRewardService?: FrontierRewardService | undefined;
   /** Optional agent topology. Routes return 404 when not configured. */
   readonly topology?: AgentTopology | undefined;
   /** Optional goal/session store. Routes return 501 when not configured. */

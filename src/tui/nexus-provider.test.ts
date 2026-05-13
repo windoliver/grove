@@ -82,7 +82,7 @@ describe("NexusDataProvider lifecycle", () => {
   test("NexusDataProvider reads recipient inbox from Nexus IPC source", async () => {
     const client = new MockNexusClient();
     await client.write(
-      "/sessions/sess-1/ipc/bob/inbox/msg-1.json",
+      "/zones/zone-1/sessions/sess-1/ipc/bob/inbox/msg-1.json",
       new TextEncoder().encode(
         JSON.stringify({
           message_id: "msg-1",

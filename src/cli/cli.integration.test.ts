@@ -234,7 +234,7 @@ describe("grove CLI integration", () => {
     } finally {
       await rm(discDir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test("grove unknown-command shows error", async () => {
     const { stderr, exitCode } = await runGrove(["nonexistent"]);

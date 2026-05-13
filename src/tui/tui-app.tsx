@@ -402,10 +402,15 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           // every store-touching path short-circuits).
           const maybeProvider = appProps.provider as {
             getHandoffStore?: () => import("../core/handoff.js").HandoffStore | undefined;
+            getNexusZoneId?: () => string;
           };
           const handoffStore =
             typeof maybeProvider.getHandoffStore === "function"
               ? maybeProvider.getHandoffStore()
+              : undefined;
+          const zoneId =
+            typeof maybeProvider.getNexusZoneId === "function"
+              ? maybeProvider.getNexusZoneId()
               : undefined;
           const bridge = new NexusWsBridge({
             topology: topo,
@@ -413,6 +418,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             nexusUrl,
             apiKey,
             getSessionId: () => manager.getSessionId(),
+            zoneId,
             eventBus: appProps.eventBus,
             handoffStore,
             onAcpEvent: (ev) => acpSink.handleGroveEvent(ev),

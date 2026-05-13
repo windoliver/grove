@@ -10,8 +10,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { LocalEventBus } from "../../core/local-event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import { ContributionKind, ContributionMode } from "../../core/models.js";
+import { lookupPresetTopology } from "../../core/presets.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import type {
@@ -43,6 +45,10 @@ type KeyboardKey = {
   readonly meta?: boolean | undefined;
 };
 type KeyboardHandler = (key: KeyboardKey) => void;
+
+interface KeyboardHandlerGlobal {
+  __groveTestKeyboardHandler?: KeyboardHandler | undefined;
+}
 
 interface CapturedScreens {
   screen?: "preset-select" | "launch-preview" | "spawning" | "running" | "complete";
@@ -85,11 +91,14 @@ interface TestSpawnManager {
   readonly reconcileCalls: string[];
   readonly saveTraceCalls: string[];
   readonly stopLogPollingCalls: string[];
+  readonly stopActiveSessionCalls: string[];
+  readonly lifecycleCalls: string[];
   reconcile(): Promise<void>;
   ensureLogBuffer(roleName: string): void;
   getLogBuffers(): Map<string, unknown>;
   startLogPolling(intervalMs?: number, seekToEnd?: boolean): void;
   stopLogPolling(): void;
+  stopActiveSession(): Promise<void>;
   setSessionId(sessionId: string): void;
   loadTraces(sessionId: string): Promise<void>;
   saveTraces(): Promise<void>;
@@ -113,6 +122,7 @@ let rendererDestroy = mock(() => undefined);
 mock.module("@opentui/react", () => ({
   useKeyboard: (handler: KeyboardHandler): void => {
     keyboardHandler = handler;
+    (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
   },
   useRenderer: (): { destroy: () => void } => ({
     destroy: rendererDestroy,
@@ -125,6 +135,15 @@ mock.module("@opentui/react", () => ({
     add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
     play: () => undefined,
   }),
+}));
+
+mock.module("../app.js", () => ({
+  App: (): null => null,
+  ADVANCED_HINTS: Object.freeze([
+    { key: "Ctrl+B", label: "Back" },
+    { key: "?", label: "Help" },
+    { key: "q", label: "Quit" },
+  ]),
 }));
 
 mock.module("../hooks/use-permission-detection.js", () => ({
@@ -207,10 +226,12 @@ const PRESETS: readonly TuiPresetEntry[] = [{ name: "review-loop", description: 
 
 const ACTIVE_SESSION: SessionRecord = {
   id: "session-active",
+  uid: "session-active",
   goal: "Resume existing work",
   presetName: "review-loop",
   status: "active",
   createdAt: "2026-03-29T00:00:00.000Z",
+  finalizers: [],
   contributionCount: 0,
   topology: TEST_TOPOLOGY,
 };
@@ -247,6 +268,22 @@ function makeContribution(cid: string): Contribution {
   };
 }
 
+function makeDoneContribution(role: string, cid: string): Contribution {
+  return {
+    cid,
+    manifestVersion: 1,
+    kind: ContributionKind.Discussion,
+    mode: ContributionMode.Exploration,
+    summary: "[DONE] Approved",
+    artifacts: {},
+    relations: [],
+    tags: [],
+    context: { done: true },
+    agent: { agentId: `${role}-agent`, role },
+    createdAt: "2026-03-29T00:00:00.000Z",
+  };
+}
+
 function makeDashboard(): DashboardData {
   return {
     metadata: {
@@ -265,10 +302,12 @@ function makeDashboard(): DashboardData {
 function makeSession(input: SessionInput, id: string): SessionRecord {
   return {
     id,
+    uid: id,
     goal: input.goal,
     presetName: input.presetName,
     status: "active",
     createdAt: "2026-03-29T00:00:00.000Z",
+    finalizers: [],
     topology: input.topology,
     config: input.config,
     contributionCount: 0,
@@ -351,6 +390,8 @@ function makeSpawnManager(): TestSpawnManager {
     reconcileCalls: [],
     saveTraceCalls: [],
     stopLogPollingCalls: [],
+    stopActiveSessionCalls: [],
+    lifecycleCalls: [],
     reconcile: async () => {
       manager.reconcileCalls.push("reconcile");
     },
@@ -363,12 +404,18 @@ function makeSpawnManager(): TestSpawnManager {
     stopLogPolling: () => {
       manager.stopLogPollingCalls.push("stop");
     },
+    stopActiveSession: async () => {
+      manager.stopActiveSessionCalls.push("stop-active");
+      manager.lifecycleCalls.push("stop-active");
+      manager.stopLogPolling();
+    },
     setSessionId: (sessionId: string) => {
       manager.sessionIds.push(sessionId);
     },
     loadTraces: async () => undefined,
     saveTraces: async () => {
       manager.saveTraceCalls.push("save");
+      manager.lifecycleCalls.push("save");
     },
     setSessionGoal: (goal: string) => {
       manager.sessionGoals.push(goal);
@@ -582,6 +629,10 @@ describe("ScreenManager transition flow", () => {
           ["builder", "Build carefully"],
         ]),
         new Map([["planner:builder", 120]]),
+        new Map([
+          ["planner", []],
+          ["builder", []],
+        ]),
       );
       await flushAsync();
       await flushAsync();
@@ -595,6 +646,68 @@ describe("ScreenManager transition flow", () => {
     ]);
     expect(spawnManager.sessionGoals).toEqual(["Launch agents"]);
     expect(spawnManager.spawnCalls.map((call) => call.roleId)).toEqual(["planner", "builder"]);
+  });
+
+  test("launch-preview -> spawning stores edited role skills in the session topology snapshot", async () => {
+    const topologyWithSkills: AgentTopology = {
+      ...TEST_TOPOLOGY,
+      roles: [
+        {
+          name: "planner",
+          description: "Plans the work",
+          command: "codex",
+          platform: "codex",
+          edges: [{ target: "builder", edgeType: "delegates" }],
+          skills: ["grove"],
+        },
+        {
+          name: "builder",
+          description: "Builds the work",
+          command: "claude",
+          platform: "claude-code",
+          skills: ["review"],
+        },
+      ],
+    };
+    const providerBundle = makeProvider();
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: topologyWithSkills,
+    });
+    await submitGoal("Launch with skill overrides");
+
+    await act(async () => {
+      requireLaunchPreview().onContinue(
+        new Map([
+          ["codex", true],
+          ["claude", true],
+        ]),
+        new Map([
+          ["planner", "codex"],
+          ["builder", "claude"],
+        ]),
+        new Map(),
+        new Map(),
+        new Map<string, readonly string[]>([
+          ["planner", ["grove", "review"]],
+          ["builder", []],
+        ]),
+      );
+      await flushAsync();
+      await flushAsync();
+    });
+
+    const createdSession = providerBundle.calls.createSession[0];
+    if (!createdSession?.topology) {
+      throw new Error("Expected createSession to receive a topology");
+    }
+
+    expect(createdSession.topology.roles).toEqual([
+      expect.objectContaining({ name: "planner", skills: ["grove", "review"] }),
+      expect.objectContaining({ name: "builder", skills: [] }),
+    ]);
+    expect(spawnManager.spawnCalls[0]?.context?.skills).toEqual(["grove", "review"]);
+    expect(spawnManager.spawnCalls[1]?.context?.skills).toBeUndefined();
   });
 
   test("spawning -> running when spawn progress resolves", async () => {
@@ -624,7 +737,7 @@ describe("ScreenManager transition flow", () => {
     const providerBundle = makeProvider({
       contributions: [makeContribution("c1"), makeContribution("c2")],
     });
-    renderScreenManager({
+    const { spawnManager } = renderScreenManager({
       provider: providerBundle.provider,
       topology: TEST_TOPOLOGY,
       initialState: {
@@ -644,7 +757,254 @@ describe("ScreenManager transition flow", () => {
     expect(captured.screen).toBe("complete");
     expect(requireCompleteView().reason).toBe("All roles signaled done");
     expect(requireCompleteView().contributionCount).toBe(2);
+    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+    expect(spawnManager.lifecycleCalls).toEqual(["stop-active", "save"]);
     expect(providerBundle.calls.archiveSession).toEqual(["session-done"]);
+  });
+
+  test("running -> complete does not wait for agent teardown to settle", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeContribution("c1")],
+    });
+    const spawnManager = makeSpawnManager();
+    let releaseStop: (() => void) | undefined;
+    spawnManager.stopActiveSession = async () => {
+      spawnManager.stopActiveSessionCalls.push("stop-active");
+      spawnManager.lifecycleCalls.push("stop-active");
+      await new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+    };
+
+    renderScreenManager({
+      provider: providerBundle.provider,
+      spawnManager,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Complete without waiting",
+        sessionId: "session-teardown-hangs",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    try {
+      await act(async () => {
+        requireRunningView().onComplete("All roles signaled done");
+        await flushAsync();
+        await flushAsync();
+      });
+
+      expect(captured.screen).toBe("complete");
+      expect(requireCompleteView().contributionCount).toBe(1);
+      expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-teardown-hangs"]);
+    } finally {
+      releaseStop?.();
+      await act(async () => {
+        await flushAsync();
+      });
+    }
+  });
+
+  test("running -> complete when reviewer signals grove_done", async () => {
+    const eventBus = new LocalEventBus();
+    const doneContribution: Contribution = {
+      ...makeContribution("done-reviewer"),
+      kind: ContributionKind.Discussion,
+      summary: "[DONE] Approved",
+      context: { done: true, reason: "Approved", ephemeral: true },
+      agent: { agentId: "reviewer-1", role: "reviewer" },
+    };
+    const providerBundle = makeProvider({
+      contributions: [doneContribution],
+    });
+    const reviewTopology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          description: "Writes code",
+          command: "codex",
+          edges: [{ target: "reviewer", edgeType: "delegates" }],
+        },
+        { name: "reviewer", description: "Reviews code", command: "claude" },
+      ],
+      spawning: { dynamic: false },
+    };
+
+    renderScreenManager({
+      appProps: { ...makeAppProps(providerBundle.provider, reviewTopology), eventBus },
+      provider: providerBundle.provider,
+      initialState: {
+        screen: "running",
+        goal: "Complete the review loop",
+        sessionId: "session-review-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      await eventBus.publishLocal({
+        type: "contribution",
+        sourceRole: "reviewer",
+        targetRole: "reviewer",
+        payload: {
+          summary: doneContribution.summary,
+          context: doneContribution.context,
+        },
+        timestamp: "2026-03-29T00:00:01.000Z",
+      });
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Session signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-review-done"]);
+    eventBus.close();
+  });
+
+  test("running -> complete when contribution feed observes reviewer grove_done", async () => {
+    const doneContribution: Contribution = {
+      ...makeContribution("done-reviewer-feed"),
+      kind: ContributionKind.Discussion,
+      summary: "[DONE] Approved",
+      context: { done: true, reason: "Approved", ephemeral: true },
+      agent: { agentId: "reviewer-1", role: "reviewer" },
+    };
+    const providerBundle = makeProvider({
+      contributions: [doneContribution],
+    });
+    const reviewTopology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          description: "Writes code",
+          command: "codex",
+          edges: [{ target: "reviewer", edgeType: "delegates" }],
+        },
+        { name: "reviewer", description: "Reviews code", command: "claude" },
+      ],
+      spawning: { dynamic: false },
+    };
+
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: reviewTopology,
+      initialState: {
+        screen: "running",
+        goal: "Complete from feed",
+        sessionId: "session-feed-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      const onNewContribution = requireRunningView().onNewContribution;
+      if (!onNewContribution) throw new Error("RunningView did not receive onNewContribution");
+      onNewContribution(doneContribution);
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Session signaled done");
+    expect(requireCompleteView().contributionCount).toBe(1);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-feed-done"]);
+    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+  });
+
+  test("running completes when a terminal role done contribution reaches the feed", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeDoneContribution("builder", "done-builder")],
+    });
+    const { spawnManager } = renderScreenManager({
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Complete from feed",
+        sessionId: "session-feed-done",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      requireRunningView().onNewContribution?.(makeDoneContribution("builder", "done-builder"));
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("complete");
+    expect(requireCompleteView().reason).toBe("Session signaled done");
+    expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+    expect(providerBundle.calls.archiveSession).toEqual(["session-feed-done"]);
+  });
+
+  test("running ignores non-terminal role done until a terminal role is done", async () => {
+    const providerBundle = makeProvider({
+      contributions: [makeDoneContribution("planner", "done-planner")],
+    });
+    renderScreenManager({
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Wait for terminal done",
+        sessionId: "session-wait-terminal",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      requireRunningView().onNewContribution?.(makeDoneContribution("planner", "done-planner"));
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(captured.screen).toBe("running");
+    expect(providerBundle.calls.archiveSession).toEqual([]);
+  });
+
+  test("event-driven done detection uses the source role, not the subscribed channel", async () => {
+    const eventBus = new LocalEventBus();
+    const providerBundle = makeProvider({
+      contributions: [makeDoneContribution("builder", "done-builder-event")],
+    });
+    try {
+      const { spawnManager } = renderScreenManager({
+        provider: providerBundle.provider,
+        topology: TEST_TOPOLOGY,
+        appProps: { ...makeAppProps(providerBundle.provider, TEST_TOPOLOGY), eventBus },
+        initialState: {
+          screen: "running",
+          goal: "Complete from event",
+          sessionId: "session-event-done",
+          sessionStartedAt: "2026-03-29T00:00:00.000Z",
+        },
+      });
+
+      await act(async () => {
+        await eventBus.publish({
+          type: "contribution",
+          sourceRole: "builder",
+          targetRole: "planner",
+          payload: { summary: "[DONE] Approved", context: { done: true } },
+          timestamp: "2026-03-29T00:00:00.000Z",
+        });
+        await flushAsync();
+        await flushAsync();
+      });
+
+      expect(captured.screen).toBe("complete");
+      expect(spawnManager.stopActiveSessionCalls).toEqual(["stop-active"]);
+      expect(providerBundle.calls.archiveSession).toEqual(["session-event-done"]);
+    } finally {
+      eventBus.close();
+    }
   });
 
   test("complete -> preset-select starts a fresh session when no preset state is reusable", () => {
@@ -661,6 +1021,70 @@ describe("ScreenManager transition flow", () => {
     });
 
     expect(captured.screen).toBe("preset-select");
+  });
+
+  test("complete -> new session restores preset topology after session skill edits", async () => {
+    const presetTopology = lookupPresetTopology("review-loop");
+    if (!presetTopology) {
+      throw new Error("Expected review-loop preset topology");
+    }
+
+    renderScreenManager({
+      presets: PRESETS,
+      initialState: {
+        screen: "goal-input",
+        selectedPreset: "review-loop",
+      },
+    });
+
+    await submitGoal("First run");
+
+    await act(async () => {
+      requireLaunchPreview().onContinue(
+        new Map([["claude", true]]),
+        new Map([
+          ["coder", "claude"],
+          ["reviewer", "claude"],
+        ]),
+        new Map(),
+        new Map(),
+        new Map<string, readonly string[]>([
+          ["coder", ["grove", "review"]],
+          ["reviewer", []],
+        ]),
+      );
+      await flushAsync();
+      await flushAsync();
+    });
+
+    await act(async () => {
+      requireSpawnProgress().onAllResolved();
+      await flushAsync();
+    });
+
+    await act(async () => {
+      requireRunningView().onComplete("First run complete");
+      await flushAsync();
+      await flushAsync();
+    });
+
+    act(() => {
+      requireCompleteView().onNewSession();
+    });
+
+    await submitGoal("Second run");
+
+    const nextLaunchPreview = requireLaunchPreview();
+    expect(nextLaunchPreview.topology?.roles).toEqual([
+      expect.objectContaining({
+        name: presetTopology.roles[0]?.name,
+        skills: presetTopology.roles[0]?.skills,
+      }),
+      expect.objectContaining({
+        name: presetTopology.roles[1]?.name,
+        skills: presetTopology.roles[1]?.skills,
+      }),
+    ]);
   });
 });
 
@@ -701,7 +1125,7 @@ describe("ScreenManager navigation and edge cases", () => {
     await submitGoal("Run without topology");
 
     await act(async () => {
-      requireLaunchPreview().onContinue(new Map(), new Map(), new Map(), new Map());
+      requireLaunchPreview().onContinue(new Map(), new Map(), new Map(), new Map(), new Map());
       await flushAsync();
       await flushAsync();
     });

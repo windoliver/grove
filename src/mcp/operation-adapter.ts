@@ -30,6 +30,10 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
     ...(deps.bountyStore !== undefined ? { bountyStore: deps.bountyStore } : {}),
     ...(deps.creditsService !== undefined ? { creditsService: deps.creditsService } : {}),
+    ...(deps.sessionOwnerRef !== undefined ? { sessionOwnerRef: deps.sessionOwnerRef } : {}),
+    ...(deps.frontierRewardService !== undefined
+      ? { frontierRewardService: deps.frontierRewardService }
+      : {}),
     ...(deps.onContributionWrite !== undefined
       ? { onContributionWrite: deps.onContributionWrite }
       : {}),

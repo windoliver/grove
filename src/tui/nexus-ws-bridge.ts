@@ -30,6 +30,7 @@ import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
 import { startInterval } from "../local/use-interval.js";
 import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
+import { encodeSegment } from "../nexus/vfs-paths.js";
 import { debugLog } from "./debug-log.js";
 
 export interface NexusWsBridgeOptions {
@@ -47,6 +48,8 @@ export interface NexusWsBridgeOptions {
   ipcClient?: NexusIpcClient | undefined;
   /** Returns the active Grove session ID for session-scoped IPC paths. */
   getSessionId?: (() => string | undefined) | undefined;
+  /** Encoded into IPC VFS paths so the bridge reads the same namespace agents write. */
+  zoneId?: string | undefined;
   /**
    * Forwards inner payloads whose `type` is "acp.message" or "acp.result"
    * to a typed consumer (AcpMessageSink). Called only when the event's
@@ -122,19 +125,37 @@ const INBOX_DRAIN_TIMEOUT_MS = 5000;
 const INBOX_DRAIN_LIMIT = 100;
 
 /** URL builder for the per-role inbox subscription on the new events SSE. */
-function inboxStreamUrl(nexusUrl: string, role: string, sessionId?: string | undefined): string {
+function inboxStreamUrl(
+  nexusUrl: string,
+  role: string,
+  sessionId?: string | undefined,
+  zoneId?: string | undefined,
+): string {
   // path_pattern is matched (SQL LIKE) against the stored zone-prefixed path.
   // `*/sessions/{sessionId}/ipc/{role}/inbox/*` scopes delivery to the
   // active Grove session. The legacy `/ipc/{role}/inbox/*` path remains as a
   // fallback for callers without a session.
-  const pattern = sessionId
-    ? `*/sessions/${sessionId}/ipc/${role}/inbox/*`
-    : `*/ipc/${role}/inbox/*`;
+  const encodedRole = encodeSegment(role);
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  const pattern = zoneId
+    ? `/zones/${encodeSegment(zoneId)}${sessionPrefix}/ipc/${encodedRole}/inbox/*`
+    : sessionId
+      ? `*/sessions/${encodeSegment(sessionId)}/ipc/${encodedRole}/inbox/*`
+      : `*/ipc/${encodedRole}/inbox/*`;
   const params = new URLSearchParams({
     path_pattern: pattern,
     event_types: "write",
   });
   return `${nexusUrl}/api/v2/events/stream?${params.toString()}`;
+}
+
+function pathMatchesZone(path: string, zoneId: string): boolean {
+  const encoded = encodeSegment(zoneId);
+  const plural = path.match(/^\/zones\/([^/]+)(?:\/|$)/);
+  if (plural) return plural[1] === encoded;
+  const singular = path.match(/^\/zone\/([^/]+)(?:\/|$)/);
+  if (singular) return singular[1] === encoded || singular[1] === zoneId;
+  return false;
 }
 
 /**
@@ -155,15 +176,22 @@ function inboxFilePath(
   recipient: string,
   messageId: string,
   sessionId?: string | undefined,
+  zoneId?: string | undefined,
 ): string {
-  return sessionId
-    ? `/sessions/${sessionId}/ipc/${recipient}/inbox/${messageId}.json`
-    : `/ipc/${recipient}/inbox/${messageId}.json`;
+  const zonePrefix = zoneId ? `/zones/${encodeSegment(zoneId)}` : "";
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(recipient)}/inbox/${encodeSegment(messageId)}.json`;
 }
 
 /** Build the inbox directory path for a recipient role. */
-function inboxDirPath(recipient: string, sessionId?: string | undefined): string {
-  return sessionId ? `/sessions/${sessionId}/ipc/${recipient}/inbox` : `/ipc/${recipient}/inbox`;
+function inboxDirPath(
+  recipient: string,
+  sessionId?: string | undefined,
+  zoneId?: string | undefined,
+): string {
+  const zonePrefix = zoneId ? `/zones/${encodeSegment(zoneId)}` : "";
+  const sessionPrefix = sessionId ? `/sessions/${encodeSegment(sessionId)}` : "";
+  return `${zonePrefix}${sessionPrefix}/ipc/${encodeSegment(recipient)}/inbox`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -202,16 +230,23 @@ function messageIdFromInboxPath(path: string): string | undefined {
   return file.endsWith(".json") ? file.slice(0, -".json".length) : file;
 }
 
+function sessionIdFromInboxPath(path: string): string | undefined {
+  const clean = stripZonePrefix(path);
+  const match = clean.match(/(?:^|\/)sessions\/([^/]+)\//);
+  return match?.[1];
+}
+
 function inboxPathFromListItem(
   role: string,
   item: Record<string, unknown>,
   sessionId?: string | undefined,
+  zoneId?: string | undefined,
 ): string | undefined {
   const path = stringField(item, "path");
   if (path) return stripZonePrefix(path);
   const name = stringField(item, "name");
   if (!name) return undefined;
-  return `${inboxDirPath(role, sessionId)}/${name}`;
+  return `${inboxDirPath(role, sessionId, zoneId)}/${name}`;
 }
 
 function modifiedMsFromListItem(item: Record<string, unknown>): number | undefined {
@@ -408,13 +443,16 @@ export class NexusWsBridge {
         const onAbort = () => ac.abort();
         deadline.addEventListener("abort", onAbort, { once: true });
         try {
-          const resp = await fetch(inboxStreamUrl(this.opts.nexusUrl, role.name), {
-            headers: {
-              Authorization: `Bearer ${this.opts.apiKey}`,
-              Accept: "text/event-stream",
+          const resp = await fetch(
+            inboxStreamUrl(this.opts.nexusUrl, role.name, undefined, this.opts.zoneId),
+            {
+              headers: {
+                Authorization: `Bearer ${this.opts.apiKey}`,
+                Accept: "text/event-stream",
+              },
+              signal: ac.signal,
             },
-            signal: ac.signal,
-          });
+          );
           if (!resp.ok) return { role: role.name, reason: `HTTP ${resp.status}` };
           // 2xx is necessary but not sufficient — a misconfigured proxy can
           // serve a success status without an actual event stream. Verify
@@ -529,7 +567,7 @@ export class NexusWsBridge {
           Authorization: `Bearer ${this.opts.apiKey}`,
         },
         body: JSON.stringify({
-          path: inboxFilePath(recipient, messageId, sessionId),
+          path: inboxFilePath(recipient, messageId, sessionId, this.opts.zoneId),
           content,
           encoding: "base64",
         }),
@@ -573,7 +611,7 @@ export class NexusWsBridge {
         for (const item of page.items) {
           const isDirectory = booleanField(item, "is_directory", "isDirectory");
           if (isDirectory === true) continue;
-          const path = inboxPathFromListItem(role, item, sessionId);
+          const path = inboxPathFromListItem(role, item, sessionId, this.opts.zoneId);
           if (!path || !path.endsWith(".json")) continue;
           const modifiedMs = modifiedMsFromListItem(item);
           if (modifiedMs !== undefined && modifiedMs < this.bridgeStartedAtMs) continue;
@@ -599,7 +637,7 @@ export class NexusWsBridge {
     cursor?: string,
   ): Promise<InboxListPage> {
     const params = new URLSearchParams({
-      path: inboxDirPath(role, sessionId),
+      path: inboxDirPath(role, sessionId, this.opts.zoneId),
       limit: String(INBOX_DRAIN_LIMIT),
     });
     if (cursor) params.set("cursor", cursor);
@@ -789,7 +827,12 @@ export class NexusWsBridge {
       // and prevent onRoleUnhealthy from ever firing.
       const openMs = 15000;
       const openTimer = setTimeout(() => ac.abort(), openMs);
-      const url = inboxStreamUrl(this.opts.nexusUrl, role, this.currentSessionId());
+      const url = inboxStreamUrl(
+        this.opts.nexusUrl,
+        role,
+        this.currentSessionId(),
+        this.opts.zoneId,
+      );
 
       let resp: Response;
       try {
@@ -934,6 +977,7 @@ export class NexusWsBridge {
       // an EventRecord describing a file write — translate it to the
       // SseEvent shape the rest of the pipeline already speaks.
       let event: SseEvent;
+      let checkedZonePath = false;
       if (eventType === "message_delivered") {
         event = JSON.parse(raw) as SseEvent;
       } else if (eventType === "event") {
@@ -943,6 +987,10 @@ export class NexusWsBridge {
         // role's inbox prefix; this is belt-and-suspenders against future
         // pattern drift or shared streams.
         if (rec.type !== "write") return;
+        if (this.opts.zoneId) {
+          if (!pathMatchesZone(rec.path, this.opts.zoneId)) return;
+          checkedZonePath = true;
+        }
         const relPath = stripZonePrefix(rec.path);
         const messageId = messageIdFromInboxPath(relPath) ?? rec.event_id;
         event = {
@@ -954,6 +1002,10 @@ export class NexusWsBridge {
           path: relPath,
         };
       } else {
+        return;
+      }
+
+      if (this.opts.zoneId && !checkedZonePath && !pathMatchesZone(event.path, this.opts.zoneId)) {
         return;
       }
 
@@ -1222,6 +1274,158 @@ export class NexusWsBridge {
    * `inbox_delivered` vs `agent_received`) is out of scope for the
    * turn-typing migration and tracked as a follow-up.
    */
+  /**
+   * Detect transient ACP errors that warrant a retry instead of an
+   * immediate dead-letter. Bootstrapping codex/claude can take several
+   * seconds; pushing during that window fails with "connection closed"
+   * even though the runtime will be ready momentarily. Retrying with
+   * backoff before dead-lettering gives the recipient time to come up.
+   */
+  private static isTransientAcpError(detail: string): boolean {
+    const d = detail.toLowerCase();
+    return (
+      d.includes("connection closed") ||
+      d.includes("stream closed") ||
+      d.includes("session not started") ||
+      d.includes("not ready") ||
+      d.includes("acp_not_initialized") ||
+      // AcpRuntime returns this when a queued send observes its session
+      // replaced before the prompt starts. Same restart race as the others.
+      d.includes("session_closed") ||
+      d.includes("session closed before turn started")
+    );
+  }
+
+  /**
+   * Send a notification with bounded transient-retry. Retries on ACP
+   * connection-closed-style errors (recipient bootstrap race) with
+   * exponential backoff. Permanent errors fall through to dead-letter.
+   */
+  private async sendWithTransientRetry(
+    session: AgentSession,
+    notification: string,
+    targetRole: string,
+    resolvedHandoffId: string | undefined,
+    retryContext:
+      | { ipcMessageId: string; sender: string | undefined; sourceCid: string | undefined }
+      | undefined,
+  ): Promise<void> {
+    const backoffsMs = [500, 1500, 3000, 5000];
+    let lastDetail = "";
+    let activeSession = session;
+    for (let attempt = 0; attempt <= backoffsMs.length; attempt += 1) {
+      if (this.draining || this.closed) return;
+      // Re-check the current session for this role before each attempt.
+      // If the role was re-registered during a backoff window — the exact
+      // crash/bootstrap race this retry is recovering from — pushing to the
+      // captured (now torn-down) session would dead-letter a handoff that
+      // the replacement should still receive. We can't trust the
+      // replacement's SSE loop to redeliver because dispatchInboxDelivery's
+      // dedupe cache (role/message_id/path) is shared across sessions and
+      // the prior attempt may have marked this entry as seen. So when the
+      // session flips, retarget the live send to the replacement session.
+      //
+      // Treat a momentarily missing role binding as ANOTHER transient state
+      // within the existing backoff budget — the unregister→reregister gap
+      // for codex/claude restarts is exactly the case this retry is trying
+      // to recover from. Only dead-letter once retries are exhausted.
+      const currentSession = this.sessions.get(targetRole);
+      if (!currentSession) {
+        if (attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] role=${targetRole} unregistered during retry attempt=${attempt + 1} — waiting for re-register\n`,
+          );
+          lastDetail = "role temporarily unregistered (waiting for re-register)";
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} unregistered through retry budget — dead-lettering\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `role unregistered through retry budget: ${lastDetail || "no prior attempt"}`,
+          retryContext,
+        );
+        return;
+      }
+      if (currentSession.id !== activeSession.id) {
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} session replaced during retry (was=${activeSession.id} now=${currentSession.id}) — retargeting send to replacement\n`,
+        );
+        activeSession = currentSession;
+      }
+      try {
+        const turn = await this.opts.runtime.send(activeSession, notification);
+        const result = await turn.result.catch((err) => ({
+          turnId: turn.turnId,
+          stopReason: "error" as const,
+          error: {
+            code: "turn_rejected",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }));
+        if (result.stopReason === "end_turn") {
+          if (resolvedHandoffId) {
+            await this.markHandoffDeliveredById(resolvedHandoffId, targetRole);
+          }
+          return;
+        }
+        const detail = result.error
+          ? `${result.error.code}: ${result.error.message}`
+          : `stopReason=${result.stopReason}`;
+        lastDetail = detail;
+        if (NexusWsBridge.isTransientAcpError(detail) && attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] transient push failure role=${targetRole} attempt=${attempt + 1}: ${detail} (will retry)\n`,
+          );
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] local push failed for role=${targetRole} turn=${turn.turnId}: ${detail}\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `local push abnormal: ${detail}`,
+          retryContext,
+        );
+        return;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        lastDetail = detail;
+        if (NexusWsBridge.isTransientAcpError(detail) && attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] transient runtime.send error role=${targetRole} attempt=${attempt + 1}: ${detail} (will retry)\n`,
+          );
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] runtime.send rejected for role=${targetRole}: ${detail}\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `runtime.send rejected: ${detail}`,
+          retryContext,
+        );
+        return;
+      }
+    }
+    process.stderr.write(
+      `[NexusWsBridge] exhausted transient retries for role=${targetRole}: ${lastDetail}\n`,
+    );
+    await this.markHandoffDeadLettered(
+      resolvedHandoffId,
+      targetRole,
+      `transient retries exhausted: ${lastDetail}`,
+      retryContext,
+    );
+  }
+
   private async markHandoffDeadLettered(
     handoffId: string | undefined,
     targetRole: string,
@@ -1661,7 +1865,7 @@ export class NexusWsBridge {
 
       const activeSessionId = this.currentSessionId();
       if (activeSessionId) {
-        const pathSessionId = path.match(/^\/sessions\/([^/]+)\//)?.[1];
+        const pathSessionId = sessionIdFromInboxPath(path);
         const msgSessionId = msg.session_id ?? pathSessionId;
         if (msgSessionId !== activeSessionId) {
           debugLog(
@@ -1703,7 +1907,13 @@ export class NexusWsBridge {
           type: "contribution",
           sourceRole: msgSender,
           targetRole: _targetRole,
-          payload: { message_id: effectiveIpcMessageId, cid, kind },
+          payload: {
+            message_id: effectiveIpcMessageId,
+            cid,
+            kind,
+            ...(typeof payload.summary === "string" ? { summary: payload.summary } : {}),
+            ...(payload.context !== undefined ? { context: payload.context } : {}),
+          },
           timestamp: new Date().toISOString(),
         };
         void this.opts.eventBus.publish(groveEvent);
@@ -1744,18 +1954,24 @@ export class NexusWsBridge {
       // Session-identity re-check: handleEvent captured `session` at SSE
       // dispatch time, but the sys_read fetch + decode above are async.
       // If the role was unregistered or replaced during that window, the
-      // captured session may now be closed. Push to a dead session would
-      // fail and — worse — trigger dead-lettering for a handoff that a
-      // replacement session should still receive. Skip delivery and skip
-      // dead-lettering in that case; the replacement's own SSE loop will
-      // pick up the redelivery from Nexus.
+      // captured session may now be closed.
+      //
+      // Skipping here is unsafe: dispatchInboxDelivery's role-level
+      // message_id dedupe is shared across sessions, so the replacement's
+      // SSE loop won't re-pull the same entry. Falling through to
+      // sendWithTransientRetry retargets delivery to the current session
+      // (or treats a missing role as transient inside the retry budget).
       const current = this.sessions.get(_targetRole);
-      if (!current || current.id !== session.id) {
+      if (!current) {
         debugLog(
           "wsBridge.readAndPush",
-          `SKIP stale session for role=${_targetRole} captured=${session.id} current=${current?.id ?? "none"}`,
+          `role=${_targetRole} unregistered before push — handing off to retry helper for transient handling`,
         );
-        return;
+      } else if (current.id !== session.id) {
+        debugLog(
+          "wsBridge.readAndPush",
+          `session changed for role=${_targetRole} captured=${session.id} current=${current.id} — retry helper will retarget`,
+        );
       }
 
       // Capture the correlated handoffId NOW using DETERMINISTIC keys
@@ -1789,52 +2005,13 @@ export class NexusWsBridge {
       // to a torn-down runtime.
       if (this.draining || this.closed) return;
 
-      const sendPromise = this.opts.runtime
-        .send(session, notification)
-        .then(async (turn) => {
-          const result = await turn.result.catch((err) => ({
-            turnId: turn.turnId,
-            stopReason: "error" as const,
-            error: {
-              code: "turn_rejected",
-              message: err instanceof Error ? err.message : String(err),
-            },
-          }));
-          // For control-plane delivery, `end_turn` is the only success
-          // signal. Treat cancelled / max_tokens / error / unknown stop
-          // reasons all as delivery failures so the handoff is dead-
-          // lettered — matches watchTurnError's abnormal-terminal policy.
-          if (result.stopReason === "end_turn") {
-            if (resolvedHandoffId) {
-              await this.markHandoffDeliveredById(resolvedHandoffId, _targetRole);
-            }
-          } else {
-            const detail = result.error
-              ? `${result.error.code}: ${result.error.message}`
-              : `stopReason=${result.stopReason}`;
-            process.stderr.write(
-              `[NexusWsBridge] local push failed for role=${_targetRole} turn=${turn.turnId}: ${detail}\n`,
-            );
-            await this.markHandoffDeadLettered(
-              resolvedHandoffId,
-              _targetRole,
-              `local push abnormal: ${detail}`,
-              retryContext,
-            );
-          }
-        })
-        .catch(async (err) => {
-          const detail = err instanceof Error ? err.message : String(err);
-          process.stderr.write(
-            `[NexusWsBridge] runtime.send rejected for role=${_targetRole}: ${detail}\n`,
-          );
-          await this.markHandoffDeadLettered(
-            resolvedHandoffId,
-            _targetRole,
-            `runtime.send rejected: ${detail}`,
-            retryContext,
-          );
-        });
+      const sendPromise = this.sendWithTransientRetry(
+        session,
+        notification,
+        _targetRole,
+        resolvedHandoffId,
+        retryContext,
+      );
 
       // Track the send-and-status-update promise so shutdown() can
       // await it (bounded) before the final drain. Without this, a

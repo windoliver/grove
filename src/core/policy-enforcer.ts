@@ -10,16 +10,14 @@
  * 4. Relation requirements — enforce required relations per kind
  * 5. Artifact requirements — enforce required artifacts per kind
  * 6. Outcome derivation — auto-derive improved/regressed/accepted
- * 7. Stop condition evaluation — check and propagate stop conditions
  *
  * Design decisions:
  * - Accept-then-flag: contributions are always written to the DAG.
  *   Gate failures are returned as flags, not rejections, unless the
  *   contract is in strict evaluation mode.
- * - The enforcer runs inside the write mutex (fast path: validate + write
- *   + derive outcome + check stop). Hooks and events run outside.
- * - No re-entrant evaluation: outcome derivation and stop checks are
- *   linear, never recursive.
+ * - The enforcer runs inside the write mutex for validation and derived
+ *   outcome work. Hooks, events, and stop-condition evaluation run outside.
+ * - No re-entrant evaluation: outcome derivation is linear, never recursive.
  */
 
 import type { Gate, MetricDefinition } from "./contract.js";
@@ -29,7 +27,6 @@ import { ContributionMode } from "./models.js";
 import type { OutcomeRecord, OutcomeStore } from "./outcome.js";
 import { OutcomeStatus } from "./outcome.js";
 import type { SessionRuntimeConfig } from "./session-config.js";
-import { evaluateStopConditions } from "./stop-conditions.js";
 import type { ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -136,9 +133,9 @@ export class PolicyEnforcer {
    *
    * - **Linear pipeline**: The enforcement sequence is: role-kind check →
    *   score requirements → relation requirements → artifact requirements →
-   *   gate checks → outcome derivation → stop condition check. There is
-   *   no re-entrant evaluation — outcome derivation and stop checks run
-   *   exactly once per enforce() call, never recursively.
+   *   gate checks → outcome derivation. There is no re-entrant evaluation —
+   *   outcome derivation runs exactly once per enforce() call, never
+   *   recursively.
    *
    * - **Config hot-reload**: Deferred. The config is resolved once at
    *   startup (or session init) and passed to the PolicyEnforcer
@@ -148,27 +145,11 @@ export class PolicyEnforcer {
    *
    * @param contribution - The contribution to enforce (already created but not yet stored).
    * @param strict - If true, violations throw instead of being returned as flags.
-   * @param options.skipStopConditions - When true, skip the stop-condition
-   *   evaluation step entirely. Used by callers that route coordination kinds
-   *   (plans, ephemeral messages) through the enforcement pipeline for the
-   *   role-kind check but don't want their coordination traffic to count
-   *   toward progress-driven stop conditions or pay the O(n) scan cost.
-   * @param options.skipExpensiveStopChecks - When true, omit the scanning
-   *   stop evaluators (`quorumReviewScore`, `deliberationLimit`) that require
-   *   a full `store.list()` scan. Intended for the write-mutex hot path in
-   *   `contributeOperation`, where the post-write recheck (outside the mutex)
-   *   evaluates these conditions without blocking concurrent writers (#232).
-   *   Default is `false` so direct `enforce()` callers keep full parity with
-   *   `evaluateStopConditions` on quorum/deliberation.
+   * Stop-condition evaluation is deliberately outside this method. Contribution
+   * writes evaluate stops after persistence in `contributeOperation`, and
+   * lifecycle/MCP callers use `evaluateStopConditions()` directly.
    */
-  async enforce(
-    contribution: Contribution,
-    strict = false,
-    options?: {
-      readonly skipStopConditions?: boolean;
-      readonly skipExpensiveStopChecks?: boolean;
-    },
-  ): Promise<PolicyEnforcementResult> {
+  async enforce(contribution: Contribution, strict = false): Promise<PolicyEnforcementResult> {
     // Reset best-score cache so each enforce() call gets a fresh view of the store.
     // The cache is repopulated lazily on the first findBestScore() call within
     // this invocation, keeping per-call O(n) scan cost to at most once.
@@ -269,50 +250,10 @@ export class PolicyEnforcer {
       derivedOutcome = await this.deriveOutcome(contribution);
     }
 
-    // 8. Stop condition check — delegates to the canonical evaluator in
-    //    stop-conditions.ts so the cheap conditions use the same algorithm as
-    //    grove_check_stop (lifecycle path).
-    //
-    //    Timing note: this runs pre-write, so the contribution being enforced
-    //    is NOT yet in the store. A contribution that crosses a threshold
-    //    (e.g., the Nth review satisfying quorum) reports stopped=false here;
-    //    the post-write recheck in contributeOperation will detect it. This is
-    //    the existing accept-then-flag design.
-    //
-    //    Cost note (#232): callers on the write-mutex hot path can pass
-    //    `skipExpensiveStopChecks: true` to omit the scanning evaluators
-    //    (quorum_review_score via full store.list(), deliberation_limit via
-    //    per-root store.thread()) and avoid blocking concurrent writers. The
-    //    default is `false` so direct callers keep full parity with
-    //    `evaluateStopConditions` — only contributeOperation opts in, and its
-    //    post-write recheck runs the full evaluator outside the mutex.
-    let stopResult: StopCheckResult | undefined;
-    if (this.config.stopConditions !== undefined && options?.skipStopConditions !== true) {
-      try {
-        const evalResult = await evaluateStopConditions(this.config, this.contributionStore, {
-          skipExpensive: options?.skipExpensiveStopChecks === true,
-        });
-        stopResult = {
-          stopped: evalResult.stopped,
-          reason: evalResult.stopped
-            ? Object.entries(evalResult.conditions)
-                .filter(([, c]) => c.met)
-                .map(([name, c]) => `${name}: ${c.reason}`)
-                .join("; ")
-            : undefined,
-        };
-      } catch {
-        // Best-effort: stop evaluation failures (e.g., store read errors) must not
-        // reject contributions. The post-write recheck in contributeOperation
-        // provides a second chance to detect stop conditions.
-      }
-    }
-
     return {
       passed: violations.length === 0,
       violations,
       derivedOutcome,
-      stopResult,
     };
   }
 

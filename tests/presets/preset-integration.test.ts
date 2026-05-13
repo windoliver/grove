@@ -1089,6 +1089,7 @@ function topologyToWire(t: AgentTopology): Record<string, unknown> {
         })),
       }),
       ...(role.command !== undefined && { command: role.command }),
+      ...(role.endsSession !== undefined && { ends_session: role.endsSession }),
       ...(role.platform !== undefined && { platform: role.platform }),
       ...(role.model !== undefined && { model: role.model }),
       ...(role.color !== undefined && { color: role.color }),

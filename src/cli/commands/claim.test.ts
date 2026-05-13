@@ -143,4 +143,16 @@ describe("grove claim", () => {
     const claims = await claimStore.activeClaims("target-x");
     expect(claims[0]?.agent.agentId).toBe("custom-agent");
   });
+
+  test("stamps session ownerRef when deps provide one", async () => {
+    const ownerRef = { kind: "session" as const, id: "session-1", uid: "uid-1" };
+
+    await runClaim(["target-owned", "--agent-id", "session-agent"], {
+      ...deps,
+      sessionOwnerRef: ownerRef,
+    });
+
+    const claims = await claimStore.activeClaims("target-owned");
+    expect(claims[0]?.ownerRef).toEqual(ownerRef);
+  });
 });

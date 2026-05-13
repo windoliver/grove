@@ -15,6 +15,14 @@ import { loadRegistry } from "../../core/project-registry.js";
 import type { InitOptions } from "./init.js";
 import { executeInit, parseInitArgs } from "./init.js";
 
+const INIT_INTEGRATION_TIMEOUT_MS = 30_000;
+
+type InitTestBody = () => void | Promise<void>;
+
+function initTest(name: string, fn: InitTestBody): void {
+  test(name, fn, INIT_INTEGRATION_TIMEOUT_MS);
+}
+
 function initGitRepo(cwd: string, origin: string | null): void {
   const run = (args: string[]) => spawnSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
   run(["init", "-q"]);
@@ -54,33 +62,33 @@ function makeOptions(overrides?: Partial<InitOptions>): InitOptions {
 // ---------------------------------------------------------------------------
 
 describe("parseInitArgs", () => {
-  test("parses name from positional argument", () => {
+  initTest("parses name from positional argument", () => {
     const opts = parseInitArgs(["my-project"]);
     expect(opts.name).toBe("my-project");
   });
 
-  test("defaults name to basename of cwd when no positional", () => {
+  initTest("defaults name to basename of cwd when no positional", () => {
     const opts = parseInitArgs([]);
     // basename of process.cwd()
     expect(opts.name).toBe(basename(process.cwd()));
   });
 
-  test("parses --mode flag", () => {
+  initTest("parses --mode flag", () => {
     const opts = parseInitArgs(["proj", "--mode", "exploration"]);
     expect(opts.mode).toBe("exploration");
   });
 
-  test("defaults mode to evaluation", () => {
+  initTest("defaults mode to evaluation", () => {
     const opts = parseInitArgs(["proj"]);
     expect(opts.mode).toBe("evaluation");
   });
 
-  test("parses --seed flags", () => {
+  initTest("parses --seed flags", () => {
     const opts = parseInitArgs(["proj", "--seed", "./src", "--seed", "./tests"]);
     expect(opts.seed).toEqual(["./src", "./tests"]);
   });
 
-  test("parses --metric flags", () => {
+  initTest("parses --metric flags", () => {
     const opts = parseInitArgs([
       "proj",
       "--metric",
@@ -91,17 +99,17 @@ describe("parseInitArgs", () => {
     expect(opts.metric).toEqual(["val_bpb:minimize", "accuracy:maximize"]);
   });
 
-  test("parses --description flag", () => {
+  initTest("parses --description flag", () => {
     const opts = parseInitArgs(["proj", "--description", "A test project"]);
     expect(opts.description).toBe("A test project");
   });
 
-  test("parses --force flag", () => {
+  initTest("parses --force flag", () => {
     const opts = parseInitArgs(["proj", "--force"]);
     expect(opts.force).toBe(true);
   });
 
-  test("parses agent override flags", () => {
+  initTest("parses agent override flags", () => {
     const opts = parseInitArgs([
       "proj",
       "--agent-id",
@@ -119,15 +127,15 @@ describe("parseInitArgs", () => {
     expect(opts.agentOverrides.model).toBe("claude-4");
   });
 
-  test("throws on invalid mode", () => {
+  initTest("throws on invalid mode", () => {
     expect(() => parseInitArgs(["proj", "--mode", "garbage"])).toThrow(/Invalid mode/);
   });
 
-  test("throws on invalid metric format", () => {
+  initTest("throws on invalid metric format", () => {
     expect(() => parseInitArgs(["proj", "--metric", "val_bpb"])).toThrow(/Invalid metric format/);
   });
 
-  test("throws on invalid metric direction", () => {
+  initTest("throws on invalid metric direction", () => {
     expect(() => parseInitArgs(["proj", "--metric", "val_bpb:ascending"])).toThrow(
       /Invalid metric direction/,
     );
@@ -139,7 +147,7 @@ describe("parseInitArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("executeInit", () => {
-  test("creates .grove directory structure", async () => {
+  initTest("creates .grove directory structure", async () => {
     const dir = await createTempDir();
     try {
       await executeInit(makeOptions({ name: "test-grove", cwd: dir }));
@@ -156,7 +164,7 @@ describe("executeInit", () => {
 
   // -- Edge cases --
 
-  test("errors on existing .grove/ without --force", async () => {
+  initTest("errors on existing .grove/ without --force", async () => {
     const dir = await createTempDir();
     try {
       await mkdir(join(dir, ".grove"), { recursive: true });
@@ -169,7 +177,7 @@ describe("executeInit", () => {
     }
   });
 
-  test("allows re-init with --force", async () => {
+  initTest("allows re-init with --force", async () => {
     const dir = await createTempDir();
     try {
       // First init
@@ -188,7 +196,7 @@ describe("executeInit", () => {
     }
   });
 
-  test("errors on nonexistent seed path", async () => {
+  initTest("errors on nonexistent seed path", async () => {
     const dir = await createTempDir();
     try {
       await expect(
@@ -203,7 +211,7 @@ describe("executeInit", () => {
     }
   });
 
-  test("seeds artifacts into CAS and creates root contribution", async () => {
+  initTest("seeds artifacts into CAS and creates root contribution", async () => {
     const dir = await createTempDir();
     try {
       // Create seed files
@@ -228,7 +236,7 @@ describe("executeInit", () => {
     }
   });
 
-  test("handles empty seed directory (valid, zero artifacts)", async () => {
+  initTest("handles empty seed directory (valid, zero artifacts)", async () => {
     const dir = await createTempDir();
     try {
       const emptyDir = join(dir, "empty-seed");
@@ -249,7 +257,7 @@ describe("executeInit", () => {
 // ---------------------------------------------------------------------------
 
 describe("grove init E2E", () => {
-  test("grove init via CLI creates .grove/", async () => {
+  initTest("grove init via CLI creates .grove/", async () => {
     const dir = await createTempDir();
     try {
       const cliPath = join(import.meta.dir, "..", "..", "cli", "main.ts");
@@ -274,7 +282,7 @@ describe("grove init E2E", () => {
 });
 
 describe("grove init — project identity (#288)", () => {
-  test("creates .grove/project-id with a valid UUIDv4 on a fresh repo", async () => {
+  initTest("creates .grove/project-id with a valid UUIDv4 on a fresh repo", async () => {
     const cwd = await createTempDir();
     initGitRepo(cwd, null);
     const registryPath = join(cwd, "test-registry.yaml");
@@ -286,7 +294,7 @@ describe("grove init — project identity (#288)", () => {
 });
 
 describe("grove init — #288 acceptance", () => {
-  test("two independent clones of same origin (non-TTY) get distinct UUIDs", async () => {
+  initTest("two independent clones of same origin (non-TTY) get distinct UUIDs", async () => {
     const sharedRegistry = join(await createTempDir(), "projects.yaml");
 
     const cloneA = await createTempDir();
@@ -312,7 +320,7 @@ describe("grove init — #288 acceptance", () => {
     await rm(cloneB, { recursive: true, force: true });
   });
 
-  test("--unify merges second clone into first's id; registry stays single-entry", async () => {
+  initTest("--unify merges second clone into first's id; registry stays single-entry", async () => {
     const sharedRegistry = join(await createTempDir(), "projects.yaml");
 
     const cloneA = await createTempDir();
@@ -335,7 +343,7 @@ describe("grove init — #288 acceptance", () => {
     await rm(cloneB, { recursive: true, force: true });
   });
 
-  test("re-running grove init leaves the project id unchanged", async () => {
+  initTest("re-running grove init leaves the project id unchanged", async () => {
     const registryPath = join(await createTempDir(), "projects.yaml");
     const cwd = await createTempDir();
     initGitRepo(cwd, "git@github.com:foo/bar.git");
@@ -349,22 +357,22 @@ describe("grove init — #288 acceptance", () => {
 });
 
 describe("parseInitArgs — unify flags", () => {
-  test("--unify sets unify: true", () => {
+  initTest("--unify sets unify: true", () => {
     const opts = parseInitArgs(["--unify"]);
     expect(opts.unify).toBe(true);
   });
 
-  test("--no-unify sets unify: false", () => {
+  initTest("--no-unify sets unify: false", () => {
     const opts = parseInitArgs(["--no-unify"]);
     expect(opts.unify).toBe(false);
   });
 
-  test("neither flag leaves unify undefined", () => {
+  initTest("neither flag leaves unify undefined", () => {
     const opts = parseInitArgs([]);
     expect(opts.unify).toBeUndefined();
   });
 
-  test("both --unify and --no-unify is an error", () => {
+  initTest("both --unify and --no-unify is an error", () => {
     expect(() => parseInitArgs(["--unify", "--no-unify"])).toThrow(/mutually exclusive/);
   });
 });

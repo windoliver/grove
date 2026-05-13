@@ -12,6 +12,11 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { DefaultFrontierCalculator } from "../../core/frontier.js";
+import {
+  FrontierRewardService,
+  frontierRewardEligibleMetrics,
+} from "../../core/frontier-reward-service.js";
 import type {
   Contribution,
   ContributionKind,
@@ -22,12 +27,12 @@ import type {
 } from "../../core/models.js";
 import type { ContributeInput } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
-import type { OutcomeStats, OutcomeStatus } from "../../core/outcome.js";
-import type { ContributionQuery } from "../../core/store.js";
+import type { OutcomeStats, OutcomeStatus, OutcomeStore } from "../../core/outcome.js";
+import type { ContributionQuery, ContributionStore } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
-import { contributionStoreForSession } from "./shared.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -44,6 +49,8 @@ const listQuerySchema = z.object({
   outcome: z.enum(["accepted", "rejected", "crashed", "invalidated"]).optional(),
   sessionId: z.string().optional(),
 });
+
+const OUTCOME_FILTER_SCAN_PAGE_SIZE = 100;
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -158,28 +165,6 @@ function hasContributionFilters(raw: {
   );
 }
 
-function matchesContributionFilters(contribution: Contribution, query: ContributionQuery): boolean {
-  if (query.kind !== undefined && contribution.kind !== query.kind) return false;
-  if (query.mode !== undefined && contribution.mode !== query.mode) return false;
-  if (query.agentId !== undefined && contribution.agent.agentId !== query.agentId) return false;
-  if (query.agentName !== undefined && contribution.agent.agentName !== query.agentName) {
-    return false;
-  }
-  if (
-    query.tags !== undefined &&
-    query.tags.length > 0 &&
-    !query.tags.every((tag) => contribution.tags.includes(tag))
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function compareByRecencyDesc(a: Contribution, b: Contribution): number {
-  const byDate = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-  return byDate !== 0 ? byDate : b.cid.localeCompare(a.cid);
-}
-
 function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): number {
   switch (status) {
     case "accepted":
@@ -190,6 +175,52 @@ function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): numb
       return stats.crashed;
     case "invalidated":
       return stats.invalidated;
+  }
+}
+
+async function listOutcomeFilteredContributions(
+  outcomeStore: OutcomeStore,
+  listStore: ContributionStore,
+  targetStatus: OutcomeStatus,
+  filterQuery: ContributionQuery,
+  limit: number,
+  offset: number,
+): Promise<{
+  readonly page: readonly Contribution[];
+  readonly total: number | undefined;
+}> {
+  const page: Contribution[] = [];
+  let matched = 0;
+  let contributionOffset = 0;
+
+  while (true) {
+    const contributions = await listStore.list({
+      ...filterQuery,
+      order: "created_at_desc",
+      limit: OUTCOME_FILTER_SCAN_PAGE_SIZE,
+      offset: contributionOffset,
+    });
+    if (contributions.length === 0) return { page, total: matched };
+
+    contributionOffset += contributions.length;
+    const outcomes = await outcomeStore.getBatch(
+      contributions.map((contribution) => contribution.cid),
+    );
+
+    for (const contribution of contributions) {
+      const outcome = outcomes.get(contribution.cid);
+      if (outcome?.status !== targetStatus) continue;
+
+      if (matched >= offset && page.length < limit) {
+        page.push(contribution);
+      }
+      matched += 1;
+    }
+
+    if (contributions.length < OUTCOME_FILTER_SCAN_PAGE_SIZE) {
+      return { page, total: matched };
+    }
+    if (page.length >= limit) return { page, total: undefined };
   }
 }
 
@@ -317,7 +348,10 @@ contributions.post("/", async (c) => {
       : {}),
   };
 
-  let opDeps = toOperationDeps(serverDeps);
+  let opDeps =
+    parsed.sessionId === undefined
+      ? toOperationDeps(serverDeps)
+      : operationDepsForSession(serverDeps, parsed.sessionId);
   // Inject namespace only for non-session writes (#292). When sessionId
   // is set, the write lands in the session-scoped store but /api/list
   // reads the process-global store, so emitting a watch event the lister
@@ -365,7 +399,26 @@ contributions.post("/", async (c) => {
         400,
       );
     }
-    opDeps = { ...opDeps, contract: sessionConfig, contributionStore: scopedContributionStore };
+    const scopedFrontier =
+      opDeps.frontier ?? new DefaultFrontierCalculator(scopedContributionStore);
+    const scopedFrontierRewardService =
+      serverDeps.frontierRewardService !== undefined &&
+      serverDeps.bountyStore !== undefined &&
+      serverDeps.creditsService !== undefined
+        ? new FrontierRewardService({
+            frontier: scopedFrontier,
+            bountyStore: serverDeps.bountyStore,
+            creditsService: serverDeps.creditsService,
+            eligibleMetrics: frontierRewardEligibleMetrics(sessionConfig),
+          })
+        : undefined;
+    opDeps = {
+      ...opDeps,
+      contract: sessionConfig,
+      contributionStore: scopedContributionStore,
+      frontier: scopedFrontier,
+      frontierRewardService: scopedFrontierRewardService,
+    };
   }
 
   const result = await contributeOperation(input, opDeps);
@@ -432,22 +485,16 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     }
 
     const filterQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const outcomes = await outcomeStore.list({ status: targetStatus });
-    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
-    const filtered: Contribution[] = [];
-    const seen = new Set<string>();
-    for (const outcome of outcomes) {
-      if (seen.has(outcome.cid)) continue;
-      seen.add(outcome.cid);
-      const contribution = contributions.get(outcome.cid);
-      if (contribution !== undefined && matchesContributionFilters(contribution, filterQuery)) {
-        filtered.push(contribution);
-      }
-    }
-    filtered.sort(compareByRecencyDesc);
-    const page = filtered.slice(offset, offset + limit);
+    const { page, total } = await listOutcomeFilteredContributions(
+      outcomeStore,
+      listStore,
+      targetStatus,
+      filterQuery,
+      limit,
+      offset,
+    );
 
-    c.header("X-Total-Count", String(filtered.length));
+    if (total !== undefined) c.header("X-Total-Count", String(total));
     return c.json(page);
   }
 

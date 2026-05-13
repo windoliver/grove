@@ -1,0 +1,3 @@
+export const FRONTIER_REWARD_TREASURY_AGENT_ID = "system:frontier-rewards";
+export const DEFAULT_CREDITS_INITIAL_BALANCE = 10_000;
+export const DEFAULT_CREDITS_REWARD_TREASURY_BALANCE = 1_000_000;

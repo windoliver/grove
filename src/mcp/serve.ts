@@ -161,6 +161,10 @@ let deadlineWatcherLockToken: string | undefined;
 let deadlineWatcherLockHeartbeat: ReturnType<typeof setInterval> | undefined;
 let deadlineWatcherRebuildTimer: ReturnType<typeof setInterval> | undefined;
 let deadlineWatcherRebuildInFlight = false;
+let sweepReconciler: import("../core/sweep-reconciler.js").SweepReconciler | undefined;
+let sweepLockPath: string | undefined;
+let sweepLockToken: string | undefined;
+let sweepLockHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 try {
   const groveDir = groveOverride ?? findGroveDir(cwd);
@@ -287,6 +291,9 @@ try {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
+  const operationFrontierRewardService =
+    bountyStore === runtime.bountyStore ? runtime.frontierRewardService : undefined;
+
   // In Nexus mode we skipped the local contract parse; load the authoritative
   // contract from the Nexus session record instead. The TUI mirrors every
   // session to Nexus via NexusSessionStore.putSession with the frozen
@@ -407,6 +414,7 @@ try {
       nexusUrl,
       ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       sessionId,
+      zoneId,
       client: nexusClient,
     });
     messageDelivery = new NexusMessageDelivery({
@@ -414,6 +422,7 @@ try {
         nexusUrl,
         ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
         sessionId,
+        zoneId,
       }),
     });
   }
@@ -428,6 +437,7 @@ try {
             nexusUrl,
             ...(apiKey ? { apiKey } : {}),
             sessionId: process.env.GROVE_SESSION_ID,
+            zoneId,
           })
         : undefined;
       eventBus = new NexusEventBus(ipcClient);
@@ -538,6 +548,57 @@ try {
         deadlineWatcherLockPath = undefined;
         deadlineWatcherLockToken = undefined;
       }
+    }
+  }
+
+  // Run settlement recovery from stdio MCP without multiplying zone-wide
+  // sweep load by agent count. Every agent process tries to acquire the same
+  // process lock; only the owner starts the reconciler.
+  {
+    const sweepZoneKey = zoneId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const lockPath = join(groveDir, `.grove-mcp-sweep.${sweepZoneKey}.lock`);
+    const lockToken = crypto.randomUUID();
+    const ownsSweep = tryAcquireDeadlineWatcherLock(lockPath, lockToken);
+    if (ownsSweep) {
+      const { BountyIndexSweep } = await import("../core/bounty-index-sweep.js");
+      const { SettlementSweep } = await import("../core/settlement-sweep.js");
+      const { SweepReconciler } = await import("../core/sweep-reconciler.js");
+      sweepLockPath = lockPath;
+      sweepLockToken = lockToken;
+      sweepReconciler = new SweepReconciler({
+        intervalMs: 60_000,
+        onCycle(results) {
+          for (const r of results) {
+            if (r.found > 0 || r.errors.length > 0) {
+              process.stderr.write(
+                `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}\n`,
+              );
+            }
+          }
+        },
+      });
+      sweepReconciler.register(new BountyIndexSweep(bountyStore));
+      sweepReconciler.register(new SettlementSweep(bountyStore, runtime.creditsService));
+      sweepReconciler.start();
+      sweepLockHeartbeat = setInterval(() => {
+        try {
+          const existing = readDeadlineWatcherLock(lockPath);
+          if (existing?.token !== lockToken) {
+            sweepReconciler?.stop();
+            sweepReconciler = undefined;
+            clearInterval(sweepLockHeartbeat);
+            sweepLockHeartbeat = undefined;
+            return;
+          }
+          writeDeadlineWatcherLock(lockPath, lockToken);
+        } catch {
+          // best-effort heartbeat; lock takeover falls back to staleness TTL
+        }
+      }, DEADLINE_WATCHER_LOCK_HEARTBEAT_MS);
+      sweepLockHeartbeat.unref?.();
+      process.stderr.write("grove-mcp: sweep-reconciler started (singleton owner)\n");
+    } else {
+      process.stderr.write("grove-mcp: sweep-reconciler already owned by another MCP process\n");
     }
   }
 
@@ -664,6 +725,8 @@ try {
     contributionStore,
     claimStore,
     bountyStore,
+    creditsService: runtime.creditsService,
+    frontierRewardService: operationFrontierRewardService,
     cas,
     frontier:
       nexusClient !== undefined
@@ -727,6 +790,12 @@ try {
         };
 
   close = () => {
+    sweepReconciler?.stop();
+    if (sweepLockHeartbeat !== undefined) {
+      clearInterval(sweepLockHeartbeat);
+      sweepLockHeartbeat = undefined;
+    }
+    releaseDeadlineWatcherLock(sweepLockPath, sweepLockToken);
     deadlineWatcher?.close();
     if (deadlineWatcherRebuildTimer !== undefined) {
       clearInterval(deadlineWatcherRebuildTimer);
@@ -750,10 +819,8 @@ try {
 }
 
 // --- Server setup ---------------------------------------------------------
-// NOTE: No sweep reconciler here. The stdio MCP server (grove-mcp) is spawned
-// per-agent — running zone-wide sweeps from every agent process would cause
-// N×load and CAS conflicts. Sweeps run in the long-lived singleton processes
-// only: src/server/serve.ts (HTTP server) and src/mcp/serve-http.ts (HTTP MCP).
+// Zone-wide sweeps are lock-owned above so per-agent stdio MCP processes do
+// not all run the same reconciler.
 
 const server = await createMcpServer(deps, preset);
 const transport = new StdioServerTransport();

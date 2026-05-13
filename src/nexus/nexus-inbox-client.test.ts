@@ -7,6 +7,7 @@ import type {
   NexusClient,
   SearchOptions,
   SearchResult,
+  WriteBatchEntry,
   WriteOptions,
   WriteResult,
 } from "./client.js";
@@ -39,6 +40,8 @@ function stubClient(overrides: Partial<NexusClient>): NexusClient {
       bytesWritten: content.byteLength,
       etag: "etag",
     }),
+    writeBatch: async (files: readonly WriteBatchEntry[]): Promise<readonly WriteResult[]> =>
+      files.map((file) => ({ bytesWritten: file.content.byteLength, etag: "etag" })),
     exists: async () => false,
     stat: async (): Promise<FileMeta | undefined> => undefined,
     delete: async () => false,
@@ -297,6 +300,51 @@ describe("NexusInboxClient", () => {
     expect(fetchCalls.filter((url) => url.includes("/api/v2/ipc/inbox/"))).toEqual([]);
     expect(listedPaths).toContain("/sessions/sess-2/ipc/bob/inbox");
     expect(messages.map((m) => m.body)).toEqual(["session scoped"]);
+  });
+
+  test("zone-scoped inbox reads use encoded Nexus VFS path", async () => {
+    const vfs = new MockNexusClient();
+    const listedPaths: string[] = [];
+    const originalList = vfs.list.bind(vfs);
+    vfs.list = async (path, opts) => {
+      listedPaths.push(path);
+      return originalList(path, opts);
+    };
+    await vfs.write(
+      "/zones/project-123%2Fworktree-a/sessions/sess-2/ipc/bob/inbox/msg-1.json",
+      encodeEnvelope({
+        message_id: "msg-1",
+        sender: "alice",
+        recipient: "bob",
+        timestamp: "2026-05-12T12:00:00.000Z",
+        payload: {
+          kind: "grove.message",
+          cid: "blake3:acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+          body: "zone scoped",
+          recipients: ["@bob"],
+          createdAt: "2026-05-12T12:00:00.000Z",
+          from: { agentId: "alice" },
+        },
+      }),
+    );
+    const fetchCalls: string[] = [];
+    const client = new NexusInboxClient({
+      nexusUrl: "http://nexus.test",
+      apiKey: "secret",
+      sessionId: "sess-2",
+      zoneId: "project-123/worktree-a",
+      client: vfs,
+      fetch: async (input) => {
+        fetchCalls.push(String(input));
+        throw new Error("zone reads must not use direct endpoint");
+      },
+    });
+
+    const messages = await client.readInbox({ recipient: "@bob" });
+
+    expect(fetchCalls.filter((url) => url.includes("/api/v2/ipc/inbox/"))).toEqual([]);
+    expect(listedPaths).toContain("/zones/project-123%2Fworktree-a/sessions/sess-2/ipc/bob/inbox");
+    expect(messages.map((m) => m.body)).toEqual(["zone scoped"]);
   });
 
   test("paginates inbox file listings before applying sender filters", async () => {

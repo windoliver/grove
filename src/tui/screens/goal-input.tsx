@@ -6,9 +6,9 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type { AgentTopology } from "../../core/topology.js";
-import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
+import { usePagesStoreFromContext } from "../hooks/use-screen-stack.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
 
 /** Props for the GoalInput screen. */
@@ -24,7 +24,7 @@ export interface GoalInputProps {
 
 /** Screen 2: goal text input. Single Enter → launch preview. */
 export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(function GoalInput({
-  presetName,
+  presetName: _presetName,
   topology,
   roleMapping,
   onSubmit,
@@ -32,6 +32,11 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
 }: GoalInputProps): React.ReactNode {
   const [buffer, setBuffer] = useState("");
   const [showEmpty, setShowEmpty] = useState(false);
+
+  const pages = usePagesStoreFromContext();
+  useEffect(() => {
+    return pages.registerDirtyCheck("goal-input", () => buffer.trim().length > 0);
+  }, [pages, buffer]);
 
   useKeyboard(
     useCallback(
@@ -87,8 +92,6 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
       borderStyle="round"
       borderColor={theme.focus}
     >
-      <BreadcrumbBar screen="goal-input" presetName={presetName} width={100} />
-
       <box flexDirection="column" paddingX={2} paddingTop={1}>
         <text color={theme.text}>What should agents work on?</text>
       </box>
