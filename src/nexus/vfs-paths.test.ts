@@ -30,6 +30,14 @@ import {
   skillCatalogSignaturePath,
   tagIndexPath,
   targetLockPath,
+  timelineCursorPath,
+  timelineEventByIdPath,
+  timelineEventPath,
+  timelineEventsDir,
+  workBlockPath,
+  workBlockSessionIndexPath,
+  workBlockStatusIndexPath,
+  workBlocksDir,
   workflowPath,
   workflowsDir,
 } from "./vfs-paths.js";
@@ -279,6 +287,39 @@ describe("path construction correctness", () => {
 
   test("workflowsDir returns /zones/{zone}/workflows", () => {
     expect(workflowsDir(zone)).toBe(`/zones/${zone}/workflows`);
+  });
+
+  test("work block paths are zone-scoped and encoded", () => {
+    expect(workBlockPath("zone/one", "wb/1")).toBe("/zones/zone%2Fone/work-blocks/wb%2F1.json");
+    expect(workBlocksDir("zone/one")).toBe("/zones/zone%2Fone/work-blocks");
+  });
+
+  test("work block index paths include sortable updatedAt and encoded identifiers", () => {
+    expect(
+      workBlockSessionIndexPath("zone/one", "session/alpha", "2026-05-13T10:00:00.000Z", "wb/1"),
+    ).toBe(
+      "/zones/zone%2Fone/indexes/work-blocks/session/session%2Falpha/2026-05-13T10:00:00.000Z-wb%2F1.json",
+    );
+    expect(
+      workBlockStatusIndexPath("zone/one", "running", "2026-05-13T10:00:00.000Z", "wb/1"),
+    ).toBe(
+      "/zones/zone%2Fone/indexes/work-blocks/status/running/2026-05-13T10:00:00.000Z-wb%2F1.json",
+    );
+  });
+
+  test("timeline paths are zone and scope scoped with padded resource versions", () => {
+    expect(timelineCursorPath("zone/one", "session/session%2Falpha")).toBe(
+      "/zones/zone%2Fone/timeline/cursors/session%2Fsession%252Falpha.json",
+    );
+    expect(timelineEventsDir("zone/one", "session/session%2Falpha")).toBe(
+      "/zones/zone%2Fone/timeline/events/session%2Fsession%252Falpha",
+    );
+    expect(timelineEventPath("zone/one", "session/session%2Falpha", "42", "te/1")).toBe(
+      "/zones/zone%2Fone/timeline/events/session%2Fsession%252Falpha/00000000000000000042-te%2F1.json",
+    );
+    expect(timelineEventByIdPath("zone/one", "te/1")).toBe(
+      "/zones/zone%2Fone/timeline/by-id/te%2F1.json",
+    );
   });
 });
 

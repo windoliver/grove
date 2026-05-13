@@ -42,6 +42,8 @@ export {
   resolveNexusSkillCatalogRoot,
   writeSkillCatalogToNexusForTest,
 } from "./nexus-skill-catalog.js";
+export type { NexusTimelineStoreConfig } from "./nexus-timeline-store.js";
+export { NexusTimelineStore } from "./nexus-timeline-store.js";
 export type { NexusWorkflowStoreConfig } from "./nexus-workflow-store.js";
 export { NexusWorkflowStore } from "./nexus-workflow-store.js";
 export { Semaphore } from "./semaphore.js";
