@@ -23,7 +23,7 @@ const BUILT_IN: Record<"codex" | "claude", BuiltInPackageSpec> = {
   codex: {
     packageName: "@zed-industries/codex-acp",
     preferredBinName: "codex-acp",
-    installHint: "bun add @zed-industries/codex-acp@^0.11.1",
+    installHint: "bun add @zed-industries/codex-acp@^0.14.0",
   },
   claude: {
     packageName: "@agentclientprotocol/claude-agent-acp",
