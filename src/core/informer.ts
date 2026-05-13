@@ -9,7 +9,13 @@
  * gate first render on a fully-populated cache (no empty-flash).
  */
 
-import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
+import type {
+  AgentSessionEntity,
+  ClaimEntity,
+  ContributionEntity,
+  TimelineEventEntity,
+  WorkBlockEntity,
+} from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
 import { WatchClient, type WatchClientOp, type WatchClientOptions } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
@@ -22,7 +28,11 @@ export type EntityForKind<K extends WatchKind> = K extends "Contribution"
     ? ClaimEntity
     : K extends "AgentSession"
       ? AgentSessionEntity
-      : never;
+      : K extends "WorkBlock"
+        ? WorkBlockEntity
+        : K extends "TimelineEvent"
+          ? TimelineEventEntity
+          : never;
 
 export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 

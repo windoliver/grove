@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { Informer, InformerFactory } from "./informer.js";
+import type { TimelineEventEntity, WorkBlockEntity } from "./entity.js";
+import { type EntityForKind, Informer, InformerFactory } from "./informer.js";
 import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
 import type { WatchStream } from "./watch-stream.js";
+
+type Assert<T extends true> = T;
+type IsSame<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+type _WorkBlockEntityForKind = Assert<IsSame<EntityForKind<"WorkBlock">, WorkBlockEntity>>;
+type _TimelineEventEntityForKind = Assert<
+  IsSame<EntityForKind<"TimelineEvent">, TimelineEventEntity>
+>;
 
 function makeFakeStream(): {
   stream: WatchStream;
@@ -733,7 +742,7 @@ describe("Informer run() safety", () => {
     await expect(informer.run(ac.signal)).rejects.toThrow(/already running/);
     // Clean up
     ac.abort();
-    await firstRun.catch(() => {});
+    await firstRun.catch(() => undefined);
   });
 
   test("abort unblocks run() even if a handler promise is still pending", async () => {

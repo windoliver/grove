@@ -6,13 +6,24 @@
  * revision) — see docs/superpowers/specs/2026-04-27-a5-watch-protocol-design.md.
  */
 
-import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
+import type {
+  AgentSessionEntity,
+  ClaimEntity,
+  ContributionEntity,
+  TimelineEventEntity,
+  WorkBlockEntity,
+} from "./entity.js";
 
-export type WatchKind = "Contribution" | "Claim" | "AgentSession";
+export type WatchKind = "Contribution" | "Claim" | "AgentSession" | "WorkBlock" | "TimelineEvent";
 
 export type WatchOp = "ADDED" | "MODIFIED" | "DELETED";
 
-export type WatchEntity = ContributionEntity | ClaimEntity | AgentSessionEntity;
+export type WatchEntity =
+  | ContributionEntity
+  | ClaimEntity
+  | AgentSessionEntity
+  | WorkBlockEntity
+  | TimelineEventEntity;
 
 /** A watch-stream event emitted by the hub to subscribers. */
 export interface WatchEvent {

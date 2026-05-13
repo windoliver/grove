@@ -537,6 +537,10 @@ async function listForKind(
       // AgentSession listing is not yet a Store API. Return empty until the
       // session-orchestrator integration lands (out of scope for #292).
       return [];
+    case "WorkBlock":
+    case "TimelineEvent":
+      // Timeline persistence is introduced after the core contracts.
+      return [];
     default: {
       const _exhaustive: never = kind;
       void _exhaustive;
