@@ -112,6 +112,33 @@ describe("NexusInboxClient", () => {
     );
   });
 
+  test("omits Authorization header when Nexus API key is absent", async () => {
+    let authorization: string | undefined;
+    const client = new NexusInboxClient({
+      nexusUrl: "http://nexus.test",
+      fetch: async (_input, init) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        authorization = headers?.Authorization;
+        return jsonResponse({
+          messages: [
+            {
+              cid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              from: { agentId: "alice" },
+              body: "direct",
+              recipients: ["@bob"],
+              createdAt: "2026-05-12T12:00:00.000Z",
+            },
+          ],
+        });
+      },
+    });
+
+    const messages = await client.readInbox({ recipient: "@bob" });
+
+    expect(messages.map((m) => m.body)).toEqual(["direct"]);
+    expect(authorization).toBeUndefined();
+  });
+
   test("falls back to session-scoped inbox files when endpoint is unavailable", async () => {
     const vfs = new MockNexusClient();
     await vfs.write(

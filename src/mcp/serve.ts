@@ -399,18 +399,22 @@ try {
   let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
   let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
 
-  if (nexusClient && nexusUrl && nexusApiKey) {
+  if (nexusClient && nexusUrl) {
     const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
     const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
     const sessionId = process.env.GROVE_SESSION_ID;
     inboxReadSource = new NexusInboxClient({
       nexusUrl,
-      apiKey: nexusApiKey,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       sessionId,
       client: nexusClient,
     });
     messageDelivery = new NexusMessageDelivery({
-      ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId,
+      }),
     });
   }
 
@@ -419,10 +423,13 @@ try {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
       const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient =
-        nexusUrl && apiKey
-          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
-          : undefined;
+      const ipcClient = nexusUrl
+        ? new NexusIpcClient({
+            nexusUrl,
+            ...(apiKey ? { apiKey } : {}),
+            sessionId: process.env.GROVE_SESSION_ID,
+          })
+        : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {

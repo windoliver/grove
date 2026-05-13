@@ -16,7 +16,7 @@ type FetchFn = (
 
 export interface NexusInboxClientOptions {
   readonly nexusUrl: string;
-  readonly apiKey: string;
+  readonly apiKey?: string | undefined;
   readonly sessionId?: string | undefined;
   readonly client?: NexusClient | undefined;
   readonly fetch?: FetchFn | undefined;
@@ -89,7 +89,7 @@ export class NexusMessageDelivery implements MessageDelivery {
 
 export class NexusInboxClient implements InboxReadSource {
   private readonly nexusUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKey: string | undefined;
   private readonly sessionId: string | undefined;
   private readonly client: NexusClient | undefined;
   private readonly fetchFn: FetchFn;
@@ -145,11 +145,10 @@ export class NexusInboxClient implements InboxReadSource {
       if (query?.fromAgentId !== undefined) params.set("from_agent_id", query.fromAgentId);
       if (query?.since !== undefined) params.set("since", query.since);
       const suffix = params.size > 0 ? `?${params.toString()}` : "";
+      const init = requestInit(this.apiKey);
       const resp = await this.fetchFn(
         `${this.nexusUrl}/api/v2/ipc/inbox/${encodeURIComponent(role)}${suffix}`,
-        {
-          headers: { Authorization: `Bearer ${this.apiKey}` },
-        },
+        init,
       );
       if (resp.status === 404 || resp.status === 405) {
         this.directEndpointAvailable = false;
@@ -216,9 +215,7 @@ export class NexusInboxClient implements InboxReadSource {
   private async readRawRestFile(path: string): Promise<Uint8Array | undefined> {
     try {
       const url = `${this.nexusUrl}/api/v2/files/read?path=${encodeURIComponent(path)}`;
-      const resp = await this.fetchFn(url, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
-      });
+      const resp = await this.fetchFn(url, requestInit(this.apiKey));
       if (!resp.ok) return undefined;
       const body = (await resp.json()) as { readonly content?: unknown };
       if (typeof body.content !== "string") return undefined;
@@ -227,6 +224,12 @@ export class NexusInboxClient implements InboxReadSource {
       return undefined;
     }
   }
+}
+
+function requestInit(apiKey: string | undefined): RequestInit {
+  const init: RequestInit = {};
+  if (apiKey) init.headers = { Authorization: `Bearer ${apiKey}` };
+  return init;
 }
 
 function recipientHandles(query?: InboxQuery): readonly string[] {

@@ -31,7 +31,7 @@ export interface IpcSendResult {
 /** Options for constructing a NexusIpcClient. */
 export interface NexusIpcClientOptions {
   readonly nexusUrl: string;
-  readonly apiKey: string;
+  readonly apiKey?: string | undefined;
   readonly sessionId?: string | undefined;
 }
 
@@ -40,7 +40,7 @@ const TRANSIENT_BACKOFF_MS = 30_000;
 
 export class NexusIpcClient {
   private readonly nexusUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKey: string | undefined;
   private readonly sessionId: string | undefined;
   /**
    * Endpoint availability state:
@@ -116,7 +116,7 @@ export class NexusIpcClient {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
         body: JSON.stringify({
           path: this.sessionId

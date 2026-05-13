@@ -359,4 +359,26 @@ describe("IPC handoff integration", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("NexusIpcClient omits Authorization header when Nexus API key is absent", async () => {
+    const { NexusIpcClient: RealIpcClient } = await import("./nexus-ipc-client.js");
+    const originalFetch = globalThis.fetch;
+    let authorization: string | undefined;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      authorization = headers?.Authorization;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new RealIpcClient({ nexusUrl: "http://localhost:9999" });
+
+      const result = await client.send("coder", "reviewer", { kind: "work" });
+
+      expect(result.ok).toBe(true);
+      expect(authorization).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

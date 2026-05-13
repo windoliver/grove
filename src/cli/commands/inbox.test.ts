@@ -341,6 +341,31 @@ describe("grove inbox — Nexus IPC delegation", () => {
     });
   });
 
+  test("send writes to Nexus IPC when Nexus auth is disabled", async () => {
+    await executeInit(makeInitOptions(dir));
+    await rm(join(dir, "GROVE.md"), { force: true });
+    delete process.env.NEXUS_API_KEY;
+    const writes: unknown[] = [];
+    const authorizations: (string | undefined)[] = [];
+    globalThis.fetch = createFetchMock(async (input, init) => {
+      if (String(input) === "http://nexus.test/api/v2/files/write") {
+        const headers = init?.headers as Record<string, string> | undefined;
+        authorizations.push(headers?.Authorization);
+        writes.push(JSON.parse(String(init?.body)));
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { exitCode } = await runInbox(
+      ["send", "no auth hello", "--to", "@reviewer", "--agent-id", "alice", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(writes).toHaveLength(1);
+    expect(authorizations).toEqual([undefined]);
+  });
+
   test("send uses session-scoped Nexus IPC path when GROVE_SESSION_ID is configured", async () => {
     await executeInit(makeInitOptions(dir));
     await rm(join(dir, "GROVE.md"), { force: true });

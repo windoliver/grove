@@ -272,28 +272,30 @@ if (nexusUrl) {
     process.exit(1);
   }
 
-  if (nexusApiKey !== undefined) {
-    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
-    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-    const sessionId = process.env.GROVE_SESSION_ID;
-    inboxReadSource = new NexusInboxClient({
+  const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+  const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+  const sessionId = process.env.GROVE_SESSION_ID;
+  inboxReadSource = new NexusInboxClient({
+    nexusUrl,
+    ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+    sessionId,
+    client: nexusClient,
+  });
+  messageDelivery = new NexusMessageDelivery({
+    ipcClient: new NexusIpcClient({
       nexusUrl,
-      apiKey: nexusApiKey,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       sessionId,
-      client: nexusClient,
+    }),
+  });
+  messageDeliveryForSession = (requestedSessionId) =>
+    new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
+      }),
     });
-    messageDelivery = new NexusMessageDelivery({
-      ipcClient: new NexusIpcClient({ nexusUrl, apiKey: nexusApiKey, sessionId }),
-    });
-    messageDeliveryForSession = (requestedSessionId) =>
-      new NexusMessageDelivery({
-        ipcClient: new NexusIpcClient({
-          nexusUrl,
-          apiKey: nexusApiKey,
-          sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
-        }),
-      });
-  }
 
   serverContributionStore = new NexusContributionStore({
     client: nexusClient,

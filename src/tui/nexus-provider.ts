@@ -100,10 +100,10 @@ export class NexusDataProvider
     const outcomes = new NexusOutcomeStore(config.nexusConfig);
     const frontier = new DefaultFrontierCalculator(store);
     const inboxReadSource =
-      config.nexusUrl !== undefined && config.apiKey !== undefined
+      config.nexusUrl !== undefined
         ? new NexusInboxClient({
             nexusUrl: config.nexusUrl,
-            apiKey: config.apiKey,
+            ...(config.apiKey ? { apiKey: config.apiKey } : {}),
             client: resolved.client,
             sessionId: resolved.sessionId,
           })
@@ -180,10 +180,10 @@ export class NexusDataProvider
       scopedStore,
     );
     this.setInboxReadSource(
-      this.nexusUrl !== undefined && this.apiKey !== undefined
+      this.nexusUrl !== undefined
         ? new NexusInboxClient({
             nexusUrl: this.nexusUrl,
-            apiKey: this.apiKey,
+            ...(this.apiKey ? { apiKey: this.apiKey } : {}),
             client: this.client,
             sessionId,
           })

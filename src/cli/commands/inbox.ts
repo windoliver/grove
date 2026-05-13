@@ -48,7 +48,7 @@ interface CliNexusInboxDeps {
 async function createCliNexusInboxDeps(): Promise<CliNexusInboxDeps> {
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const apiKey = process.env.NEXUS_API_KEY;
-  if (nexusUrl === undefined || apiKey === undefined) return {};
+  if (nexusUrl === undefined) return {};
 
   const sessionId = process.env.GROVE_SESSION_ID;
   const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
@@ -56,17 +56,24 @@ async function createCliNexusInboxDeps(): Promise<CliNexusInboxDeps> {
     "../../nexus/nexus-inbox-client.js"
   );
   const { NexusIpcClient } = await import("../../nexus/nexus-ipc-client.js");
-  const client = new NexusHttpClient({ url: nexusUrl, apiKey });
+  const client = new NexusHttpClient({
+    url: nexusUrl,
+    ...(apiKey ? { apiKey } : {}),
+  });
 
   return {
     inboxReadSource: new NexusInboxClient({
       nexusUrl,
-      apiKey,
+      ...(apiKey ? { apiKey } : {}),
       sessionId,
       client,
     }),
     messageDelivery: new NexusMessageDelivery({
-      ipcClient: new NexusIpcClient({ nexusUrl, apiKey, sessionId }),
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(apiKey ? { apiKey } : {}),
+        sessionId,
+      }),
     }),
   };
 }
