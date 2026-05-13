@@ -3,8 +3,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentTaskPhase } from "../core/agent-task.js";
 import { makeContribution } from "../core/test-helpers.js";
-import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
+import {
+  initSqliteDb,
+  SqliteAgentTaskStore,
+  SqliteContributionStore,
+} from "../local/sqlite-store.js";
 import type { DiagnosticEntry, SqliteExportManifest } from "./sqlite-export.js";
 import { exportSqliteSummaries } from "./sqlite-export.js";
 
@@ -133,6 +138,70 @@ describe("exportSqliteSummaries", () => {
     expect(rawExport).not.toContain("result_json");
     expect(rawExport).not.toContain("secret-fingerprint");
     expect(rawExport).not.toContain("secret-payload");
+  });
+
+  test("exports AgentTask spec/status tables", async () => {
+    const ctx = await createExportContext();
+    const db = initSqliteDb(ctx.dbPath);
+    try {
+      const store = new SqliteAgentTaskStore(db);
+      await store.putAgentTaskSpec({
+        id: "task-1",
+        worktree: "/repo",
+        runtime: "codex",
+        role: "coder",
+        prompt: "Implement the task",
+        dependsOn: ["dep-1"],
+        maxTurns: 3,
+        budget: { usd: 5 },
+        generation: 1,
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await store.patchAgentTaskStatus("task-1", {
+        phase: AgentTaskPhase.Running,
+        sessionId: "session-1",
+        contributions: ["cid-1"],
+        conditions: [
+          {
+            type: "Running",
+            status: "True",
+            observedGeneration: 1,
+            lastTransitionTime: "2026-05-13T00:02:00Z",
+            reason: "Started",
+            message: "Controller started the task.",
+          },
+        ],
+        observedGeneration: 1,
+        lastTransitionAt: "2026-05-13T00:02:00Z",
+      });
+    } finally {
+      db.close();
+    }
+
+    const result = exportSqliteSummaries(ctx.dbPath, {
+      recentContributionLimit: 10,
+    });
+
+    expect(result.manifest.tables.agent_task_spec).toMatchObject({
+      present: true,
+      rowCount: 1,
+      exportedPath: "db/agent-task-spec.json",
+    });
+    expect(result.manifest.tables.agent_task_status).toMatchObject({
+      present: true,
+      rowCount: 1,
+      exportedPath: "db/agent-task-status.json",
+    });
+    expect(
+      readJson<readonly Record<string, unknown>[]>(
+        getEntry(result.entries, "db/agent-task-spec.json"),
+      )[0]?.id,
+    ).toBe("task-1");
+    expect(
+      readJson<readonly Record<string, unknown>[]>(
+        getEntry(result.entries, "db/agent-task-status.json"),
+      )[0]?.phase,
+    ).toBe("Running");
   });
 
   test("continues when contributions table is missing", async () => {

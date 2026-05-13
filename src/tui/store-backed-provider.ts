@@ -8,6 +8,7 @@
  * (e.g. artifacts, VFS, search).
  */
 
+import type { AgentTaskView } from "../core/agent-task.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
@@ -20,6 +21,7 @@ import { getSessionCosts as getSessionCostsOp } from "../core/operations/cost-tr
 import { readInbox } from "../core/operations/messaging.js";
 import type { OutcomeRecord, OutcomeStatus, OutcomeStore } from "../core/outcome.js";
 import type {
+  AgentTaskStore,
   ClaimStore,
   ContributionQuery,
   ContributionStore,
@@ -77,6 +79,7 @@ import { buildFrontierSummary } from "./provider-utils.js";
 export interface StoreBackedProviderDeps {
   readonly contributionStore: ContributionStore;
   readonly claimStore: ClaimStore;
+  readonly agentTaskStore?: AgentTaskStore | undefined;
   readonly frontier: FrontierCalculator;
   readonly groveName: string;
   readonly outcomeStore?: OutcomeStore | undefined;
@@ -123,6 +126,7 @@ export abstract class StoreBackedProvider
 
   protected readonly store: ContributionStore;
   protected readonly claims: ClaimStore;
+  protected readonly tasks: AgentTaskStore | undefined;
   protected readonly calc: FrontierCalculator;
   protected readonly name: string;
   protected readonly outcomes: OutcomeStore | undefined;
@@ -159,6 +163,7 @@ export abstract class StoreBackedProvider
   constructor(deps: StoreBackedProviderDeps) {
     this.store = deps.contributionStore;
     this.claims = deps.claimStore;
+    this.tasks = deps.agentTaskStore;
     this.calc = deps.frontier;
     this.name = deps.groveName;
     this.outcomes = deps.outcomeStore;
@@ -286,6 +291,10 @@ export abstract class StoreBackedProvider
   /** List claims with optional status / agent filters. */
   async getClaims(query?: ClaimsQuery): Promise<readonly Claim[]> {
     return claimsFromStore(this.claims, query);
+  }
+
+  async getAgentTasks(): Promise<readonly AgentTaskView[]> {
+    return this.tasks === undefined ? [] : this.tasks.listAgentTasks();
   }
 
   /** Create a new claim for an agent. */

@@ -20,6 +20,22 @@ function cond(type: string, status: "True" | "False" | "Unknown", reason = ""): 
   };
 }
 
+function condWithMessage(
+  type: string,
+  status: "True" | "False" | "Unknown",
+  reason: string,
+  message: string,
+): Condition {
+  return {
+    type,
+    status,
+    observedGeneration: 0,
+    lastTransitionTime: "",
+    reason,
+    message,
+  };
+}
+
 describe("ConditionChips module", () => {
   test("exports ConditionChips as a React.memo component", async () => {
     const mod = await import("./condition-chips.js");
@@ -128,5 +144,19 @@ describe("shouldShowReason (polarity-aware)", () => {
   test("Unknown status + reason → shows (uncertain = worth explaining)", () => {
     expect(shouldShowReason(cond("Ready", "Unknown", "waiting"))).toBe(true);
     expect(shouldShowReason(cond("Crashed", "Unknown", "timeout"))).toBe(true);
+  });
+});
+
+describe("condition explanation formatting", () => {
+  test("includes both reason and message when message is present", async () => {
+    const { conditionExplanation } = await import("./condition-chips.js");
+    expect(conditionExplanation(condWithMessage("Ready", "False", "blocked", "Waiting"))).toBe(
+      "blocked — Waiting",
+    );
+  });
+
+  test("falls back to reason when message is empty", async () => {
+    const { conditionExplanation } = await import("./condition-chips.js");
+    expect(conditionExplanation(cond("Ready", "False", "blocked"))).toBe("blocked");
   });
 });

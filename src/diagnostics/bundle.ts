@@ -252,7 +252,12 @@ function operatorAvailability(): readonly Record<string, unknown>[] {
       ["ACP trace lines", "typed permission request log messages when present"],
       "Permission decisions are represented only when trace or typed request log lines exist in included logs.",
     ),
-    availability("agent_tasks", "unavailable", [], "Pending #297 and #379."),
+    availability(
+      "agent_tasks",
+      "partial",
+      ["agent_task_spec", "agent_task_status"],
+      "AgentTask spec/status records are available when the local store is configured; trigger adapters are pending #379.",
+    ),
     availability(
       "watch_compaction",
       "partial",

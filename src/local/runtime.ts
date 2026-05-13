@@ -24,6 +24,7 @@ import type { SqliteBountyStore } from "./sqlite-bounty-store.js";
 import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import type { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 import type {
+  SqliteAgentTaskStore,
   SqliteClaimStore,
   SqliteContributionStore,
   SqliteIdempotencyStore,
@@ -75,6 +76,7 @@ export interface LocalRuntime {
   readonly db: import("bun:sqlite").Database;
   readonly contributionStore: SqliteContributionStore;
   readonly claimStore: SqliteClaimStore;
+  readonly agentTaskStore: SqliteAgentTaskStore;
   readonly bountyStore: SqliteBountyStore;
   readonly outcomeStore: SqliteOutcomeStore;
   readonly goalSessionStore: SqliteGoalSessionStore;
@@ -215,6 +217,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     db: stores.db,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
+    agentTaskStore: stores.agentTaskStore,
     bountyStore: stores.bountyStore,
     outcomeStore: stores.outcomeStore,
     goalSessionStore: stores.goalSessionStore,
