@@ -311,6 +311,8 @@ export { ExpiryReason } from "./store.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { SubprocessRuntime } from "./subprocess-runtime.js";
 export { toUtcIso } from "./time.js";
+export * from "./timeline.js";
+export * from "./timeline-schemas.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
 export type { RouteResult } from "./topology-router.js";
