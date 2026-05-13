@@ -19,6 +19,7 @@ import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
 import { detectCli } from "./agent-cli-detect.js";
+import { matchesKey } from "./key-match.js";
 import {
   applyRoleSkillsToAll,
   formatRoleSkillsInput,
@@ -46,13 +47,6 @@ export interface AgentDetectProps {
     roleSkills: Map<string, readonly string[]>,
   ) => void;
   readonly onBack: () => void;
-}
-
-export function matchesKey(
-  key: { readonly name?: string | undefined; readonly sequence?: string | undefined },
-  expected: string,
-): boolean {
-  return key.name === expected || key.sequence === expected;
 }
 
 /** Screen 3: Launch preview — agent detection + role prompt configuration. */
