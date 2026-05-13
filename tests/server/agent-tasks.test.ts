@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AgentTaskPhase } from "../../src/core/agent-task.js";
+import { Finalizer } from "../../src/core/lifecycle-metadata.js";
 import type { TestContext } from "./helpers.js";
 import { createTestContext, TEST_AUTH_HEADERS, TEST_CONTROLLER_HEADERS } from "./helpers.js";
 
@@ -53,6 +54,31 @@ describe("Agent task routes", () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  test("PUT /api/agent-tasks/:id preserves existing lifecycle metadata", async () => {
+    await ctx.agentTaskStore.putAgentTaskSpec({
+      id: "task-metadata",
+      ...SPEC_BODY,
+      generation: 0,
+      ownerRef: { kind: "session", id: "session-1", uid: "uid-1" },
+      finalizers: [Finalizer.ReleaseSlots],
+      deletionTimestamp: "2026-05-13T13:00:00.000Z",
+      createdAt: "2026-05-13T12:00:00.000Z",
+    });
+
+    const res = await ctx.app.request("/api/agent-tasks/task-metadata", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ ...SPEC_BODY, prompt: "Updated prompt" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.spec.prompt).toBe("Updated prompt");
+    expect(data.spec.ownerRef).toEqual({ kind: "session", id: "session-1", uid: "uid-1" });
+    expect(data.spec.finalizers).toEqual([Finalizer.ReleaseSlots]);
+    expect(data.spec.deletionTimestamp).toBe("2026-05-13T13:00:00.000Z");
   });
 
   test("PATCH /api/agent-tasks/:id/status requires controller token before body validation", async () => {

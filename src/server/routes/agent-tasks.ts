@@ -171,6 +171,9 @@ agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
     budget: body.budget as Readonly<Record<string, JsonValue>> | undefined,
     generation: 0,
     createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
+    ownerRef: existing?.spec.ownerRef,
+    finalizers: existing?.spec.finalizers,
+    deletionTimestamp: existing?.spec.deletionTimestamp,
   };
 
   const view = await store.putAgentTaskSpec(spec);
