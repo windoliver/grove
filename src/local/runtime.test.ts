@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { RewardType } from "../core/bounty.js";
 import { ScoreDirection } from "../core/models.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
+import type { WorkBlock } from "../core/timeline.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../core/timeline.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "./runtime.js";
 
@@ -220,7 +222,7 @@ name: runtime-fallback-test
     }
   });
 
-  test("watchHub republishes contribution + claim writes (PR2 #388)", async () => {
+  test("watchHub republishes contribution, claim, and timeline writes", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-watch-"));
     const groveDir = join(rootDir, ".grove");
     const NS = "test-ns";
@@ -245,6 +247,41 @@ name: runtime-fallback-test
 
         await runtime.claimStore.complete(claim.claimId);
         expect(hub.currentRv(NS, "Claim")).toBe(2n);
+
+        const block: WorkBlock = {
+          workBlockId: "wb-runtime-watch",
+          sessionId: "session-runtime-watch",
+          goal: "Publish timeline writes",
+          actor: { agentId: "runtime-agent", role: "tester", platform: "codex" },
+          origin: WorkBlockOrigin.Agent,
+          status: WorkBlockStatus.Running,
+          updatedAt: "2026-05-13T12:00:00.000Z",
+          inputRefs: [],
+          outputRefs: [],
+          evidenceRefs: [],
+          approvalRefs: [],
+          contributionCids: [],
+          artifactHashes: [],
+          claimIds: [],
+          revision: 1,
+          createdAt: "2026-05-13T12:00:00.000Z",
+        };
+        await runtime.timelineStore.putWorkBlock(block);
+        expect(hub.currentRv(NS, "WorkBlock")).toBe(1n);
+
+        const eventInput = {
+          eventId: "te-runtime-watch",
+          sessionId: "session-runtime-watch",
+          type: TimelineEventType.WorkBlockStarted,
+          occurredAt: "2026-05-13T12:00:00.000Z",
+          actor: { agentId: "runtime-agent", role: "tester", platform: "codex" },
+          workBlockId: "wb-runtime-watch",
+          targetRefs: [{ kind: "WorkBlock", id: "wb-runtime-watch" }],
+          payload: {},
+        } as const;
+        await runtime.timelineStore.appendTimelineEvent(eventInput);
+        await runtime.timelineStore.appendTimelineEvent(eventInput);
+        expect(hub.currentRv(NS, "TimelineEvent")).toBe(1n);
       } finally {
         runtime.close();
       }

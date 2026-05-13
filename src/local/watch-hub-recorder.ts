@@ -12,8 +12,15 @@
  */
 
 import type { AgentSession } from "../core/agent-runtime.js";
-import { agentSessionToEntity, claimToEntity, contributionToEntity } from "../core/entity.js";
+import {
+  agentSessionToEntity,
+  claimToEntity,
+  contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
+} from "../core/entity.js";
 import type { Claim, Contribution } from "../core/models.js";
+import type { TimelineEvent, WorkBlock } from "../core/timeline.js";
 import type { WatchOp } from "../core/watch-events.js";
 import type { WatchHub } from "../core/watch-hub.js";
 
@@ -21,6 +28,8 @@ export interface WatchHubRecorder {
   contribution(op: WatchOp, c: Contribution): void;
   claim(op: WatchOp, c: Claim): void;
   agentSession(op: WatchOp, s: AgentSession): void;
+  workBlock(op: WatchOp, block: WorkBlock): void;
+  timelineEvent(op: "ADDED", event: TimelineEvent): void;
 }
 
 export interface CreateWatchHubRecorderOptions {
@@ -38,12 +47,14 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
   const now = opts.now ?? (() => Date.now());
 
   const safeRecord = (
-    kind: "Contribution" | "Claim" | "AgentSession",
+    kind: "Contribution" | "Claim" | "AgentSession" | "WorkBlock" | "TimelineEvent",
     op: WatchOp,
     entity:
       | ReturnType<typeof contributionToEntity>
       | ReturnType<typeof claimToEntity>
-      | ReturnType<typeof agentSessionToEntity>,
+      | ReturnType<typeof agentSessionToEntity>
+      | ReturnType<typeof workBlockToEntity>
+      | ReturnType<typeof timelineEventToEntity>,
   ): void => {
     try {
       hub.recordWrite({ kind, namespace, op, entity });
@@ -62,6 +73,12 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
     },
     agentSession(op, s) {
       safeRecord("AgentSession", op, agentSessionToEntity(s, undefined, namespace));
+    },
+    workBlock(op, block) {
+      safeRecord("WorkBlock", op, workBlockToEntity(block, namespace));
+    },
+    timelineEvent(op, event) {
+      safeRecord("TimelineEvent", op, timelineEventToEntity(event, namespace));
     },
   };
 }

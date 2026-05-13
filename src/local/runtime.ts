@@ -29,6 +29,7 @@ import type {
   SqliteIdempotencyStore,
 } from "./sqlite-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
+import type { SqliteTimelineStore } from "./sqlite-timeline-store.js";
 import { createWatchHubRecorder } from "./watch-hub-recorder.js";
 import { LocalWorkspaceManager } from "./workspace.js";
 
@@ -79,6 +80,7 @@ export interface LocalRuntime {
   readonly outcomeStore: SqliteOutcomeStore;
   readonly goalSessionStore: SqliteGoalSessionStore;
   readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
+  readonly timelineStore: SqliteTimelineStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
   readonly creditsService: CreditsService;
   readonly frontierRewardService: FrontierRewardService;
@@ -156,6 +158,8 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     });
     stores.contributionStore.onContributionWrite = (op, c) => recorder.contribution(op, c);
     stores.claimStore.onClaimWrite = (op, c) => recorder.claim(op, c);
+    stores.timelineStore.onWorkBlockWrite = (op, block) => recorder.workBlock(op, block);
+    stores.timelineStore.onTimelineEventWrite = (op, event) => recorder.timelineEvent(op, event);
   }
 
   let workspace: LocalWorkspaceManager | undefined;
@@ -219,6 +223,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     outcomeStore: stores.outcomeStore,
     goalSessionStore: stores.goalSessionStore,
     handoffStore: stores.handoffStore,
+    timelineStore: stores.timelineStore,
     idempotencyStore: stores.idempotencyStore,
     creditsService: stores.creditsService,
     frontierRewardService,
