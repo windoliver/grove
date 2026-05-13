@@ -17,7 +17,8 @@ import {
   listPendingQuestions,
 } from "../core/operations/ask-user-bus.js";
 import { getSessionCosts as getSessionCostsOp } from "../core/operations/cost-tracking.js";
-import { readInbox } from "../core/operations/messaging.js";
+import type { InboxReadSource } from "../core/operations/inbox-delegation.js";
+import { readInboxWithSource } from "../core/operations/inbox-delegation.js";
 import type { OutcomeRecord, OutcomeStatus, OutcomeStore } from "../core/outcome.js";
 import type {
   ClaimStore,
@@ -84,6 +85,7 @@ export interface StoreBackedProviderDeps {
   readonly backendLabel?: string | undefined;
   readonly goalSessionStore?: GoalSessionStore | undefined;
   readonly handoffStore?: HandoffStore | undefined;
+  readonly inboxReadSource?: InboxReadSource | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,7 @@ export abstract class StoreBackedProvider
   protected readonly label: string;
   protected readonly goalSession: GoalSessionStore | undefined;
   protected readonly handoffs: HandoffStore | undefined;
+  protected inboxReadSource: InboxReadSource | undefined;
 
   /**
    * Public accessor for the handoff store. NexusWsBridge needs direct
@@ -166,6 +169,7 @@ export abstract class StoreBackedProvider
     this.label = deps.backendLabel ?? this.name;
     this.goalSession = deps.goalSessionStore;
     this.handoffs = deps.handoffStore;
+    this.inboxReadSource = deps.inboxReadSource;
   }
 
   // ---------------------------------------------------------------------------
@@ -213,6 +217,10 @@ export abstract class StoreBackedProvider
     return () => {
       this.scopeListeners.delete(listener);
     };
+  }
+
+  protected setInboxReadSource(source: InboxReadSource | undefined): void {
+    this.inboxReadSource = source;
   }
 
   // ---------------------------------------------------------------------------
@@ -458,11 +466,15 @@ export abstract class StoreBackedProvider
     recipient?: string;
     limit?: number;
   }): Promise<readonly InboxMessage[]> {
-    const messages = await readInbox(this.store, {
-      recipient: query?.recipient,
-      limit: query?.limit,
-      ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
-    });
+    const messages = await readInboxWithSource(
+      this.store,
+      {
+        recipient: query?.recipient,
+        limit: query?.limit,
+        ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
+      },
+      this.inboxReadSource,
+    );
     return messages.map((m) => ({
       cid: m.cid,
       from: {

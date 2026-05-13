@@ -19,6 +19,7 @@ import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
 import { detectCli } from "./agent-cli-detect.js";
+import { matchesKey } from "./key-match.js";
 import {
   applyRoleSkillsToAll,
   formatRoleSkillsInput,
@@ -262,11 +263,11 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           }
 
           // Normal mode
-          if (key.name === "j" || key.name === "down") {
+          if (matchesKey(key, "j") || key.name === "down") {
             setCursor((c) => Math.min(c + 1, roles.length - 1));
             return;
           }
-          if (key.name === "k" || key.name === "up") {
+          if (matchesKey(key, "k") || key.name === "up") {
             setCursor((c) => Math.max(c - 1, 0));
             return;
           }
@@ -293,7 +294,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             return;
           }
           // c: cycle CLI for the selected role
-          if (key.name === "c" && availableClis.length > 0) {
+          if (matchesKey(key, "c") && availableClis.length > 0) {
             const roleName = roles[cursor]?.name;
             if (roleName) {
               const currentCli = roleMapping.get(roleName) ?? availableClis[0] ?? "claude";
@@ -311,7 +312,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             return;
           }
           // e: edit the selected role's prompt
-          if (key.name === "e") {
+          if (matchesKey(key, "e")) {
             const roleName = roles[cursor]?.name;
             if (roleName) {
               setEditBuffer(rolePrompts.get(roleName) ?? "");
@@ -320,7 +321,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             return;
           }
           // t: edit reply timeout for edges from the selected role
-          if (key.name === "t") {
+          if (matchesKey(key, "t")) {
             const role = roles[cursor];
             if (role?.edges && role.edges.length > 0) {
               const firstEdgeKey = `${role.name}:${role.edges[0]?.target}`;
