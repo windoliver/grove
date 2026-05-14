@@ -13,14 +13,15 @@
 ## Execution Notes
 
 This repo's `bunfig.toml` enables coverage thresholds globally. For targeted
-TDD commands in this plan, run the listed `bun test ...` command through a
-temporary config with coverage disabled so a focused file set can return a
-useful red/green exit code:
+TDD commands in this plan, run the listed `bun test ...` command from outside
+the repo with a temporary config and an absolute test path so a focused file
+set can return a useful red/green exit code:
 
 ```bash
 tmp=$(mktemp)
 printf '[test]\ncoverage = false\n' > "$tmp"
-PATH="$HOME/.bun/bin:$PATH" bun test --config "$tmp" <same test files from the step>
+cd /tmp
+PATH="$HOME/.bun/bin:$PATH" bun test -c "$tmp" /absolute/path/to/test-file.test.ts
 rc=$?
 rm -f "$tmp"
 exit "$rc"
