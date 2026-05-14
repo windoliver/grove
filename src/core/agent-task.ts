@@ -114,13 +114,14 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
     },
     conditions: view.status.conditions,
     observedGeneration: view.status.observedGeneration,
-    // C6 (#304) NOTE: `view.status.resourceVersion` is the persisted
-    // `resource_version` column. Task 3 will land bump-on-write for
-    // agent task spec/status mutations and switch the source-of-truth
-    // here (analogous to the composite formula used in
-    // `claimViewToEntity` after Task 2). Until then `revision` remains
-    // the authoritative monotonic signal that conformance tests rely on.
-    resourceVersion: String(view.status.revision),
+    // C6 (#304): The Entity's `resourceVersion` is a composite of the
+    // persisted spec `resource_version` (bumped by `putAgentTaskSpec`) and
+    // the status `resource_version` (bumped by `patchAgentTaskStatus`).
+    // Mirrors the `claimViewToEntity` formula: (specRv + statusRv - 1) so
+    // a freshly-created task has RV "1" rather than "2". `status.revision`
+    // remains a backstop for stores that haven't migrated the
+    // `resource_version` column yet.
+    resourceVersion: String(agentTaskRvComposite(view)),
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
@@ -129,6 +130,22 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
       deletionTimestamp: view.spec.deletionTimestamp,
     },
   };
+}
+
+/**
+ * Compute the composite Entity resourceVersion for an AgentTaskView.
+ *
+ * Combines the persisted spec `resource_version` (bumped by every spec-side
+ * write via `putAgentTaskSpec`) with the persisted status `resource_version`
+ * (bumped by every status-side write via `patchAgentTaskStatus`). Falls back
+ * to `status.revision` for stores that haven't yet populated
+ * `status.resource_version`. The `-1` term keeps `(1,1) → 1` so a freshly
+ * created task has RV `"1"` rather than `"2"`.
+ */
+function agentTaskRvComposite(view: AgentTaskView): number {
+  const specRv = view.spec.resourceVersion ?? 1;
+  const statusRv = view.status.resourceVersion ?? view.status.revision ?? 1;
+  return specRv + statusRv - 1;
 }
 
 export function isAgentTaskSpecStale(entity: AgentTaskEntity): boolean {
