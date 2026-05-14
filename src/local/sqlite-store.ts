@@ -819,6 +819,7 @@ export function initSqliteDb(dbPath: string): Database {
     addResourceVersionColumn(db, "bounties", { initFrom: "literal", literal: 1 });
     addResourceVersionColumn(db, "goals", { initFrom: "literal", literal: 1 });
     addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
+    addResourceVersionColumn(db, "outcomes", { initFrom: "literal", literal: 1 });
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
@@ -854,7 +855,7 @@ export function initSqliteDb(dbPath: string): Database {
 }
 
 /**
- * Idempotently add a `resource_version INTEGER NOT NULL DEFAULT 0` column to
+ * Idempotently add a `resource_version INTEGER NOT NULL DEFAULT 1` column to
  * `table`, then backfill existing rows according to `init`.
  *
  * Used by migration v16 (#304, C6) to lay down compare-and-set resource
@@ -862,12 +863,23 @@ export function initSqliteDb(dbPath: string): Database {
  * exist (some tables — sessions, bounties — are created lazily by their own
  * stores) or if the column has already been added.
  *
- * The literal-init path (`initFrom: "literal"`) writes the value to ALL rows
- * unconditionally; safe because freshly-added columns start at the DEFAULT (0)
- * and we want to lift legacy rows to 1 so callers do not observe an
- * "uninitialised" RV. The column-init path (`initFrom: "column"`) copies an
- * existing monotonic counter (generation / revision) so the first CAS bump in
- * Task 2+ stays strictly increasing.
+ * The `DEFAULT 1` matches the SCHEMA_DDL fresh-table default and the C6
+ * invariant that every row carries `resource_version >= 1`. It is critical
+ * for tables whose DDL is defined lazily in another module (handoffs,
+ * sessions, goals, bounties, outcomes): subsequent INSERTs from those stores
+ * do not mention `resource_version`, so they rely on the column DEFAULT to
+ * supply 1 rather than 0.
+ *
+ * The literal-init path (`initFrom: "literal"`) writes the value to existing
+ * rows that still sit at 0; safe because the column DEFAULT also lifts new
+ * inserts directly to 1. The column-init path (`initFrom: "column"`) copies
+ * an existing monotonic counter (generation / revision) so the first CAS
+ * bump in Task 2+ stays strictly increasing.
+ *
+ * The legacy `WHERE resource_version = 0` clauses are retained as belt-and-
+ * suspenders for any rows that somehow predate this DEFAULT change (e.g. a
+ * DB that already ran the original `DEFAULT 0` ALTER from the initial T1
+ * landing).
  */
 function addResourceVersionColumn(
   db: Database,
@@ -885,10 +897,12 @@ function addResourceVersionColumn(
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as readonly { name: string }[];
   const colNames = new Set(cols.map((c) => c.name));
   if (!colNames.has("resource_version")) {
-    db.run(`ALTER TABLE ${table} ADD COLUMN resource_version INTEGER NOT NULL DEFAULT 0`);
+    db.run(`ALTER TABLE ${table} ADD COLUMN resource_version INTEGER NOT NULL DEFAULT 1`);
   }
 
   if (init.initFrom === "literal") {
+    // Backfill rows that the DEFAULT didn't catch (e.g. a DB that already ran
+    // the original DEFAULT-0 ALTER from the initial T1 landing).
     db.run(`UPDATE ${table} SET resource_version = ? WHERE resource_version = 0`, [init.literal]);
   } else {
     // Copy from an existing column (generation/revision). Guard against the
@@ -897,9 +911,10 @@ function addResourceVersionColumn(
       db.run(`UPDATE ${table} SET resource_version = 1 WHERE resource_version = 0`);
       return;
     }
-    db.run(`UPDATE ${table} SET resource_version = ${init.column} WHERE resource_version = 0`);
-    // Defensive: ensure no row stays at 0 even if the source column was 0.
-    db.run(`UPDATE ${table} SET resource_version = 1 WHERE resource_version = 0`);
+    // Unconditional: column-init means generation/revision IS the desired RV,
+    // overriding the DEFAULT 1 set by the ALTER above. Floor at 1 so rows
+    // with a 0 source counter still end up with a valid RV.
+    db.run(`UPDATE ${table} SET resource_version = MAX(${init.column}, 1)`);
   }
 }
 

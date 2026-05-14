@@ -235,7 +235,10 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
   // watch is tracked as a follow-up.
   if (body.sessionId === undefined) {
     try {
-      const entity = contributionToEntity(contribution, namespace);
+      // Pass `1` (the SCHEMA_DDL `resource_version` DEFAULT) so the
+      // watch event matches the RV a subsequent `listEntities()` will
+      // hydrate from the freshly-inserted row. See C6 (#304) Task 1.
+      const entity = contributionToEntity(contribution, namespace, 1);
       watchHub.recordWrite({ kind: "Contribution", namespace, op: "ADDED", entity });
       watchSubscriber?.markSeen({
         kind: "Contribution",

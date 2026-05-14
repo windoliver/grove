@@ -1015,4 +1015,341 @@ describe("schema migration", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("v16 migration backfills resource_version on every mutating-entity table", async () => {
+    // C6 (#304) Task 1 safety net. Asserts both:
+    //   1. Existing rows are lifted to a non-zero `resource_version` matching
+    //      the init rule (generation for *_spec, revision for *_status,
+    //      literal 1 for everything else).
+    //   2. Post-migration INSERTs that do NOT mention `resource_version`
+    //      still land with `resource_version >= 1` — the column DEFAULT
+    //      must be 1, not 0. This is the regression check for the
+    //      `DEFAULT 0` bug in the original T1 commit.
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      // Build a v15-shaped legacy DB. Each table's DDL mirrors the
+      // pre-v16 SCHEMA_DDL but omits `resource_version` so the
+      // migration must add it.
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+
+        -- v15-shaped contributions (no resource_version)
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          description TEXT,
+          agent_id TEXT NOT NULL,
+          agent_name TEXT,
+          created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          content_hash TEXT NOT NULL,
+          manifest_json TEXT NOT NULL
+        );
+
+        -- v15-shaped claim_spec / claim_status (no resource_version)
+        CREATE TABLE IF NOT EXISTS claim_spec (
+          id TEXT PRIMARY KEY,
+          role_name TEXT,
+          platform TEXT,
+          blueprint TEXT,
+          assignee_json TEXT,
+          lease_deadline_sec INTEGER,
+          priority INTEGER,
+          max_iterations INTEGER,
+          generation INTEGER NOT NULL DEFAULT 1,
+          target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_json TEXT NOT NULL,
+          intent_summary TEXT NOT NULL,
+          context_json TEXT,
+          owner_ref_json TEXT,
+          finalizers_json TEXT NOT NULL DEFAULT '[]',
+          deletion_timestamp TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS claim_status (
+          id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL DEFAULT 'active',
+          observed_generation INTEGER NOT NULL DEFAULT 0,
+          agent_session_id TEXT,
+          last_heartbeat_at TEXT NOT NULL,
+          lease_expires_at TEXT NOT NULL,
+          current_contribution_cid TEXT,
+          conditions_json TEXT NOT NULL DEFAULT '[]',
+          last_transition_at TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL DEFAULT 1
+        );
+
+        -- v15-shaped agent_task_spec / agent_task_status (no resource_version)
+        CREATE TABLE IF NOT EXISTS agent_task_spec (
+          id TEXT PRIMARY KEY,
+          worktree TEXT NOT NULL,
+          runtime TEXT NOT NULL,
+          role TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          depends_on_json TEXT NOT NULL DEFAULT '[]',
+          max_turns INTEGER,
+          budget_json TEXT,
+          generation INTEGER NOT NULL DEFAULT 1,
+          owner_ref_json TEXT,
+          finalizers_json TEXT NOT NULL DEFAULT '[]',
+          deletion_timestamp TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_task_status (
+          id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL DEFAULT 'Pending',
+          session_id TEXT,
+          contributions_json TEXT NOT NULL DEFAULT '[]',
+          conditions_json TEXT NOT NULL DEFAULT '[]',
+          observed_generation INTEGER NOT NULL DEFAULT 0,
+          last_transition_at TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1
+        );
+
+        -- v15-shaped lazy tables (DDLs live in their own modules; they
+        -- predate v16 so they also lack resource_version). These mirror
+        -- the production DDLs from sqlite-handoff-store.ts,
+        -- sqlite-goal-session-store.ts, sqlite-bounty-store.ts, and
+        -- sqlite-outcome-store.ts.
+        CREATE TABLE IF NOT EXISTS handoffs (
+          handoff_id TEXT PRIMARY KEY,
+          source_cid TEXT NOT NULL,
+          from_role TEXT NOT NULL,
+          to_role TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending_pickup',
+          requires_reply INTEGER NOT NULL DEFAULT 0,
+          reply_due_at TEXT,
+          resolved_by_cid TEXT,
+          seen_at TEXT,
+          acked_at TEXT,
+          session_id TEXT,
+          ipc_message_id TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          uid TEXT NOT NULL,
+          goal TEXT,
+          preset_name TEXT,
+          topology_json TEXT,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          worktree_strategy_json TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          started_at TEXT NOT NULL,
+          finalizers_json TEXT NOT NULL DEFAULT '[]',
+          deletion_timestamp TEXT,
+          deletion_audit_json TEXT NOT NULL DEFAULT '[]',
+          ended_at TEXT,
+          stop_reason TEXT,
+          stop_status TEXT,
+          archived_at INTEGER,
+          contribution_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS goals (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          goal TEXT NOT NULL,
+          acceptance TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          set_at TEXT NOT NULL,
+          set_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bounties (
+          bounty_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          creator_agent_id TEXT NOT NULL,
+          creator_json TEXT NOT NULL,
+          amount INTEGER NOT NULL,
+          criteria_json TEXT NOT NULL,
+          zone_id TEXT,
+          deadline TEXT NOT NULL,
+          claimed_by_json TEXT,
+          claim_id TEXT,
+          fulfilled_by_cid TEXT,
+          reservation_id TEXT,
+          context_json TEXT,
+          content_hash TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS outcomes (
+          cid TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          reason TEXT,
+          baseline_cid TEXT,
+          content_hash TEXT,
+          evaluated_at TEXT NOT NULL,
+          evaluated_by TEXT NOT NULL
+        );
+
+        INSERT OR REPLACE INTO schema_migrations (version, applied_at)
+        VALUES (15, '2026-05-01T00:00:00Z');
+      `);
+
+      const now = new Date().toISOString();
+
+      // Seed one row per table. The *_spec rows use a distinct
+      // `generation` and the *_status rows use a distinct `revision` so
+      // we can verify the column-init path actually copies from the
+      // right source.
+      db.run(
+        `INSERT INTO contributions
+           (cid, kind, mode, summary, agent_id, created_at, tags_json, content_hash, manifest_json)
+         VALUES (?, 'note', 'individual', ?, 'agent-a', ?, '[]', ?, '{}')`,
+        ["blake3:v16-contrib", "v16-test", now, "blake3:v16-hash"],
+      );
+      db.run(
+        `INSERT INTO claim_spec
+           (id, role_name, generation, target_ref, agent_id, agent_json,
+            intent_summary, finalizers_json, created_at)
+         VALUES (?, 'reviewer', 3, 'task:x', 'agent-a', '{}', 'work', '[]', ?)`,
+        ["claim-v16", now],
+      );
+      db.run(
+        `INSERT INTO claim_status
+           (id, phase, observed_generation, last_heartbeat_at, lease_expires_at,
+            conditions_json, last_transition_at, attempt_count, revision)
+         VALUES (?, 'active', 0, ?, ?, '[]', ?, 0, 5)`,
+        ["claim-v16", now, now, now],
+      );
+      db.run(
+        `INSERT INTO agent_task_spec
+           (id, worktree, runtime, role, prompt, depends_on_json, generation,
+            finalizers_json, created_at)
+         VALUES (?, 'wt-a', 'claude', 'planner', 'do work', '[]', 2, '[]', ?)`,
+        ["task-v16", now],
+      );
+      db.run(
+        `INSERT INTO agent_task_status
+           (id, phase, contributions_json, conditions_json,
+            observed_generation, last_transition_at, revision)
+         VALUES (?, 'Pending', '[]', '[]', 0, ?, 4)`,
+        ["task-v16", now],
+      );
+      db.run(
+        `INSERT INTO handoffs
+           (handoff_id, source_cid, from_role, to_role, status, created_at)
+         VALUES (?, ?, 'planner', 'reviewer', 'pending_pickup', ?)`,
+        ["handoff-v16", "blake3:v16-contrib", now],
+      );
+      db.run(
+        `INSERT INTO sessions
+           (session_id, uid, goal, started_at)
+         VALUES (?, 'session-uid-v16', 'session goal', ?)`,
+        ["session-v16", now],
+      );
+      db.run(
+        `INSERT INTO goals (id, goal, acceptance, set_at, set_by)
+         VALUES (1, 'goal v16', 'acceptance', ?, 'tester')`,
+        [now],
+      );
+      db.run(
+        `INSERT INTO bounties
+           (bounty_id, title, description, creator_agent_id, creator_json,
+            amount, criteria_json, deadline, created_at, updated_at)
+         VALUES (?, 'b', 'd', 'agent-a', '{}', 1, '{}', ?, ?, ?)`,
+        ["bounty-v16", now, now, now],
+      );
+      db.run(
+        `INSERT INTO outcomes
+           (cid, status, content_hash, evaluated_at, evaluated_by)
+         VALUES (?, 'accepted', 'blake3:outcome-v16', ?, 'evaluator')`,
+        ["blake3:v16-outcome", now],
+      );
+      db.close();
+
+      // Run the v16 migration.
+      const migrated = initSqliteDb(dbPath);
+
+      // Helper: read resource_version for a single keyed row.
+      const rvFor = (table: string, idCol: string, idVal: string): number => {
+        const row = migrated
+          .prepare(`SELECT resource_version AS rv FROM ${table} WHERE ${idCol} = ?`)
+          .get(idVal) as { rv: number } | null;
+        if (row === null) throw new Error(`row not found in ${table}: ${idVal}`);
+        return row.rv;
+      };
+
+      // Existing rows backfilled per init rule.
+      expect(rvFor("contributions", "cid", "blake3:v16-contrib")).toBe(1);
+      expect(rvFor("claim_spec", "id", "claim-v16")).toBe(3); // from generation
+      expect(rvFor("claim_status", "id", "claim-v16")).toBe(5); // from revision
+      expect(rvFor("agent_task_spec", "id", "task-v16")).toBe(2); // from generation
+      expect(rvFor("agent_task_status", "id", "task-v16")).toBe(4); // from revision
+      expect(rvFor("handoffs", "handoff_id", "handoff-v16")).toBe(1);
+      expect(rvFor("sessions", "session_id", "session-v16")).toBe(1);
+      expect(rvFor("bounties", "bounty_id", "bounty-v16")).toBe(1);
+      expect(rvFor("outcomes", "cid", "blake3:v16-outcome")).toBe(1);
+
+      // Goals uses id=1 (singleton); rvFor takes numeric -> cast via raw.
+      const goalRow = migrated
+        .prepare("SELECT resource_version AS rv FROM goals WHERE id = 1")
+        .get() as { rv: number } | null;
+      expect(goalRow?.rv).toBe(1);
+
+      // Schema version was advanced.
+      const ver = (
+        migrated.prepare("SELECT MAX(version) as v FROM schema_migrations").get() as {
+          v: number | null;
+        }
+      ).v;
+      expect(ver).toBe(CURRENT_SCHEMA_VERSION);
+
+      // Critical regression check (Issue 1): post-migration INSERTs that
+      // do NOT mention `resource_version` MUST land with the column
+      // DEFAULT, and that DEFAULT MUST be 1 — not 0. Exercises every
+      // lazy-DDL table whose insert path does not specify the column.
+      migrated.run(
+        `INSERT INTO contributions
+           (cid, kind, mode, summary, agent_id, created_at, tags_json, content_hash, manifest_json)
+         VALUES (?, 'note', 'individual', 'fresh', 'agent-b', ?, '[]', ?, '{}')`,
+        ["blake3:v16-fresh-contrib", now, "blake3:v16-fresh-hash"],
+      );
+      migrated.run(
+        `INSERT INTO handoffs
+           (handoff_id, source_cid, from_role, to_role, status, created_at)
+         VALUES (?, ?, 'planner', 'reviewer', 'pending_pickup', ?)`,
+        ["handoff-v16-fresh", "blake3:v16-fresh-contrib", now],
+      );
+      migrated.run(
+        `INSERT INTO sessions (session_id, uid, goal, started_at)
+         VALUES (?, 'fresh-uid', 'fresh', ?)`,
+        ["session-v16-fresh", now],
+      );
+      migrated.run(
+        `INSERT INTO bounties
+           (bounty_id, title, description, creator_agent_id, creator_json,
+            amount, criteria_json, deadline, created_at, updated_at)
+         VALUES (?, 'b', 'd', 'agent-b', '{}', 1, '{}', ?, ?, ?)`,
+        ["bounty-v16-fresh", now, now, now],
+      );
+      migrated.run(
+        `INSERT INTO outcomes
+           (cid, status, content_hash, evaluated_at, evaluated_by)
+         VALUES (?, 'accepted', 'blake3:outcome-v16-fresh', ?, 'evaluator')`,
+        ["blake3:v16-outcome-fresh", now],
+      );
+
+      expect(rvFor("contributions", "cid", "blake3:v16-fresh-contrib")).toBeGreaterThanOrEqual(1);
+      expect(rvFor("handoffs", "handoff_id", "handoff-v16-fresh")).toBeGreaterThanOrEqual(1);
+      expect(rvFor("sessions", "session_id", "session-v16-fresh")).toBeGreaterThanOrEqual(1);
+      expect(rvFor("bounties", "bounty_id", "bounty-v16-fresh")).toBeGreaterThanOrEqual(1);
+      expect(rvFor("outcomes", "cid", "blake3:v16-outcome-fresh")).toBeGreaterThanOrEqual(1);
+
+      migrated.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

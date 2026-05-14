@@ -1406,7 +1406,13 @@ export async function contributeOperation(
           kind: "Contribution",
           namespace: deps.namespace,
           op: "ADDED",
-          entity: contributionToEntity(contribution, deps.namespace),
+          // Pass `1` to match the SCHEMA_DDL DEFAULT for fresh `contributions`
+          // inserts (and the v16 migration DEFAULT). Without it, the
+          // adapter projects RV from a missing field as "0" and a
+          // subsequent `listEntities()` round-trip returns "1", breaking
+          // the watch list↔notify RV invariant. T2/T3 will swap this for
+          // the value read back from the durable write.
+          entity: contributionToEntity(contribution, deps.namespace, 1),
         });
       }
     } catch (callbackErr) {
