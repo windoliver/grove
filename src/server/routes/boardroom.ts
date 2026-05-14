@@ -235,10 +235,12 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
   // watch is tracked as a follow-up.
   if (body.sessionId === undefined) {
     try {
-      // Pass `1` (the SCHEMA_DDL `resource_version` DEFAULT) so the
-      // watch event matches the RV a subsequent `listEntities()` will
-      // hydrate from the freshly-inserted row. See C6 (#304) Task 1.
-      const entity = contributionToEntity(contribution, namespace, 1);
+      // Until T2/T3 lands per-mutation RV bump and threading through
+      // write events, this projects RV=0 (matching the other
+      // contribution-broadcast paths: watch-hub-recorder, serve.ts,
+      // routes/watch.ts, nexus-contribution-store). Uniform 0 is
+      // strictly better than asymmetric 0/1. Tracked in C6 (#304).
+      const entity = contributionToEntity(contribution, namespace);
       watchHub.recordWrite({ kind: "Contribution", namespace, op: "ADDED", entity });
       watchSubscriber?.markSeen({
         kind: "Contribution",

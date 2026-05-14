@@ -1352,4 +1352,44 @@ describe("schema migration", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("v16 migration is idempotent — does not clobber post-migration RV bumps", async () => {
+    // Regression for C6 (#304) Task 1 review: an earlier fix used an
+    // unconditional UPDATE that would reset T2's CAS-bumped RV values
+    // back to MAX(generation, 1) on every grove restart.
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      // First boot — migrates to v16.
+      let db = initSqliteDb(dbPath);
+      db.run(
+        `INSERT INTO claim_spec
+           (id, target_ref, agent_id, agent_json, intent_summary, created_at)
+         VALUES ('claim-bump', 'ref-1', 'a', '{}', 'i', '2026-01-01T00:00:00Z')`,
+      );
+      db.run(
+        `INSERT INTO claim_status
+           (id, last_heartbeat_at, lease_expires_at, last_transition_at)
+         VALUES ('claim-bump', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', '2026-01-01T00:00:00Z')`,
+      );
+      // Simulate T2's CAS bump pushing RV past the source column.
+      db.run(`UPDATE claim_spec SET resource_version = 99 WHERE id = 'claim-bump'`);
+      db.run(`UPDATE claim_status SET resource_version = 77 WHERE id = 'claim-bump'`);
+      db.close();
+
+      // Second boot — must NOT re-run v16 migration.
+      db = initSqliteDb(dbPath);
+      const spec = db
+        .prepare("SELECT resource_version FROM claim_spec WHERE id = 'claim-bump'")
+        .get() as { resource_version: number };
+      const status = db
+        .prepare("SELECT resource_version FROM claim_status WHERE id = 'claim-bump'")
+        .get() as { resource_version: number };
+      expect(spec.resource_version).toBe(99);
+      expect(status.resource_version).toBe(77);
+      db.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1406,13 +1406,12 @@ export async function contributeOperation(
           kind: "Contribution",
           namespace: deps.namespace,
           op: "ADDED",
-          // Pass `1` to match the SCHEMA_DDL DEFAULT for fresh `contributions`
-          // inserts (and the v16 migration DEFAULT). Without it, the
-          // adapter projects RV from a missing field as "0" and a
-          // subsequent `listEntities()` round-trip returns "1", breaking
-          // the watch list↔notify RV invariant. T2/T3 will swap this for
-          // the value read back from the durable write.
-          entity: contributionToEntity(contribution, deps.namespace, 1),
+          // Until T2/T3 lands per-mutation RV bump and threading through
+          // write events, this projects RV=0 (matching the other
+          // contribution-broadcast paths: watch-hub-recorder, serve.ts,
+          // routes/watch.ts, nexus-contribution-store). Uniform 0 is
+          // strictly better than asymmetric 0/1. Tracked in C6 (#304).
+          entity: contributionToEntity(contribution, deps.namespace),
         });
       }
     } catch (callbackErr) {

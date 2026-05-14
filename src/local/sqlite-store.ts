@@ -810,21 +810,29 @@ export function initSqliteDb(dbPath: string): Database {
     // Each table existence is guarded because some (sessions, bounties, outcomes)
     // are created lazily by their own stores and may not exist yet on a fresh DB
     // that has only ever exercised the contribution path.
-    addResourceVersionColumn(db, "contributions", { initFrom: "literal", literal: 1 });
-    addResourceVersionColumn(db, "claim_spec", { initFrom: "column", column: "generation" });
-    addResourceVersionColumn(db, "claim_status", { initFrom: "column", column: "revision" });
-    addResourceVersionColumn(db, "agent_task_spec", { initFrom: "column", column: "generation" });
-    addResourceVersionColumn(db, "agent_task_status", { initFrom: "column", column: "revision" });
-    addResourceVersionColumn(db, "sessions", { initFrom: "literal", literal: 1 });
-    addResourceVersionColumn(db, "bounties", { initFrom: "literal", literal: 1 });
-    addResourceVersionColumn(db, "goals", { initFrom: "literal", literal: 1 });
-    addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
-    addResourceVersionColumn(db, "outcomes", { initFrom: "literal", literal: 1 });
+    //
+    // CRITICAL: this block MUST be version-gated. The column-init path inside
+    // `addResourceVersionColumn` issues an unconditional
+    // `UPDATE ... SET resource_version = MAX(<col>, 1)` which would otherwise
+    // clobber Task 2+ CAS-bumped values back to MAX(generation, 1) on every
+    // grove server restart. Run once per DB upgrade, never again.
+    if (currentVersion === null || currentVersion < 16) {
+      addResourceVersionColumn(db, "contributions", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "claim_spec", { initFrom: "column", column: "generation" });
+      addResourceVersionColumn(db, "claim_status", { initFrom: "column", column: "revision" });
+      addResourceVersionColumn(db, "agent_task_spec", { initFrom: "column", column: "generation" });
+      addResourceVersionColumn(db, "agent_task_status", { initFrom: "column", column: "revision" });
+      addResourceVersionColumn(db, "sessions", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "bounties", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "goals", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "outcomes", { initFrom: "literal", literal: 1 });
 
-    db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
-      CURRENT_SCHEMA_VERSION,
-      new Date().toISOString(),
-    ]);
+      db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
+        CURRENT_SCHEMA_VERSION,
+        new Date().toISOString(),
+      ]);
+    }
 
     if (needsLegacyBackfill) {
       // Backfill junction tables for pre-existing contributions once while
@@ -876,10 +884,13 @@ export function initSqliteDb(dbPath: string): Database {
  * an existing monotonic counter (generation / revision) so the first CAS
  * bump in Task 2+ stays strictly increasing.
  *
- * The legacy `WHERE resource_version = 0` clauses are retained as belt-and-
- * suspenders for any rows that somehow predate this DEFAULT change (e.g. a
- * DB that already ran the original `DEFAULT 0` ALTER from the initial T1
- * landing).
+ * Re-run safety: the column-init path issues an UNCONDITIONAL
+ * `UPDATE ... SET resource_version = MAX(<col>, 1)` (no WHERE clause). This
+ * is correct ONLY because the caller — the v16 migration block in
+ * `initSqliteDb` — is version-gated and runs at most once per DB upgrade.
+ * If the caller were ever re-run on an already-migrated DB, this UPDATE
+ * would clobber Task 2+ CAS-bumped RV values back to MAX(generation, 1).
+ * Do not invoke this helper outside the version-gated migration block.
  */
 function addResourceVersionColumn(
   db: Database,
