@@ -564,11 +564,57 @@ describe("TaskController worker lifecycle", () => {
     expect(errors).toEqual([{ taskId: "task-1", message: "spawn unavailable" }]);
   });
 
+  test("start is idempotent while running", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({ id: "task-1", phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }),
+    );
+    store.seed(
+      taskView({ id: "task-2", phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }),
+    );
+    let releaseBind: (() => void) | undefined;
+    let blockNextBind = true;
+    const bindCalls: string[] = [];
+    const binder: TaskBinder = {
+      bind: async ({ task }) => {
+        bindCalls.push(task.spec.id);
+        if (blockNextBind) {
+          blockNextBind = false;
+          await new Promise<void>((resolve) => {
+            releaseBind = resolve;
+          });
+        }
+        return { session: { id: `session-${task.spec.id}`, role: "worker", status: "running" } };
+      },
+    };
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      binder,
+      queue: new KeyedWorkQueue({ baseDelayMs: 1, maxDelayMs: 1 }),
+      now: () => FIXED_NOW_MS,
+      workerCount: 1,
+    });
+
+    controller.enqueue("task-1");
+    controller.enqueue("task-2");
+    controller.start();
+    controller.start();
+    await waitFor(() => bindCalls.length === 1);
+    await sleep(10);
+
+    expect(bindCalls).toEqual(["task-1"]);
+    releaseBind?.();
+    await waitFor(() => store.patches.some((patch) => patch.taskId === "task-1"));
+    await controller.stop();
+  });
+
   test("stop cancels workers and rejects new work", async () => {
     const store = new FakeTaskStore();
     const controller = controllerFor(store);
 
     controller.start();
+    await controller.stop();
     await controller.stop();
 
     expect(() => controller.enqueue("task-1")).toThrow("Work queue is closed");
@@ -609,7 +655,48 @@ describe("TaskController failure injection", () => {
       expect(store.views.get("task-1")?.status.phase).toBe(AgentTaskPhase.Running);
     }
   });
+
+  test("worker retry closes failed patch session and converges without duplicate live sessions", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const runtime = new FakeRuntime();
+    let failed = false;
+    const errors: Array<{ readonly taskId: string; readonly message: string }> = [];
+    const originalPatch = store.patchAgentTaskStatus;
+    store.patchAgentTaskStatus = async (taskId, patch) => {
+      if (patch.phase === AgentTaskPhase.Running && !failed) {
+        failed = true;
+        throw new Error("injected patch failure");
+      }
+      return originalPatch(taskId, patch);
+    };
+    const controller = new TaskController({
+      taskStore: store,
+      runtime,
+      queue: new KeyedWorkQueue({ baseDelayMs: 1, maxDelayMs: 1 }),
+      now: () => FIXED_NOW_MS,
+      onError: (error, taskId) => {
+        errors.push({ taskId, message: error instanceof Error ? error.message : String(error) });
+      },
+    });
+
+    controller.enqueue("task-1");
+    controller.start();
+    await waitFor(() => errors.length === 1);
+    await waitFor(() => store.views.get("task-1")?.status.sessionId === "session-2");
+    await controller.stop();
+
+    expect(errors).toEqual([{ taskId: "task-1", message: "injected patch failure" }]);
+    expect(runtime.spawnCalls).toHaveLength(2);
+    expect(runtime.closeCalls.map((session) => session.id)).toEqual(["session-1"]);
+    expect([...runtime.sessions.keys()]).toEqual(["session-2"]);
+    expect(store.views.get("task-1")?.status.phase).toBe(AgentTaskPhase.Running);
+  });
 });
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const started = Date.now();
