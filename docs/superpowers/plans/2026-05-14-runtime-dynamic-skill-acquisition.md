@@ -10,6 +10,25 @@
 
 ---
 
+## Execution Notes
+
+This repo's `bunfig.toml` enables coverage thresholds globally. For targeted
+TDD commands in this plan, run the listed `bun test ...` command through a
+temporary config with coverage disabled so a focused file set can return a
+useful red/green exit code:
+
+```bash
+tmp=$(mktemp)
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun test --config "$tmp" <same test files from the step>
+rc=$?
+rm -f "$tmp"
+exit "$rc"
+```
+
+For `bun run typecheck`, `bun run check`, `bun run build`, and full `bun test`,
+use the repository config as written.
+
 ## File Structure
 
 - `src/core/config.ts` owns `runtimeSkills` schema parsing and serialization.
