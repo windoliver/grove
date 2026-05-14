@@ -230,6 +230,17 @@ agentTasks.patch(
       observedGeneration: body.observedGeneration,
       lastTransitionAt: body.lastTransitionAt,
     };
-    return c.json(await store.patchAgentTaskStatus(c.req.param("id"), patch));
+    const patchResult = await store.patchAgentTaskStatus(c.req.param("id"), patch);
+    if (patchResult.kind === "rv-mismatch") {
+      // PATCH /status handler does not (yet) accept If-Match; if the inner
+      // store surfaces an rv-mismatch here, that's a programming error —
+      // only CAS-bearing routes should observe this branch (T6).
+      throw new Error(
+        `Unexpected RV mismatch on PATCH /api/agent-tasks/${c.req.param(
+          "id",
+        )}/status; route does not yet accept If-Match (C6 T6 will wire this)`,
+      );
+    }
+    return c.json(patchResult.view);
   },
 );

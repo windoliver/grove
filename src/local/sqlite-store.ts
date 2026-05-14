@@ -2144,7 +2144,8 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   patchAgentTaskStatus = async (
     taskId: string,
     patch: AgentTaskStatusPatch,
-  ): Promise<AgentTaskView> => {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
     const assignments: string[] = [];
     const params: SQLQueryBindings[] = [];
     const addAssignment = (column: string, value: SQLQueryBindings): void => {
@@ -2168,8 +2169,11 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     }
 
     assignments.push("revision = revision + 1");
+    // C6 (#304): bump resource_version on the status row alongside revision.
+    assignments.push("resource_version = resource_version + 1");
     params.push(taskId);
 
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(taskId);
       if (existing === null) {
@@ -2179,6 +2183,20 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
           message: `AgentTask '${taskId}' not found`,
         });
       }
+
+      // C6 (#304): Compare-and-set on the persisted status resource_version.
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existing.status.resourceVersion ?? existing.status.revision ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            // Status has no generation of its own; surface the spec's.
+            generation: existing.spec.generation,
+          };
+          return null;
+        }
+      }
+
       this.db
         .prepare(`UPDATE agent_task_status SET ${assignments.join(", ")} WHERE id = ?`)
         .run(...params);
@@ -2188,7 +2206,12 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
       return view;
     });
 
-    return tx.immediate();
+    const view = tx.immediate();
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
+    if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
+    return { kind: "ok", view };
   };
 
   async listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]> {

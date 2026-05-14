@@ -107,12 +107,14 @@ describe("SqliteAgentTaskStore", () => {
       }),
     );
 
-    const patched = await stores.agentTaskStore.patchAgentTaskStatus("task-status", {
-      phase: AgentTaskPhase.Succeeded,
-      observedGeneration: created.spec.generation,
-      contributions: ["b3:done"],
-      conditions: [condition],
-    });
+    const patched = expectOk(
+      await stores.agentTaskStore.patchAgentTaskStatus("task-status", {
+        phase: AgentTaskPhase.Succeeded,
+        observedGeneration: created.spec.generation,
+        contributions: ["b3:done"],
+        conditions: [condition],
+      }),
+    );
 
     expect(patched.spec.generation).toBe(created.spec.generation);
     expect(patched.spec.dependsOn).toEqual(["task-a"]);
@@ -250,5 +252,114 @@ describe("SqliteAgentTaskStore", () => {
       { ifMatch: "999" }, // bogus RV — must create the row regardless
     );
     expect(result.kind).toBe("ok");
+  });
+
+  // --------------------------------------------------------------------------
+  // patchAgentTaskStatus CAS (C6, #304)
+  // --------------------------------------------------------------------------
+
+  test("patchAgentTaskStatus returns rv-mismatch when ifMatch is stale", async () => {
+    const stores = createSqliteStores(join(tempDir, "test.db"));
+    closeStores = stores.close;
+
+    const created = expectOk(
+      await stores.agentTaskStore.putAgentTaskSpec({
+        id: "status-cas-stale",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "worker",
+        prompt: "first",
+        dependsOn: [],
+        generation: 0,
+        createdAt: "2026-05-13T11:00:00.000Z",
+      }),
+    );
+    const staleRv = String(created.status.resourceVersion ?? created.status.revision ?? 1);
+
+    // Bump status RV via an unguarded patch.
+    const bumped = expectOk(
+      await stores.agentTaskStore.patchAgentTaskStatus("status-cas-stale", {
+        phase: AgentTaskPhase.Running,
+        observedGeneration: created.spec.generation,
+      }),
+    );
+    expect(
+      Number(String(bumped.status.resourceVersion ?? bumped.status.revision ?? 1)),
+    ).toBeGreaterThan(Number(staleRv));
+
+    // Retry with stale ifMatch → rv-mismatch.
+    const result = await stores.agentTaskStore.patchAgentTaskStatus(
+      "status-cas-stale",
+      { observedGeneration: created.spec.generation },
+      { ifMatch: staleRv },
+    );
+    expect(result.kind).toBe("rv-mismatch");
+    if (result.kind === "rv-mismatch") {
+      expect(result.current.resourceVersion).not.toBe(staleRv);
+      expect(typeof result.current.generation).toBe("number");
+    }
+  });
+
+  test("patchAgentTaskStatus bumps status resource_version when ifMatch matches", async () => {
+    const stores = createSqliteStores(join(tempDir, "test.db"));
+    closeStores = stores.close;
+
+    const created = expectOk(
+      await stores.agentTaskStore.putAgentTaskSpec({
+        id: "status-cas-fresh",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "worker",
+        prompt: "first",
+        dependsOn: [],
+        generation: 0,
+        createdAt: "2026-05-13T11:00:00.000Z",
+      }),
+    );
+    const initialRv = String(created.status.resourceVersion ?? created.status.revision ?? 1);
+
+    const result = await stores.agentTaskStore.patchAgentTaskStatus(
+      "status-cas-fresh",
+      { phase: AgentTaskPhase.Running, observedGeneration: created.spec.generation },
+      { ifMatch: initialRv },
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      const nextRv = String(result.view.status.resourceVersion ?? result.view.status.revision ?? 1);
+      expect(Number(nextRv)).toBeGreaterThan(Number(initialRv));
+    }
+  });
+
+  test("patchAgentTaskStatus without ifMatch still writes (back-compat path)", async () => {
+    const stores = createSqliteStores(join(tempDir, "test.db"));
+    closeStores = stores.close;
+
+    const created = expectOk(
+      await stores.agentTaskStore.putAgentTaskSpec({
+        id: "status-cas-noopts",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "worker",
+        prompt: "first",
+        dependsOn: [],
+        generation: 0,
+        createdAt: "2026-05-13T11:00:00.000Z",
+      }),
+    );
+    const result = await stores.agentTaskStore.patchAgentTaskStatus("status-cas-noopts", {
+      observedGeneration: created.spec.generation,
+    });
+    expect(result.kind).toBe("ok");
+  });
+
+  test("patchAgentTaskStatus against non-existent task throws NotFoundError", async () => {
+    const stores = createSqliteStores(join(tempDir, "test.db"));
+    closeStores = stores.close;
+
+    // PATCH on a missing resource is NotFound, regardless of ifMatch. The
+    // route surface treats this as a 404 (T6 wires If-Match enforcement).
+    await expect(
+      stores.agentTaskStore.patchAgentTaskStatus("status-cas-missing", {}, { ifMatch: "1" }),
+    ).rejects.toThrow();
   });
 });

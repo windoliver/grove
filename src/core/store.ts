@@ -471,8 +471,20 @@ export interface AgentTaskStore {
   /** List merged split agent task views. */
   listAgentTasks(query?: AgentTaskQuery): Promise<readonly AgentTaskView[]>;
 
-  /** Patch controller-owned task status fields only. */
-  patchAgentTaskStatus(taskId: string, patch: AgentTaskStatusPatch): Promise<AgentTaskView>;
+  /**
+   * Patch controller-owned task status fields only.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted status
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes
+   * and returns `{ kind: "ok", view }` with the bumped status RV.
+   */
+  patchAgentTaskStatus(
+    taskId: string,
+    patch: AgentTaskStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
 
   /** Return AgentTasks wrapped in the Entity envelope. */
   listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]>;
