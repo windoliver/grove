@@ -679,6 +679,18 @@ describe("InformerFactory memoization", () => {
     expect(() => factory.informerFor("AgentSession")).toThrow(/mode=remote/);
   });
 
+  test("WorkBlock and TimelineEvent supported in remote mode", () => {
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+    });
+    expect(factory.supportsKind("WorkBlock")).toBe(true);
+    expect(factory.supportsKind("TimelineEvent")).toBe(true);
+    expect(factory.informerFor("WorkBlock")).toBeDefined();
+    expect(factory.informerFor("TimelineEvent")).toBeDefined();
+  });
+
   test("AgentSession supported in local mode — informerFor returns informer, supportsKind=true", () => {
     const factory = new InformerFactory({
       mode: "local",
@@ -692,6 +704,19 @@ describe("InformerFactory memoization", () => {
     expect(factory.supportsKind("AgentSession")).toBe(true);
     const informer = factory.informerFor("AgentSession");
     expect(informer).toBeDefined();
+  });
+
+  test("WorkBlock and TimelineEvent supported in local mode", () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+    expect(factory.supportsKind("WorkBlock")).toBe(true);
+    expect(factory.supportsKind("TimelineEvent")).toBe(true);
+    expect(factory.informerFor("WorkBlock")).toBeDefined();
+    expect(factory.informerFor("TimelineEvent")).toBeDefined();
   });
 
   test("separate factories for separate namespaces use distinct instances", () => {

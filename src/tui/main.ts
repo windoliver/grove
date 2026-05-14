@@ -565,6 +565,10 @@ async function buildAppProps(
               } catch {
                 return [];
               }
+            case "WorkBlock":
+              return localCleanupRuntime.timelineStore.listWorkBlockEntities();
+            case "TimelineEvent":
+              return localCleanupRuntime.timelineStore.listAllTimelineEventEntities();
             default:
               return [];
           }

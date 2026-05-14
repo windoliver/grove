@@ -25,6 +25,8 @@ import type {
   ContributionStore,
   ThreadSummary,
 } from "../core/store.js";
+import type { SessionTimeline, WorkBlock } from "../core/timeline.js";
+import type { TimelineStore } from "../core/timeline-store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import { getActivePR } from "../github/active-pr.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
@@ -84,6 +86,7 @@ export interface StoreBackedProviderDeps {
   readonly backendLabel?: string | undefined;
   readonly goalSessionStore?: GoalSessionStore | undefined;
   readonly handoffStore?: HandoffStore | undefined;
+  readonly timelineStore?: TimelineStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +133,7 @@ export abstract class StoreBackedProvider
   protected readonly label: string;
   protected readonly goalSession: GoalSessionStore | undefined;
   protected readonly handoffs: HandoffStore | undefined;
+  protected readonly timeline: TimelineStore | undefined;
 
   /**
    * Public accessor for the handoff store. NexusWsBridge needs direct
@@ -166,6 +170,7 @@ export abstract class StoreBackedProvider
     this.label = deps.backendLabel ?? this.name;
     this.goalSession = deps.goalSessionStore;
     this.handoffs = deps.handoffStore;
+    this.timeline = deps.timelineStore;
   }
 
   // ---------------------------------------------------------------------------
@@ -388,6 +393,51 @@ export abstract class StoreBackedProvider
       return [];
     }
     return this.store.hotThreads({ limit });
+  }
+
+  /** List WorkBlocks for timeline-aware providers. */
+  async getWorkBlocks(query?: {
+    readonly sessionId?: string | undefined;
+  }): Promise<readonly WorkBlock[]> {
+    if (this.timeline === undefined) return [];
+    return this.timeline.listWorkBlocks({
+      sessionId: query?.sessionId ?? this.activeSessionId,
+    });
+  }
+
+  /** Fetch SessionTimeline from the backing timeline store. */
+  async getTimeline(query?: {
+    readonly sessionId?: string | undefined;
+    readonly afterRv?: string | undefined;
+    readonly limit?: number | undefined;
+    readonly includeWorkBlocks?: boolean | undefined;
+  }): Promise<SessionTimeline> {
+    const sessionId = query?.sessionId ?? this.activeSessionId;
+    if (this.timeline === undefined) {
+      return {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        events: [],
+        ...(query?.includeWorkBlocks === true ? { workBlocks: [] } : {}),
+        timelineResourceVersion: "0",
+      };
+    }
+    const events = await this.timeline.listTimelineEvents({
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(query?.afterRv === undefined ? {} : { afterRv: query.afterRv }),
+      ...(query?.limit === undefined ? {} : { limit: query.limit }),
+    });
+    const workBlocks =
+      query?.includeWorkBlocks === true
+        ? await this.timeline.listWorkBlocks({
+            ...(sessionId === undefined ? {} : { sessionId }),
+          })
+        : undefined;
+    return {
+      ...(sessionId === undefined ? {} : { sessionId }),
+      events,
+      ...(workBlocks === undefined ? {} : { workBlocks }),
+      timelineResourceVersion: await this.timeline.currentTimelineResourceVersion(sessionId),
+    };
   }
 
   // ---------------------------------------------------------------------------

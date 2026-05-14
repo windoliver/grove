@@ -256,6 +256,7 @@ async function createLocalProvider(
     bountyStore: stores.bountyStore,
     goalSessionStore: stores.goalSessionStore,
     handoffStore: stores.handoffStore,
+    timelineStore: deps.timelineStore,
     cas: deps.cas,
     workspace: deps.workspace,
     backendLabel: label,

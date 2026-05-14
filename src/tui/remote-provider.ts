@@ -25,6 +25,8 @@ import {
   parseThreadSummaries,
 } from "../core/schemas.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
+import type { SessionTimeline, WorkBlock } from "../core/timeline.js";
+import { parseSessionTimeline, parseWorkBlocks } from "../core/timeline-schemas.js";
 import type {
   ActivityQuery,
   ArtifactMeta,
@@ -374,6 +376,37 @@ export class RemoteDataProvider
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { threads: unknown };
     return parseThreadSummaries(body.threads);
+  }
+
+  async getWorkBlocks(query?: {
+    readonly sessionId?: string | undefined;
+  }): Promise<readonly WorkBlock[]> {
+    const params = new URLSearchParams();
+    if (query?.sessionId !== undefined) params.set("sessionId", query.sessionId);
+    const resp = await fetch(this.sessionScopedUrl("/api/work-blocks", params), {
+      headers: this.authHeaders,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    const body = (await resp.json()) as { readonly items?: unknown };
+    return parseWorkBlocks(body.items ?? []);
+  }
+
+  async getTimeline(query?: {
+    readonly sessionId?: string | undefined;
+    readonly afterRv?: string | undefined;
+    readonly limit?: number | undefined;
+    readonly includeWorkBlocks?: boolean | undefined;
+  }): Promise<SessionTimeline> {
+    const params = new URLSearchParams();
+    if (query?.sessionId !== undefined) params.set("sessionId", query.sessionId);
+    if (query?.afterRv !== undefined) params.set("afterRv", query.afterRv);
+    if (query?.limit !== undefined) params.set("limit", String(query.limit));
+    if (query?.includeWorkBlocks === true) params.set("includeWorkBlocks", "true");
+    const resp = await fetch(this.sessionScopedUrl("/api/timeline", params), {
+      headers: this.authHeaders,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return parseSessionTimeline(await resp.json());
   }
 
   // ---------------------------------------------------------------------------

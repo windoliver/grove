@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { computeCid } from "../core/manifest.js";
 import type { Claim, Contribution, ContributionInput } from "../core/models.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../core/timeline.js";
 import { createSqliteStores } from "../local/sqlite-store.js";
 import { LocalDataProvider } from "./local-provider.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
@@ -51,11 +52,33 @@ function makeClaim(overrides: Partial<Claim> = {}): Claim {
   };
 }
 
+function makeWorkBlock(workBlockId: string, sessionId: string) {
+  return {
+    workBlockId,
+    sessionId,
+    goal: "Investigate provider timeline",
+    actor: { agentId: "agent-1" },
+    origin: WorkBlockOrigin.Agent,
+    status: WorkBlockStatus.Running,
+    startedAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    inputRefs: [],
+    outputRefs: [],
+    evidenceRefs: [],
+    approvalRefs: [],
+    contributionCids: [],
+    artifactHashes: [],
+    claimIds: [],
+    revision: 1,
+    createdAt: "2026-05-13T10:00:00.000Z",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory for conformance suite
 // ---------------------------------------------------------------------------
 
-function createTestProvider(): Promise<{
+async function createTestProvider(): Promise<{
   provider: LocalDataProvider;
   testCid: string;
   cleanup: () => void;
@@ -85,6 +108,15 @@ function createTestProvider(): Promise<{
   // Insert a claim
   const claim = makeClaim({ targetRef: c1.cid });
   stores.claimStore.createClaim(claim);
+  await stores.timelineStore.putWorkBlock(makeWorkBlock("wb_local_provider", "session-provider"));
+  await stores.timelineStore.appendTimelineEvent({
+    eventId: "te_local_provider",
+    sessionId: "session-provider",
+    type: TimelineEventType.WorkBlockStarted,
+    occurredAt: "2026-05-13T10:00:00.000Z",
+    targetRefs: [{ kind: "WorkBlock", id: "wb_local_provider" }],
+    payload: {},
+  });
 
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
@@ -93,16 +125,17 @@ function createTestProvider(): Promise<{
     claimStore: stores.claimStore,
     frontier,
     groveName: "test-grove",
+    timelineStore: stores.timelineStore,
   });
 
-  return Promise.resolve({
+  return {
     provider,
     testCid: c1.cid,
     cleanup: () => {
       stores.close();
       rmSync(tempDir, { recursive: true, force: true });
     },
-  });
+  };
 }
 
 // Run the conformance suite
@@ -161,6 +194,18 @@ describe("LocalDataProvider specific", () => {
   test("getActivity respects limit", async () => {
     const activity = await provider.getActivity({ limit: 2 });
     expect(activity.length).toBe(2);
+  });
+
+  test("exposes WorkBlocks and SessionTimeline from the local timeline store", async () => {
+    const blocks = await provider.getWorkBlocks?.({ sessionId: "session-provider" });
+    const timeline = await provider.getTimeline?.({
+      sessionId: "session-provider",
+      includeWorkBlocks: true,
+    });
+
+    expect(blocks?.map((block) => block.workBlockId)).toEqual(["wb_local_provider"]);
+    expect(timeline?.events.map((event) => event.eventId)).toEqual(["te_local_provider"]);
+    expect(timeline?.workBlocks?.map((block) => block.workBlockId)).toEqual(["wb_local_provider"]);
   });
 
   test("close releases resources without error", () => {

@@ -21,6 +21,7 @@ import type {
 } from "../core/models.js";
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
+import type { SessionTimeline, WorkBlock } from "../core/timeline.js";
 
 // ---------------------------------------------------------------------------
 // Capabilities
@@ -106,6 +107,19 @@ export interface ActivityQuery extends PaginatedQuery {
   readonly kind?: ContributionKind | undefined;
   readonly agentId?: string | undefined;
   readonly tags?: readonly string[] | undefined;
+}
+
+/** WorkBlock list query. */
+export interface WorkBlocksQuery {
+  readonly sessionId?: string | undefined;
+}
+
+/** SessionTimeline read query. */
+export interface TimelineQuery {
+  readonly sessionId?: string | undefined;
+  readonly afterRv?: string | undefined;
+  readonly limit?: number | undefined;
+  readonly includeWorkBlocks?: boolean | undefined;
 }
 
 /** Full detail for a single contribution, including relations and thread. */
@@ -248,6 +262,12 @@ export interface TuiDataProvider {
 
   /** Hot discussion threads. */
   getHotThreads(limit?: number): Promise<readonly ThreadSummary[]>;
+
+  /** List WorkBlocks when the backend exposes timeline storage. */
+  getWorkBlocks?(query?: WorkBlocksQuery): Promise<readonly WorkBlock[]>;
+
+  /** Fetch an ordered SessionTimeline view when available. */
+  getTimeline?(query?: TimelineQuery): Promise<SessionTimeline>;
 
   /** Create a claim for an agent (optional — available in local/remote modes). */
   createClaim?(input: ClaimInput): Promise<Claim>;

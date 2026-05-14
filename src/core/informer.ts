@@ -485,8 +485,14 @@ interface RunningInformer {
  * Asking for an unsupported kind throws — louder than handing back an
  * informer that would silently never sync.
  */
-const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
-const LOCAL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
+const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "WorkBlock", "TimelineEvent"];
+const LOCAL_KINDS: readonly WatchKind[] = [
+  "Contribution",
+  "Claim",
+  "AgentSession",
+  "WorkBlock",
+  "TimelineEvent",
+];
 
 const REMOTE_SUPPORTED = new Set<WatchKind>(REMOTE_KINDS);
 const LOCAL_SUPPORTED = new Set<WatchKind>(LOCAL_KINDS);
