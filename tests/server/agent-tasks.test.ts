@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AgentTaskPhase } from "../../src/core/agent-task.js";
 import { Finalizer } from "../../src/core/lifecycle-metadata.js";
+import type { EntityWriteEvent } from "../../src/core/watch-events.js";
 import type { TestContext } from "./helpers.js";
 import {
   createTestContext,
@@ -18,6 +19,16 @@ const SPEC_BODY = {
   maxTurns: 4,
   budget: { usd: 3 },
 };
+
+function captureWatchWrites(ctx: TestContext): EntityWriteEvent[] {
+  const events: EntityWriteEvent[] = [];
+  const original = ctx.deps.watchHub.recordWrite.bind(ctx.deps.watchHub);
+  ctx.deps.watchHub.recordWrite = (event: EntityWriteEvent) => {
+    events.push(event);
+    return original(event);
+  };
+  return events;
+}
 
 describe("Agent task routes", () => {
   let ctx: TestContext;
@@ -44,6 +55,37 @@ describe("Agent task routes", () => {
     expect(data.spec.generation).toBe(1);
     expect(data.status.phase).toBe(AgentTaskPhase.Pending);
     expect(data.status.observedGeneration).toBe(0);
+  });
+
+  test("PUT /api/agent-tasks/:id emits AgentTask watch writes for create and update", async () => {
+    const events = captureWatchWrites(ctx);
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(0n);
+
+    const createRes = await ctx.app.request("/api/agent-tasks/task-watch-put", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(SPEC_BODY),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(1n);
+
+    const updateRes = await ctx.app.request("/api/agent-tasks/task-watch-put", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ ...SPEC_BODY, prompt: "Updated prompt" }),
+    });
+
+    expect(updateRes.status).toBe(200);
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(2n);
+    expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED"]);
+    expect(events.map((event) => event.kind)).toEqual(["AgentTask", "AgentTask"]);
+    expect(events.map((event) => event.namespace)).toEqual([TEST_NAMESPACE, TEST_NAMESPACE]);
+    expect(events[0]?.entity.id).toBe("task-watch-put");
+    expect(events[0]?.entity.metadata.generation).toBe(1);
+    expect(events[1]?.entity.id).toBe("task-watch-put");
+    expect(events[1]?.entity.metadata.generation).toBe(2);
+    expect(events[1]?.entity.spec.prompt).toBe("Updated prompt");
   });
 
   test("PUT /api/agent-tasks/:id rejects status-owned fields from the TUI path", async () => {
@@ -147,6 +189,44 @@ describe("Agent task routes", () => {
     expect(data.status.conditions[0].message).toBe("Started session-1");
     expect(data.spec.prompt).toBe("Implement issue 297");
     expect(data.spec.generation).toBe(created.spec.generation);
+  });
+
+  test("PATCH /api/agent-tasks/:id/status emits AgentTask MODIFIED watch write", async () => {
+    const events = captureWatchWrites(ctx);
+
+    const putRes = await ctx.app.request("/api/agent-tasks/task-watch-status-source", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(SPEC_BODY),
+    });
+    expect(putRes.status).toBe(201);
+    const created = await putRes.json();
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(1n);
+
+    const patchRes = await ctx.app.request("/api/agent-tasks/task-watch-status-source/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        ...TEST_CONTROLLER_HEADERS,
+      },
+      body: JSON.stringify({
+        phase: AgentTaskPhase.Running,
+        observedGeneration: created.spec.generation,
+        sessionId: "session-watch",
+      }),
+    });
+
+    expect(patchRes.status).toBe(200);
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(2n);
+    expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED"]);
+    const statusEvent = events[1];
+    expect(statusEvent?.kind).toBe("AgentTask");
+    expect(statusEvent?.namespace).toBe(TEST_NAMESPACE);
+    expect(statusEvent?.entity.id).toBe("task-watch-status-source");
+    expect(statusEvent?.entity.metadata.generation).toBe(created.spec.generation);
+    expect(statusEvent?.entity.status.phase).toBe(AgentTaskPhase.Running);
+    expect(statusEvent?.entity.status.sessionId).toBe("session-watch");
   });
 
   test("GET /api/list supports AgentTask snapshots", async () => {

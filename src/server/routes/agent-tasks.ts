@@ -12,7 +12,7 @@ import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
-import { AgentTaskPhase } from "../../core/agent-task.js";
+import { AgentTaskPhase, agentTaskViewToEntity } from "../../core/agent-task.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
@@ -154,9 +154,10 @@ export const agentTasks: HonoType<ServerEnv> = new Hono<ServerEnv>();
 agentTasks.use("*", requireAgentTaskStore);
 
 agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
+  const deps = c.get("deps");
   const taskId = c.req.param("id");
   const body = c.req.valid("json");
-  const store = c.get("deps").agentTaskStore;
+  const store = deps.agentTaskStore;
   if (store === undefined) throw new Error("AgentTask store middleware did not run");
 
   const existing = await store.getAgentTask(taskId);
@@ -177,6 +178,27 @@ agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
   };
 
   const view = await store.putAgentTaskSpec(spec);
+  const namespace = c.get("namespace");
+  const entity = agentTaskViewToEntity(view, namespace);
+  try {
+    deps.watchHub.recordWrite({
+      kind: "AgentTask",
+      namespace,
+      op: existing === undefined ? "ADDED" : "MODIFIED",
+      entity,
+    });
+    deps.watchSubscriber?.markSeen({
+      kind: "AgentTask",
+      entityId: view.spec.id,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: watch fan-out threw after PUT /api/agent-tasks/${taskId}: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
   return c.json(view, existing === undefined ? 201 : 200);
 });
 
@@ -211,7 +233,8 @@ agentTasks.patch(
   requireControllerToken,
   zValidator("json", statusBodySchema),
   async (c) => {
-    const store = c.get("deps").agentTaskStore;
+    const deps = c.get("deps");
+    const store = deps.agentTaskStore;
     if (store === undefined) throw new Error("AgentTask store middleware did not run");
     const body = c.req.valid("json");
     const patch: AgentTaskStatusPatch = {
@@ -222,6 +245,24 @@ agentTasks.patch(
       observedGeneration: body.observedGeneration,
       lastTransitionAt: body.lastTransitionAt,
     };
-    return c.json(await store.patchAgentTaskStatus(c.req.param("id"), patch));
+    const taskId = c.req.param("id");
+    const view = await store.patchAgentTaskStatus(taskId, patch);
+    const namespace = c.get("namespace");
+    const entity = agentTaskViewToEntity(view, namespace);
+    try {
+      deps.watchHub.recordWrite({ kind: "AgentTask", namespace, op: "MODIFIED", entity });
+      deps.watchSubscriber?.markSeen({
+        kind: "AgentTask",
+        entityId: view.spec.id,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PATCH /api/agent-tasks/${taskId}/status: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+    return c.json(view);
   },
 );
