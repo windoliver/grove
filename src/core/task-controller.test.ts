@@ -16,6 +16,7 @@ import {
   type TaskControllerRuntime,
   type TaskControllerStore,
 } from "./task-controller.js";
+import { KeyedWorkQueue } from "./workqueue.js";
 
 const FIXED_NOW_MS = Date.parse("2026-05-14T12:00:00.000Z");
 const FIXED_NOW_ISO = "2026-05-14T12:00:00.000Z";
@@ -469,3 +470,135 @@ describe("DefaultTaskBinder", () => {
     });
   });
 });
+
+describe("TaskController worker lifecycle", () => {
+  test("rejects invalid lifecycle options", () => {
+    const invalidOptions: ReadonlyArray<{
+      readonly resyncIntervalMs?: number;
+      readonly workerCount?: number;
+    }> = [
+      { resyncIntervalMs: 0 },
+      { resyncIntervalMs: Number.NaN },
+      { workerCount: 0 },
+      { workerCount: 1.5 },
+    ];
+
+    for (const options of invalidOptions) {
+      const store = new FakeTaskStore();
+      expect(
+        () =>
+          new TaskController({
+            taskStore: store,
+            runtime: new FakeRuntime(),
+            now: () => FIXED_NOW_MS,
+            ...options,
+          }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  test("resync enqueues every AgentTask entity id", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ id: "task-a" }));
+    store.seed(taskView({ id: "task-b" }));
+    const queue = new KeyedWorkQueue({ now: () => FIXED_NOW_MS });
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      queue,
+      now: () => FIXED_NOW_MS,
+    });
+
+    const count = await controller.resync();
+
+    expect(count).toBe(2);
+    await expect(queue.take()).resolves.toEqual({ key: "task-a", attempt: 0 });
+    await expect(queue.take()).resolves.toEqual({ key: "task-b", attempt: 0 });
+  });
+
+  test("failed worker reconcile retries and re-reads fresh task state", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    let fail = true;
+    const binder: TaskBinder = {
+      bind: async () => {
+        if (fail) throw new Error("spawn unavailable");
+        return { session: { id: "session-retry", role: "worker", status: "running" } };
+      },
+    };
+    const errors: Array<{ readonly taskId: string; readonly message: string }> = [];
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      binder,
+      queue: new KeyedWorkQueue({ baseDelayMs: 1, maxDelayMs: 1 }),
+      now: () => FIXED_NOW_MS,
+      onError: (error, taskId) => {
+        errors.push({ taskId, message: error instanceof Error ? error.message : String(error) });
+      },
+    });
+
+    controller.enqueue("task-1");
+    controller.start();
+    await waitFor(() => errors.length === 1);
+    fail = false;
+    await waitFor(() => store.patches.some((patch) => patch.patch.sessionId === "session-retry"));
+    await controller.stop();
+
+    expect(errors).toEqual([{ taskId: "task-1", message: "spawn unavailable" }]);
+  });
+
+  test("stop cancels workers and rejects new work", async () => {
+    const store = new FakeTaskStore();
+    const controller = controllerFor(store);
+
+    controller.start();
+    await controller.stop();
+
+    expect(() => controller.enqueue("task-1")).toThrow("Work queue is closed");
+    expect(() => controller.start()).toThrow("Work queue is closed");
+  });
+});
+
+describe("TaskController failure injection", () => {
+  test("converges when each bind step fails once", async () => {
+    const cases = ["bind", "patch-running"] as const;
+
+    for (const failurePoint of cases) {
+      const store = new FakeTaskStore();
+      store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+      let failed = false;
+      const binder: TaskBinder = {
+        bind: async () => {
+          if (failurePoint === "bind" && !failed) {
+            failed = true;
+            throw new Error("injected bind failure");
+          }
+          return { session: { id: `session-${failurePoint}`, role: "worker", status: "running" } };
+        },
+      };
+      const originalPatch = store.patchAgentTaskStatus;
+      store.patchAgentTaskStatus = async (taskId, patch) => {
+        if (failurePoint === "patch-running" && patch.phase === AgentTaskPhase.Running && !failed) {
+          failed = true;
+          throw new Error("injected patch failure");
+        }
+        return originalPatch(taskId, patch);
+      };
+      const controller = controllerFor(store, { binder });
+
+      await expect(controller.reconcileTask("task-1")).rejects.toThrow("injected");
+      await expect(controller.reconcileTask("task-1")).resolves.toBeDefined();
+
+      expect(store.views.get("task-1")?.status.phase).toBe(AgentTaskPhase.Running);
+    }
+  });
+});
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > 500) throw new Error("condition was not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
