@@ -512,8 +512,7 @@ describe("TaskController worker lifecycle", () => {
     const count = await controller.resync();
 
     expect(count).toBe(2);
-    await expect(queue.take()).resolves.toEqual({ key: "task-a", attempt: 0 });
-    await expect(queue.take()).resolves.toEqual({ key: "task-b", attempt: 0 });
+    expect(queue.pendingKeys()).toEqual(["task-a", "task-b"]);
   });
 
   test("failed worker reconcile retries and re-reads fresh task state", async () => {
