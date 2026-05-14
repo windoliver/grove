@@ -520,8 +520,10 @@ describe("TaskController worker lifecycle", () => {
     const store = new FakeTaskStore();
     store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
     let fail = true;
+    const bindCalls: Array<{ readonly prompt: string; readonly generation: number }> = [];
     const binder: TaskBinder = {
-      bind: async () => {
+      bind: async ({ task }) => {
+        bindCalls.push({ prompt: task.spec.prompt, generation: task.spec.generation });
         if (fail) throw new Error("spawn unavailable");
         return { session: { id: "session-retry", role: "worker", status: "running" } };
       },
@@ -541,10 +543,24 @@ describe("TaskController worker lifecycle", () => {
     controller.enqueue("task-1");
     controller.start();
     await waitFor(() => errors.length === 1);
+    const current = store.views.get("task-1");
+    if (current === undefined) throw new Error("expected seeded task");
+    store.views.set("task-1", {
+      spec: {
+        ...current.spec,
+        prompt: "Implement the updated task",
+        generation: 2,
+      },
+      status: current.status,
+    });
     fail = false;
     await waitFor(() => store.patches.some((patch) => patch.patch.sessionId === "session-retry"));
     await controller.stop();
 
+    expect(bindCalls).toEqual([
+      { prompt: "Implement the task", generation: 1 },
+      { prompt: "Implement the updated task", generation: 2 },
+    ]);
     expect(errors).toEqual([{ taskId: "task-1", message: "spawn unavailable" }]);
   });
 
