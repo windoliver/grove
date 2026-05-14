@@ -3,9 +3,64 @@
  *
  * Artifacts are stored by BLAKE3 content hash.
  * Implementations handle deduplication automatically.
+ *
+ * This file ALSO houses the compare-and-set (CAS) mutation result type used
+ * by stores/routes for `If-Match` precondition handling (C6, #304). The two
+ * concepts share the "CAS" acronym in different domains: "Content-Addressable
+ * Storage" for blobs and "Compare-And-Set" for optimistic concurrency.
  */
 
 import type { Artifact } from "./models.js";
+
+// ---------------------------------------------------------------------------
+// Compare-And-Set mutation result (C6, #304)
+// ---------------------------------------------------------------------------
+
+/**
+ * Successful CAS mutation: the write committed and the caller-visible
+ * post-write view of the entity is returned.
+ */
+export interface CasOkResult<View> {
+  readonly kind: "ok";
+  readonly view: View;
+}
+
+/**
+ * CAS precondition failure: the supplied `ifMatch` resource version did not
+ * match the store's current value. The current `resourceVersion` and
+ * `generation` are returned so the caller can decide whether to retry with
+ * the new snapshot or surface a 409 to the user.
+ */
+export interface CasMismatchResult {
+  readonly kind: "rv-mismatch";
+  readonly current: {
+    readonly resourceVersion: string;
+    readonly generation: number;
+  };
+}
+
+/**
+ * Discriminated union returned by every CAS-aware store mutation method.
+ *
+ * Callers branch on `.kind`: `"ok"` carries the post-write view, while
+ * `"rv-mismatch"` carries the store's current resource version so retry
+ * logic can read-merge-retry without an extra round-trip.
+ */
+export type CasMutationResult<View> = CasOkResult<View> | CasMismatchResult;
+
+/** Narrowing helper: was the mutation accepted? */
+export function isOk<V>(r: CasMutationResult<V>): r is CasOkResult<V> {
+  return r.kind === "ok";
+}
+
+/** Narrowing helper: did the precondition fail? */
+export function isMismatch<V>(r: CasMutationResult<V>): r is CasMismatchResult {
+  return r.kind === "rv-mismatch";
+}
+
+// ---------------------------------------------------------------------------
+// Content-Addressable Storage (CAS) protocol
+// ---------------------------------------------------------------------------
 
 /** Options for storing artifacts. */
 export interface PutOptions {

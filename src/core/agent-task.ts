@@ -39,6 +39,13 @@ export interface AgentTaskSpecRecord {
   readonly finalizers?: readonly Finalizer[] | undefined;
   readonly deletionTimestamp?: string | undefined;
   readonly createdAt: string;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to deriving RV from
+   * `generation`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 export interface AgentTaskStatusRecord {
@@ -50,6 +57,13 @@ export interface AgentTaskStatusRecord {
   readonly observedGeneration: number;
   readonly lastTransitionAt: string;
   readonly revision: number;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to deriving RV from
+   * `revision`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 export interface AgentTaskView {
@@ -100,6 +114,11 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
     },
     conditions: view.status.conditions,
     observedGeneration: view.status.observedGeneration,
+    // C6 (#304) NOTE: `view.status.resourceVersion` is the persisted
+    // `resource_version` column. Until subsequent C6 tasks land the
+    // per-mutation bump, `revision` remains the authoritative monotonic
+    // signal that conformance tests rely on. Tasks 2-3 will switch the
+    // source-of-truth here once they own bumping the new column.
     resourceVersion: String(view.status.revision),
     metadata: {
       generation: view.spec.generation,

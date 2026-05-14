@@ -74,7 +74,21 @@ export type ContributionStatus = Record<string, never>;
 
 export type ContributionEntity = Entity<"Contribution", ContributionSpec, ContributionStatus>;
 
-export function contributionToEntity(c: Contribution, namespace: string): ContributionEntity {
+/**
+ * Project a Contribution into the Entity envelope.
+ *
+ * Contributions are immutable, so the resourceVersion ordinarily stays at
+ * its initial value. C6 (#304) introduced an optional, store-provided
+ * `resourceVersion` so the Entity reflects the real persisted column rather
+ * than the legacy hardcoded `"0"`. Callers that do not have a stored value
+ * (in-memory stores, fixture builders, projection-only tests) may omit it;
+ * the projection then falls back to `"0"` for backward compatibility.
+ */
+export function contributionToEntity(
+  c: Contribution,
+  namespace: string,
+  resourceVersion?: number,
+): ContributionEntity {
   const published: Condition = {
     type: "Published",
     status: "True",
@@ -103,7 +117,7 @@ export function contributionToEntity(c: Contribution, namespace: string): Contri
     status: {},
     conditions: [published],
     observedGeneration: 0,
-    resourceVersion: "0",
+    resourceVersion: String(resourceVersion ?? 0),
     metadata: {
       generation: 1,
       creationTimestamp: c.createdAt,
@@ -298,6 +312,13 @@ export function claimViewToEntity(
     // `revision` has not. Encode the lease-crossed boundary in the
     // resourceVersion so caches/informers see a version change at the
     // boundary and do not conflate the two snapshots.
+    //
+    // C6 (#304) NOTE: `view.status.resourceVersion` is the persisted
+    // `resource_version` column. Until subsequent C6 tasks land the
+    // per-mutation bump, `revision` remains the authoritative monotonic
+    // signal so heartbeat/release/complete continue to advance the Entity
+    // RV. Tasks 2-3 will switch the source-of-truth here once they own
+    // bumping the new column inside each mutation.
     resourceVersion: leaseIsExpired
       ? `${view.status.revision}-lease-expired`
       : String(view.status.revision),

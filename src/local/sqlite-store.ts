@@ -71,7 +71,7 @@ import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/e
 import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 const SQLITE_BIND_LIMIT = 900;
 const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
@@ -100,7 +100,8 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     tags_json TEXT NOT NULL DEFAULT '[]',
     content_hash TEXT NOT NULL,
-    manifest_json TEXT NOT NULL
+    manifest_json TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE INDEX IF NOT EXISTS idx_contributions_kind ON contributions(kind);
@@ -187,7 +188,8 @@ const SCHEMA_DDL = `
     owner_ref_json TEXT,
     finalizers_json TEXT NOT NULL DEFAULT '[]',
     deletion_timestamp TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS claim_status (
@@ -202,6 +204,7 @@ const SCHEMA_DDL = `
     last_transition_at TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     revision INTEGER NOT NULL DEFAULT 1,
+    resource_version INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (id) REFERENCES claim_spec(id) ON DELETE CASCADE
   );
 
@@ -223,7 +226,8 @@ const SCHEMA_DDL = `
     owner_ref_json TEXT,
     finalizers_json TEXT NOT NULL DEFAULT '[]',
     deletion_timestamp TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS agent_task_status (
@@ -235,6 +239,7 @@ const SCHEMA_DDL = `
     observed_generation INTEGER NOT NULL DEFAULT 0,
     last_transition_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1,
+    resource_version INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (id) REFERENCES agent_task_spec(id) ON DELETE CASCADE
   );
 
@@ -793,6 +798,28 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v16: persist `resource_version` on every mutating-entity table
+    // (C6 #304). Subsequent C6 tasks will bump this column atomically inside
+    // each store mutation; T1 only lays down the column + initial values.
+    //
+    // Init rule:
+    //   - tables with `revision` (claim_status, agent_task_status) → init from revision
+    //   - tables with `generation` (claim_spec, agent_task_spec) → init from generation
+    //   - everything else                                            → init to 1
+    //
+    // Each table existence is guarded because some (sessions, bounties, outcomes)
+    // are created lazily by their own stores and may not exist yet on a fresh DB
+    // that has only ever exercised the contribution path.
+    addResourceVersionColumn(db, "contributions", { initFrom: "literal", literal: 1 });
+    addResourceVersionColumn(db, "claim_spec", { initFrom: "column", column: "generation" });
+    addResourceVersionColumn(db, "claim_status", { initFrom: "column", column: "revision" });
+    addResourceVersionColumn(db, "agent_task_spec", { initFrom: "column", column: "generation" });
+    addResourceVersionColumn(db, "agent_task_status", { initFrom: "column", column: "revision" });
+    addResourceVersionColumn(db, "sessions", { initFrom: "literal", literal: 1 });
+    addResourceVersionColumn(db, "bounties", { initFrom: "literal", literal: 1 });
+    addResourceVersionColumn(db, "goals", { initFrom: "literal", literal: 1 });
+    addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -824,6 +851,56 @@ export function initSqliteDb(dbPath: string): Database {
   initSchema.immediate();
 
   return db;
+}
+
+/**
+ * Idempotently add a `resource_version INTEGER NOT NULL DEFAULT 0` column to
+ * `table`, then backfill existing rows according to `init`.
+ *
+ * Used by migration v16 (#304, C6) to lay down compare-and-set resource
+ * versions on every mutating-entity table. No-op if the table does not yet
+ * exist (some tables — sessions, bounties — are created lazily by their own
+ * stores) or if the column has already been added.
+ *
+ * The literal-init path (`initFrom: "literal"`) writes the value to ALL rows
+ * unconditionally; safe because freshly-added columns start at the DEFAULT (0)
+ * and we want to lift legacy rows to 1 so callers do not observe an
+ * "uninitialised" RV. The column-init path (`initFrom: "column"`) copies an
+ * existing monotonic counter (generation / revision) so the first CAS bump in
+ * Task 2+ stays strictly increasing.
+ */
+function addResourceVersionColumn(
+  db: Database,
+  table: string,
+  init:
+    | { readonly initFrom: "literal"; readonly literal: number }
+    | { readonly initFrom: "column"; readonly column: string },
+): void {
+  const tableExists =
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table) as {
+      name: string;
+    } | null) !== null;
+  if (!tableExists) return;
+
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as readonly { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("resource_version")) {
+    db.run(`ALTER TABLE ${table} ADD COLUMN resource_version INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  if (init.initFrom === "literal") {
+    db.run(`UPDATE ${table} SET resource_version = ? WHERE resource_version = 0`, [init.literal]);
+  } else {
+    // Copy from an existing column (generation/revision). Guard against the
+    // unlikely case where the source column is missing on a legacy DB.
+    if (!colNames.has(init.column)) {
+      db.run(`UPDATE ${table} SET resource_version = 1 WHERE resource_version = 0`);
+      return;
+    }
+    db.run(`UPDATE ${table} SET resource_version = ${init.column} WHERE resource_version = 0`);
+    // Defensive: ensure no row stays at 0 even if the source column was 0.
+    db.run(`UPDATE ${table} SET resource_version = 1 WHERE resource_version = 0`);
+  }
 }
 
 /**
@@ -1111,6 +1188,7 @@ interface ClaimSpecRow {
   readonly intent_summary: string;
   readonly context_json: string | null;
   readonly created_at: string;
+  readonly resource_version: number;
 }
 
 interface ClaimStatusRow {
@@ -1125,9 +1203,23 @@ interface ClaimStatusRow {
   readonly last_transition_at: string;
   readonly attempt_count: number;
   readonly revision: number;
+  readonly resource_version: number;
 }
 
-interface ClaimViewRow extends ClaimSpecRow, ClaimStatusRow {}
+/**
+ * Joined-view row. The `resource_version` column appears on both `claim_spec`
+ * and `claim_status`, so the joined SELECT aliases them as
+ * `spec_resource_version` / `status_resource_version` to disambiguate.
+ * Both sides therefore intentionally omit `resource_version` from the merged
+ * interface — `rowToClaimView` re-injects the right alias before calling
+ * `rowToClaimSpec` / `rowToClaimStatus`.
+ */
+interface ClaimViewRow
+  extends Omit<ClaimSpecRow, "resource_version">,
+    Omit<ClaimStatusRow, "resource_version"> {
+  readonly spec_resource_version: number;
+  readonly status_resource_version: number;
+}
 
 function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
   return {
@@ -1154,6 +1246,7 @@ function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
     finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
     ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -1172,13 +1265,14 @@ function rowToClaimStatus(row: ClaimStatusRow): ClaimStatusRecord {
     lastTransitionAt: row.last_transition_at,
     attemptCount: row.attempt_count,
     revision: row.revision,
+    resourceVersion: row.resource_version,
   };
 }
 
 function rowToClaimView(row: ClaimViewRow): ClaimView {
   return {
-    spec: rowToClaimSpec(row),
-    status: rowToClaimStatus(row),
+    spec: rowToClaimSpec({ ...row, resource_version: row.spec_resource_version }),
+    status: rowToClaimStatus({ ...row, resource_version: row.status_resource_version }),
   };
 }
 
@@ -1196,6 +1290,7 @@ interface AgentTaskSpecRow {
   readonly finalizers_json: string;
   readonly deletion_timestamp: string | null;
   readonly created_at: string;
+  readonly resource_version: number;
 }
 
 interface AgentTaskStatusRow {
@@ -1207,9 +1302,19 @@ interface AgentTaskStatusRow {
   readonly observed_generation: number;
   readonly last_transition_at: string;
   readonly revision: number;
+  readonly resource_version: number;
 }
 
-interface AgentTaskViewRow extends AgentTaskSpecRow, AgentTaskStatusRow {}
+/**
+ * Joined-view row. See `ClaimViewRow` for the rationale behind the aliased
+ * `*_resource_version` columns.
+ */
+interface AgentTaskViewRow
+  extends Omit<AgentTaskSpecRow, "resource_version">,
+    Omit<AgentTaskStatusRow, "resource_version"> {
+  readonly spec_resource_version: number;
+  readonly status_resource_version: number;
+}
 
 function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
   return {
@@ -1230,6 +1335,7 @@ function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
     finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
     ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -1243,13 +1349,14 @@ function rowToAgentTaskStatus(row: AgentTaskStatusRow): AgentTaskStatusRecord {
     observedGeneration: row.observed_generation,
     lastTransitionAt: row.last_transition_at,
     revision: row.revision,
+    resourceVersion: row.resource_version,
   };
 }
 
 function rowToAgentTaskView(row: AgentTaskViewRow): AgentTaskView {
   return {
-    spec: rowToAgentTaskSpec(row),
-    status: rowToAgentTaskStatus(row),
+    spec: rowToAgentTaskSpec({ ...row, resource_version: row.spec_resource_version }),
+    status: rowToAgentTaskStatus({ ...row, resource_version: row.status_resource_version }),
   };
 }
 
@@ -1719,7 +1826,23 @@ export class SqliteContributionStore implements ContributionStore {
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
     const namespace = readStoreNamespace(this.db);
-    return items.map((c) => contributionToEntity(c, namespace));
+    if (items.length === 0) return [];
+
+    // Fetch the persisted resource_version per cid so the Entity projection
+    // can surface it (C6, #304). Done as a single bulk lookup to avoid an
+    // N+1 round-trip across the contributions list. Chunked under the SQLite
+    // variable-bind limit because `list()` can return arbitrarily large
+    // result sets when filters are open-ended.
+    const rvByCid = new Map<string, number>();
+    for (let i = 0; i < items.length; i += SQLITE_BIND_LIMIT) {
+      const chunk = items.slice(i, i + SQLITE_BIND_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.db
+        .prepare(`SELECT cid, resource_version FROM contributions WHERE cid IN (${placeholders})`)
+        .all(...chunk.map((c) => c.cid)) as readonly { cid: string; resource_version: number }[];
+      for (const row of rows) rvByCid.set(row.cid, row.resource_version);
+    }
+    return items.map((c) => contributionToEntity(c, namespace, rvByCid.get(c.cid)));
   }
 
   /**
@@ -1853,13 +1976,15 @@ const AGENT_TASK_VIEW_SELECT_COLS = `
   s.finalizers_json AS finalizers_json,
   s.deletion_timestamp AS deletion_timestamp,
   s.created_at AS created_at,
+  s.resource_version AS spec_resource_version,
   st.phase AS phase,
   st.session_id AS session_id,
   st.contributions_json AS contributions_json,
   st.conditions_json AS conditions_json,
   st.observed_generation AS observed_generation,
   st.last_transition_at AS last_transition_at,
-  st.revision AS revision
+  st.revision AS revision,
+  st.resource_version AS status_resource_version
 `;
 
 export class SqliteAgentTaskStore implements AgentTaskStore {
@@ -2103,6 +2228,7 @@ const CLAIM_VIEW_SELECT_COLS = `
   s.finalizers_json AS finalizers_json,
   s.deletion_timestamp AS deletion_timestamp,
   s.created_at AS created_at,
+  s.resource_version AS spec_resource_version,
   st.phase AS phase,
   st.observed_generation AS observed_generation,
   st.agent_session_id AS agent_session_id,
@@ -2112,7 +2238,8 @@ const CLAIM_VIEW_SELECT_COLS = `
   st.conditions_json AS conditions_json,
   st.last_transition_at AS last_transition_at,
   st.attempt_count AS attempt_count,
-  st.revision AS revision
+  st.revision AS revision,
+  st.resource_version AS status_resource_version
 `;
 const CLAIM_SPEC_OWNER_REF_PREDICATE = `json_extract(s.owner_ref_json, '$.kind') = ?
   AND json_extract(s.owner_ref_json, '$.id') = ?
