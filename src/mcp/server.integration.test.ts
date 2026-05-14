@@ -9,9 +9,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { parseGroveConfig } from "../core/config.js";
+import { InMemorySessionStore } from "../core/in-memory-session-store.js";
+import { DefaultRuntimeSkillAcquisitionService } from "../core/runtime-skill-acquisition.js";
 import { makeContribution } from "../core/test-helpers.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
@@ -53,7 +59,7 @@ describe("MCP server integration", () => {
     await testDeps.cleanup();
   });
 
-  test("lists all 41 tools", async () => {
+  test("lists all 42 tools", async () => {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
@@ -87,6 +93,7 @@ describe("MCP server integration", () => {
       "grove_release",
       "grove_report_usage",
       "grove_reproduce",
+      "grove_request_skill",
       "grove_search",
       "grove_send_message",
       "grove_session_delete_blockers",
@@ -233,6 +240,99 @@ describe("MCP server integration", () => {
 
     expect(result.isError).toBeTruthy();
     expect(getText(result)).toContain("NOT_FOUND");
+  });
+});
+
+describe("MCP server runtime skill integration", () => {
+  const originalRole = process.env.GROVE_AGENT_ROLE;
+  const originalAgent = process.env.GROVE_AGENT_ID;
+  const originalSession = process.env.GROVE_SESSION_ID;
+
+  afterEach(() => {
+    if (originalRole === undefined) delete process.env.GROVE_AGENT_ROLE;
+    else process.env.GROVE_AGENT_ROLE = originalRole;
+    if (originalAgent === undefined) delete process.env.GROVE_AGENT_ID;
+    else process.env.GROVE_AGENT_ID = originalAgent;
+    if (originalSession === undefined) delete process.env.GROVE_SESSION_ID;
+    else process.env.GROVE_SESSION_ID = originalSession;
+  });
+
+  test("grove_request_skill installs from local catalog and persists session role skill", async () => {
+    const root = mkdtempSync(join(tmpdir(), "grove-mcp-runtime-skill-"));
+    const groveDir = join(root, ".grove");
+    const workspace = join(root, "workspace");
+    const catalogRoot = join(groveDir, "skills");
+    const originalCwd = process.cwd();
+
+    mkdirSync(join(catalogRoot, "review"), { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(catalogRoot, "review", "SKILL.md"), "review skill", "utf-8");
+    writeFileSync(
+      join(groveDir, "grove.json"),
+      JSON.stringify({
+        name: "runtime-skill-test",
+        mode: "local",
+        runtimeSkills: {
+          mode: "role-allowlist",
+          roles: { coder: ["grove", "review"] },
+        },
+      }),
+      "utf-8",
+    );
+
+    const testDeps = await createTestMcpDeps();
+    const goalSessionStore = new InMemorySessionStore();
+    const session = await goalSessionStore.createSession({
+      goal: "Review work",
+      topology: {
+        structure: "flat",
+        roles: [{ name: "coder", skills: ["grove"] }],
+      },
+    });
+    const runtimeSkillService = new DefaultRuntimeSkillAcquisitionService({
+      readRuntimeSkillsConfig: async () => {
+        const config = parseGroveConfig(readFileSync(join(groveDir, "grove.json"), "utf-8"));
+        return config.runtimeSkills;
+      },
+      bundledSkillsRoot: catalogRoot,
+      workspaceOverrideRoot: catalogRoot,
+      sessionStore: goalSessionStore,
+    });
+    const deps: McpDeps = { ...testDeps.deps, runtimeSkillService };
+    const server = await createMcpServer(deps, { transport: "stdio" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "runtime-skill-client", version: "0.0.1" });
+
+    process.env.GROVE_AGENT_ROLE = "coder";
+    process.env.GROVE_AGENT_ID = "agent-1";
+    process.env.GROVE_SESSION_ID = session.id;
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      process.chdir(workspace);
+
+      const result = await client.callTool({
+        name: "grove_request_skill",
+        arguments: { skillName: "review" },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(readFileSync(join(workspace, ".codex/skills/review/SKILL.md"), "utf-8")).toBe(
+        "review skill",
+      );
+      expect(readFileSync(join(workspace, ".claude/skills/review/SKILL.md"), "utf-8")).toBe(
+        "review skill",
+      );
+      const updated = await goalSessionStore.getSession(session.id);
+      expect(updated?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    } finally {
+      process.chdir(originalCwd);
+      await client.close();
+      await server.close();
+      await testDeps.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
