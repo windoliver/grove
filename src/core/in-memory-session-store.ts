@@ -5,7 +5,9 @@ import {
   Finalizer,
 } from "./lifecycle-metadata.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
@@ -18,7 +20,7 @@ import type {
  * In-memory session store. Suitable for testing and single-process CLI usage.
  * Sessions are lost on process restart.
  */
-export class InMemorySessionStore implements SessionStore {
+export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionStore {
   private sessions: Session[] = [];
   private readonly contributions = new Map<string, string[]>();
 
@@ -120,6 +122,40 @@ export class InMemorySessionStore implements SessionStore {
       blockers: [],
       ...(warning !== undefined ? { warning } : {}),
     };
+  }
+
+  async appendSessionRoleSkill(
+    sessionId: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> {
+    const idx = this.sessions.findIndex((s) => s.id === sessionId);
+    if (idx === -1) return "session_missing";
+    const existing = this.sessions[idx];
+    if (!existing?.topology) return "role_missing";
+
+    let changed = false;
+    let foundRole = false;
+    const nextRoles = existing.topology.roles.map((role) => {
+      if (role.name !== roleName) return { ...role };
+      foundRole = true;
+      const currentSkills = role.skills ?? [];
+      if (currentSkills.includes(skillName)) return { ...role };
+      changed = true;
+      return { ...role, skills: [...currentSkills, skillName] };
+    });
+
+    if (!foundRole) return "role_missing";
+    if (!changed) return "already_present";
+
+    this.sessions[idx] = {
+      ...existing,
+      topology: {
+        ...existing.topology,
+        roles: nextRoles,
+      },
+    };
+    return "appended";
   }
 
   async archiveSession(id: string): Promise<void> {

@@ -44,7 +44,11 @@ export interface Session {
   readonly stopReason?: string | undefined;
   /** Machine-readable final loop status for operator UI and automation. */
   readonly stopStatus?: LoopStopStatus | undefined;
-  /** Resolved topology at session creation time (immutable once set). */
+  /**
+   * Resolved effective topology at session creation time.
+   * Runtime skill acquisition may append an authorized skill to a role's
+   * `skills` list; all other topology fields remain immutable after creation.
+   */
   readonly topology?: AgentTopology | undefined;
   /** Number of contributions linked to this session. */
   readonly contributionCount: number;
@@ -141,4 +145,18 @@ export interface SessionStore {
 
   /** Get all contribution CIDs for a session, ordered by time added. */
   getContributions(sessionId: string): Promise<readonly string[]>;
+}
+
+export type AppendSessionRoleSkillResult =
+  | "appended"
+  | "already_present"
+  | "session_missing"
+  | "role_missing";
+
+export interface RuntimeSkillSessionStore {
+  appendSessionRoleSkill(
+    sessionId: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult>;
 }
