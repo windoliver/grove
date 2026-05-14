@@ -9,6 +9,7 @@
  * gate first render on a fully-populated cache (no empty-flash).
  */
 
+import type { AgentTaskEntity } from "./agent-task.js";
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
 import { WatchClient, type WatchClientOp, type WatchClientOptions } from "./watch-client.js";
@@ -22,7 +23,9 @@ export type EntityForKind<K extends WatchKind> = K extends "Contribution"
     ? ClaimEntity
     : K extends "AgentSession"
       ? AgentSessionEntity
-      : never;
+      : K extends "AgentTask"
+        ? AgentTaskEntity
+        : never;
 
 export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 
@@ -466,17 +469,18 @@ interface RunningInformer {
  *
  * Remote: AgentSession is excluded because the grove-server `/api/list`
  * route currently returns 501 NOT_CONFIGURED for it (handler exists, list
- * source not wired). Re-add once server support lands.
+ * source not wired). AgentTask is backed by the server task store when
+ * configured.
  *
- * Local: AgentSession is supported — the in-process `WatchHub` plus
- * `agentRuntime.listSessions()` snapshot covers it without any server
- * route. PR2 (#388) wires this in via `LocalRuntime` + `tui/main.ts`.
+ * Local: AgentSession and AgentTask are supported — the in-process
+ * `WatchHub` plus caller-provided list snapshots cover them without any
+ * server route.
  *
  * Asking for an unsupported kind throws — louder than handing back an
  * informer that would silently never sync.
  */
-const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
-const LOCAL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
+const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentTask"];
+const LOCAL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession", "AgentTask"];
 
 const REMOTE_SUPPORTED = new Set<WatchKind>(REMOTE_KINDS);
 const LOCAL_SUPPORTED = new Set<WatchKind>(LOCAL_KINDS);

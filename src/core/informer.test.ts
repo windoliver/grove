@@ -685,6 +685,25 @@ describe("InformerFactory memoization", () => {
     expect(informer).toBeDefined();
   });
 
+  test("InformerFactory supports AgentTask in local and remote modes", () => {
+    const localFactory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+    expect(localFactory.supportsKind("AgentTask")).toBe(true);
+    expect(localFactory.informerFor("AgentTask")).toBeDefined();
+
+    const remoteFactory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://localhost:4515",
+      authHeader: "Bearer test",
+    });
+    expect(remoteFactory.supportsKind("AgentTask")).toBe(true);
+    expect(remoteFactory.informerFor("AgentTask")).toBeDefined();
+  });
+
   test("separate factories for separate namespaces use distinct instances", () => {
     // Each namespace gets its own factory (and its own authHeader that encodes
     // the namespace server-side). Two factories for different namespaces must
@@ -733,7 +752,9 @@ describe("Informer run() safety", () => {
     await expect(informer.run(ac.signal)).rejects.toThrow(/already running/);
     // Clean up
     ac.abort();
-    await firstRun.catch(() => {});
+    await firstRun.catch(() => {
+      /* abort rejects the blocked fake fetch */
+    });
   });
 
   test("abort unblocks run() even if a handler promise is still pending", async () => {

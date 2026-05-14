@@ -10,6 +10,7 @@
  */
 
 import { join } from "node:path";
+import { agentTaskViewToEntity } from "../core/agent-task.js";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
@@ -372,6 +373,7 @@ const watchSubscriber = new NexusWatchSubscriber({
   fetchEntity: makeWatchEntityFetcher({
     contributionStore: serverContributionStore,
     claimStore: serverClaimStore,
+    agentTaskStore: runtime.agentTaskStore,
   }),
 });
 watchSubscriber.start();
@@ -643,6 +645,7 @@ process.on("SIGINT", () => void shutdown());
 function makeWatchEntityFetcher(stores: {
   contributionStore: import("../core/store.js").ContributionStore;
   claimStore: import("../core/store.js").ClaimStore;
+  agentTaskStore?: import("../core/store.js").AgentTaskStore | undefined;
 }): (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity> {
   return async (kind, namespace, id) => {
     if (kind === "Contribution") {
@@ -654,6 +657,11 @@ function makeWatchEntityFetcher(stores: {
       const c = await stores.claimStore.getClaim(id);
       if (!c) throw new Error(`Claim ${id} not found`);
       return claimToEntity(c, () => Date.now(), namespace);
+    }
+    if (kind === "AgentTask") {
+      const view = await stores.agentTaskStore?.getAgentTask(id);
+      if (!view) throw new Error(`AgentTask ${id} not found`);
+      return agentTaskViewToEntity(view, namespace);
     }
     throw new Error(`Unsupported kind for watch fetcher: ${kind}`);
   };

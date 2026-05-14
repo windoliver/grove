@@ -143,4 +143,22 @@ describe("Agent task routes", () => {
     expect(data.spec.prompt).toBe("Implement issue 297");
     expect(data.spec.generation).toBe(created.spec.generation);
   });
+
+  test("GET /api/list supports AgentTask snapshots", async () => {
+    await ctx.agentTaskStore.putAgentTaskSpec({
+      id: "task-watch-list",
+      ...SPEC_BODY,
+      generation: 0,
+      createdAt: "2026-05-14T12:00:00.000Z",
+    });
+
+    const res = await ctx.app.request("/api/list?kind=AgentTask", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.items[0].kind).toBe("AgentTask");
+    expect(data.items[0].id).toBe("task-watch-list");
+  });
 });
