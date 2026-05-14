@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeContribution } from "../core/test-helpers.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../core/timeline.js";
 import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
+import { SqliteTimelineStore } from "../local/sqlite-timeline-store.js";
 import { buildDiagnosticsEntries } from "./bundle.js";
 import type { DiagnosticEntry } from "./sqlite-export.js";
 import type { ProbeRunner } from "./system.js";
@@ -42,6 +44,9 @@ describe("buildDiagnosticsEntries", () => {
     expect(paths).toContain("logs/manifest.json");
     expect(paths).toContain("logs/agent-logs/sess-1/coder.jsonl");
     expect(paths).toContain("db/contributions-recent.jsonl");
+    expect(paths).toContain("db/work-blocks.json");
+    expect(paths).toContain("db/timeline-events.json");
+    expect(paths).toContain("db/timeline-cursors.json");
     expect(paths).toContain("operator-primitives/availability.json");
     expect(paths).toContain("system/process-tree.txt");
     expect(paths).not.toContain("db/grove.db");
@@ -61,6 +66,14 @@ describe("buildDiagnosticsEntries", () => {
 
     const contributionText = decodeEntry(getEntry(result.entries, "db/contributions-recent.jsonl"));
     expect(contributionText).toContain("diagnostic contribution");
+    const workBlocks = readJson<readonly { readonly work_block_id: string }[]>(
+      getEntry(result.entries, "db/work-blocks.json"),
+    );
+    expect(workBlocks.map((block) => block.work_block_id)).toEqual(["wb_diagnostic"]);
+    const timelineEvents = readJson<readonly { readonly event_id: string }[]>(
+      getEntry(result.entries, "db/timeline-events.json"),
+    );
+    expect(timelineEvents.map((event) => event.event_id)).toEqual(["te_diagnostic_started"]);
 
     const availability = readJson<readonly OperatorAvailabilityEntry[]>(
       getEntry(result.entries, "operator-primitives/availability.json"),
@@ -79,12 +92,11 @@ describe("buildDiagnosticsEntries", () => {
     ]);
     expect(getAvailability(availability, "session_timeline")).toMatchObject({
       status: "partial",
-      sources: ["sessions", "session_contributions", "agent-logs", "contribution timestamps"],
+      sources: ["timeline_events", "timeline_cursors", "sessions", "agent-logs"],
     });
     expect(getAvailability(availability, "work_blocks")).toMatchObject({
-      status: "unavailable",
-      sources: [],
-      notes: "Pending #375.",
+      status: "partial",
+      sources: ["work_blocks", "timeline_events", "timeline_cursors"],
     });
     expect(getAvailability(availability, "run_health")).toMatchObject({
       status: "partial",
@@ -338,12 +350,43 @@ async function createBundleContext(options: BundleContextOptions = {}): Promise<
     const db = initSqliteDb(join(groveDir, "grove.db"));
     try {
       const store = new SqliteContributionStore(db);
+      const timelineStore = new SqliteTimelineStore(db);
       await store.put(
         makeContribution({
           summary: "diagnostic contribution",
           createdAt: "2026-05-02T00:00:00Z",
         }),
       );
+      await timelineStore.putWorkBlock({
+        workBlockId: "wb_diagnostic",
+        sessionId: "sess-1",
+        goal: "Inspect diagnostic availability",
+        actor: { agentId: "diagnostic-agent" },
+        origin: WorkBlockOrigin.Agent,
+        status: WorkBlockStatus.Running,
+        startedAt: "2026-05-02T00:01:00.000Z",
+        updatedAt: "2026-05-02T00:01:00.000Z",
+        inputRefs: [],
+        outputRefs: [],
+        evidenceRefs: [],
+        approvalRefs: [],
+        contributionCids: [],
+        artifactHashes: [],
+        claimIds: [],
+        revision: 1,
+        createdAt: "2026-05-02T00:01:00.000Z",
+      });
+      await timelineStore.appendTimelineEvent({
+        eventId: "te_diagnostic_started",
+        sessionId: "sess-1",
+        type: TimelineEventType.WorkBlockStarted,
+        occurredAt: "2026-05-02T00:01:00.000Z",
+        recordedAt: "2026-05-02T00:01:01.000Z",
+        actor: { agentId: "diagnostic-agent" },
+        workBlockId: "wb_diagnostic",
+        targetRefs: [{ kind: "WorkBlock", id: "wb_diagnostic" }],
+        payload: { status: WorkBlockStatus.Running },
+      });
     } finally {
       db.close();
     }

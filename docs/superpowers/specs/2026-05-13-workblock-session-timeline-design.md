@@ -545,7 +545,7 @@ Extend these surfaces enough for consumers to use the new data:
 - `InformerFactory`: support the new kinds in local and remote mode.
 - `EntityStore` typing: map `WorkBlock` and `TimelineEvent` to their entity
   shapes.
-- CLI: add read-only commands `grove work-blocks list` and `grove timeline`.
+- CLI: add read-only commands `grove work-blocks` and `grove timeline`.
   `grove timeline` accepts `--session`, `--after-rv`, `--limit`, and
   `--include-work-blocks`.
 
