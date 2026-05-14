@@ -24,7 +24,9 @@ import {
 } from "../core/lifecycle-metadata.js";
 import type { Claim } from "../core/models.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
@@ -591,7 +593,7 @@ class SessionDeleteFinalizerError extends Error {
 }
 
 /** SQLite-backed GoalSessionStore. */
-export class SqliteGoalSessionStore implements GoalSessionStore {
+export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSessionStore {
   readonly db: Database;
   private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
   private claimStore: ClaimCleanupStore | undefined;
@@ -919,6 +921,42 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     this.db
       .prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`)
       .run(...params);
+  };
+
+  appendSessionRoleSkill = async (
+    sessionId: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> => {
+    const tx = this.db.transaction((): AppendSessionRoleSkillResult => {
+      const row = this.db
+        .prepare("SELECT topology_json FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { topology_json: string | null } | null;
+      if (row === null) return "session_missing";
+      if (row.topology_json === null) return "role_missing";
+
+      const topology = JSON.parse(row.topology_json) as AgentTopology;
+      let foundRole = false;
+      let changed = false;
+      const roles = topology.roles.map((role) => {
+        if (role.name !== roleName) return { ...role };
+        foundRole = true;
+        const currentSkills = role.skills ?? [];
+        if (currentSkills.includes(skillName)) return { ...role };
+        changed = true;
+        return { ...role, skills: [...currentSkills, skillName] };
+      });
+
+      if (!foundRole) return "role_missing";
+      if (!changed) return "already_present";
+
+      this.db
+        .prepare("UPDATE sessions SET topology_json = ? WHERE session_id = ?")
+        .run(JSON.stringify({ ...topology, roles }), sessionId);
+      return "appended";
+    });
+
+    return tx.immediate();
   };
 
   /**

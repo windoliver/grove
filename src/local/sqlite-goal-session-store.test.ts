@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import { LoopStopStatus } from "../core/loop-runner.js";
-import type { SessionStore } from "../core/session.js";
+import type { RuntimeSkillSessionStore, SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import type { GoalSessionStore } from "./sqlite-goal-session-store.js";
@@ -1023,7 +1023,9 @@ describe("session deletion finalizers", () => {
  * getSessionContributions) and has a typed updateSession. This thin adapter
  * bridges the gap so the conformance suite runs against the SQLite backend.
  */
-function adaptGoalSessionStore(gs: GoalSessionStore): SessionStore {
+function adaptGoalSessionStore(
+  gs: GoalSessionStore & RuntimeSkillSessionStore,
+): SessionStore & RuntimeSkillSessionStore {
   return {
     createSession: (input) => gs.createSession(input),
     getSession: (id) => gs.getSession(id),
@@ -1034,6 +1036,8 @@ function adaptGoalSessionStore(gs: GoalSessionStore): SessionStore {
     archiveSession: (id) => gs.archiveSession(id),
     addContribution: (sid, cid) => gs.addContributionToSession(sid, cid),
     getContributions: (sid) => gs.getSessionContributions(sid),
+    appendSessionRoleSkill: (sessionId, roleName, skillName) =>
+      gs.appendSessionRoleSkill(sessionId, roleName, skillName),
   };
 }
 
