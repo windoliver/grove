@@ -1274,6 +1274,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // of shell execution is a remote-code-execution risk.
     const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
     try {
+      // Runtime skill acquisition mutates the caller workspace and requires
+      // stdio's per-agent role/cwd binding. HTTP MCP intentionally omits it.
       server = await createMcpServer(scopedDeps, {
         eval: evalEnabled,
         transport: "http",
