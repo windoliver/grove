@@ -72,6 +72,15 @@ describe("DefaultRuntimeSkillAcquisitionService", () => {
     ).rejects.toMatchObject({ code: "NOT_AUTHORIZED" });
   });
 
+  test("denies prototype-colliding roles not present in allowlist", async () => {
+    await expect(
+      service({ runtimeSkills: config() }).requestSkill({
+        skillName: "review",
+        caller: { role: "toString", workspacePath: workspace, sessionId: "s1" },
+      }),
+    ).rejects.toMatchObject({ code: "NOT_AUTHORIZED" });
+  });
+
   test("rejects unsafe skill names before resolver call", async () => {
     let resolverCalls = 0;
 

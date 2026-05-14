@@ -202,8 +202,10 @@ export class DefaultRuntimeSkillAcquisitionService implements RuntimeSkillAcquis
         "Runtime skill acquisition is not configured",
       );
     }
-    const allowed = runtimeSkills.roles[caller.role] ?? [];
-    if (!allowed.includes(skillName)) {
+    const allowed = Object.hasOwn(runtimeSkills.roles, caller.role)
+      ? runtimeSkills.roles[caller.role]
+      : undefined;
+    if (allowed === undefined || !allowed.includes(skillName)) {
       throw new RuntimeSkillAcquisitionError(
         "NOT_AUTHORIZED",
         `Role '${caller.role}' is not authorized to request skill '${skillName}'`,
