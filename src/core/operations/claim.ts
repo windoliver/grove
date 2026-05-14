@@ -6,8 +6,14 @@
  * listClaimsOperation — List claims with filters
  */
 
-import { claimToEntity } from "../entity.js";
+import { claimToEntity, workBlockToEntity } from "../entity.js";
 import type { Claim, ClaimStatus, JsonValue } from "../models.js";
+import { TimelineEventType, WorkBlockStatus } from "../timeline.js";
+import {
+  claimWorkBlockId,
+  timelineEventForClaim,
+  timelineEventForWorkBlock,
+} from "../timeline-projector.js";
 import type { EntityWriteEvent } from "../watch-events.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
@@ -30,6 +36,64 @@ function fireClaimEntityWrite(deps: OperationDeps, event: EntityWriteEvent): voi
   } catch (err) {
     process.stderr.write(
       `[grove] Warning: post-commit callback threw after claim commit: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+async function appendClaimTimelineEvent(
+  deps: OperationDeps,
+  claim: Claim,
+  eventType: TimelineEventType,
+  occurredAt?: string | undefined,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  if (timelineStore === undefined) return;
+  try {
+    await timelineStore.appendTimelineEvent(
+      timelineEventForClaim(claim, eventType, { occurredAt }),
+    );
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: timeline projection failed after claim commit: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+async function completeLinkedWorkBlock(deps: OperationDeps, claim: Claim): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  const workBlockId = claimWorkBlockId(claim);
+  if (timelineStore === undefined || workBlockId === undefined) return;
+  try {
+    const block = await timelineStore.patchWorkBlock(workBlockId, {
+      status: WorkBlockStatus.Completed,
+      completedAt: new Date().toISOString(),
+    });
+    await timelineStore.appendTimelineEvent(
+      timelineEventForWorkBlock(block, TimelineEventType.WorkBlockCompleted),
+    );
+    if (deps.onEntityWrite && deps.namespace) {
+      try {
+        deps.onEntityWrite({
+          kind: "WorkBlock",
+          namespace: deps.namespace,
+          op: "MODIFIED",
+          entity: workBlockToEntity(block, deps.namespace),
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: WorkBlock watch projection failed after claim commit: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: linked WorkBlock completion failed after claim commit: ${
         err instanceof Error ? err.message : String(err)
       }\n`,
     );
@@ -153,6 +217,11 @@ export async function claimOperation(
         entity: claimToEntity(result, () => Date.now(), deps.namespace),
       });
     }
+    await appendClaimTimelineEvent(
+      deps,
+      result,
+      renewed ? TimelineEventType.ClaimLeaseRefreshed : TimelineEventType.ClaimCreated,
+    );
 
     return ok({
       claimId: result.claimId,
@@ -200,6 +269,14 @@ export async function releaseOperation(
         op: "MODIFIED",
         entity: claimToEntity(result, () => Date.now(), deps.namespace),
       });
+    }
+    const eventType =
+      input.action === "release"
+        ? TimelineEventType.ClaimReleased
+        : TimelineEventType.ClaimCompleted;
+    await appendClaimTimelineEvent(deps, result, eventType, new Date().toISOString());
+    if (input.action === "complete") {
+      await completeLinkedWorkBlock(deps, result);
     }
 
     return ok({

@@ -29,6 +29,8 @@ import {
   writeClientKey,
   writeNamespace,
 } from "../core/project-key.js";
+import { TimelineEventType } from "../core/timeline.js";
+import { timelineEventForClaim } from "../core/timeline-projector.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
 import type { WatchEntity, WatchKind } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
@@ -428,6 +430,17 @@ const claimExpiryTimer = setInterval(async () => {
       } catch (err) {
         process.stderr.write(
           `[grove] Warning: claim-expiry watch fan-out threw: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+      try {
+        await serverTimelineStore.appendTimelineEvent(
+          timelineEventForClaim(claim, TimelineEventType.ClaimExpired),
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: claim-expiry timeline projection threw: ${
             err instanceof Error ? err.message : String(err)
           }\n`,
         );

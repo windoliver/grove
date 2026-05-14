@@ -320,6 +320,7 @@ export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from 
 export { SubprocessRuntime } from "./subprocess-runtime.js";
 export { toUtcIso } from "./time.js";
 export * from "./timeline.js";
+export * from "./timeline-projector.js";
 export * from "./timeline-schemas.js";
 export * from "./timeline-store.js";
 export { TmuxRuntime } from "./tmux-runtime.js";

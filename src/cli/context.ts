@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
+import type { TimelineStore } from "../core/timeline-store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { FsCas } from "../local/fs-cas.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -21,6 +22,7 @@ export { findGroveDir };
 export interface CliDeps {
   readonly store: ContributionStore;
   readonly claimStore: ClaimStore;
+  readonly timelineStore?: TimelineStore | undefined;
   readonly frontier: FrontierCalculator;
   readonly workspace: WorkspaceManager;
   readonly cas: FsCas;
@@ -57,6 +59,7 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
   return {
     store: runtime.contributionStore,
     claimStore: runtime.claimStore,
+    timelineStore: runtime.timelineStore,
     frontier: runtime.frontier,
     workspace: runtime.workspace,
     cas: runtime.cas,

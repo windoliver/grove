@@ -21,6 +21,8 @@ import {
 } from "../core/entity.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { TimelineEvent, WorkBlock } from "../core/timeline.js";
+import { timelineEventForAgentSession } from "../core/timeline-projector.js";
+import type { TimelineEventInput, TimelineStore } from "../core/timeline-store.js";
 import type { WatchOp } from "../core/watch-events.js";
 import type { WatchHub } from "../core/watch-hub.js";
 
@@ -35,6 +37,7 @@ export interface WatchHubRecorder {
 export interface CreateWatchHubRecorderOptions {
   readonly hub: WatchHub;
   readonly namespace: string;
+  readonly timelineStore?: TimelineStore | undefined;
   /**
    * Injectable clock for `claimToEntity` lease-aware projection. Defaults to
    * wall-clock; tests can pass a fake.
@@ -43,7 +46,7 @@ export interface CreateWatchHubRecorderOptions {
 }
 
 export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): WatchHubRecorder {
-  const { hub, namespace } = opts;
+  const { hub, namespace, timelineStore } = opts;
   const now = opts.now ?? (() => Date.now());
 
   const safeRecord = (
@@ -73,6 +76,9 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
     },
     agentSession(op, s) {
       safeRecord("AgentSession", op, agentSessionToEntity(s, undefined, namespace));
+      if (timelineStore !== undefined) {
+        appendTimelineEvent(timelineStore, timelineEventForAgentSession(s, op));
+      }
     },
     workBlock(op, block) {
       safeRecord("WorkBlock", op, workBlockToEntity(block, namespace));
@@ -81,4 +87,11 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
       safeRecord("TimelineEvent", op, timelineEventToEntity(event, namespace));
     },
   };
+}
+
+function appendTimelineEvent(timelineStore: TimelineStore, event: TimelineEventInput): void {
+  timelineStore.appendTimelineEvent(event).catch((err: unknown) => {
+    const detail = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[watch-hub-recorder] timeline append failed: ${detail}\n`);
+  });
 }

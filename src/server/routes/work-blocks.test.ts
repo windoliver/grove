@@ -38,6 +38,11 @@ describe("work block routes", () => {
     expect(((await patch.json()) as WorkBlockResponse).status).toBe(WorkBlockStatus.Running);
     expect(writes.map((write) => write.op)).toEqual(["ADDED", "MODIFIED"]);
     expect(writes.every((write) => write.entity.kind === "WorkBlock")).toBe(true);
+    const timelineEvents = await store.listTimelineEvents({ sessionId: "s1" });
+    expect(timelineEvents.map((event) => event.type)).toEqual([
+      TimelineEventType.WorkBlockCreated,
+      TimelineEventType.WorkBlockStarted,
+    ]);
   });
 
   test("lists WorkBlocks by session", async () => {

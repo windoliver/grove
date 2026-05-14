@@ -14,11 +14,17 @@ import { z } from "zod";
 import { workBlockToEntity } from "../../core/entity.js";
 import { NotFoundError } from "../../core/errors.js";
 import {
+  buildTimelineEventId,
   type ResourceRef,
+  TimelineEventType,
   type WorkBlock,
   WorkBlockStatus,
   type WorkBlockStatus as WorkBlockStatusType,
 } from "../../core/timeline.js";
+import {
+  timelineEventForWorkBlock,
+  workBlockTimelineEventTypeForStatus,
+} from "../../core/timeline-projector.js";
 import { WorkBlockSchema } from "../../core/timeline-schemas.js";
 import type { WorkBlockPatch } from "../../core/timeline-store.js";
 import type { EntityWriteEvent } from "../../core/watch-events.js";
@@ -114,6 +120,13 @@ workBlocks.post("/work-blocks", zValidator("json", WorkBlockSchema), async (c) =
   const existing = await store.getWorkBlock(input.workBlockId);
   const block = await store.putWorkBlock(input);
   recordWorkBlockWrite(deps, namespace, existing === undefined ? "ADDED" : "MODIFIED", block);
+  await appendWorkBlockTimelineEvent(
+    deps,
+    block,
+    existing === undefined
+      ? TimelineEventType.WorkBlockCreated
+      : workBlockTimelineEventTypeForStatus(block.status),
+  );
   return c.json(block, 201);
 });
 
@@ -122,11 +135,18 @@ workBlocks.patch("/work-blocks/:id", zValidator("json", patchSchema), async (c) 
   const store = deps.timelineStore;
   if (store === undefined) return notConfigured(c, "timelineStore is not configured");
   try {
-    const block = await store.patchWorkBlock(
-      c.req.param("id"),
-      c.req.valid("json") as WorkBlockPatch,
-    );
+    const workBlockId = c.req.param("id");
+    const patch = c.req.valid("json") as WorkBlockPatch;
+    const existing = await store.getWorkBlock(workBlockId);
+    const block = await store.patchWorkBlock(workBlockId, patch);
     recordWorkBlockWrite(deps, c.get("namespace"), "MODIFIED", block);
+    if (patch.status !== undefined && existing?.status !== block.status) {
+      await appendWorkBlockTimelineEvent(
+        deps,
+        block,
+        workBlockTimelineEventTypeForStatus(block.status),
+      );
+    }
     return c.json(block);
   } catch (error) {
     if (error instanceof NotFoundError) {
@@ -149,4 +169,25 @@ function recordWorkBlockWrite(
     entityId: block.workBlockId,
     generation: entity.metadata.generation,
   });
+}
+
+async function appendWorkBlockTimelineEvent(
+  deps: ServerEnv["Variables"]["deps"],
+  block: WorkBlock,
+  type: TimelineEventType,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  if (timelineStore === undefined) return;
+  try {
+    await timelineStore.appendTimelineEvent({
+      ...timelineEventForWorkBlock(block, type),
+      eventId: buildTimelineEventId(),
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: WorkBlock route timeline projection failed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
 }

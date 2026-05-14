@@ -396,7 +396,11 @@ async function buildAppProps(
       const ar = agentRuntime as { onSessionWrite?: (op: string, s: unknown) => void };
       if ("onSessionWrite" in ar || ar.onSessionWrite !== undefined) {
         const { createWatchHubRecorder } = await import("../local/watch-hub-recorder.js");
-        const recorder = createWatchHubRecorder({ hub: watchHub, namespace: WATCH_NAMESPACE });
+        const recorder = createWatchHubRecorder({
+          hub: watchHub,
+          namespace: WATCH_NAMESPACE,
+          timelineStore: cleanupRuntime.timelineStore,
+        });
         (
           agentRuntime as unknown as {
             onSessionWrite?: (
