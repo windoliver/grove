@@ -45,6 +45,7 @@ import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
+import { AgentTasksView } from "../views/agent-tasks.js";
 import { DagView } from "../views/dag.js";
 import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
@@ -1665,9 +1666,12 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
 
     case RunningPanel.Tasks:
       return (
-        <box paddingX={2}>
-          <text color={theme.secondary}>Tasks view (coming in C3/C4)</text>
-        </box>
+        <AgentTasksView
+          provider={ctx.provider}
+          intervalMs={ctx.intervalMs}
+          active
+          cursor={ctx.cursor}
+        />
       );
 
     case RunningPanel.Reviews:

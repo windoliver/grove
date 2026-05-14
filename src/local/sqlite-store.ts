@@ -12,6 +12,13 @@
 
 import type { SQLQueryBindings, Statement } from "bun:sqlite";
 import { Database } from "bun:sqlite";
+import type {
+  AgentTaskEntity,
+  AgentTaskSpecRecord,
+  AgentTaskStatusRecord,
+  AgentTaskView,
+} from "../core/agent-task.js";
+import { AgentTaskPhase, agentTaskViewToEntity } from "../core/agent-task.js";
 import { ContextSchema, fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   AgentIdentity,
@@ -29,6 +36,9 @@ import type {
 import { claimToSpecRecord, claimToStatusRecord, claimViewToClaim } from "../core/models.js";
 import type {
   ActiveClaimFilter,
+  AgentTaskQuery,
+  AgentTaskStatusPatch,
+  AgentTaskStore,
   ClaimQuery,
   ClaimStatusPatch,
   ClaimStore,
@@ -61,7 +71,7 @@ import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/e
 import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 const SQLITE_BIND_LIMIT = 900;
 const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
@@ -199,6 +209,38 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_claim_spec_agent ON claim_spec(agent_id);
   CREATE INDEX IF NOT EXISTS idx_claim_status_phase ON claim_status(phase);
   CREATE INDEX IF NOT EXISTS idx_claim_status_phase_lease ON claim_status(phase, lease_expires_at);
+
+  CREATE TABLE IF NOT EXISTS agent_task_spec (
+    id TEXT PRIMARY KEY,
+    worktree TEXT NOT NULL,
+    runtime TEXT NOT NULL,
+    role TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    depends_on_json TEXT NOT NULL DEFAULT '[]',
+    max_turns INTEGER,
+    budget_json TEXT,
+    generation INTEGER NOT NULL DEFAULT 1,
+    owner_ref_json TEXT,
+    finalizers_json TEXT NOT NULL DEFAULT '[]',
+    deletion_timestamp TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_task_status (
+    id TEXT PRIMARY KEY,
+    phase TEXT NOT NULL DEFAULT 'Pending',
+    session_id TEXT,
+    contributions_json TEXT NOT NULL DEFAULT '[]',
+    conditions_json TEXT NOT NULL DEFAULT '[]',
+    observed_generation INTEGER NOT NULL DEFAULT 0,
+    last_transition_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (id) REFERENCES agent_task_spec(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_task_spec_role ON agent_task_spec(role);
+  CREATE INDEX IF NOT EXISTS idx_agent_task_spec_runtime ON agent_task_spec(runtime);
+  CREATE INDEX IF NOT EXISTS idx_agent_task_status_phase ON agent_task_status(phase);
 
   -- Workspaces table for agent session isolation (per-agent isolation)
   CREATE TABLE IF NOT EXISTS workspaces (
@@ -909,6 +951,7 @@ export function createSqliteStores(
   db: Database;
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
+  agentTaskStore: SqliteAgentTaskStore;
   bountyStore: SqliteBountyStore;
   creditsService: SqliteCreditsService;
   outcomeStore: SqliteOutcomeStore;
@@ -920,10 +963,12 @@ export function createSqliteStores(
   const db = initSqliteDb(dbPath);
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
+  const agentTaskStore = new SqliteAgentTaskStore(db);
   return {
     db,
     contributionStore,
     claimStore,
+    agentTaskStore,
     bountyStore: new SqliteBountyStore(db),
     creditsService: new SqliteCreditsService(db),
     outcomeStore: new SqliteOutcomeStore(db),
@@ -1134,6 +1179,77 @@ function rowToClaimView(row: ClaimViewRow): ClaimView {
   return {
     spec: rowToClaimSpec(row),
     status: rowToClaimStatus(row),
+  };
+}
+
+interface AgentTaskSpecRow {
+  readonly id: string;
+  readonly worktree: string;
+  readonly runtime: string;
+  readonly role: string;
+  readonly prompt: string;
+  readonly depends_on_json: string;
+  readonly max_turns: number | null;
+  readonly budget_json: string | null;
+  readonly generation: number;
+  readonly owner_ref_json: string | null;
+  readonly finalizers_json: string;
+  readonly deletion_timestamp: string | null;
+  readonly created_at: string;
+}
+
+interface AgentTaskStatusRow {
+  readonly id: string;
+  readonly phase: string;
+  readonly session_id: string | null;
+  readonly contributions_json: string;
+  readonly conditions_json: string;
+  readonly observed_generation: number;
+  readonly last_transition_at: string;
+  readonly revision: number;
+}
+
+interface AgentTaskViewRow extends AgentTaskSpecRow, AgentTaskStatusRow {}
+
+function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
+  return {
+    id: row.id,
+    worktree: row.worktree,
+    runtime: row.runtime,
+    role: row.role,
+    prompt: row.prompt,
+    dependsOn: JSON.parse(row.depends_on_json) as readonly string[],
+    ...(row.max_turns === null ? {} : { maxTurns: row.max_turns }),
+    ...(row.budget_json === null
+      ? {}
+      : { budget: JSON.parse(row.budget_json) as Readonly<Record<string, JsonValue>> }),
+    generation: row.generation,
+    ...(row.owner_ref_json === null
+      ? {}
+      : { ownerRef: JSON.parse(row.owner_ref_json) as OwnerRef }),
+    finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
+    ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
+    createdAt: row.created_at,
+  };
+}
+
+function rowToAgentTaskStatus(row: AgentTaskStatusRow): AgentTaskStatusRecord {
+  return {
+    id: row.id,
+    phase: row.phase as AgentTaskPhase,
+    ...(row.session_id === null ? {} : { sessionId: row.session_id }),
+    contributions: JSON.parse(row.contributions_json) as readonly string[],
+    conditions: JSON.parse(row.conditions_json) as AgentTaskStatusRecord["conditions"],
+    observedGeneration: row.observed_generation,
+    lastTransitionAt: row.last_transition_at,
+    revision: row.revision,
+  };
+}
+
+function rowToAgentTaskView(row: AgentTaskViewRow): AgentTaskView {
+  return {
+    spec: rowToAgentTaskSpec(row),
+    status: rowToAgentTaskStatus(row),
   };
 }
 
@@ -1716,6 +1832,251 @@ export class SqliteContributionStore implements ContributionStore {
       content_hash: string;
     }[];
     return new Set(rows.map((r) => r.content_hash));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SqliteAgentTaskStore
+// ---------------------------------------------------------------------------
+
+const AGENT_TASK_VIEW_SELECT_COLS = `
+  s.id AS id,
+  s.worktree AS worktree,
+  s.runtime AS runtime,
+  s.role AS role,
+  s.prompt AS prompt,
+  s.depends_on_json AS depends_on_json,
+  s.max_turns AS max_turns,
+  s.budget_json AS budget_json,
+  s.generation AS generation,
+  s.owner_ref_json AS owner_ref_json,
+  s.finalizers_json AS finalizers_json,
+  s.deletion_timestamp AS deletion_timestamp,
+  s.created_at AS created_at,
+  st.phase AS phase,
+  st.session_id AS session_id,
+  st.contributions_json AS contributions_json,
+  st.conditions_json AS conditions_json,
+  st.observed_generation AS observed_generation,
+  st.last_transition_at AS last_transition_at,
+  st.revision AS revision
+`;
+
+export class SqliteAgentTaskStore implements AgentTaskStore {
+  readonly storeIdentity: string;
+  private readonly db: Database;
+  private readonly stmtGetTask: Statement;
+
+  constructor(db: Database) {
+    this.db = db;
+    this.storeIdentity = db.filename;
+    this.stmtGetTask = db.query(`
+      SELECT ${AGENT_TASK_VIEW_SELECT_COLS}
+      FROM agent_task_spec s
+      JOIN agent_task_status st ON st.id = s.id
+      WHERE s.id = ?
+    `);
+  }
+
+  putAgentTaskSpec = async (spec: AgentTaskSpecRecord): Promise<AgentTaskView> => {
+    const tx = this.db.transaction(() => {
+      const existing = this.readAgentTask(spec.id);
+      if (existing === null) {
+        const nowIso = new Date().toISOString();
+        this.insertTaskSpecRow({ ...spec, generation: 1 });
+        this.insertTaskStatusRow({
+          id: spec.id,
+          phase: AgentTaskPhase.Pending,
+          contributions: [],
+          conditions: [],
+          observedGeneration: 0,
+          lastTransitionAt: nowIso,
+          revision: 1,
+        });
+        return;
+      }
+
+      this.db
+        .prepare(
+          `UPDATE agent_task_spec
+           SET worktree = ?,
+               runtime = ?,
+               role = ?,
+               prompt = ?,
+               depends_on_json = ?,
+               max_turns = ?,
+               budget_json = ?,
+               generation = generation + 1,
+               owner_ref_json = ?,
+               finalizers_json = ?,
+               deletion_timestamp = ?
+           WHERE id = ?`,
+        )
+        .run(
+          spec.worktree,
+          spec.runtime,
+          spec.role,
+          spec.prompt,
+          JSON.stringify(spec.dependsOn),
+          spec.maxTurns ?? null,
+          spec.budget === undefined ? null : JSON.stringify(spec.budget),
+          spec.ownerRef === undefined ? null : JSON.stringify(spec.ownerRef),
+          JSON.stringify(spec.finalizers ?? []),
+          spec.deletionTimestamp ?? null,
+          spec.id,
+        );
+    });
+    tx.immediate();
+
+    const view = this.readAgentTask(spec.id);
+    if (view === null) throw new Error(`Failed to read back agent task '${spec.id}'`);
+    return view;
+  };
+
+  getAgentTask = async (taskId: string): Promise<AgentTaskView | undefined> =>
+    this.readAgentTask(taskId) ?? undefined;
+
+  listAgentTasks = async (query?: AgentTaskQuery): Promise<readonly AgentTaskView[]> => {
+    const conditions: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    if (query?.phase !== undefined) {
+      const phases = Array.isArray(query.phase) ? query.phase : [query.phase];
+      if (phases.length > 0) {
+        conditions.push(`st.phase IN (${phases.map(() => "?").join(", ")})`);
+        params.push(...phases);
+      }
+    }
+    if (query?.role !== undefined) {
+      conditions.push("s.role = ?");
+      params.push(query.role);
+    }
+    if (query?.runtime !== undefined) {
+      conditions.push("s.runtime = ?");
+      params.push(query.runtime);
+    }
+
+    let sql = `SELECT ${AGENT_TASK_VIEW_SELECT_COLS}
+      FROM agent_task_spec s
+      JOIN agent_task_status st ON st.id = s.id`;
+    if (conditions.length > 0) sql += ` WHERE ${conditions.join(" AND ")}`;
+    sql += " ORDER BY s.created_at DESC, s.id ASC";
+
+    const rows = this.db.prepare(sql).all(...params) as readonly AgentTaskViewRow[];
+    return rows.map(rowToAgentTaskView);
+  };
+
+  patchAgentTaskStatus = async (
+    taskId: string,
+    patch: AgentTaskStatusPatch,
+  ): Promise<AgentTaskView> => {
+    const assignments: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    const addAssignment = (column: string, value: SQLQueryBindings): void => {
+      assignments.push(`${column} = ?`);
+      params.push(value);
+    };
+
+    if (patch.phase !== undefined) addAssignment("phase", patch.phase);
+    if (patch.sessionId !== undefined) addAssignment("session_id", patch.sessionId);
+    if (patch.contributions !== undefined) {
+      addAssignment("contributions_json", JSON.stringify(patch.contributions));
+    }
+    if (patch.conditions !== undefined) {
+      addAssignment("conditions_json", JSON.stringify(patch.conditions));
+    }
+    if (patch.observedGeneration !== undefined) {
+      addAssignment("observed_generation", patch.observedGeneration);
+    }
+    if (patch.lastTransitionAt !== undefined) {
+      addAssignment("last_transition_at", toUtcIso(patch.lastTransitionAt));
+    }
+
+    assignments.push("revision = revision + 1");
+    params.push(taskId);
+
+    const tx = this.db.transaction(() => {
+      const existing = this.readAgentTask(taskId);
+      if (existing === null) {
+        throw new NotFoundError({
+          resource: "AgentTask",
+          identifier: taskId,
+          message: `AgentTask '${taskId}' not found`,
+        });
+      }
+      this.db
+        .prepare(`UPDATE agent_task_status SET ${assignments.join(", ")} WHERE id = ?`)
+        .run(...params);
+
+      const view = this.readAgentTask(taskId);
+      if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
+      return view;
+    });
+
+    return tx.immediate();
+  };
+
+  async listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]> {
+    const namespace = readStoreNamespace(this.db);
+    const views = await this.listAgentTasks(query);
+    return views.map((view) => agentTaskViewToEntity(view, namespace));
+  }
+
+  close(): void {
+    // Intentional no-op: DB lifecycle is managed by the factory or SqliteStore facade.
+  }
+
+  private insertTaskSpecRow(spec: AgentTaskSpecRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO agent_task_spec (
+          id, worktree, runtime, role, prompt, depends_on_json, max_turns,
+          budget_json, generation, owner_ref_json, finalizers_json,
+          deletion_timestamp, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        spec.id,
+        spec.worktree,
+        spec.runtime,
+        spec.role,
+        spec.prompt,
+        JSON.stringify(spec.dependsOn),
+        spec.maxTurns ?? null,
+        spec.budget === undefined ? null : JSON.stringify(spec.budget),
+        spec.generation,
+        spec.ownerRef === undefined ? null : JSON.stringify(spec.ownerRef),
+        JSON.stringify(spec.finalizers ?? []),
+        spec.deletionTimestamp ?? null,
+        toUtcIso(spec.createdAt),
+      );
+  }
+
+  private insertTaskStatusRow(status: AgentTaskStatusRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO agent_task_status (
+          id, phase, session_id, contributions_json, conditions_json,
+          observed_generation, last_transition_at, revision
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        status.id,
+        status.phase,
+        status.sessionId ?? null,
+        JSON.stringify(status.contributions),
+        JSON.stringify(status.conditions),
+        status.observedGeneration,
+        toUtcIso(status.lastTransitionAt),
+        status.revision,
+      );
+  }
+
+  private readAgentTask(taskId: string): AgentTaskView | null {
+    const row = this.stmtGetTask.get(taskId) as AgentTaskViewRow | null;
+    if (row === null) return null;
+    return rowToAgentTaskView(row);
   }
 }
 
@@ -2706,6 +3067,7 @@ export class SqliteStore implements ContributionStore {
    */
   readonly contributions: SqliteContributionStore;
   readonly claims: SqliteClaimStore;
+  readonly agentTasks: SqliteAgentTaskStore;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -2713,6 +3075,7 @@ export class SqliteStore implements ContributionStore {
     this.storeIdentity = this.db.filename;
     this.contributions = new SqliteContributionStore(this.db);
     this.claims = new SqliteClaimStore(this.db);
+    this.agentTasks = new SqliteAgentTaskStore(this.db);
   }
 
   // ContributionStore delegation

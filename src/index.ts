@@ -1,3 +1,17 @@
+export type {
+  AgentTaskEntity,
+  AgentTaskSpec,
+  AgentTaskSpecRecord,
+  AgentTaskStatus,
+  AgentTaskStatusRecord,
+  AgentTaskView,
+} from "./core/agent-task.js";
+export {
+  AgentTaskConditionType,
+  AgentTaskPhase,
+  agentTaskViewToEntity,
+  isAgentTaskSpecStale,
+} from "./core/agent-task.js";
 export {
   canRetry,
   computeBackoffMs,
@@ -85,6 +99,9 @@ export type {
 export { DefaultReconciler } from "./core/reconciler.js";
 export type {
   ActiveClaimFilter,
+  AgentTaskQuery,
+  AgentTaskStatusPatch,
+  AgentTaskStore,
   ClaimStore,
   ContributionStore,
   ExpiredClaim,

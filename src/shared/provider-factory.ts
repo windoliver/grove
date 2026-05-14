@@ -212,6 +212,8 @@ async function createNexusProvider(
 
   return new NexusDataProvider({
     nexusConfig: { client, zoneId: nexusZoneId },
+    nexusUrl: backend.url,
+    apiKey,
     workspaceManager,
     backendLabel: label,
     serverUrl,
@@ -250,6 +252,7 @@ async function createLocalProvider(
   return new LocalDataProvider({
     contributionStore: deps.store,
     claimStore: stores.claimStore,
+    agentTaskStore: stores.agentTaskStore,
     frontier: deps.frontier,
     groveName,
     outcomeStore: stores.outcomeStore,

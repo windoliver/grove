@@ -19,6 +19,7 @@ import { resolveConfig } from "../nexus/config.js";
 import { NexusBountyStore } from "../nexus/nexus-bounty-store.js";
 import { NexusClaimStore } from "../nexus/nexus-claim-store.js";
 import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
+import { NexusInboxClient } from "../nexus/nexus-inbox-client.js";
 import { NexusOutcomeStore } from "../nexus/nexus-outcome-store.js";
 import { NexusSessionStore } from "../nexus/nexus-session-store.js";
 import { casMetaPath, casPath } from "../nexus/vfs-paths.js";
@@ -49,6 +50,8 @@ import { StoreBackedProvider } from "./store-backed-provider.js";
 export interface NexusProviderConfig {
   readonly nexusConfig: NexusConfig;
   readonly groveName?: string | undefined;
+  readonly nexusUrl?: string | undefined;
+  readonly apiKey?: string | undefined;
   /** Optional workspace manager for local workspace lifecycle (hybrid mode). */
   readonly workspaceManager?: WorkspaceManager | undefined;
   readonly backendLabel?: string | undefined;
@@ -86,13 +89,26 @@ export class NexusDataProvider
   private readonly bountyStore: NexusBountyStore;
   private readonly serverUrl: string | undefined;
   private readonly serverApiKey: string | undefined;
+  private readonly nexusUrl: string | undefined;
+  private readonly apiKey: string | undefined;
   private readonly nexusSessionStore: NexusSessionStore;
 
   constructor(config: NexusProviderConfig) {
+    const resolved = resolveConfig(config.nexusConfig);
     const store = new NexusContributionStore(config.nexusConfig);
     const claims = new NexusClaimStore(config.nexusConfig);
     const outcomes = new NexusOutcomeStore(config.nexusConfig);
     const frontier = new DefaultFrontierCalculator(store);
+    const inboxReadSource =
+      config.nexusUrl !== undefined
+        ? new NexusInboxClient({
+            nexusUrl: config.nexusUrl,
+            ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+            client: resolved.client,
+            sessionId: resolved.sessionId,
+            zoneId: resolved.zoneId,
+          })
+        : undefined;
     super({
       contributionStore: store,
       claimStore: claims,
@@ -103,6 +119,7 @@ export class NexusDataProvider
       backendLabel: config.backendLabel ?? "nexus",
       goalSessionStore: config.goalSessionStore,
       handoffStore: config.handoffStore,
+      inboxReadSource,
     });
 
     // Goals/sessions are available when a co-located server provides the shared
@@ -127,8 +144,9 @@ export class NexusDataProvider
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
     this.serverUrl = config.serverUrl?.replace(/\/+$/, "");
     this.serverApiKey = config.serverApiKey;
+    this.nexusUrl = config.nexusUrl;
+    this.apiKey = config.apiKey;
 
-    const resolved = resolveConfig(config.nexusConfig);
     this.client = resolved.client;
     this.zoneId = resolved.zoneId;
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
@@ -165,6 +183,17 @@ export class NexusDataProvider
     // Also update the frontier calculator to use the scoped store
     (this as unknown as { calc: DefaultFrontierCalculator }).calc = new DefaultFrontierCalculator(
       scopedStore,
+    );
+    this.setInboxReadSource(
+      this.nexusUrl !== undefined
+        ? new NexusInboxClient({
+            nexusUrl: this.nexusUrl,
+            ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+            client: this.client,
+            sessionId,
+            zoneId: this.zoneId,
+          })
+        : undefined,
     );
     // Handoff store uses readAllHandoffs (dir scan) — no session scoping needed.
     // The sessionStartedAt time filter in HandoffsView handles session isolation.

@@ -103,6 +103,13 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
+let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+let messageDeliveryForSession:
+  | ((
+      sessionId: string | undefined,
+    ) => import("../core/operations/inbox-delegation.js").MessageDelivery | undefined)
+  | undefined;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -265,6 +272,34 @@ if (nexusUrl) {
     process.exit(1);
   }
 
+  const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+  const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+  const sessionId = process.env.GROVE_SESSION_ID;
+  inboxReadSource = new NexusInboxClient({
+    nexusUrl,
+    ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+    sessionId,
+    zoneId,
+    client: nexusClient,
+  });
+  messageDelivery = new NexusMessageDelivery({
+    ipcClient: new NexusIpcClient({
+      nexusUrl,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      sessionId,
+      zoneId,
+    }),
+  });
+  messageDeliveryForSession = (requestedSessionId) =>
+    new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
+        zoneId,
+      }),
+    });
+
   serverContributionStore = new NexusContributionStore({
     client: nexusClient,
     zoneId,
@@ -345,6 +380,7 @@ const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
+  agentTaskStore: runtime.agentTaskStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   creditsService: runtime.creditsService,
@@ -359,6 +395,9 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  inboxReadSource,
+  messageDelivery,
+  messageDeliveryForSession,
   watchHub,
   watchSubscriber,
 };

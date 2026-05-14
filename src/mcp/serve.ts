@@ -409,16 +409,43 @@ try {
   // Wire EventBus + TopologyRouter for IPC when topology exists.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
+  let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+  let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+
+  if (nexusClient && nexusUrl) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    const sessionId = process.env.GROVE_SESSION_ID;
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      sessionId,
+      zoneId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId,
+        zoneId,
+      }),
+    });
+  }
 
   if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
       const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient =
-        nexusUrl && apiKey
-          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
-          : undefined;
+      const ipcClient = nexusUrl
+        ? new NexusIpcClient({
+            nexusUrl,
+            ...(apiKey ? { apiKey } : {}),
+            sessionId: process.env.GROVE_SESSION_ID,
+            zoneId,
+          })
+        : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {
@@ -768,6 +795,8 @@ try {
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     runtimeSkillService,
+    inboxReadSource,
+    messageDelivery,
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),

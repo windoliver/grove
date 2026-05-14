@@ -14,8 +14,9 @@ import type { FrontierRewardService } from "../core/frontier-reward-service.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { IdempotencyStore } from "../core/operations/deps.js";
+import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
 import type { OutcomeStore } from "../core/outcome.js";
-import type { ClaimStore, ContributionStore } from "../core/store.js";
+import type { AgentTaskStore, ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
@@ -36,6 +37,8 @@ export interface ServerDeps {
    */
   readonly contributionStoreForSession?: ((sessionId: string) => ContributionStore) | undefined;
   readonly claimStore: ClaimStore;
+  /** Optional agent task lifecycle store. Routes return 501 when not configured. */
+  readonly agentTaskStore?: AgentTaskStore | undefined;
   readonly cas: ContentStore;
   readonly frontier: FrontierCalculator;
   /**
@@ -66,6 +69,14 @@ export interface ServerDeps {
   readonly contract?: GroveContract | undefined;
   /** Optional handoff store. Routes return 501 when not configured. */
   readonly handoffStore?: HandoffStore | undefined;
+  /** Optional source for recipient-scoped inbox reads. */
+  readonly inboxReadSource?: InboxReadSource | undefined;
+  /** Optional delivery adapter for ephemeral message sends. */
+  readonly messageDelivery?: MessageDelivery | undefined;
+  /** Optional factory for request/session-scoped message delivery. */
+  readonly messageDeliveryForSession?:
+    | ((sessionId: string | undefined) => MessageDelivery | undefined)
+    | undefined;
   /**
    * Factory for session-scoped handoff stores. Optional: when provided,
    * HTTP routes that need session isolation (e.g. GET/list under a

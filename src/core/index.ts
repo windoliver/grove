@@ -1,6 +1,20 @@
 export type { AcpRuntimeOptions } from "./acp-runtime.js";
 export { AcpRuntime } from "./acp-runtime.js";
 export type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+export type {
+  AgentTaskEntity,
+  AgentTaskSpec,
+  AgentTaskSpecRecord,
+  AgentTaskStatus,
+  AgentTaskStatusRecord,
+  AgentTaskView,
+} from "./agent-task.js";
+export {
+  AgentTaskConditionType,
+  AgentTaskPhase,
+  agentTaskViewToEntity,
+  isAgentTaskSpecStale,
+} from "./agent-task.js";
 export {
   extractChoices,
   extractQuestion,
@@ -299,6 +313,9 @@ export type {
 export { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
 export type {
   ActiveClaimFilter,
+  AgentTaskQuery,
+  AgentTaskStatusPatch,
+  AgentTaskStore,
   ClaimQuery,
   ClaimStatusPatch,
   ClaimStore,

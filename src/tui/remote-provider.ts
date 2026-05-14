@@ -5,6 +5,7 @@
  * `grove tui --url http://server:4515`.
  */
 
+import type { AgentTaskView } from "../core/agent-task.js";
 import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery } from "../core/bounty-store.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
@@ -286,6 +287,15 @@ export class RemoteDataProvider
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { claims: unknown };
     return parseClaims(body.claims);
+  }
+
+  async getAgentTasks(): Promise<readonly AgentTaskView[]> {
+    const resp = await fetch(`${this.baseUrl}/api/agent-tasks`, {
+      headers: this.authHeaders,
+    });
+    if (resp.status === 501) return [];
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return (await resp.json()) as readonly AgentTaskView[];
   }
 
   async createClaim(input: ClaimInput): Promise<Claim> {
