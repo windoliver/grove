@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AgentTaskPhase } from "../../src/core/agent-task.js";
 import { Finalizer } from "../../src/core/lifecycle-metadata.js";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, TEST_AUTH_HEADERS, TEST_CONTROLLER_HEADERS } from "./helpers.js";
+import {
+  createTestContext,
+  TEST_AUTH_HEADERS,
+  TEST_CONTROLLER_HEADERS,
+  TEST_NAMESPACE,
+} from "./helpers.js";
 
 const SPEC_BODY = {
   worktree: "/tmp/worktree",
@@ -160,5 +165,6 @@ describe("Agent task routes", () => {
     const data = await res.json();
     expect(data.items[0].kind).toBe("AgentTask");
     expect(data.items[0].id).toBe("task-watch-list");
+    expect(data.items[0].namespace).toBe(TEST_NAMESPACE);
   });
 });

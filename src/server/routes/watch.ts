@@ -570,7 +570,6 @@ async function listForKind(
   namespace: string,
   kind: WatchKind,
 ): Promise<readonly unknown[]> {
-  void namespace;
   switch (kind) {
     case "Contribution":
       return deps.contributionStore.listEntities();
@@ -584,7 +583,9 @@ async function listForKind(
       if (deps.agentTaskStore === undefined) {
         throw new Error("AgentTask store is not configured");
       }
-      return deps.agentTaskStore.listAgentTaskEntities();
+      return (await deps.agentTaskStore.listAgentTasks()).map((view) =>
+        agentTaskViewToEntity(view, namespace),
+      );
     default: {
       const _exhaustive: never = kind;
       void _exhaustive;

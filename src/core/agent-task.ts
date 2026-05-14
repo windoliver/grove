@@ -78,6 +78,9 @@ export interface AgentTaskStatus {
 export type AgentTaskEntity = Entity<"AgentTask", AgentTaskSpec, AgentTaskStatus>;
 
 export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"): AgentTaskEntity {
+  // WatchClient parses the leading numeric prefix for snapshot dedup ordering.
+  const resourceVersionPrefix = view.spec.generation + view.status.revision;
+  const resourceVersion = `${resourceVersionPrefix}:${view.spec.generation}:${view.status.revision}`;
   return {
     kind: "AgentTask",
     namespace,
@@ -100,7 +103,7 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
     },
     conditions: view.status.conditions,
     observedGeneration: view.status.observedGeneration,
-    resourceVersion: String(view.status.revision),
+    resourceVersion,
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
