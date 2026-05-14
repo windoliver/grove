@@ -6,6 +6,7 @@ import type { TimelineEvent, WorkBlock } from "../core/timeline.js";
 import { timelineScope } from "../core/timeline.js";
 import { parseTimelineEvent, parseWorkBlock } from "../core/timeline-schemas.js";
 import type {
+  AllScopeTimelineEventQuery,
   TimelineEventInput,
   TimelineEventQuery,
   TimelineStore,
@@ -310,6 +311,36 @@ export class SqliteTimelineStore implements TimelineStore {
     const events = await this.listTimelineEvents(query);
     const namespace = readStoreNamespace(this.db);
     return events.map((event) => timelineEventToEntity(event, namespace));
+  }
+
+  async listAllTimelineEventEntities(
+    query?: AllScopeTimelineEventQuery,
+  ): Promise<readonly TimelineEventEntity[]> {
+    const conditions: string[] = [];
+    const params: SQLQueryBindings[] = [];
+
+    if (query?.afterRv !== undefined) {
+      conditions.push("resource_version > ?");
+      params.push(Number(query.afterRv));
+    }
+    if (query?.workBlockId !== undefined) {
+      conditions.push("work_block_id = ?");
+      params.push(query.workBlockId);
+    }
+
+    let sql = "SELECT * FROM timeline_events";
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
+    }
+    sql += " ORDER BY scope ASC, resource_version ASC";
+    if (query?.limit !== undefined) {
+      sql += " LIMIT ?";
+      params.push(query.limit);
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as readonly TimelineEventRow[];
+    const namespace = readStoreNamespace(this.db);
+    return rows.map((row) => timelineEventToEntity(rowToTimelineEvent(row), namespace));
   }
 
   async currentTimelineResourceVersion(sessionId?: string): Promise<string> {

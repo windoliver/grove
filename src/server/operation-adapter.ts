@@ -28,6 +28,7 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
   return {
     contributionStore: deps.contributionStore,
     claimStore: deps.claimStore,
+    ...(deps.timelineStore !== undefined ? { timelineStore: deps.timelineStore } : {}),
     cas: deps.cas,
     frontier: deps.frontier,
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),

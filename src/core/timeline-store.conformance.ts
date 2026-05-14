@@ -65,6 +65,11 @@ export function runTimelineStoreConformance(harness: TimelineStoreHarness): void
         const second = await store.appendTimelineEvent(
           makeTimelineEventInput("te-conformance-2", TimelineEventType.WorkBlockStarted),
         );
+        await store.appendTimelineEvent(
+          makeTimelineEventInput("te-conformance-other", TimelineEventType.WorkBlockStarted, {
+            sessionId: "session-other",
+          }),
+        );
 
         expect(first.resourceVersion).toBe("1");
         expect(second.resourceVersion).toBe("2");
@@ -82,6 +87,9 @@ export function runTimelineStoreConformance(harness: TimelineStoreHarness): void
         });
         expect(entityListed[0]?.kind).toBe("TimelineEvent");
         expect(entityListed.map((entity) => entity.id)).toContain("te-conformance-2");
+        expect(
+          (await store.listAllTimelineEventEntities()).map((entity) => entity.id).sort(),
+        ).toEqual(["te-conformance-1", "te-conformance-2", "te-conformance-other"]);
 
         const currentRv = await store.currentTimelineResourceVersion("session-conformance");
         expect(currentRv).toBe("2");
@@ -115,7 +123,11 @@ function makeWorkBlock(overrides: Partial<WorkBlock> = {}): WorkBlock {
   };
 }
 
-function makeTimelineEventInput(eventId: string, type: TimelineEventType): TimelineEventInput {
+function makeTimelineEventInput(
+  eventId: string,
+  type: TimelineEventType,
+  overrides: Partial<TimelineEventInput> = {},
+): TimelineEventInput {
   return {
     eventId,
     sessionId: "session-conformance",
@@ -125,5 +137,6 @@ function makeTimelineEventInput(eventId: string, type: TimelineEventType): Timel
     workBlockId: "wb-conformance-1",
     targetRefs: [{ kind: "WorkBlock", id: "wb-conformance-1" }],
     payload: {},
+    ...overrides,
   };
 }

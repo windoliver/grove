@@ -5,6 +5,7 @@ import type { TimelineEvent, WorkBlock } from "../core/timeline.js";
 import { timelineScope } from "../core/timeline.js";
 import { parseTimelineEvent, parseWorkBlock } from "../core/timeline-schemas.js";
 import type {
+  AllScopeTimelineEventQuery,
   TimelineEventInput,
   TimelineEventQuery,
   TimelineStore,
@@ -26,6 +27,7 @@ import {
   timelineEventByIdPath,
   timelineEventPath,
   timelineEventsDir,
+  timelineEventsRootDir,
   workBlockPath,
   workBlockSessionIndexPath,
   workBlockStatusIndexPath,
@@ -350,6 +352,44 @@ export class NexusTimelineStore implements TimelineStore {
   ): Promise<readonly TimelineEventEntity[]> {
     const events = await this.listTimelineEvents(query);
     return events.map((event) => timelineEventToEntity(event, this.zoneId));
+  }
+
+  async listAllTimelineEventEntities(
+    query?: AllScopeTimelineEventQuery,
+  ): Promise<readonly TimelineEventEntity[]> {
+    const entries = await listAllPages(
+      this.client,
+      this.semaphore,
+      this.resolvedConfig,
+      timelineEventsRootDir(this.zoneId),
+      { recursive: true },
+    );
+    const files = entries.filter((entry) => !entry.isDirectory && entry.path.endsWith(".json"));
+    const events = await batchParallel(
+      files,
+      async (entry) => {
+        const data = await withRetry(
+          () => withSemaphore(this.semaphore, () => this.client.read(entry.path)),
+          "listAllTimelineEventEntities:read",
+          this.resolvedConfig,
+        );
+        return data === undefined ? undefined : decodeTimelineEvent(data);
+      },
+      this.resolvedConfig.maxConcurrency,
+    );
+
+    const afterRv = query?.afterRv === undefined ? undefined : BigInt(query.afterRv);
+    const filtered = events.filter((event): event is TimelineEvent => {
+      if (event === undefined) return false;
+      if (afterRv !== undefined && BigInt(event.resourceVersion) <= afterRv) return false;
+      if (query?.workBlockId !== undefined && event.workBlockId !== query.workBlockId) return false;
+      return true;
+    });
+
+    filtered.sort(compareTimelineEventScopeRvAsc);
+    return filtered
+      .slice(0, query?.limit ?? filtered.length)
+      .map((event) => timelineEventToEntity(event, this.zoneId));
   }
 
   async currentTimelineResourceVersion(sessionId?: string): Promise<string> {
@@ -685,6 +725,12 @@ function compareTimelineEventRvAsc(a: TimelineEvent, b: TimelineEvent): number {
   if (aRv < bRv) return -1;
   if (aRv > bRv) return 1;
   return a.eventId.localeCompare(b.eventId);
+}
+
+function compareTimelineEventScopeRvAsc(a: TimelineEvent, b: TimelineEvent): number {
+  const byScope = timelineScope(a.sessionId).localeCompare(timelineScope(b.sessionId));
+  if (byScope !== 0) return byScope;
+  return compareTimelineEventRvAsc(a, b);
 }
 
 function nextUpdatedAt(previousUpdatedAt: string): string {

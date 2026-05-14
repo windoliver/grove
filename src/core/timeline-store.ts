@@ -16,6 +16,8 @@ export interface TimelineEventQuery {
   readonly workBlockId?: string | undefined;
 }
 
+export type AllScopeTimelineEventQuery = Omit<TimelineEventQuery, "sessionId">;
+
 export type WorkBlockPatch = Partial<
   Pick<
     WorkBlock,
@@ -49,6 +51,9 @@ export interface TimelineStore {
   getTimelineEvent(eventId: string): Promise<TimelineEvent | undefined>;
   listTimelineEvents(query?: TimelineEventQuery): Promise<readonly TimelineEvent[]>;
   listTimelineEventEntities(query?: TimelineEventQuery): Promise<readonly TimelineEventEntity[]>;
+  listAllTimelineEventEntities(
+    query?: AllScopeTimelineEventQuery,
+  ): Promise<readonly TimelineEventEntity[]>;
   currentTimelineResourceVersion(sessionId?: string): Promise<string>;
   close(): void;
 }

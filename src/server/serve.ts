@@ -10,7 +10,12 @@
  */
 
 import { join } from "node:path";
-import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import {
+  claimToEntity,
+  contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
+} from "../core/entity.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
@@ -103,6 +108,7 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
+let serverTimelineStore: import("../core/timeline-store.js").TimelineStore = runtime.timelineStore;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -221,6 +227,7 @@ if (nexusUrl) {
   const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
   const { NexusCas } = await import("../nexus/nexus-cas.js");
   const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+  const { NexusTimelineStore } = await import("../nexus/nexus-timeline-store.js");
   const { NexusWatchPublisher } = await import("../nexus/nexus-watch-publisher.js");
 
   const nexusClient = new NexusHttpClient({
@@ -274,6 +281,7 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
+  serverTimelineStore = new NexusTimelineStore({ client: nexusClient, zoneId, watchPublisher });
   const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
   const nexusContributionStoreForSession = memoizeContributionStoreForSession(
     (sessionId: string) =>
@@ -337,6 +345,7 @@ const watchSubscriber = new NexusWatchSubscriber({
   fetchEntity: makeWatchEntityFetcher({
     contributionStore: serverContributionStore,
     claimStore: serverClaimStore,
+    timelineStore: serverTimelineStore,
   }),
 });
 watchSubscriber.start();
@@ -345,6 +354,7 @@ const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
+  timelineStore: serverTimelineStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   creditsService: runtime.creditsService,
@@ -604,6 +614,7 @@ process.on("SIGINT", () => void shutdown());
 function makeWatchEntityFetcher(stores: {
   contributionStore: import("../core/store.js").ContributionStore;
   claimStore: import("../core/store.js").ClaimStore;
+  timelineStore: import("../core/timeline-store.js").TimelineStore;
 }): (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity> {
   return async (kind, namespace, id) => {
     if (kind === "Contribution") {
@@ -615,6 +626,16 @@ function makeWatchEntityFetcher(stores: {
       const c = await stores.claimStore.getClaim(id);
       if (!c) throw new Error(`Claim ${id} not found`);
       return claimToEntity(c, () => Date.now(), namespace);
+    }
+    if (kind === "WorkBlock") {
+      const block = await stores.timelineStore.getWorkBlock(id);
+      if (!block) throw new Error(`WorkBlock ${id} not found`);
+      return workBlockToEntity(block, namespace);
+    }
+    if (kind === "TimelineEvent") {
+      const event = await stores.timelineStore.getTimelineEvent(id);
+      if (!event) throw new Error(`TimelineEvent ${id} not found`);
+      return timelineEventToEntity(event, namespace);
     }
     throw new Error(`Unsupported kind for watch fetcher: ${kind}`);
   };

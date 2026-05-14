@@ -296,9 +296,14 @@ export function timelineCursorPath(zoneId: string, scope: string): string {
   return `/zones/${encodeSegment(zoneId)}/timeline/cursors/${encodeSegment(scope)}.json`;
 }
 
+/** Directory containing per-scope timeline event directories. */
+export function timelineEventsRootDir(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/timeline/events`;
+}
+
 /** Directory containing timeline event JSON files for one scope. */
 export function timelineEventsDir(zoneId: string, scope: string): string {
-  return `/zones/${encodeSegment(zoneId)}/timeline/events/${encodeSegment(scope)}`;
+  return `${timelineEventsRootDir(zoneId)}/${encodeSegment(scope)}`;
 }
 
 /** Path to a timeline event JSON file in resource-version order. */

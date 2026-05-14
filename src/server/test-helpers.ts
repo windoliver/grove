@@ -8,7 +8,12 @@
 import type { Hono } from "hono";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
-import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import {
+  claimToEntity,
+  contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
+} from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
@@ -34,7 +39,8 @@ import type {
   ExpireStaleOptions,
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
-import { InMemoryContributionStore } from "../core/testing.js";
+import { InMemoryContributionStore, InMemoryTimelineStore } from "../core/testing.js";
+import type { TimelineStore } from "../core/timeline-store.js";
 import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
@@ -533,6 +539,7 @@ export interface TestContext {
   deps: ServerDeps;
   contributionStore: InMemoryContributionStore;
   claimStore: InMemoryClaimStore;
+  timelineStore?: TimelineStore | undefined;
   cas: InMemoryContentStore;
   watchHub: WatchHub;
   watchEventBus: EventBus;
@@ -543,12 +550,17 @@ export interface CreateTestAppOptions {
   readonly eventBus?: EventBus;
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly goalSessionStore?: GoalSessionStore;
+  readonly timelineStore?: TimelineStore | null;
 }
 
 /** Create a test app with fresh in-memory stores. */
 export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
   const contributionStore = new InMemoryContributionStore();
   const claimStore = new InMemoryClaimStore();
+  const timelineStore =
+    opts.timelineStore === null
+      ? undefined
+      : (opts.timelineStore ?? new InMemoryTimelineStore(TEST_NAMESPACE));
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
   const watchHub = new WatchHub(opts.watchHubOptions);
@@ -576,6 +588,18 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
         if (!c) throw new Error(`Claim ${id} not found`);
         return claimToEntity(c, () => Date.now(), namespace);
       }
+      if (kind === "WorkBlock") {
+        if (timelineStore === undefined) throw new Error("Timeline store not configured");
+        const block = await timelineStore.getWorkBlock(id);
+        if (!block) throw new Error(`WorkBlock ${id} not found`);
+        return workBlockToEntity(block, namespace);
+      }
+      if (kind === "TimelineEvent") {
+        if (timelineStore === undefined) throw new Error("Timeline store not configured");
+        const event = await timelineStore.getTimelineEvent(id);
+        if (!event) throw new Error(`TimelineEvent ${id} not found`);
+        return timelineEventToEntity(event, namespace);
+      }
       throw new Error(`Unsupported kind: ${kind}`);
     },
   });
@@ -589,12 +613,22 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     goalSessionStore: opts.goalSessionStore,
     watchHub,
     watchSubscriber,
+    ...(timelineStore !== undefined ? { timelineStore } : {}),
     ...(opts.outcomeStore !== undefined ? { outcomeStore: opts.outcomeStore } : {}),
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
 
-  return { app, deps, contributionStore, claimStore, cas, watchHub, watchEventBus };
+  return {
+    app,
+    deps,
+    contributionStore,
+    claimStore,
+    ...(timelineStore !== undefined ? { timelineStore } : {}),
+    cas,
+    watchHub,
+    watchEventBus,
+  };
 }
 
 // ---------------------------------------------------------------------------
