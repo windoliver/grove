@@ -327,6 +327,16 @@ export type {
 export { ExpiryReason } from "./store.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { SubprocessRuntime } from "./subprocess-runtime.js";
+export type {
+  AgentTaskStatusTransition,
+  TaskBinder,
+  TaskBindRequest,
+  TaskBindResult,
+  TaskControllerOptions,
+  TaskControllerRuntime,
+  TaskControllerStore,
+} from "./task-controller.js";
+export { DefaultTaskBinder, TaskController } from "./task-controller.js";
 export { toUtcIso } from "./time.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
