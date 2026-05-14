@@ -8,10 +8,23 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import type { CasMutationResult } from "./cas.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
-import { ClaimStatus } from "./models.js";
+import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStore } from "./store.js";
 import { makeAgent, makeClaim } from "./test-helpers.js";
+
+/**
+ * Unwrap a CAS putClaimSpec result for tests that don't exercise the
+ * mismatch branch (C6 #304, T2). Centralizes the migration during
+ * roll-out — once every caller carries an ifMatch the unwrap stays put.
+ */
+function unwrapPut(result: CasMutationResult<ClaimView>): ClaimView {
+  if (result.kind !== "ok") {
+    throw new Error(`unexpected putClaimSpec result kind: ${result.kind}`);
+  }
+  return result.view;
+}
 
 /** Factory that creates a fresh ClaimStore and returns a cleanup function. */
 export type ClaimStoreFactory = () => Promise<{
@@ -57,22 +70,24 @@ export function runClaimStoreTests(
 
     test("putClaimSpec creates a claim view with default status", async () => {
       const now = new Date().toISOString();
-      const view = await store.putClaimSpec({
-        id: "spec-create",
-        roleName: "coder",
-        platform: "codex",
-        blueprint: "implement issue",
-        assignee: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
-        leaseDeadlineSec: 600,
-        priority: 7,
-        maxIterations: 3,
-        generation: 99,
-        targetRef: "target-spec",
-        agent: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
-        intentSummary: "Implement claim split",
-        context: { issue: 270 },
-        createdAt: now,
-      });
+      const view = unwrapPut(
+        await store.putClaimSpec({
+          id: "spec-create",
+          roleName: "coder",
+          platform: "codex",
+          blueprint: "implement issue",
+          assignee: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
+          leaseDeadlineSec: 600,
+          priority: 7,
+          maxIterations: 3,
+          generation: 99,
+          targetRef: "target-spec",
+          agent: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
+          intentSummary: "Implement claim split",
+          context: { issue: 270 },
+          createdAt: now,
+        }),
+      );
 
       expect(view.spec.id).toBe("spec-create");
       expect(view.spec.generation).toBe(1);
@@ -84,25 +99,29 @@ export function runClaimStoreTests(
     });
 
     test("putClaimSpec increments generation without changing status revision", async () => {
-      const created = await store.putClaimSpec({
-        id: "spec-update",
-        targetRef: "target-spec-update",
-        agent: makeAgent({ agentId: "agent-spec-update" }),
-        intentSummary: "first spec",
-        createdAt: new Date().toISOString(),
-        generation: 1,
-      });
+      const created = unwrapPut(
+        await store.putClaimSpec({
+          id: "spec-update",
+          targetRef: "target-spec-update",
+          agent: makeAgent({ agentId: "agent-spec-update" }),
+          intentSummary: "first spec",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      );
       const statusUpdated = await store.patchClaimStatus("spec-update", {
         phase: ClaimStatus.Active,
         observedGeneration: created.spec.generation,
         lastHeartbeatAt: "2026-01-01T00:01:00.000Z",
       });
 
-      const updated = await store.putClaimSpec({
-        ...statusUpdated.spec,
-        intentSummary: "second spec",
-        generation: 1,
-      });
+      const updated = unwrapPut(
+        await store.putClaimSpec({
+          ...statusUpdated.spec,
+          intentSummary: "second spec",
+          generation: 1,
+        }),
+      );
 
       expect(updated.spec.generation).toBe(created.spec.generation + 1);
       expect(updated.spec.intentSummary).toBe("second spec");
@@ -111,14 +130,16 @@ export function runClaimStoreTests(
     });
 
     test("patchClaimStatus changes status without changing spec generation", async () => {
-      const created = await store.putClaimSpec({
-        id: "status-update",
-        targetRef: "target-status-update",
-        agent: makeAgent({ agentId: "agent-status-update" }),
-        intentSummary: "status-only write",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        generation: 1,
-      });
+      const created = unwrapPut(
+        await store.putClaimSpec({
+          id: "status-update",
+          targetRef: "target-status-update",
+          agent: makeAgent({ agentId: "agent-status-update" }),
+          intentSummary: "status-only write",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          generation: 1,
+        }),
+      );
 
       const patched = await store.patchClaimStatus("status-update", {
         phase: ClaimStatus.Completed,
@@ -152,6 +173,98 @@ export function runClaimStoreTests(
 
     test("getClaimView returns undefined for a missing claim", async () => {
       await expect(store.getClaimView("missing-view")).resolves.toBeUndefined();
+    });
+
+    // ------------------------------------------------------------------
+    // putClaimSpec CAS (C6, #304)
+    // ------------------------------------------------------------------
+
+    test("putClaimSpec returns rv-mismatch when ifMatch is stale", async () => {
+      const nowIso = new Date().toISOString();
+      const created = await store.putClaimSpec({
+        id: "cas-stale",
+        targetRef: "ref-cas-stale",
+        agent: makeAgent({ agentId: "agent-cas-stale" }),
+        intentSummary: "first",
+        createdAt: nowIso,
+        generation: 1,
+      });
+      if (created.kind !== "ok") throw new Error("expected ok on first put");
+      const staleRv = String(created.view.spec.resourceVersion ?? 1);
+
+      // External mutation bumps RV without ifMatch.
+      const secondPut = await store.putClaimSpec({
+        id: "cas-stale",
+        targetRef: "ref-cas-stale",
+        agent: makeAgent({ agentId: "agent-cas-stale" }),
+        intentSummary: "second",
+        createdAt: nowIso,
+        generation: 1,
+      });
+      expect(secondPut.kind).toBe("ok");
+
+      // Retry with the captured stale RV — must be rejected.
+      const result = await store.putClaimSpec(
+        {
+          id: "cas-stale",
+          targetRef: "ref-cas-stale",
+          agent: makeAgent({ agentId: "agent-cas-stale" }),
+          intentSummary: "third",
+          createdAt: nowIso,
+          generation: 1,
+        },
+        { ifMatch: staleRv },
+      );
+      expect(result.kind).toBe("rv-mismatch");
+      if (result.kind === "rv-mismatch") {
+        expect(result.current.resourceVersion).not.toBe(staleRv);
+        expect(typeof result.current.generation).toBe("number");
+      }
+    });
+
+    test("putClaimSpec bumps resource_version when ifMatch matches", async () => {
+      const nowIso = new Date().toISOString();
+      const created = await store.putClaimSpec({
+        id: "cas-fresh",
+        targetRef: "ref-cas-fresh",
+        agent: makeAgent({ agentId: "agent-cas-fresh" }),
+        intentSummary: "first",
+        createdAt: nowIso,
+        generation: 1,
+      });
+      if (created.kind !== "ok") throw new Error("expected ok on first put");
+      const initialRv = String(created.view.spec.resourceVersion ?? 1);
+
+      const result = await store.putClaimSpec(
+        {
+          id: "cas-fresh",
+          targetRef: "ref-cas-fresh",
+          agent: makeAgent({ agentId: "agent-cas-fresh" }),
+          intentSummary: "second",
+          createdAt: nowIso,
+          generation: 1,
+        },
+        { ifMatch: initialRv },
+      );
+      expect(result.kind).toBe("ok");
+      if (result.kind === "ok") {
+        // RV should have advanced past the ifMatch value.
+        const nextRv = String(result.view.spec.resourceVersion ?? 1);
+        expect(Number(nextRv)).toBeGreaterThan(Number(initialRv));
+      }
+    });
+
+    test("putClaimSpec without ifMatch still writes (back-compat path)", async () => {
+      const nowIso = new Date().toISOString();
+      const result = await store.putClaimSpec({
+        id: "cas-noopts",
+        targetRef: "ref-cas-noopts",
+        agent: makeAgent({ agentId: "agent-cas-noopts" }),
+        intentSummary: "first",
+        createdAt: nowIso,
+        generation: 1,
+      });
+      expect(result.kind).toBe("ok");
     });
 
     // ------------------------------------------------------------------

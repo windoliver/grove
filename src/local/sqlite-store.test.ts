@@ -13,13 +13,25 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CasMutationResult } from "../core/cas.js";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
-import type { Claim } from "../core/models.js";
+import type { Claim, ClaimView } from "../core/models.js";
 import { ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
 import { makeAgent, makeClaim, makeContribution } from "../core/test-helpers.js";
 import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
+
+/**
+ * Unwrap a CAS putClaimSpec result for tests that don't exercise the
+ * mismatch branch. Centralizes the migration after T2 (#304).
+ */
+function unwrapPutResult(result: CasMutationResult<ClaimView>): ClaimView {
+  if (result.kind !== "ok") {
+    throw new Error(`unexpected putClaimSpec result kind: ${result.kind}`);
+  }
+  return result.view;
+}
 
 function sqliteBindLimit(db: Database): number {
   const rows = db.prepare("PRAGMA compile_options").all() as readonly {
@@ -116,14 +128,16 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const first = await claimStore.putClaimSpec({
-        id: "split-target-first",
-        targetRef: "split-target",
-        agent: makeAgent({ agentId: "agent-first" }),
-        intentSummary: "first active spec",
-        createdAt: new Date().toISOString(),
-        generation: 1,
-      });
+      const first = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "split-target-first",
+          targetRef: "split-target",
+          agent: makeAgent({ agentId: "agent-first" }),
+          intentSummary: "first active spec",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      );
 
       expect(first.status.phase).toBe(ClaimStatus.Active);
       expect(first.status.revision).toBe(1);
@@ -139,14 +153,16 @@ describe("SqliteClaimStore split API", () => {
         }),
       ).rejects.toThrow(/active claim/);
 
-      const movable = await claimStore.putClaimSpec({
-        id: "split-target-move",
-        targetRef: "other-target",
-        agent: makeAgent({ agentId: "agent-move" }),
-        intentSummary: "move candidate",
-        createdAt: new Date().toISOString(),
-        generation: 1,
-      });
+      const movable = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "split-target-move",
+          targetRef: "other-target",
+          agent: makeAgent({ agentId: "agent-move" }),
+          intentSummary: "move candidate",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      );
       await expect(
         claimStore.putClaimSpec({
           ...movable.spec,
@@ -165,14 +181,16 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const created = await claimStore.putClaimSpec({
-        id: "split-update",
-        targetRef: "split-update-target",
-        agent: makeAgent({ agentId: "agent-update" }),
-        intentSummary: "initial spec",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        generation: 99,
-      });
+      const created = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "split-update",
+          targetRef: "split-update-target",
+          agent: makeAgent({ agentId: "agent-update" }),
+          intentSummary: "initial spec",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          generation: 99,
+        }),
+      );
       const patched = await claimStore.patchClaimStatus("split-update", {
         phase: ClaimStatus.Completed,
         observedGeneration: created.spec.generation,
@@ -181,11 +199,13 @@ describe("SqliteClaimStore split API", () => {
         lastTransitionAt: "2026-01-01T00:05:00.000Z",
       });
 
-      const updated = await claimStore.putClaimSpec({
-        ...patched.spec,
-        intentSummary: "updated spec",
-        createdAt: "2030-01-01T00:00:00.000Z",
-      });
+      const updated = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          ...patched.spec,
+          intentSummary: "updated spec",
+          createdAt: "2030-01-01T00:00:00.000Z",
+        }),
+      );
 
       expect(updated.spec.generation).toBe(created.spec.generation + 1);
       expect(updated.spec.createdAt).toBe(created.spec.createdAt);
@@ -207,14 +227,16 @@ describe("SqliteClaimStore split API", () => {
       const now = new Date();
       const activeLeaseExpiresAt = new Date(now.getTime() + 600_000).toISOString();
 
-      const terminal = await claimStore.putClaimSpec({
-        id: "terminal-edit",
-        targetRef: "shared-terminal-target",
-        agent: makeAgent({ agentId: "agent-terminal" }),
-        intentSummary: "terminal before edit",
-        createdAt: now.toISOString(),
-        generation: 1,
-      });
+      const terminal = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "terminal-edit",
+          targetRef: "shared-terminal-target",
+          agent: makeAgent({ agentId: "agent-terminal" }),
+          intentSummary: "terminal before edit",
+          createdAt: now.toISOString(),
+          generation: 1,
+        }),
+      );
       await claimStore.patchClaimStatus("terminal-edit", {
         phase: ClaimStatus.Completed,
         lastHeartbeatAt: new Date(now.getTime() + 1_000).toISOString(),
@@ -230,24 +252,28 @@ describe("SqliteClaimStore split API", () => {
         generation: 1,
       });
 
-      const terminalEdited = await claimStore.putClaimSpec({
-        ...terminal.spec,
-        intentSummary: "terminal after edit",
-      });
+      const terminalEdited = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          ...terminal.spec,
+          intentSummary: "terminal after edit",
+        }),
+      );
 
       expect(terminalEdited.spec.generation).toBe(terminal.spec.generation + 1);
       expect(terminalEdited.spec.intentSummary).toBe("terminal after edit");
       expect(terminalEdited.status.phase).toBe(ClaimStatus.Completed);
 
-      const expired = await claimStore.putClaimSpec({
-        id: "expired-edit",
-        targetRef: "shared-expired-target",
-        agent: makeAgent({ agentId: "agent-expired" }),
-        intentSummary: "expired before edit",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        generation: 1,
-        leaseDeadlineSec: 60,
-      });
+      const expired = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "expired-edit",
+          targetRef: "shared-expired-target",
+          agent: makeAgent({ agentId: "agent-expired" }),
+          intentSummary: "expired before edit",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          generation: 1,
+          leaseDeadlineSec: 60,
+        }),
+      );
       await claimStore.putClaimSpec({
         id: "expired-active-holder",
         targetRef: "shared-expired-target",
@@ -257,10 +283,12 @@ describe("SqliteClaimStore split API", () => {
         generation: 1,
       });
 
-      const expiredEdited = await claimStore.putClaimSpec({
-        ...expired.spec,
-        intentSummary: "expired after edit",
-      });
+      const expiredEdited = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          ...expired.spec,
+          intentSummary: "expired after edit",
+        }),
+      );
 
       expect(expiredEdited.spec.generation).toBe(expired.spec.generation + 1);
       expect(expiredEdited.spec.intentSummary).toBe("expired after edit");
@@ -277,14 +305,16 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const created = await claimStore.putClaimSpec({
-        id: "split-patch",
-        targetRef: "split-patch-target",
-        agent: makeAgent({ agentId: "agent-patch" }),
-        intentSummary: "patch spec",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        generation: 1,
-      });
+      const created = unwrapPutResult(
+        await claimStore.putClaimSpec({
+          id: "split-patch",
+          targetRef: "split-patch-target",
+          agent: makeAgent({ agentId: "agent-patch" }),
+          intentSummary: "patch spec",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          generation: 1,
+        }),
+      );
 
       const firstPatch = await claimStore.patchClaimStatus("split-patch", {
         observedGeneration: created.spec.generation,
@@ -1100,14 +1130,16 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     const events: Array<{ op: string; claim: Claim }> = [];
     claimStore.onClaimWrite = (op, c) => events.push({ op, claim: c });
 
-    const created = await claimStore.putClaimSpec({
-      id: "watch-split",
-      targetRef: "target-watch-split",
-      agent: { agentId: "agent-watch-split" },
-      intentSummary: "initial split spec",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      generation: 1,
-    });
+    const created = unwrapPutResult(
+      await claimStore.putClaimSpec({
+        id: "watch-split",
+        targetRef: "target-watch-split",
+        agent: { agentId: "agent-watch-split" },
+        intentSummary: "initial split spec",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+      }),
+    );
     const patched = await claimStore.patchClaimStatus("watch-split", {
       phase: ClaimStatus.Completed,
       observedGeneration: created.spec.generation,

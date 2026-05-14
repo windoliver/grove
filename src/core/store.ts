@@ -12,6 +12,7 @@ import type {
   AgentTaskStatusRecord,
   AgentTaskView,
 } from "./agent-task.js";
+import type { CasMutationResult } from "./cas.js";
 import type { ClaimEntity, Condition, ContributionEntity } from "./entity.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
@@ -292,8 +293,19 @@ export interface ClaimStore {
   /** Optional persistent-state identity string. See ContributionStore.storeIdentity. */
   readonly storeIdentity?: string | undefined;
 
-  /** Create or update user-owned claim spec. Store controls generation. */
-  putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView>;
+  /**
+   * Create or update user-owned claim spec. Store controls generation.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted spec
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on insert/back-compat path)
+   * writes and returns `{ kind: "ok", view }` with the bumped RV.
+   */
+  putClaimSpec(
+    spec: ClaimSpecRecord,
+    opts?: { readonly ifMatch?: string },
+  ): Promise<CasMutationResult<ClaimView>>;
 
   /** Get the merged split claim view by ID. */
   getClaimView(claimId: string): Promise<ClaimView | undefined>;

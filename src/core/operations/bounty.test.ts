@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-
+import type { CasMutationResult } from "../cas.js";
 import type { InMemoryCreditsService } from "../in-memory-credits.js";
 import {
   type Claim,
@@ -45,7 +45,7 @@ class OwnerAwareClaimStore implements ClaimStore {
     this.claims.set(view.spec.id, claimViewToClaim(view));
   }
 
-  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+  async putClaimSpec(spec: ClaimSpecRecord): Promise<CasMutationResult<ClaimView>> {
     const existing = await this.getClaimView(spec.id);
     const now = new Date().toISOString();
     const createdAtMs = Date.parse(spec.createdAt);
@@ -80,7 +80,7 @@ class OwnerAwareClaimStore implements ClaimStore {
             status: existing.status,
           };
     this.putView(view);
-    return view;
+    return { kind: "ok", view };
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {

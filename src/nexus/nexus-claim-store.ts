@@ -9,6 +9,7 @@
  * - Active index:  /zones/{zoneId}/indexes/claims/active/{targetRef}/{claimId}
  */
 
+import type { CasMutationResult } from "../core/cas.js";
 import {
   computeLeaseDuration,
   DEFAULT_LEASE_DURATION_MS,
@@ -214,7 +215,10 @@ export class NexusClaimStore implements ClaimStore {
     this.activeClaimsCache = undefined;
   }
 
-  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+  async putClaimSpec(
+    spec: ClaimSpecRecord,
+    opts?: { readonly ifMatch?: string },
+  ): Promise<CasMutationResult<ClaimView>> {
     const existing = await this.readClaimWithEtag(spec.id);
 
     if (existing === undefined) {
@@ -224,7 +228,7 @@ export class NexusClaimStore implements ClaimStore {
       const createdAtMs = new Date(createdAt).getTime();
       const leaseDeadlineSec = spec.leaseDeadlineSec ?? DEFAULT_LEASE_DURATION_MS / 1000;
       const document: ClaimDocument = {
-        spec: { ...spec, generation: 1, createdAt },
+        spec: { ...spec, generation: 1, createdAt, resourceVersion: 1 },
         status: {
           id: spec.id,
           phase: "active" as ClaimStatus,
@@ -235,6 +239,7 @@ export class NexusClaimStore implements ClaimStore {
           lastTransitionAt: nowIso,
           attemptCount: 0,
           revision: 1,
+          resourceVersion: 1,
         },
       };
       const flatClaim = claimViewToClaim(document);
@@ -278,15 +283,32 @@ export class NexusClaimStore implements ClaimStore {
       this.claimCache.set(flatClaim.claimId, flatClaim);
       this.invalidateActiveClaimsCache();
       this.publishWatch(flatClaim, "ADDED");
-      return document;
+      return { kind: "ok", view: document };
     }
 
     const existingDocument = existing.document;
+
+    // C6 (#304): Compare-and-set on the persisted spec resource_version.
+    // Only applies on UPDATE. Mismatch returns rv-mismatch without writing.
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(existingDocument.spec.resourceVersion ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: existingDocument.spec.generation,
+          },
+        };
+      }
+    }
+
     const updatedDocument: ClaimDocument = {
       spec: {
         ...spec,
         createdAt: existingDocument.spec.createdAt,
         generation: existingDocument.spec.generation + 1,
+        resourceVersion: (existingDocument.spec.resourceVersion ?? 1) + 1,
       },
       status: existingDocument.status,
     };
@@ -336,7 +358,7 @@ export class NexusClaimStore implements ClaimStore {
     this.claimCache.set(updatedClaim.claimId, updatedClaim);
     this.invalidateActiveClaimsCache();
     this.publishWatch(updatedClaim, "MODIFIED");
-    return updatedDocument;
+    return { kind: "ok", view: updatedDocument };
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {

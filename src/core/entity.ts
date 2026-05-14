@@ -313,15 +313,18 @@ export function claimViewToEntity(
     // resourceVersion so caches/informers see a version change at the
     // boundary and do not conflate the two snapshots.
     //
-    // C6 (#304) NOTE: `view.status.resourceVersion` is the persisted
-    // `resource_version` column. Until subsequent C6 tasks land the
-    // per-mutation bump, `revision` remains the authoritative monotonic
-    // signal so heartbeat/release/complete continue to advance the Entity
-    // RV. Tasks 2-3 will switch the source-of-truth here once they own
-    // bumping the new column inside each mutation.
+    // C6 (#304): The Entity's `resourceVersion` is a composite of the
+    // persisted spec `resource_version` (bumped by `putClaimSpec`, T2)
+    // and the status `revision` (advanced by every status-side write
+    // — heartbeat, release, complete, expireStale, patchClaimStatus).
+    // T3 will land status `resource_version` bumping; once that's in,
+    // this composite can collapse to `spec.resource_version +
+    // status.resource_version - 1`. For now the formula keeps both the
+    // "init RV='1'" and "heartbeat/transition advances RV" invariants
+    // true while letting spec writes also bump the entity-level RV.
     resourceVersion: leaseIsExpired
-      ? `${view.status.revision}-lease-expired`
-      : String(view.status.revision),
+      ? `${claimRvComposite(view)}-lease-expired`
+      : String(claimRvComposite(view)),
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
@@ -330,6 +333,23 @@ export function claimViewToEntity(
       deletionTimestamp: view.spec.deletionTimestamp,
     },
   };
+}
+
+/**
+ * Compute the composite Entity resourceVersion for a ClaimView.
+ *
+ * Combines the persisted spec `resource_version` (bumped by every
+ * spec-side write via `putClaimSpec`) with the status `revision`
+ * (advanced by every status-side write). The `-1` term keeps
+ * `(1,1) → 1` so a freshly-created claim has RV `"1"` rather than `"2"`.
+ *
+ * Once T3 lands status-side `resource_version` bumping, this can be
+ * collapsed to `spec.resourceVersion + status.resourceVersion - 1`.
+ */
+function claimRvComposite(view: ClaimView): number {
+  const specRv = view.spec.resourceVersion ?? 1;
+  const statusRv = view.status.revision;
+  return specRv + statusRv - 1;
 }
 
 function computeLeaseDeadlineSec(createdAt: string, leaseExpiresAt: string): number | undefined {

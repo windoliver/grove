@@ -247,7 +247,14 @@ claims.put("/:id", zValidator("json", specBodySchema), async (c) => {
     createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
   };
 
-  const view = await deps.claimStore.putClaimSpec(spec);
+  const putResult = await deps.claimStore.putClaimSpec(spec);
+  if (putResult.kind === "rv-mismatch") {
+    // PUT handler does not (yet) accept If-Match; if the inner store
+    // surfaces an rv-mismatch here, that's a programming error — only
+    // CAS-bearing routes should observe this branch (T6).
+    throw new Error("unexpected RV mismatch on non-CAS putClaimSpec path");
+  }
+  const view = putResult.view;
   const namespace = c.get("namespace");
   const entity = claimViewToEntity(view, () => Date.now(), namespace);
   try {

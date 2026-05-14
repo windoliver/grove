@@ -115,10 +115,11 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
     conditions: view.status.conditions,
     observedGeneration: view.status.observedGeneration,
     // C6 (#304) NOTE: `view.status.resourceVersion` is the persisted
-    // `resource_version` column. Until subsequent C6 tasks land the
-    // per-mutation bump, `revision` remains the authoritative monotonic
-    // signal that conformance tests rely on. Tasks 2-3 will switch the
-    // source-of-truth here once they own bumping the new column.
+    // `resource_version` column. Task 3 will land bump-on-write for
+    // agent task spec/status mutations and switch the source-of-truth
+    // here (analogous to the composite formula used in
+    // `claimViewToEntity` after Task 2). Until then `revision` remains
+    // the authoritative monotonic signal that conformance tests rely on.
     resourceVersion: String(view.status.revision),
     metadata: {
       generation: view.spec.generation,

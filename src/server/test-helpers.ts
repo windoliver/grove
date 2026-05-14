@@ -6,7 +6,7 @@
  */
 
 import type { Hono } from "hono";
-import type { ContentStore, PutOptions } from "../core/cas.js";
+import type { CasMutationResult, ContentStore, PutOptions } from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
@@ -142,19 +142,35 @@ export class InMemoryClaimStore implements ClaimStore {
     this.statuses.set(view.status.id, view.status);
   }
 
-  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+  async putClaimSpec(
+    spec: ClaimSpecRecord,
+    opts?: { readonly ifMatch?: string },
+  ): Promise<CasMutationResult<ClaimView>> {
     const existing = this.viewFor(spec.id);
     if (existing !== undefined) {
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existing.spec.resourceVersion ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          return {
+            kind: "rv-mismatch",
+            current: {
+              resourceVersion: currentRv,
+              generation: existing.spec.generation,
+            },
+          };
+        }
+      }
       const updated: ClaimView = {
         spec: {
           ...spec,
           createdAt: existing.spec.createdAt,
           generation: existing.spec.generation + 1,
+          resourceVersion: (existing.spec.resourceVersion ?? 1) + 1,
         },
         status: existing.status,
       };
       this.putView(updated);
-      return updated;
+      return { kind: "ok", view: updated };
     }
 
     const now = new Date().toISOString();
@@ -162,7 +178,7 @@ export class InMemoryClaimStore implements ClaimStore {
     const leaseBaseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
     const leaseDurationSec = spec.leaseDeadlineSec ?? 300;
     const view: ClaimView = {
-      spec: { ...spec, generation: 1 },
+      spec: { ...spec, generation: 1, resourceVersion: 1 },
       status: {
         id: spec.id,
         phase: "active",
@@ -173,10 +189,11 @@ export class InMemoryClaimStore implements ClaimStore {
         lastTransitionAt: now,
         attemptCount: 0,
         revision: 1,
+        resourceVersion: 1,
       },
     };
     this.putView(view);
-    return view;
+    return { kind: "ok", view };
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {

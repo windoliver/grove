@@ -63,6 +63,7 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // Constants
 // ---------------------------------------------------------------------------
 
+import type { CasMutationResult } from "../core/cas.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
@@ -2308,12 +2309,31 @@ export class SqliteClaimStore implements ClaimStore {
     `);
   }
 
-  putClaimSpec = async (spec: ClaimSpecRecord): Promise<ClaimView> => {
+  putClaimSpec = async (
+    spec: ClaimSpecRecord,
+    opts?: { readonly ifMatch?: string },
+  ): Promise<CasMutationResult<ClaimView>> => {
     this.validateSpecContext(spec);
 
     let op: "ADDED" | "MODIFIED" = "MODIFIED";
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(spec.id);
+
+      // C6 (#304): Compare-and-set on the persisted spec resource_version.
+      // Only applies on UPDATE (existing !== null). Inserts have no version
+      // to compare against and proceed unconditionally.
+      if (opts?.ifMatch !== undefined && existing !== null) {
+        const currentRv = String(existing.spec.resourceVersion ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            generation: existing.spec.generation,
+          };
+          return;
+        }
+      }
+
       const now = new Date();
       const nowIso = now.toISOString();
       const existingActiveUnexpired =
@@ -2382,7 +2402,8 @@ export class SqliteClaimStore implements ClaimStore {
                context_json = ?,
                owner_ref_json = ?,
                finalizers_json = ?,
-               deletion_timestamp = ?
+               deletion_timestamp = ?,
+               resource_version = resource_version + 1
            WHERE id = ?`,
         )
         .run(
@@ -2406,10 +2427,14 @@ export class SqliteClaimStore implements ClaimStore {
     });
     tx.immediate();
 
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
+
     const view = this.readClaimView(spec.id);
     if (view === null) throw new Error(`Failed to read back claim '${spec.id}'`);
     this.onClaimWrite?.(op, claimViewToClaim(view));
-    return view;
+    return { kind: "ok", view };
   };
 
   getClaimView = async (claimId: string): Promise<ClaimView | undefined> => {

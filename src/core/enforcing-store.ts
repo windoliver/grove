@@ -14,7 +14,7 @@
  * all policy enforcement lives in these wrappers.
  */
 
-import type { ContentStore } from "./cas.js";
+import type { CasMutationResult, ContentStore } from "./cas.js";
 import type { ClaimEntity, ContributionEntity } from "./entity.js";
 import {
   ArtifactLimitError,
@@ -559,7 +559,10 @@ export class EnforcingClaimStore implements ClaimStore {
     return this.inner.heartbeat(claimId, effectiveDurationMs);
   };
 
-  putClaimSpec = async (spec: ClaimSpecRecord): Promise<ClaimView> => {
+  putClaimSpec = async (
+    spec: ClaimSpecRecord,
+    opts?: { readonly ifMatch?: string },
+  ): Promise<CasMutationResult<ClaimView>> => {
     return this.writeMutex.runExclusive(async () => {
       const existing = await this.inner.getClaimView(spec.id);
       const existingClaim = existing !== undefined ? claimViewToClaim(existing) : undefined;
@@ -579,7 +582,7 @@ export class EnforcingClaimStore implements ClaimStore {
       }
       this.enforceSpecLeaseLimit(spec);
 
-      return await this.inner.putClaimSpec(spec);
+      return await this.inner.putClaimSpec(spec, opts);
     });
   };
 
