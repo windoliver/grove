@@ -118,6 +118,42 @@ describe("parseGroveConfig", () => {
     expect(config.skillCatalog?.policy).toBe("warn-and-fallback");
     expect(config.skillCatalog?.trustedKeys).toEqual([]);
   });
+
+  test("parses runtime skill allowlist config", () => {
+    const config = parseGroveConfig(
+      JSON.stringify({
+        name: "swarm",
+        mode: "local",
+        runtimeSkills: {
+          mode: "role-allowlist",
+          roles: {
+            coder: ["grove", "review"],
+            reviewer: ["grove"],
+          },
+          returnSkillMdMaxBytes: 32768,
+        },
+      }),
+    );
+
+    expect(config.runtimeSkills?.mode).toBe("role-allowlist");
+    expect(config.runtimeSkills?.roles.coder).toEqual(["grove", "review"]);
+    expect(config.runtimeSkills?.roles.reviewer).toEqual(["grove"]);
+    expect(config.runtimeSkills?.returnSkillMdMaxBytes).toBe(32768);
+  });
+
+  test("defaults runtime skill content byte limit", () => {
+    const config = parseGroveConfig(
+      JSON.stringify({
+        name: "swarm",
+        runtimeSkills: {
+          mode: "role-allowlist",
+          roles: { coder: ["grove"] },
+        },
+      }),
+    );
+
+    expect(config.runtimeSkills?.returnSkillMdMaxBytes).toBe(65536);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -215,6 +251,56 @@ describe("parseGroveConfig errors", () => {
       ),
     ).toThrow("Invalid grove.json");
   });
+
+  test("rejects unknown runtime skills mode", () => {
+    expect(() =>
+      parseGroveConfig(
+        JSON.stringify({
+          name: "x",
+          runtimeSkills: { mode: "approval", roles: { coder: ["grove"] } },
+        }),
+      ),
+    ).toThrow("Invalid grove.json");
+  });
+
+  test("rejects unsafe runtime skill names", () => {
+    for (const skillName of ["", ".", "..", "nested/name", "nested\\name", "bad\u0000name"]) {
+      expect(() =>
+        parseGroveConfig(
+          JSON.stringify({
+            name: "x",
+            runtimeSkills: { mode: "role-allowlist", roles: { coder: [skillName] } },
+          }),
+        ),
+      ).toThrow("Invalid grove.json");
+    }
+  });
+
+  test("rejects empty runtime skill role names", () => {
+    expect(() =>
+      parseGroveConfig(
+        JSON.stringify({
+          name: "x",
+          runtimeSkills: { mode: "role-allowlist", roles: { "": ["grove"] } },
+        }),
+      ),
+    ).toThrow("Invalid grove.json");
+  });
+
+  test("rejects oversized runtime skill return limit", () => {
+    expect(() =>
+      parseGroveConfig(
+        JSON.stringify({
+          name: "x",
+          runtimeSkills: {
+            mode: "role-allowlist",
+            roles: { coder: ["grove"] },
+            returnSkillMdMaxBytes: 262145,
+          },
+        }),
+      ),
+    ).toThrow("Invalid grove.json");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -286,6 +372,25 @@ describe("writeGroveConfig", () => {
 
     const parsed = parseGroveConfig(readFileSync(tmpPath, "utf-8"));
     expect(parsed.skillCatalog).toEqual(original.skillCatalog);
+  });
+
+  test("round-trips runtime skill config", () => {
+    const original: GroveConfig = {
+      name: "runtime-skills",
+      mode: "local",
+      runtimeSkills: {
+        mode: "role-allowlist",
+        roles: {
+          coder: ["grove", "review"],
+        },
+        returnSkillMdMaxBytes: 4096,
+      },
+    };
+    writeGroveConfig(original, tmpPath);
+
+    const parsed = parseGroveConfig(readFileSync(tmpPath, "utf-8"));
+
+    expect(parsed.runtimeSkills).toEqual(original.runtimeSkills);
   });
 
   test("omits undefined optional fields", () => {
