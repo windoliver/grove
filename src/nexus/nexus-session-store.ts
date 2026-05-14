@@ -17,7 +17,9 @@ import {
   type SessionFinalizer,
 } from "../core/lifecycle-metadata.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
@@ -132,7 +134,7 @@ function isContributionSidecarV2(value: unknown): value is ContributionSidecarV2
   );
 }
 
-export class NexusSessionStore implements SessionStore {
+export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore {
   private readonly client: NexusClient;
   private readonly zoneId: string;
   private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
@@ -467,6 +469,55 @@ export class NexusSessionStore implements SessionStore {
       if (latest === undefined) return;
       throw error;
     }
+  }
+
+  async appendSessionRoleSkill(
+    id: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const loaded = await this.readPersistedSessionRecordWithEtag(id);
+      if (loaded === undefined) return "session_missing";
+      const existing = this.normalizeSessionRecord(loaded.persisted).session;
+      if (existing.topology === undefined) return "role_missing";
+
+      let foundRole = false;
+      let changed = false;
+      const roles = existing.topology.roles.map((role) => {
+        if (role.name !== roleName) return { ...role };
+        foundRole = true;
+        const currentSkills = role.skills ?? [];
+        if (currentSkills.includes(skillName)) return { ...role };
+        changed = true;
+        return { ...role, skills: [...currentSkills, skillName] };
+      });
+
+      if (!foundRole) return "role_missing";
+      if (!changed) return "already_present";
+
+      const nextPersisted: PersistedSessionRecord = {
+        ...loaded.persisted,
+        uid: existing.uid,
+        topology: {
+          ...existing.topology,
+          roles,
+        },
+      };
+
+      try {
+        await this.client.write(
+          this.sessionPath(id),
+          encoder.encode(JSON.stringify(nextPersisted)),
+          { ifMatch: loaded.etag },
+        );
+        return "appended";
+      } catch (error) {
+        if (!isCasConflict(error)) throw error;
+      }
+    }
+
+    throw new Error("appendSessionRoleSkill retry loop exhausted");
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
