@@ -28,6 +28,7 @@ interface RecordedPatch {
 class FakeTaskStore implements TaskControllerStore {
   readonly views = new Map<string, AgentTaskView>();
   readonly patches: RecordedPatch[] = [];
+  patchError: Error | undefined;
 
   seed(view: AgentTaskView): void {
     this.views.set(view.spec.id, view);
@@ -41,6 +42,7 @@ class FakeTaskStore implements TaskControllerStore {
     taskId: string,
     patch: AgentTaskStatusPatch,
   ): Promise<AgentTaskView> => {
+    if (this.patchError !== undefined) throw this.patchError;
     const current = this.views.get(taskId);
     if (current === undefined) throw new Error(`missing task ${taskId}`);
     this.patches.push({ taskId, patch });
@@ -66,6 +68,7 @@ class FakeTaskStore implements TaskControllerStore {
 
 class FakeRuntime implements TaskControllerRuntime {
   readonly spawnCalls: Array<{ readonly role: string; readonly config: AgentConfig }> = [];
+  readonly closeCalls: AgentSession[] = [];
   readonly sessions = new Map<string, AgentSession>();
   private nextId = 1;
 
@@ -86,6 +89,7 @@ class FakeRuntime implements TaskControllerRuntime {
   listSessions = async (): Promise<readonly AgentSession[]> => [...this.sessions.values()];
 
   close = async (session: AgentSession): Promise<void> => {
+    this.closeCalls.push(session);
     this.sessions.delete(session.id);
   };
 }
@@ -170,6 +174,18 @@ function condition(
   return conditions?.find((candidate) => candidate.type === type);
 }
 
+function makeCondition(type: string, overrides: Partial<Condition> = {}): Condition {
+  return {
+    type,
+    status: "True",
+    observedGeneration: 1,
+    lastTransitionTime: FIXED_NOW_ISO,
+    reason: "seeded",
+    message: "",
+    ...overrides,
+  };
+}
+
 describe("TaskController transitions", () => {
   test("missing tasks are successful no-ops", async () => {
     const store = new FakeTaskStore();
@@ -225,6 +241,28 @@ describe("TaskController transitions", () => {
     });
   });
 
+  test("pending tasks that are already blocked do not patch unchanged status", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({
+        observedGeneration: 1,
+        dependsOn: ["task-a", "task-b"],
+        conditions: [
+          makeCondition("Blocked", {
+            reason: "depends-on",
+            message: "Waiting for task-a, task-b",
+          }),
+        ],
+      }),
+    );
+    const controller = controllerFor(store);
+
+    const transition = await controller.reconcileTask("task-1");
+
+    expect(transition).toBeUndefined();
+    expect(store.patches).toEqual([]);
+  });
+
   test("pending tasks with satisfied dependencies move to PendingBind", async () => {
     const store = new FakeTaskStore();
     store.seed(taskView({ id: "task-a", phase: AgentTaskPhase.Succeeded, observedGeneration: 1 }));
@@ -235,6 +273,43 @@ describe("TaskController transitions", () => {
 
     const patch = onlyPatch(store).patch;
     expect(patch.phase).toBe(AgentTaskPhase.PendingBind);
+    expect(condition(patch.conditions, "Scheduled")).toEqual({
+      type: "Scheduled",
+      status: "True",
+      observedGeneration: 1,
+      lastTransitionTime: FIXED_NOW_ISO,
+      reason: "ready-to-bind",
+      message: "",
+    });
+  });
+
+  test("pending tasks clear stale Blocked condition when dependencies become satisfied", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ id: "task-a", phase: AgentTaskPhase.Succeeded, observedGeneration: 1 }));
+    store.seed(
+      taskView({
+        dependsOn: ["task-a"],
+        conditions: [
+          makeCondition("Blocked", {
+            reason: "depends-on",
+            message: "Waiting for task-a",
+          }),
+        ],
+      }),
+    );
+    const controller = controllerFor(store);
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(condition(patch.conditions, "Blocked")).toEqual({
+      type: "Blocked",
+      status: "False",
+      observedGeneration: 1,
+      lastTransitionTime: FIXED_NOW_ISO,
+      reason: "ready-to-bind",
+      message: "",
+    });
     expect(condition(patch.conditions, "Scheduled")).toEqual({
       type: "Scheduled",
       status: "True",
@@ -273,6 +348,20 @@ describe("TaskController transitions", () => {
       reason: "session-running",
       message: "",
     });
+  });
+
+  test("PendingBind tasks close spawned sessions when Running patch fails", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    store.patchError = new Error("patch failed");
+    const runtime = new FakeRuntime();
+    const controller = controllerFor(store, { runtime });
+
+    await expect(controller.reconcileTask("task-1")).rejects.toThrow("patch failed");
+
+    expect(runtime.spawnCalls).toHaveLength(1);
+    expect(runtime.closeCalls.map((session) => session.id)).toEqual(["session-1"]);
+    expect(runtime.sessions.has("session-1")).toBe(false);
   });
 
   test("running tasks reattach when the session is live", async () => {
@@ -320,6 +409,36 @@ describe("TaskController transitions", () => {
       reason: "session-lost",
       message: "",
     });
+  });
+
+  test("running tasks clear stale Running condition when the session is missing", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({
+        phase: AgentTaskPhase.Running,
+        observedGeneration: 1,
+        sessionId: "session-missing",
+        conditions: [
+          makeCondition("Running", {
+            reason: "session-running",
+          }),
+        ],
+      }),
+    );
+    const controller = controllerFor(store, { runtime: new FakeRuntime() });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(condition(patch.conditions, "Running")).toEqual({
+      type: "Running",
+      status: "False",
+      observedGeneration: 1,
+      lastTransitionTime: FIXED_NOW_ISO,
+      reason: "session-lost",
+      message: "",
+    });
+    expect(condition(patch.conditions, "Failed")?.reason).toBe("session-lost");
   });
 });
 

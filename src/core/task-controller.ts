@@ -51,6 +51,7 @@ export interface TaskControllerOptions {
 interface ReconciliationResult {
   readonly patch: AgentTaskStatusPatch;
   readonly transition: AgentTaskStatusTransition;
+  readonly sessionToCloseOnPatchFailure?: AgentSession | undefined;
 }
 
 const DEFAULT_RESYNC_INTERVAL_MS = 30_000;
@@ -139,7 +140,14 @@ export class TaskController {
     const result = await this.computeReconciliation(task);
     if (result === undefined) return undefined;
 
-    await this.taskStore.patchAgentTaskStatus(taskId, result.patch);
+    try {
+      await this.taskStore.patchAgentTaskStatus(taskId, result.patch);
+    } catch (error) {
+      if (result.sessionToCloseOnPatchFailure !== undefined) {
+        await this.closeAfterPatchFailure(result.sessionToCloseOnPatchFailure);
+      }
+      throw error;
+    }
     this.onTransition?.(result.transition);
     return result.transition;
   }
@@ -216,40 +224,44 @@ export class TaskController {
     return undefined;
   }
 
-  private async reconcilePending(task: AgentTaskView): Promise<ReconciliationResult> {
+  private async reconcilePending(task: AgentTaskView): Promise<ReconciliationResult | undefined> {
     const blockedOn = await this.blockingDependencies(task);
     const nowIso = this.nowIso();
 
     if (blockedOn.length > 0) {
-      return {
-        patch: {
-          phase: AgentTaskPhase.Pending,
+      const patch: AgentTaskStatusPatch = {
+        phase: AgentTaskPhase.Pending,
+        observedGeneration: task.spec.generation,
+        conditions: upsertCondition(task.status.conditions, {
+          type: AgentTaskConditionType.Blocked,
+          status: "True",
           observedGeneration: task.spec.generation,
-          conditions: upsertCondition(task.status.conditions, {
-            type: AgentTaskConditionType.Blocked,
-            status: "True",
-            observedGeneration: task.spec.generation,
-            lastTransitionTime: nowIso,
-            reason: "depends-on",
-            message: `Waiting for ${blockedOn.join(", ")}`,
-          }),
-        },
-        transition: transition(task, AgentTaskPhase.Pending, "depends-on"),
+          lastTransitionTime: nowIso,
+          reason: "depends-on",
+          message: `Waiting for ${blockedOn.join(", ")}`,
+        }),
       };
+      return statusPatchIsNoOp(task, patch)
+        ? undefined
+        : {
+            patch,
+            transition: transition(task, AgentTaskPhase.Pending, "depends-on"),
+          };
     }
 
+    const conditions = upsertCondition(clearBlockedCondition(task, nowIso), {
+      type: AgentTaskConditionType.Scheduled,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "ready-to-bind",
+      message: "",
+    });
     return {
       patch: {
         phase: AgentTaskPhase.PendingBind,
         observedGeneration: task.spec.generation,
-        conditions: upsertCondition(task.status.conditions, {
-          type: AgentTaskConditionType.Scheduled,
-          status: "True",
-          observedGeneration: task.spec.generation,
-          lastTransitionTime: nowIso,
-          reason: "ready-to-bind",
-          message: "",
-        }),
+        conditions,
         lastTransitionAt: nowIso,
       },
       transition: transition(task, AgentTaskPhase.PendingBind, "ready-to-bind"),
@@ -293,6 +305,7 @@ export class TaskController {
         lastTransitionAt: nowIso,
       },
       transition: transition(task, AgentTaskPhase.Running, "session-bound"),
+      sessionToCloseOnPatchFailure: session,
     };
   }
 
@@ -332,6 +345,14 @@ export class TaskController {
       return;
     }
   }
+
+  private async closeAfterPatchFailure(session: AgentSession): Promise<void> {
+    try {
+      await this.runtime.close(session);
+    } catch {
+      return;
+    }
+  }
 }
 
 function terminalObservedGenerationCatchUp(task: AgentTaskView): ReconciliationResult | undefined {
@@ -343,22 +364,77 @@ function terminalObservedGenerationCatchUp(task: AgentTaskView): ReconciliationR
 }
 
 function failLostSession(task: AgentTaskView, nowIso: string): ReconciliationResult {
+  const conditions = upsertCondition(
+    upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Running,
+      status: "False",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "session-lost",
+      message: "",
+    }),
+    {
+      type: AgentTaskConditionType.Failed,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "session-lost",
+      message: "",
+    },
+  );
+
   return {
     patch: {
       phase: AgentTaskPhase.Failed,
       observedGeneration: task.spec.generation,
-      conditions: upsertCondition(task.status.conditions, {
-        type: AgentTaskConditionType.Failed,
-        status: "True",
-        observedGeneration: task.spec.generation,
-        lastTransitionTime: nowIso,
-        reason: "session-lost",
-        message: "",
-      }),
+      conditions,
       lastTransitionAt: nowIso,
     },
     transition: transition(task, AgentTaskPhase.Failed, "session-lost"),
   };
+}
+
+function clearBlockedCondition(task: AgentTaskView, nowIso: string): readonly Condition[] {
+  const blocked = task.status.conditions.find(
+    (condition) => condition.type === AgentTaskConditionType.Blocked && condition.status === "True",
+  );
+  if (blocked === undefined) return task.status.conditions;
+
+  return upsertCondition(task.status.conditions, {
+    type: AgentTaskConditionType.Blocked,
+    status: "False",
+    observedGeneration: task.spec.generation,
+    lastTransitionTime: nowIso,
+    reason: "ready-to-bind",
+    message: "",
+  });
+}
+
+function statusPatchIsNoOp(task: AgentTaskView, patch: AgentTaskStatusPatch): boolean {
+  return (
+    (patch.phase === undefined || patch.phase === task.status.phase) &&
+    (patch.sessionId === undefined || patch.sessionId === task.status.sessionId) &&
+    (patch.contributions === undefined ||
+      stringArraysEqual(patch.contributions, task.status.contributions)) &&
+    (patch.conditions === undefined || conditionsEqual(patch.conditions, task.status.conditions)) &&
+    (patch.observedGeneration === undefined ||
+      patch.observedGeneration === task.status.observedGeneration) &&
+    (patch.lastTransitionAt === undefined ||
+      patch.lastTransitionAt === task.status.lastTransitionAt)
+  );
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function conditionsEqual(left: readonly Condition[], right: readonly Condition[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((condition, index) => {
+    const other = right[index];
+    return other !== undefined && conditionEqual(condition, other);
+  });
 }
 
 function validateResyncIntervalMs(value: number): void {
