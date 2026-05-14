@@ -27,6 +27,7 @@ import type {
   SessionQuery,
   SessionStore,
 } from "../core/session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "../core/session.js";
 import type { ClaimStore } from "../core/store.js";
 import type { NexusClient } from "./client.js";
 import { NexusConflictError } from "./errors.js";
@@ -482,27 +483,17 @@ export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore
       const existing = this.normalizeSessionRecord(loaded.persisted).session;
       if (existing.topology === undefined) return "role_missing";
 
-      let foundRole = false;
-      let changed = false;
-      const roles = existing.topology.roles.map((role) => {
-        if (role.name !== roleName) return { ...role };
-        foundRole = true;
-        const currentSkills = role.skills ?? [];
-        if (currentSkills.includes(skillName)) return { ...role };
-        changed = true;
-        return { ...role, skills: [...currentSkills, skillName] };
-      });
+      const topologyResult = appendSkillToTopology(existing.topology, roleName, skillName);
+      const configResult = appendSkillToSessionConfigTopology(existing.config, roleName, skillName);
 
-      if (!foundRole) return "role_missing";
-      if (!changed) return "already_present";
+      if (!topologyResult.foundRole) return "role_missing";
+      if (!topologyResult.changed && !configResult.changed) return "already_present";
 
       const nextPersisted: PersistedSessionRecord = {
         ...loaded.persisted,
         uid: existing.uid,
-        topology: {
-          ...existing.topology,
-          roles,
-        },
+        topology: topologyResult.topology,
+        config: configResult.config,
       };
 
       try {

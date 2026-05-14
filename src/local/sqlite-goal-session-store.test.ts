@@ -528,6 +528,35 @@ describe("Session Config", () => {
     expect(fetched!.config?.topology?.roles[0]?.name).toBe("worker");
   });
 
+  it("appendSessionRoleSkill updates frozen config topology for restart paths", async () => {
+    const topology = {
+      structure: "flat" as const,
+      roles: [{ name: "coder", skills: ["grove"] }],
+    };
+    const session = await store.createSession({
+      goal: "Runtime skill config topology",
+      topology,
+      config: {
+        contractVersion: 3,
+        name: "runtime-skill-config",
+        mode: "evaluation",
+        topology,
+      } as unknown as import("../core/contract.js").GroveContract,
+    });
+
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+      "appended",
+    );
+
+    const fetched = await store.getSession(session.id);
+    expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(fetched?.config?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(store.getSessionConfigSync(session.id)?.topology?.roles[0]?.skills).toEqual([
+      "grove",
+      "review",
+    ]);
+  });
+
   it("getSessionConfig returns undefined for malformed config_json", async () => {
     stores.db.run(
       "INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at) VALUES (?, ?, ?, ?, 'active', ?)",

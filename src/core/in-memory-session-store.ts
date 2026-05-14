@@ -15,6 +15,7 @@ import type {
   SessionQuery,
   SessionStore,
 } from "./session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "./session.js";
 
 /**
  * In-memory session store. Suitable for testing and single-process CLI usage.
@@ -32,6 +33,7 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
       goal: input.goal,
       presetName: input.presetName,
       topology: input.topology,
+      config: input.config,
       status: "pending",
       createdAt: new Date().toISOString(),
       finalizers: DEFAULT_SESSION_FINALIZERS,
@@ -134,26 +136,16 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
     const existing = this.sessions[idx];
     if (!existing?.topology) return "role_missing";
 
-    let changed = false;
-    let foundRole = false;
-    const nextRoles = existing.topology.roles.map((role) => {
-      if (role.name !== roleName) return { ...role };
-      foundRole = true;
-      const currentSkills = role.skills ?? [];
-      if (currentSkills.includes(skillName)) return { ...role };
-      changed = true;
-      return { ...role, skills: [...currentSkills, skillName] };
-    });
+    const topologyResult = appendSkillToTopology(existing.topology, roleName, skillName);
+    const configResult = appendSkillToSessionConfigTopology(existing.config, roleName, skillName);
 
-    if (!foundRole) return "role_missing";
-    if (!changed) return "already_present";
+    if (!topologyResult.foundRole) return "role_missing";
+    if (!topologyResult.changed && !configResult.changed) return "already_present";
 
     this.sessions[idx] = {
       ...existing,
-      topology: {
-        ...existing.topology,
-        roles: nextRoles,
-      },
+      topology: topologyResult.topology,
+      config: configResult.config,
     };
     return "appended";
   }

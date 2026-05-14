@@ -160,3 +160,53 @@ export interface RuntimeSkillSessionStore {
     skillName: string,
   ): Promise<AppendSessionRoleSkillResult>;
 }
+
+export interface AppendSkillToTopologyResult {
+  readonly topology: AgentTopology;
+  readonly foundRole: boolean;
+  readonly changed: boolean;
+}
+
+export function appendSkillToTopology(
+  topology: AgentTopology,
+  roleName: string,
+  skillName: string,
+): AppendSkillToTopologyResult {
+  let foundRole = false;
+  let changed = false;
+  const roles = topology.roles.map((role) => {
+    if (role.name !== roleName) return { ...role };
+    foundRole = true;
+    const currentSkills = role.skills ?? [];
+    if (currentSkills.includes(skillName)) return { ...role };
+    changed = true;
+    return { ...role, skills: [...currentSkills, skillName] };
+  });
+
+  return {
+    topology: changed ? { ...topology, roles } : topology,
+    foundRole,
+    changed,
+  };
+}
+
+export function appendSkillToSessionConfigTopology(
+  config: GroveContract | undefined,
+  roleName: string,
+  skillName: string,
+): {
+  readonly config: GroveContract | undefined;
+  readonly changed: boolean;
+} {
+  if (config?.topology === undefined) {
+    return { config, changed: false };
+  }
+  const result = appendSkillToTopology(config.topology, roleName, skillName);
+  if (!result.foundRole || !result.changed) {
+    return { config, changed: false };
+  }
+  return {
+    config: { ...config, topology: result.topology },
+    changed: true,
+  };
+}

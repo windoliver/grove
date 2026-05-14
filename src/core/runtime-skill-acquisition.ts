@@ -222,7 +222,7 @@ export class DefaultRuntimeSkillAcquisitionService implements RuntimeSkillAcquis
       warnings: [],
     };
     let preserveResolvedSource = false;
-    if (!alreadyInstalled && this.deps.resolveSkillRoot !== undefined) {
+    if (this.deps.resolveSkillRoot !== undefined) {
       try {
         const resolverResult = await this.deps.resolveSkillRoot([skillName]);
         if (resolverResult !== undefined) {
@@ -241,22 +241,20 @@ export class DefaultRuntimeSkillAcquisitionService implements RuntimeSkillAcquis
     let installedTargets: readonly string[] = nativeTargets;
     let actualSource = resolved.source;
     try {
-      if (!alreadyInstalled) {
-        const report = await injectSkills({
-          workspacePath: caller.workspacePath,
-          skills: [skillName],
-          bundledSkillsRoot: resolved.root,
-          workspaceOverrideRoot:
-            resolved.source === "bundled" ? this.deps.workspaceOverrideRoot : undefined,
-        });
-        installedTargets = report.injected[0]?.targets ?? installedTargets;
-        const injectedSource = report.injected[0]?.source;
-        if (
-          !preserveResolvedSource &&
-          (injectedSource === "override" || injectedSource === "bundled")
-        ) {
-          actualSource = injectedSource;
-        }
+      const report = await injectSkills({
+        workspacePath: caller.workspacePath,
+        skills: [skillName],
+        bundledSkillsRoot: resolved.root,
+        workspaceOverrideRoot:
+          resolved.source === "bundled" ? this.deps.workspaceOverrideRoot : undefined,
+      });
+      installedTargets = report.injected[0]?.targets ?? installedTargets;
+      const injectedSource = report.injected[0]?.source;
+      if (
+        !preserveResolvedSource &&
+        (injectedSource === "override" || injectedSource === "bundled")
+      ) {
+        actualSource = injectedSource;
       }
     } catch (error) {
       if (error instanceof SkillResolutionError) {

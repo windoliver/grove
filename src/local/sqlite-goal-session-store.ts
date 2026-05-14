@@ -33,6 +33,7 @@ import type {
   SessionDeleteResult,
   SessionQuery,
 } from "../core/session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
@@ -930,29 +931,29 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
   ): Promise<AppendSessionRoleSkillResult> => {
     const tx = this.db.transaction((): AppendSessionRoleSkillResult => {
       const row = this.db
-        .prepare("SELECT topology_json FROM sessions WHERE session_id = ?")
-        .get(sessionId) as { topology_json: string | null } | null;
+        .prepare("SELECT topology_json, config_json FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { topology_json: string | null; config_json: string | null } | null;
       if (row === null) return "session_missing";
       if (row.topology_json === null) return "role_missing";
 
       const topology = JSON.parse(row.topology_json) as AgentTopology;
-      let foundRole = false;
-      let changed = false;
-      const roles = topology.roles.map((role) => {
-        if (role.name !== roleName) return { ...role };
-        foundRole = true;
-        const currentSkills = role.skills ?? [];
-        if (currentSkills.includes(skillName)) return { ...role };
-        changed = true;
-        return { ...role, skills: [...currentSkills, skillName] };
-      });
+      const config =
+        row.config_json !== null && row.config_json !== "{}"
+          ? (JSON.parse(row.config_json) as GroveContract)
+          : undefined;
+      const topologyResult = appendSkillToTopology(topology, roleName, skillName);
+      const configResult = appendSkillToSessionConfigTopology(config, roleName, skillName);
 
-      if (!foundRole) return "role_missing";
-      if (!changed) return "already_present";
+      if (!topologyResult.foundRole) return "role_missing";
+      if (!topologyResult.changed && !configResult.changed) return "already_present";
 
       this.db
-        .prepare("UPDATE sessions SET topology_json = ? WHERE session_id = ?")
-        .run(JSON.stringify({ ...topology, roles }), sessionId);
+        .prepare("UPDATE sessions SET topology_json = ?, config_json = ? WHERE session_id = ?")
+        .run(
+          JSON.stringify(topologyResult.topology),
+          JSON.stringify(configResult.config ?? {}),
+          sessionId,
+        );
       return "appended";
     });
 

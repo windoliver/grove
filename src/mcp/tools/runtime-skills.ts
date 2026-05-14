@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { RuntimeSkillAcquisitionError } from "../../core/runtime-skill-acquisition.js";
@@ -13,6 +14,23 @@ const requestSkillInputSchema = z.object({
 function callerRole(): string | undefined {
   const role = process.env.GROVE_AGENT_ROLE;
   return role && role.length > 0 ? role : undefined;
+}
+
+function runtimeSkillErrorResult(error: RuntimeSkillAcquisitionError): CallToolResult {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({
+          code: error.code,
+          message: error.message,
+          workspaceInstalled: error.workspaceInstalled,
+          installedTargets: error.installedTargets,
+        }),
+      },
+    ],
+  };
 }
 
 export function registerRuntimeSkillTools(server: McpServer, deps: McpDeps): void {
@@ -47,7 +65,7 @@ export function registerRuntimeSkillTools(server: McpServer, deps: McpDeps): voi
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch (error) {
         if (error instanceof RuntimeSkillAcquisitionError) {
-          return toolError(error.code, error.message);
+          return runtimeSkillErrorResult(error);
         }
         throw error;
       }

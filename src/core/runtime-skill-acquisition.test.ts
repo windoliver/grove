@@ -177,7 +177,34 @@ describe("DefaultRuntimeSkillAcquisitionService", () => {
     });
 
     expect(result.status).toBe("already_installed");
-    expect(result.skill.skillMd).toBe("installed");
+    expect(result.skill.skillMd).toBe("review skill");
+  });
+
+  test("re-resolves and refreshes preinstalled skills before returning content", async () => {
+    mkdirSync(join(workspace, ".codex", "skills", "review"), { recursive: true });
+    mkdirSync(join(workspace, ".claude", "skills", "review"), { recursive: true });
+    writeFileSync(join(workspace, ".codex", "skills", "review", "SKILL.md"), "stale", "utf-8");
+    writeFileSync(join(workspace, ".claude", "skills", "review", "SKILL.md"), "stale", "utf-8");
+
+    let resolverCalls = 0;
+    const result = await service({
+      runtimeSkills: config(),
+      resolveSkillRoot: async () => {
+        resolverCalls += 1;
+        return { root: catalogRoot, source: "nexus", warnings: [] };
+      },
+    }).requestSkill({
+      skillName: "review",
+      caller: { role: "coder", workspacePath: workspace },
+    });
+
+    expect(resolverCalls).toBe(1);
+    expect(result.status).toBe("already_installed");
+    expect(result.source).toBe("nexus");
+    expect(result.skill.skillMd).toBe("review skill");
+    expect(readFileSync(join(workspace, ".codex/skills/review/SKILL.md"), "utf-8")).toBe(
+      "review skill",
+    );
   });
 
   test("maps unreadable installed skill content to install failure", async () => {

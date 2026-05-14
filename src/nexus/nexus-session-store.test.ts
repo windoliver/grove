@@ -761,12 +761,19 @@ describe("NexusSessionStore", () => {
 
   test("appendSessionRoleSkill updates persisted topology and dedupes", async () => {
     const store = new NexusSessionStore(client, "test-zone");
+    const topology = {
+      structure: "flat" as const,
+      roles: [{ name: "coder", skills: ["grove"] }],
+    };
     const session = await store.createSession({
       goal: "runtime skill",
-      topology: {
-        structure: "flat",
-        roles: [{ name: "coder", skills: ["grove"] }],
-      },
+      topology,
+      config: {
+        contractVersion: 3,
+        name: "runtime-skill-config",
+        mode: "evaluation",
+        topology,
+      } as unknown as import("../core/contract.js").GroveContract,
     });
 
     await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
@@ -778,6 +785,7 @@ describe("NexusSessionStore", () => {
 
     const fetched = await store.getSession(session.id);
     expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(fetched?.config?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
   });
 
   test("appendSessionRoleSkill reports missing session and role", async () => {

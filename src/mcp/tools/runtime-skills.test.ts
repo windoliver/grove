@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { RuntimeSkillAcquisitionService } from "../../core/runtime-skill-acquisition.js";
+import {
+  RuntimeSkillAcquisitionError,
+  type RuntimeSkillAcquisitionService,
+} from "../../core/runtime-skill-acquisition.js";
 import type { McpDeps } from "../deps.js";
 import type { TestMcpDeps } from "../test-helpers.js";
 import { createTestMcpDeps } from "../test-helpers.js";
@@ -100,5 +103,39 @@ describe("grove_request_skill", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("[NOT_CONFIGURED]");
+  });
+
+  test("preserves runtime skill persistence recovery metadata in error response", async () => {
+    testDeps = await createTestMcpDeps();
+    process.env.GROVE_AGENT_ROLE = "coder";
+    const runtimeSkillService: RuntimeSkillAcquisitionService = {
+      requestSkill: async () => {
+        throw new RuntimeSkillAcquisitionError("SESSION_PERSIST_FAILED", "persist failed", {
+          workspaceInstalled: true,
+          installedTargets: [".claude/skills/review", ".codex/skills/review"],
+        });
+      },
+    };
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerRuntimeSkillTools(server, { ...testDeps.deps, runtimeSkillService });
+
+    const result = await callTool(server, "grove_request_skill", { skillName: "review" });
+    const payload = JSON.parse(result.text) as {
+      code: string;
+      message: string;
+      workspaceInstalled: boolean;
+      installedTargets: readonly string[];
+    };
+
+    expect(result.isError).toBe(true);
+    expect(payload).toEqual({
+      code: "SESSION_PERSIST_FAILED",
+      message: "persist failed",
+      workspaceInstalled: true,
+      installedTargets: [".claude/skills/review", ".codex/skills/review"],
+    });
   });
 });
