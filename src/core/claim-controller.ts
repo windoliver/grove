@@ -87,7 +87,14 @@ export class ClaimReconciliationController {
     const result = this.computeReconciliation(view);
     if (result === undefined) return undefined;
 
-    await this.claimStore.patchClaimStatus(claimId, result.patch);
+    const patchResult = await this.claimStore.patchClaimStatus(claimId, result.patch);
+    if (patchResult.kind === "rv-mismatch") {
+      // Reconciler does not (yet) supply ifMatch — observing a mismatch here
+      // would be a store-side programming error.
+      throw new Error(
+        `Unexpected RV mismatch on reconcileClaim(${claimId}); controller does not yet accept If-Match (C6 T6)`,
+      );
+    }
     if (result.transition !== undefined) {
       this.onTransition?.(result.transition);
     }

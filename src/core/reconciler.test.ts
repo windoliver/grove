@@ -115,7 +115,7 @@ function makeClaimStore(overrides?: {
       };
       const updated = { spec: view.spec, status: updatedStatus };
       putView(updated);
-      return updated;
+      return { kind: "ok" as const, view: updated };
     },
     createClaim: async (claim) => {
       putClaim(claim);
@@ -256,13 +256,15 @@ describe("makeClaimStore split claim adapters", () => {
         generation: 1,
       }),
     );
-    const patched = await claimStore.patchClaimStatus("split-updated", {
-      phase: ClaimStatus.Completed,
-      observedGeneration: created.spec.generation,
-      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-      leaseExpiresAt: "2026-01-01T00:10:00.000Z",
-      lastTransitionAt: "2026-01-01T00:05:00.000Z",
-    });
+    const patched = expectOk(
+      await claimStore.patchClaimStatus("split-updated", {
+        phase: ClaimStatus.Completed,
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      }),
+    );
 
     const updated = expectOk(
       await claimStore.putClaimSpec({
@@ -290,26 +292,28 @@ describe("makeClaimStore split claim adapters", () => {
       generation: 1,
     });
 
-    const patched = await claimStore.patchClaimStatus("split-status", {
-      phase: ClaimStatus.Active,
-      observedGeneration: 7,
-      agentSessionId: "session-1",
-      lastHeartbeatAt: "2026-01-01T00:03:00.000Z",
-      leaseExpiresAt: "2026-01-01T00:08:00.000Z",
-      currentContributionCid:
-        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      conditions: [
-        {
-          type: "Ready",
-          status: "True",
-          observedGeneration: 7,
-          lastTransitionTime: "2026-01-01T00:03:00.000Z",
-          reason: "Heartbeat",
-          message: "claim heartbeat observed",
-        },
-      ],
-      lastTransitionAt: "2026-01-01T00:03:00.000Z",
-    });
+    const patched = expectOk(
+      await claimStore.patchClaimStatus("split-status", {
+        phase: ClaimStatus.Active,
+        observedGeneration: 7,
+        agentSessionId: "session-1",
+        lastHeartbeatAt: "2026-01-01T00:03:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:08:00.000Z",
+        currentContributionCid:
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        conditions: [
+          {
+            type: "Ready",
+            status: "True",
+            observedGeneration: 7,
+            lastTransitionTime: "2026-01-01T00:03:00.000Z",
+            reason: "Heartbeat",
+            message: "claim heartbeat observed",
+          },
+        ],
+        lastTransitionAt: "2026-01-01T00:03:00.000Z",
+      }),
+    );
 
     const current = await claimStore.getClaimView("split-status");
 

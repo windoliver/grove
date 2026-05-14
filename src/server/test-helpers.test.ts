@@ -41,13 +41,15 @@ describe("InMemoryClaimStore split claim methods", () => {
         generation: 1,
       }),
     );
-    const patched = await store.patchClaimStatus("split-update", {
-      phase: ClaimStatus.Completed,
-      observedGeneration: created.spec.generation,
-      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-      leaseExpiresAt: "2026-01-01T00:10:00.000Z",
-      lastTransitionAt: "2026-01-01T00:05:00.000Z",
-    });
+    const patched = expectOk(
+      await store.patchClaimStatus("split-update", {
+        phase: ClaimStatus.Completed,
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      }),
+    );
 
     const updated = expectOk(
       await store.putClaimSpec({
@@ -77,26 +79,28 @@ describe("InMemoryClaimStore split claim methods", () => {
       }),
     );
 
-    const patched = await store.patchClaimStatus("split-status", {
-      phase: ClaimStatus.Active,
-      observedGeneration: 7,
-      agentSessionId: "session-1",
-      lastHeartbeatAt: "2026-01-01T00:03:00.000Z",
-      leaseExpiresAt: "2026-01-01T00:08:00.000Z",
-      currentContributionCid:
-        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      conditions: [
-        {
-          type: "Ready",
-          status: "True",
-          observedGeneration: 7,
-          lastTransitionTime: "2026-01-01T00:03:00.000Z",
-          reason: "Heartbeat",
-          message: "claim heartbeat observed",
-        },
-      ],
-      lastTransitionAt: "2026-01-01T00:03:00.000Z",
-    });
+    const patched = expectOk(
+      await store.patchClaimStatus("split-status", {
+        phase: ClaimStatus.Active,
+        observedGeneration: 7,
+        agentSessionId: "session-1",
+        lastHeartbeatAt: "2026-01-01T00:03:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:08:00.000Z",
+        currentContributionCid:
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        conditions: [
+          {
+            type: "Ready",
+            status: "True",
+            observedGeneration: 7,
+            lastTransitionTime: "2026-01-01T00:03:00.000Z",
+            reason: "Heartbeat",
+            message: "claim heartbeat observed",
+          },
+        ],
+        lastTransitionAt: "2026-01-01T00:03:00.000Z",
+      }),
+    );
     const current = await store.getClaimView("split-status");
 
     expect(patched.spec).toEqual(created.spec);

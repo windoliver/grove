@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { CasMutationResult } from "./cas.js";
 import {
   type ClaimControllerStore,
   ClaimReconciliationController,
@@ -59,7 +60,10 @@ class FakeClaimControllerStore implements ClaimControllerStore {
     return this.views.get(claimId);
   };
 
-  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+  patchClaimStatus = async (
+    claimId: string,
+    patch: ClaimStatusPatch,
+  ): Promise<CasMutationResult<ClaimView>> => {
     const view = this.views.get(claimId);
     if (view === undefined) {
       throw new Error(`missing claim ${claimId}`);
@@ -79,7 +83,7 @@ class FakeClaimControllerStore implements ClaimControllerStore {
     };
     const updated: ClaimView = { spec: view.spec, status: updatedStatus };
     this.views.set(claimId, updated);
-    return updated;
+    return { kind: "ok", view: updated };
   };
 
   listEntities = async (): Promise<readonly ClaimEntity[]> => {

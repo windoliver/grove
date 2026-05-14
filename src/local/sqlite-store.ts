@@ -2441,7 +2441,11 @@ export class SqliteClaimStore implements ClaimStore {
     return this.readClaimView(claimId) ?? undefined;
   };
 
-  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+  patchClaimStatus = async (
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> => {
     const assignments: string[] = [];
     const params: SQLQueryBindings[] = [];
     const addAssignment = (column: string, value: SQLQueryBindings): void => {
@@ -2475,8 +2479,11 @@ export class SqliteClaimStore implements ClaimStore {
     }
 
     assignments.push("revision = revision + 1");
+    // C6 (#304): bump resource_version on the status row alongside revision.
+    assignments.push("resource_version = resource_version + 1");
     params.push(claimId);
 
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(claimId);
       if (existing === null) {
@@ -2485,6 +2492,20 @@ export class SqliteClaimStore implements ClaimStore {
           identifier: claimId,
           message: `Claim '${claimId}' not found`,
         });
+      }
+
+      // C6 (#304): Compare-and-set on the persisted status resource_version.
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existing.status.resourceVersion ?? existing.status.revision ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            // Surface the spec's generation — status has no generation of its
+            // own; modals show spec.generation alongside status RV.
+            generation: existing.spec.generation,
+          };
+          return null;
+        }
       }
 
       const nowIso = new Date().toISOString();
@@ -2525,8 +2546,12 @@ export class SqliteClaimStore implements ClaimStore {
     });
 
     const view = tx.immediate();
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
+    if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
     this.onClaimWrite?.("MODIFIED", claimViewToClaim(view));
-    return view;
+    return { kind: "ok", view };
   };
 
   createClaim = async (claim: Claim): Promise<Claim> => {

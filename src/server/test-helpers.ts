@@ -197,7 +197,11 @@ export class InMemoryClaimStore implements ClaimStore {
     return this.viewFor(claimId);
   }
 
-  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+  async patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> {
     const view = this.viewFor(claimId);
     if (view === undefined) {
       throw new NotFoundError({
@@ -205,6 +209,19 @@ export class InMemoryClaimStore implements ClaimStore {
         identifier: claimId,
         message: `Claim ${claimId} does not exist`,
       });
+    }
+
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(view.status.resourceVersion ?? view.status.revision ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: view.spec.generation,
+          },
+        };
+      }
     }
 
     const updated: ClaimView = {
@@ -220,10 +237,11 @@ export class InMemoryClaimStore implements ClaimStore {
         conditions: patch.conditions ?? view.status.conditions,
         lastTransitionAt: patch.lastTransitionAt ?? view.status.lastTransitionAt,
         revision: view.status.revision + 1,
+        resourceVersion: (view.status.resourceVersion ?? 1) + 1,
       },
     };
     this.putView(updated);
-    return updated;
+    return { kind: "ok", view: updated };
   }
 
   async createClaim(claim: Claim): Promise<Claim> {

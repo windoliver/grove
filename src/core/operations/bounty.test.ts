@@ -88,7 +88,10 @@ class OwnerAwareClaimStore implements ClaimStore {
     return claim === undefined ? undefined : this.viewFromClaim(claim);
   }
 
-  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+  async patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+  ): Promise<CasMutationResult<ClaimView>> {
     const view = await this.getClaimView(claimId);
     if (view === undefined) throw new Error(`Claim ${claimId} does not exist`);
     const updated: ClaimView = {
@@ -107,7 +110,7 @@ class OwnerAwareClaimStore implements ClaimStore {
       },
     };
     this.putView(updated);
-    return updated;
+    return { kind: "ok", view: updated };
   }
 
   async createClaim(claim: Claim): Promise<Claim> {

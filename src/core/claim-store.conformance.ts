@@ -97,11 +97,13 @@ export function runClaimStoreTests(
           generation: 1,
         }),
       );
-      const statusUpdated = await store.patchClaimStatus("spec-update", {
-        phase: ClaimStatus.Active,
-        observedGeneration: created.spec.generation,
-        lastHeartbeatAt: "2026-01-01T00:01:00.000Z",
-      });
+      const statusUpdated = expectOk(
+        await store.patchClaimStatus("spec-update", {
+          phase: ClaimStatus.Active,
+          observedGeneration: created.spec.generation,
+          lastHeartbeatAt: "2026-01-01T00:01:00.000Z",
+        }),
+      );
 
       const updated = expectOk(
         await store.putClaimSpec({
@@ -129,26 +131,28 @@ export function runClaimStoreTests(
         }),
       );
 
-      const patched = await store.patchClaimStatus("status-update", {
-        phase: ClaimStatus.Completed,
-        observedGeneration: created.spec.generation,
-        agentSessionId: "session-1",
-        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
-        currentContributionCid:
-          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        conditions: [
-          {
-            type: "Completed",
-            status: "True",
-            observedGeneration: created.spec.generation,
-            lastTransitionTime: "2026-01-01T00:05:00.000Z",
-            reason: "controller",
-            message: "done",
-          },
-        ],
-        lastTransitionAt: "2026-01-01T00:05:00.000Z",
-      });
+      const patched = expectOk(
+        await store.patchClaimStatus("status-update", {
+          phase: ClaimStatus.Completed,
+          observedGeneration: created.spec.generation,
+          agentSessionId: "session-1",
+          lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+          leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+          currentContributionCid:
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          conditions: [
+            {
+              type: "Completed",
+              status: "True",
+              observedGeneration: created.spec.generation,
+              lastTransitionTime: "2026-01-01T00:05:00.000Z",
+              reason: "controller",
+              message: "done",
+            },
+          ],
+          lastTransitionAt: "2026-01-01T00:05:00.000Z",
+        }),
+      );
 
       expect(patched.spec.generation).toBe(created.spec.generation);
       expect(patched.spec.intentSummary).toBe(created.spec.intentSummary);
@@ -273,6 +277,103 @@ export function runClaimStoreTests(
         { ifMatch: "999" }, // bogus RV
       );
       expect(result.kind).toBe("ok");
+    });
+
+    // ------------------------------------------------------------------
+    // patchClaimStatus CAS (C6, #304)
+    // ------------------------------------------------------------------
+
+    test("patchClaimStatus returns rv-mismatch when ifMatch is stale", async () => {
+      const nowIso = new Date().toISOString();
+      const created = expectOk(
+        await store.putClaimSpec({
+          id: "status-cas-stale",
+          targetRef: "ref-status-cas-stale",
+          agent: makeAgent({ agentId: "agent-status-cas-stale" }),
+          intentSummary: "first",
+          createdAt: nowIso,
+          generation: 1,
+        }),
+      );
+      const staleRv = String(created.status.resourceVersion ?? created.status.revision ?? 1);
+
+      // Bump the status RV via an unguarded patch.
+      const bumped = expectOk(
+        await store.patchClaimStatus("status-cas-stale", {
+          observedGeneration: created.spec.generation,
+        }),
+      );
+      expect(
+        Number(String(bumped.status.resourceVersion ?? bumped.status.revision ?? 1)),
+      ).toBeGreaterThan(Number(staleRv));
+
+      // Retry with stale ifMatch → rv-mismatch.
+      const result = await store.patchClaimStatus(
+        "status-cas-stale",
+        { observedGeneration: created.spec.generation },
+        { ifMatch: staleRv },
+      );
+      expect(result.kind).toBe("rv-mismatch");
+      if (result.kind === "rv-mismatch") {
+        expect(result.current.resourceVersion).not.toBe(staleRv);
+        expect(typeof result.current.generation).toBe("number");
+      }
+    });
+
+    test("patchClaimStatus bumps status resource_version when ifMatch matches", async () => {
+      const nowIso = new Date().toISOString();
+      const created = expectOk(
+        await store.putClaimSpec({
+          id: "status-cas-fresh",
+          targetRef: "ref-status-cas-fresh",
+          agent: makeAgent({ agentId: "agent-status-cas-fresh" }),
+          intentSummary: "first",
+          createdAt: nowIso,
+          generation: 1,
+        }),
+      );
+      const initialRv = String(created.status.resourceVersion ?? created.status.revision ?? 1);
+
+      const result = await store.patchClaimStatus(
+        "status-cas-fresh",
+        { observedGeneration: created.spec.generation },
+        { ifMatch: initialRv },
+      );
+      expect(result.kind).toBe("ok");
+      if (result.kind === "ok") {
+        const nextRv = String(
+          result.view.status.resourceVersion ?? result.view.status.revision ?? 1,
+        );
+        expect(Number(nextRv)).toBeGreaterThan(Number(initialRv));
+      }
+    });
+
+    test("patchClaimStatus without ifMatch still writes (back-compat path)", async () => {
+      const nowIso = new Date().toISOString();
+      const created = expectOk(
+        await store.putClaimSpec({
+          id: "status-cas-noopts",
+          targetRef: "ref-status-cas-noopts",
+          agent: makeAgent({ agentId: "agent-status-cas-noopts" }),
+          intentSummary: "first",
+          createdAt: nowIso,
+          generation: 1,
+        }),
+      );
+      const result = await store.patchClaimStatus("status-cas-noopts", {
+        observedGeneration: created.spec.generation,
+      });
+      expect(result.kind).toBe("ok");
+    });
+
+    test("patchClaimStatus against non-existent claim throws NotFoundError", async () => {
+      // patchXxxStatus differs from putXxxSpec: PATCH on a missing resource
+      // is NotFound, regardless of ifMatch. The route surface treats this as
+      // a 404 (T6 will wire If-Match enforcement, but missing-resource is
+      // not a CAS concern).
+      await expect(
+        store.patchClaimStatus("status-cas-missing", {}, { ifMatch: "1" }),
+      ).rejects.toThrow();
     });
 
     // ------------------------------------------------------------------

@@ -363,7 +363,11 @@ export class NexusClaimStore implements ClaimStore {
     return result?.document;
   }
 
-  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+  async patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> {
     const existing = await this.readClaimWithEtag(claimId);
     if (existing === undefined) {
       throw new NotFoundError({
@@ -371,6 +375,23 @@ export class NexusClaimStore implements ClaimStore {
         identifier: claimId,
         message: `Claim '${claimId}' not found`,
       });
+    }
+
+    // C6 (#304): Compare-and-set on the persisted status resource_version.
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(
+        existing.document.status.resourceVersion ?? existing.document.status.revision ?? 1,
+      );
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            // Status has no generation of its own; surface the spec's.
+            generation: existing.document.spec.generation,
+          },
+        };
+      }
     }
 
     const updatedDocument: ClaimDocument = {
@@ -396,6 +417,7 @@ export class NexusClaimStore implements ClaimStore {
             ? toUtcIso(patch.lastTransitionAt)
             : existing.document.status.lastTransitionAt,
         revision: existing.document.status.revision + 1,
+        resourceVersion: (existing.document.status.resourceVersion ?? 1) + 1,
       },
     };
 
@@ -450,7 +472,7 @@ export class NexusClaimStore implements ClaimStore {
     this.claimCache.set(updatedClaim.claimId, updatedClaim);
     this.invalidateActiveClaimsCache();
     this.publishWatch(updatedClaim, "MODIFIED");
-    return updatedDocument;
+    return { kind: "ok", view: updatedDocument };
   }
 
   async createClaim(claim: Claim): Promise<Claim> {

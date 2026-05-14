@@ -307,8 +307,20 @@ export interface ClaimStore {
   /** Get the merged split claim view by ID. */
   getClaimView(claimId: string): Promise<ClaimView | undefined>;
 
-  /** Patch controller-owned claim status fields only. */
-  patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView>;
+  /**
+   * Patch controller-owned claim status fields only.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted status
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes and
+   * returns `{ kind: "ok", view }` with the bumped status RV.
+   */
+  patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>>;
 
   /** Create a new claim. Throws if claimId already exists. */
   createClaim(claim: Claim): Promise<Claim>;

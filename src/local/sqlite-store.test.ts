@@ -180,13 +180,15 @@ describe("SqliteClaimStore split API", () => {
           generation: 99,
         }),
       );
-      const patched = await claimStore.patchClaimStatus("split-update", {
-        phase: ClaimStatus.Completed,
-        observedGeneration: created.spec.generation,
-        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
-        lastTransitionAt: "2026-01-01T00:05:00.000Z",
-      });
+      const patched = expectOk(
+        await claimStore.patchClaimStatus("split-update", {
+          phase: ClaimStatus.Completed,
+          observedGeneration: created.spec.generation,
+          lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+          leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+          lastTransitionAt: "2026-01-01T00:05:00.000Z",
+        }),
+      );
 
       const updated = expectOk(
         await claimStore.putClaimSpec({
@@ -305,28 +307,32 @@ describe("SqliteClaimStore split API", () => {
         }),
       );
 
-      const firstPatch = await claimStore.patchClaimStatus("split-patch", {
-        observedGeneration: created.spec.generation,
-        agentSessionId: "session-1",
-        currentContributionCid:
-          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      });
-      const secondPatch = await claimStore.patchClaimStatus("split-patch", {
-        phase: ClaimStatus.Completed,
-        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
-        conditions: [
-          {
-            type: "Completed",
-            status: "True",
-            observedGeneration: created.spec.generation,
-            lastTransitionTime: "2026-01-01T00:05:00.000Z",
-            reason: "controller",
-            message: "done",
-          },
-        ],
-        lastTransitionAt: "2026-01-01T00:05:00.000Z",
-      });
+      const firstPatch = expectOk(
+        await claimStore.patchClaimStatus("split-patch", {
+          observedGeneration: created.spec.generation,
+          agentSessionId: "session-1",
+          currentContributionCid:
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }),
+      );
+      const secondPatch = expectOk(
+        await claimStore.patchClaimStatus("split-patch", {
+          phase: ClaimStatus.Completed,
+          lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+          leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+          conditions: [
+            {
+              type: "Completed",
+              status: "True",
+              observedGeneration: created.spec.generation,
+              lastTransitionTime: "2026-01-01T00:05:00.000Z",
+              reason: "controller",
+              message: "done",
+            },
+          ],
+          lastTransitionAt: "2026-01-01T00:05:00.000Z",
+        }),
+      );
       const readBack = await claimStore.getClaimView("split-patch");
 
       expect(secondPatch.spec).toEqual(created.spec);
@@ -1129,11 +1135,13 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
         generation: 1,
       }),
     );
-    const patched = await claimStore.patchClaimStatus("watch-split", {
-      phase: ClaimStatus.Completed,
-      observedGeneration: created.spec.generation,
-      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-    });
+    const patched = expectOk(
+      await claimStore.patchClaimStatus("watch-split", {
+        phase: ClaimStatus.Completed,
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+      }),
+    );
 
     expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED"]);
     expect(events[0]?.claim.intentSummary).toBe("initial split spec");

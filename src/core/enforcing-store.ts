@@ -589,7 +589,11 @@ export class EnforcingClaimStore implements ClaimStore {
   getClaimView = (claimId: string): Promise<ClaimView | undefined> =>
     this.inner.getClaimView(claimId);
 
-  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+  patchClaimStatus = async (
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> => {
     return this.writeMutex.runExclusive(async () => {
       const existing = await this.inner.getClaimView(claimId);
       if (existing !== undefined) {
@@ -611,7 +615,7 @@ export class EnforcingClaimStore implements ClaimStore {
         }
       }
 
-      return await this.inner.patchClaimStatus(claimId, patch);
+      return await this.inner.patchClaimStatus(claimId, patch, opts);
     });
   };
 
