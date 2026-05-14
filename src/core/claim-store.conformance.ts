@@ -8,23 +8,11 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import type { CasMutationResult } from "./cas.js";
+import { expectOk } from "./cas.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
-import { ClaimStatus, type ClaimView } from "./models.js";
+import { ClaimStatus } from "./models.js";
 import type { ClaimStore } from "./store.js";
 import { makeAgent, makeClaim } from "./test-helpers.js";
-
-/**
- * Unwrap a CAS putClaimSpec result for tests that don't exercise the
- * mismatch branch (C6 #304, T2). Centralizes the migration during
- * roll-out — once every caller carries an ifMatch the unwrap stays put.
- */
-function unwrapPut(result: CasMutationResult<ClaimView>): ClaimView {
-  if (result.kind !== "ok") {
-    throw new Error(`unexpected putClaimSpec result kind: ${result.kind}`);
-  }
-  return result.view;
-}
 
 /** Factory that creates a fresh ClaimStore and returns a cleanup function. */
 export type ClaimStoreFactory = () => Promise<{
@@ -70,7 +58,7 @@ export function runClaimStoreTests(
 
     test("putClaimSpec creates a claim view with default status", async () => {
       const now = new Date().toISOString();
-      const view = unwrapPut(
+      const view = expectOk(
         await store.putClaimSpec({
           id: "spec-create",
           roleName: "coder",
@@ -99,7 +87,7 @@ export function runClaimStoreTests(
     });
 
     test("putClaimSpec increments generation without changing status revision", async () => {
-      const created = unwrapPut(
+      const created = expectOk(
         await store.putClaimSpec({
           id: "spec-update",
           targetRef: "target-spec-update",
@@ -115,7 +103,7 @@ export function runClaimStoreTests(
         lastHeartbeatAt: "2026-01-01T00:01:00.000Z",
       });
 
-      const updated = unwrapPut(
+      const updated = expectOk(
         await store.putClaimSpec({
           ...statusUpdated.spec,
           intentSummary: "second spec",
@@ -130,7 +118,7 @@ export function runClaimStoreTests(
     });
 
     test("patchClaimStatus changes status without changing spec generation", async () => {
-      const created = unwrapPut(
+      const created = expectOk(
         await store.putClaimSpec({
           id: "status-update",
           targetRef: "target-status-update",
@@ -264,6 +252,26 @@ export function runClaimStoreTests(
         createdAt: nowIso,
         generation: 1,
       });
+      expect(result.kind).toBe("ok");
+    });
+
+    test("putClaimSpec with ifMatch against non-existent record creates (matches HTTP semantics)", async () => {
+      // Specifying `ifMatch` against a record that doesn't exist creates the
+      // record unconditionally. This matches HTTP If-Match semantics on PUT
+      // for absent resources (treated as "create"). Documented invariant —
+      // T3 fan-out should preserve this for putXxxSpec methods.
+      const nowIso = new Date().toISOString();
+      const result = await store.putClaimSpec(
+        {
+          id: "cas-missing",
+          targetRef: "ref-cas-missing",
+          agent: makeAgent({ agentId: "agent-cas-missing" }),
+          intentSummary: "first",
+          createdAt: nowIso,
+          generation: 1,
+        },
+        { ifMatch: "999" }, // bogus RV
+      );
       expect(result.kind).toBe("ok");
     });
 

@@ -58,6 +58,34 @@ export function isMismatch<V>(r: CasMutationResult<V>): r is CasMismatchResult {
   return r.kind === "rv-mismatch";
 }
 
+/**
+ * Shared options shape for CAS mutation methods. Stores accept this on
+ * `putXxxSpec` / `patchXxxStatus` / `deleteXxx`. When `ifMatch` is set, the
+ * store compares it to the persisted `resource_version` and returns
+ * `{ kind: "rv-mismatch", current }` on disagreement; when unset, the
+ * mutation proceeds without the check (back-compat path).
+ */
+export interface CasOpts {
+  readonly ifMatch?: string;
+}
+
+/**
+ * Test helper: assert a CAS mutation succeeded and return the view.
+ *
+ * Throws if the result is `rv-mismatch`. Use only in tests where the
+ * mismatch branch is unreachable (no `ifMatch` supplied, or `ifMatch`
+ * provably fresh). Production code MUST handle both variants explicitly.
+ */
+export function expectOk<V>(result: CasMutationResult<V>): V {
+  if (result.kind !== "ok") {
+    throw new Error(
+      `expected CasMutationResult.kind === "ok", got "${result.kind}"` +
+        (result.kind === "rv-mismatch" ? ` (current RV=${result.current.resourceVersion})` : ""),
+    );
+  }
+  return result.view;
+}
+
 // ---------------------------------------------------------------------------
 // Content-Addressable Storage (CAS) protocol
 // ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-import type { CasMutationResult } from "../core/cas.js";
+import type { CasMutationResult, CasOpts } from "../core/cas.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
@@ -2311,7 +2311,7 @@ export class SqliteClaimStore implements ClaimStore {
 
   putClaimSpec = async (
     spec: ClaimSpecRecord,
-    opts?: { readonly ifMatch?: string },
+    opts?: CasOpts,
   ): Promise<CasMutationResult<ClaimView>> => {
     this.validateSpecContext(spec);
 

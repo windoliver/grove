@@ -9,7 +9,7 @@
  * - Active index:  /zones/{zoneId}/indexes/claims/active/{targetRef}/{claimId}
  */
 
-import type { CasMutationResult } from "../core/cas.js";
+import type { CasMutationResult, CasOpts } from "../core/cas.js";
 import {
   computeLeaseDuration,
   DEFAULT_LEASE_DURATION_MS,
@@ -215,10 +215,7 @@ export class NexusClaimStore implements ClaimStore {
     this.activeClaimsCache = undefined;
   }
 
-  async putClaimSpec(
-    spec: ClaimSpecRecord,
-    opts?: { readonly ifMatch?: string },
-  ): Promise<CasMutationResult<ClaimView>> {
+  async putClaimSpec(spec: ClaimSpecRecord, opts?: CasOpts): Promise<CasMutationResult<ClaimView>> {
     const existing = await this.readClaimWithEtag(spec.id);
 
     if (existing === undefined) {

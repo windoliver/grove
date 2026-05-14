@@ -14,7 +14,7 @@
  * all policy enforcement lives in these wrappers.
  */
 
-import type { CasMutationResult, ContentStore } from "./cas.js";
+import type { CasMutationResult, CasOpts, ContentStore } from "./cas.js";
 import type { ClaimEntity, ContributionEntity } from "./entity.js";
 import {
   ArtifactLimitError,
@@ -561,7 +561,7 @@ export class EnforcingClaimStore implements ClaimStore {
 
   putClaimSpec = async (
     spec: ClaimSpecRecord,
-    opts?: { readonly ifMatch?: string },
+    opts?: CasOpts,
   ): Promise<CasMutationResult<ClaimView>> => {
     return this.writeMutex.runExclusive(async () => {
       const existing = await this.inner.getClaimView(spec.id);

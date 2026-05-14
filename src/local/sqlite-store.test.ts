@@ -13,25 +13,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CasMutationResult } from "../core/cas.js";
+import { expectOk } from "../core/cas.js";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
-import type { Claim, ClaimView } from "../core/models.js";
+import type { Claim } from "../core/models.js";
 import { ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
 import { makeAgent, makeClaim, makeContribution } from "../core/test-helpers.js";
 import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
-
-/**
- * Unwrap a CAS putClaimSpec result for tests that don't exercise the
- * mismatch branch. Centralizes the migration after T2 (#304).
- */
-function unwrapPutResult(result: CasMutationResult<ClaimView>): ClaimView {
-  if (result.kind !== "ok") {
-    throw new Error(`unexpected putClaimSpec result kind: ${result.kind}`);
-  }
-  return result.view;
-}
 
 function sqliteBindLimit(db: Database): number {
   const rows = db.prepare("PRAGMA compile_options").all() as readonly {
@@ -128,7 +117,7 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const first = unwrapPutResult(
+      const first = expectOk(
         await claimStore.putClaimSpec({
           id: "split-target-first",
           targetRef: "split-target",
@@ -153,7 +142,7 @@ describe("SqliteClaimStore split API", () => {
         }),
       ).rejects.toThrow(/active claim/);
 
-      const movable = unwrapPutResult(
+      const movable = expectOk(
         await claimStore.putClaimSpec({
           id: "split-target-move",
           targetRef: "other-target",
@@ -181,7 +170,7 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const created = unwrapPutResult(
+      const created = expectOk(
         await claimStore.putClaimSpec({
           id: "split-update",
           targetRef: "split-update-target",
@@ -199,7 +188,7 @@ describe("SqliteClaimStore split API", () => {
         lastTransitionAt: "2026-01-01T00:05:00.000Z",
       });
 
-      const updated = unwrapPutResult(
+      const updated = expectOk(
         await claimStore.putClaimSpec({
           ...patched.spec,
           intentSummary: "updated spec",
@@ -227,7 +216,7 @@ describe("SqliteClaimStore split API", () => {
       const now = new Date();
       const activeLeaseExpiresAt = new Date(now.getTime() + 600_000).toISOString();
 
-      const terminal = unwrapPutResult(
+      const terminal = expectOk(
         await claimStore.putClaimSpec({
           id: "terminal-edit",
           targetRef: "shared-terminal-target",
@@ -252,7 +241,7 @@ describe("SqliteClaimStore split API", () => {
         generation: 1,
       });
 
-      const terminalEdited = unwrapPutResult(
+      const terminalEdited = expectOk(
         await claimStore.putClaimSpec({
           ...terminal.spec,
           intentSummary: "terminal after edit",
@@ -263,7 +252,7 @@ describe("SqliteClaimStore split API", () => {
       expect(terminalEdited.spec.intentSummary).toBe("terminal after edit");
       expect(terminalEdited.status.phase).toBe(ClaimStatus.Completed);
 
-      const expired = unwrapPutResult(
+      const expired = expectOk(
         await claimStore.putClaimSpec({
           id: "expired-edit",
           targetRef: "shared-expired-target",
@@ -283,7 +272,7 @@ describe("SqliteClaimStore split API", () => {
         generation: 1,
       });
 
-      const expiredEdited = unwrapPutResult(
+      const expiredEdited = expectOk(
         await claimStore.putClaimSpec({
           ...expired.spec,
           intentSummary: "expired after edit",
@@ -305,7 +294,7 @@ describe("SqliteClaimStore split API", () => {
     const dbPath = join(dir, "test.db");
     const { claimStore, close } = createSqliteStores(dbPath);
     try {
-      const created = unwrapPutResult(
+      const created = expectOk(
         await claimStore.putClaimSpec({
           id: "split-patch",
           targetRef: "split-patch-target",
@@ -1130,7 +1119,7 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     const events: Array<{ op: string; claim: Claim }> = [];
     claimStore.onClaimWrite = (op, c) => events.push({ op, claim: c });
 
-    const created = unwrapPutResult(
+    const created = expectOk(
       await claimStore.putClaimSpec({
         id: "watch-split",
         targetRef: "target-watch-split",

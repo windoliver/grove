@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { expectOk } from "./cas.js";
 import type { ClaimEntity } from "./entity.js";
 import { claimToEntity } from "./entity.js";
 import { NotFoundError } from "./errors.js";
@@ -226,17 +227,17 @@ describe("makeClaimStore split claim adapters", () => {
   test("putClaimSpec derives default status lease from createdAt and lease deadline", async () => {
     const claimStore = makeClaimStore();
 
-    const result = await claimStore.putClaimSpec({
-      id: "split-created",
-      targetRef: "target-split",
-      agent: { agentId: "agent-split" },
-      intentSummary: "create split claim",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      leaseDeadlineSec: 120,
-      generation: 99,
-    });
-    if (result.kind !== "ok") throw new Error("expected ok");
-    const view = result.view;
+    const view = expectOk(
+      await claimStore.putClaimSpec({
+        id: "split-created",
+        targetRef: "target-split",
+        agent: { agentId: "agent-split" },
+        intentSummary: "create split claim",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        leaseDeadlineSec: 120,
+        generation: 99,
+      }),
+    );
 
     expect(view.spec.generation).toBe(1);
     expect(view.status.leaseExpiresAt).toBe("2026-01-01T00:02:00.000Z");
@@ -245,16 +246,16 @@ describe("makeClaimStore split claim adapters", () => {
   test("putClaimSpec updates preserve original createdAt and status", async () => {
     const claimStore = makeClaimStore();
 
-    const createdResult = await claimStore.putClaimSpec({
-      id: "split-updated",
-      targetRef: "target-split",
-      agent: { agentId: "agent-split" },
-      intentSummary: "first intent",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      generation: 1,
-    });
-    if (createdResult.kind !== "ok") throw new Error("expected ok");
-    const created = createdResult.view;
+    const created = expectOk(
+      await claimStore.putClaimSpec({
+        id: "split-updated",
+        targetRef: "target-split",
+        agent: { agentId: "agent-split" },
+        intentSummary: "first intent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+      }),
+    );
     const patched = await claimStore.patchClaimStatus("split-updated", {
       phase: ClaimStatus.Completed,
       observedGeneration: created.spec.generation,
@@ -263,14 +264,14 @@ describe("makeClaimStore split claim adapters", () => {
       lastTransitionAt: "2026-01-01T00:05:00.000Z",
     });
 
-    const updatedResult = await claimStore.putClaimSpec({
-      ...created.spec,
-      intentSummary: "second intent",
-      createdAt: "2026-02-01T00:00:00.000Z",
-      generation: 99,
-    });
-    if (updatedResult.kind !== "ok") throw new Error("expected ok");
-    const updated = updatedResult.view;
+    const updated = expectOk(
+      await claimStore.putClaimSpec({
+        ...created.spec,
+        intentSummary: "second intent",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        generation: 99,
+      }),
+    );
 
     expect(updated.spec.createdAt).toBe(created.spec.createdAt);
     expect(updated.spec.generation).toBe(created.spec.generation + 1);

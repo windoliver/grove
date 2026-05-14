@@ -1,18 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { CasMutationResult } from "../core/cas.js";
-import { ClaimStatus, type ClaimView } from "../core/models.js";
+import { expectOk } from "../core/cas.js";
+import { ClaimStatus } from "../core/models.js";
 import { InMemoryClaimStore } from "./test-helpers.js";
-
-function unwrap(result: CasMutationResult<ClaimView>): ClaimView {
-  if (result.kind !== "ok") throw new Error(`unexpected result kind: ${result.kind}`);
-  return result.view;
-}
 
 describe("InMemoryClaimStore split claim methods", () => {
   test("putClaimSpec creates default status from spec lease deadline", async () => {
     const store = new InMemoryClaimStore();
 
-    const view = unwrap(
+    const view = expectOk(
       await store.putClaimSpec({
         id: "split-create",
         targetRef: "target-split",
@@ -36,7 +31,7 @@ describe("InMemoryClaimStore split claim methods", () => {
   test("putClaimSpec update preserves original createdAt and current status", async () => {
     const store = new InMemoryClaimStore();
 
-    const created = unwrap(
+    const created = expectOk(
       await store.putClaimSpec({
         id: "split-update",
         targetRef: "target-split",
@@ -54,7 +49,7 @@ describe("InMemoryClaimStore split claim methods", () => {
       lastTransitionAt: "2026-01-01T00:05:00.000Z",
     });
 
-    const updated = unwrap(
+    const updated = expectOk(
       await store.putClaimSpec({
         ...created.spec,
         intentSummary: "second intent",
@@ -71,7 +66,7 @@ describe("InMemoryClaimStore split claim methods", () => {
 
   test("patchClaimStatus merges split-only fields while preserving spec", async () => {
     const store = new InMemoryClaimStore();
-    const created = unwrap(
+    const created = expectOk(
       await store.putClaimSpec({
         id: "split-status",
         targetRef: "target-split",

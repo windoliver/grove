@@ -6,7 +6,7 @@
  */
 
 import type { Hono } from "hono";
-import type { CasMutationResult, ContentStore, PutOptions } from "../core/cas.js";
+import type { CasMutationResult, CasOpts, ContentStore, PutOptions } from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
@@ -142,10 +142,7 @@ export class InMemoryClaimStore implements ClaimStore {
     this.statuses.set(view.status.id, view.status);
   }
 
-  async putClaimSpec(
-    spec: ClaimSpecRecord,
-    opts?: { readonly ifMatch?: string },
-  ): Promise<CasMutationResult<ClaimView>> {
+  async putClaimSpec(spec: ClaimSpecRecord, opts?: CasOpts): Promise<CasMutationResult<ClaimView>> {
     const existing = this.viewFor(spec.id);
     if (existing !== undefined) {
       if (opts?.ifMatch !== undefined) {

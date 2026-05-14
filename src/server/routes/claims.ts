@@ -252,7 +252,9 @@ claims.put("/:id", zValidator("json", specBodySchema), async (c) => {
     // PUT handler does not (yet) accept If-Match; if the inner store
     // surfaces an rv-mismatch here, that's a programming error — only
     // CAS-bearing routes should observe this branch (T6).
-    throw new Error("unexpected RV mismatch on non-CAS putClaimSpec path");
+    throw new Error(
+      `Unexpected RV mismatch on PUT /api/claims/${claimId}; route does not yet accept If-Match (C6 T6 will wire this)`,
+    );
   }
   const view = putResult.view;
   const namespace = c.get("namespace");

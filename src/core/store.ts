@@ -12,7 +12,7 @@ import type {
   AgentTaskStatusRecord,
   AgentTaskView,
 } from "./agent-task.js";
-import type { CasMutationResult } from "./cas.js";
+import type { CasMutationResult, CasOpts } from "./cas.js";
 import type { ClaimEntity, Condition, ContributionEntity } from "./entity.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
@@ -302,10 +302,7 @@ export interface ClaimStore {
    * without writing; match (or absent ifMatch on insert/back-compat path)
    * writes and returns `{ kind: "ok", view }` with the bumped RV.
    */
-  putClaimSpec(
-    spec: ClaimSpecRecord,
-    opts?: { readonly ifMatch?: string },
-  ): Promise<CasMutationResult<ClaimView>>;
+  putClaimSpec(spec: ClaimSpecRecord, opts?: CasOpts): Promise<CasMutationResult<ClaimView>>;
 
   /** Get the merged split claim view by ID. */
   getClaimView(claimId: string): Promise<ClaimView | undefined>;
