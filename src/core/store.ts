@@ -451,8 +451,19 @@ export interface AgentTaskStatusPatch {
 export interface AgentTaskStore {
   readonly storeIdentity?: string | undefined;
 
-  /** Create or update user-owned desired task spec. Store controls generation. */
-  putAgentTaskSpec(spec: AgentTaskSpecRecord): Promise<AgentTaskView>;
+  /**
+   * Create or update user-owned desired task spec. Store controls generation.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted spec
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on insert/back-compat path)
+   * writes and returns `{ kind: "ok", view }` with the bumped RV.
+   */
+  putAgentTaskSpec(
+    spec: AgentTaskSpecRecord,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
 
   /** Get the merged split agent task view by ID. */
   getAgentTask(taskId: string): Promise<AgentTaskView | undefined>;

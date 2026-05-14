@@ -176,8 +176,16 @@ agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
     deletionTimestamp: existing?.spec.deletionTimestamp,
   };
 
-  const view = await store.putAgentTaskSpec(spec);
-  return c.json(view, existing === undefined ? 201 : 200);
+  const putResult = await store.putAgentTaskSpec(spec);
+  if (putResult.kind === "rv-mismatch") {
+    // PUT handler does not (yet) accept If-Match; if the inner store surfaces
+    // an rv-mismatch here, that's a programming error — only CAS-bearing
+    // routes should observe this branch (T6).
+    throw new Error(
+      `Unexpected RV mismatch on PUT /api/agent-tasks/${taskId}; route does not yet accept If-Match (C6 T6 will wire this)`,
+    );
+  }
+  return c.json(putResult.view, existing === undefined ? 201 : 200);
 });
 
 agentTasks.get("/", zValidator("query", listQuerySchema), async (c) => {

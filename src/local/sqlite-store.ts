@@ -2030,9 +2030,28 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     `);
   }
 
-  putAgentTaskSpec = async (spec: AgentTaskSpecRecord): Promise<AgentTaskView> => {
+  putAgentTaskSpec = async (
+    spec: AgentTaskSpecRecord,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(spec.id);
+
+      // C6 (#304): Compare-and-set on the persisted spec resource_version.
+      // Only applies on UPDATE (existing !== null). Inserts have no version
+      // to compare against and proceed unconditionally.
+      if (opts?.ifMatch !== undefined && existing !== null) {
+        const currentRv = String(existing.spec.resourceVersion ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            generation: existing.spec.generation,
+          };
+          return;
+        }
+      }
+
       if (existing === null) {
         const nowIso = new Date().toISOString();
         this.insertTaskSpecRow({ ...spec, generation: 1 });
@@ -2061,7 +2080,8 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
                generation = generation + 1,
                owner_ref_json = ?,
                finalizers_json = ?,
-               deletion_timestamp = ?
+               deletion_timestamp = ?,
+               resource_version = resource_version + 1
            WHERE id = ?`,
         )
         .run(
@@ -2080,9 +2100,13 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     });
     tx.immediate();
 
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
+
     const view = this.readAgentTask(spec.id);
     if (view === null) throw new Error(`Failed to read back agent task '${spec.id}'`);
-    return view;
+    return { kind: "ok", view };
   };
 
   getAgentTask = async (taskId: string): Promise<AgentTaskView | undefined> =>
