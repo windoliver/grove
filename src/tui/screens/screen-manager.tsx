@@ -779,7 +779,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
     const handleToggleAdvanced = useCallback(() => {
       setState((s) => ({ ...s, screen: "advanced" }));
-      pages.push({ kind: "advanced" });
+      pages.push({ kind: "inspect" });
     }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
@@ -998,7 +998,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         "launch-preview": LaunchPreviewPage,
         spawning: SpawningPage,
         running: RunningPage,
-        advanced: AdvancedPage,
+        inspect: AdvancedPage,
         complete: CompletePage,
         panel: RunningPage,
         "entity-detail": RunningPage,
