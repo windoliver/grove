@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: flickering-dancing-spark
+name: swirling-sparking-sketch
 
 description: Code review loop with coder and reviewer roles
 
@@ -68,6 +68,9 @@ agent_topology:
       mode: broadcast
       platform: claude-code
       skills: ["grove"]
+      edges:
+        - target: reviewer
+          edge_type: delegates
     - name: reviewer
       description: "Reviews code and provides feedback"
       prompt: |
@@ -113,7 +116,7 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# flickering-dancing-spark
+# swirling-sparking-sketch
 
 Code review loop with coder and reviewer roles
 

@@ -22,8 +22,8 @@ operators.
 ## Lifecycle
 
 ```
-Welcome ──┬──▶ Initializing ──▶ Session View ──[Ctrl+I]──▶ Inspect Overlay
-          ├──▶ Starting     ──▶ Session View ◀─[Ctrl+I or Esc]──┘
+Welcome ──┬──▶ Initializing ──▶ Session View ──[Ctrl+G]──▶ Inspect Overlay
+          ├──▶ Starting     ──▶ Session View ◀─[Ctrl+G or Esc]──┘
           └──▶ Connecting   ──▶ Session View
 ```
 
@@ -62,9 +62,9 @@ the inspect overlay as a top-of-stack page when opened.
 
 - **Purpose:** deep panel workspace, multi-panel layout, command palette,
   panel zoom, decisions/inbox/vfs/terminal/frontier panels.
-- **Entry:** `Ctrl+I` from the `running` screen, and only from there.
+- **Entry:** `Ctrl+G` from the `running` screen, and only from there.
   Pushes `{ kind: "inspect" }` onto `PagesStore`.
-- **Exit:** `Ctrl+I` *or* `Esc`. Both pop the inspect page; the session
+- **Exit:** `Ctrl+G` *or* `Esc`. Both pop the inspect page; the session
   state underneath is preserved bit-for-bit (no re-mount, no lost cursor
   or autoFollow state).
 - **State mechanism:** stack push, **not** a separate mode flag. The

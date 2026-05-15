@@ -7,7 +7,7 @@
  *   Screen 3: LaunchPreview (auto-detect CLIs, Ctrl+Enter to launch)
  *   Screen 4: RunningView (contribution feed + agent status)
  *   Screen 5: CompleteView (session summary)
- *   Ctrl+I: open inspect overlay (full panel workspace) / Ctrl+I or Esc to return
+ *   Ctrl+G: open inspect overlay (full panel workspace) / Ctrl+G or Esc to return
  */
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
@@ -776,7 +776,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       }
     }, [presets, handleQuit, pages]);
 
-    // Screen 4 -> inspect overlay (Ctrl+I, deliberate entry)
+    // Screen 4 -> inspect overlay (Ctrl+G, deliberate entry)
     const handleEnterInspect = useCallback(() => {
       setState((s) => ({ ...s, screen: "inspect" }));
       pages.push({ kind: "inspect" });
@@ -966,7 +966,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.secondary}>Ctrl+I or Esc:back to running view</text>
+              <text color={theme.secondary}>Ctrl+G or Esc:back to running view</text>
             </box>
             <box flexGrow={1}>
               <InspectModeWrapper appProps={appProps} onBack={handleExitInspect} />
@@ -1053,7 +1053,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 );
 
 // ---------------------------------------------------------------------------
-// Inspect mode wrapper — intercepts Esc / Ctrl+I (and legacy Ctrl+B) to return to the session view
+// Inspect mode wrapper — intercepts Esc / Ctrl+G (and legacy Ctrl+B) to return to the session view
 // ---------------------------------------------------------------------------
 
 interface InspectModeWrapperProps {
@@ -1063,11 +1063,11 @@ interface InspectModeWrapperProps {
 
 /**
  * Wraps the full App as an inspect overlay above the session view.
- * Intercepts Ctrl+I and Esc to return to the session view.
+ * Intercepts Ctrl+G and Esc to return to the session view.
  */
 export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
   function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {
-    // Intercept Esc / Ctrl+I to return to the session view. Tab is used by
+    // Intercept Esc / Ctrl+G to return to the session view. Tab is used by
     // App for panel cycling, so we use dedicated back keys.
     useKeyboard(
       useCallback(
@@ -1076,7 +1076,7 @@ export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperPr
             onBack();
             return;
           }
-          if (key.ctrl && key.name === "i") {
+          if (key.ctrl && key.name === "g") {
             onBack();
             return;
           }

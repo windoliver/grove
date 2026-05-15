@@ -350,9 +350,9 @@ describe("routeRunningKey — normal mode misc", () => {
     expect(log.calls).toContain("toggleVfs");
   });
 
-  test("Ctrl+I calls enterInspect", () => {
+  test("Ctrl+G calls enterInspect", () => {
     const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("i", { ctrl: true }), defaultState(), actions);
+    routeRunningKey(keyEvent("g", { ctrl: true }), defaultState(), actions);
     expect(log.calls).toContain("enterInspect");
   });
 
@@ -646,9 +646,9 @@ describe("routeRunningKey — prompt mode", () => {
     expect(log.calls).not.toContain("toggleFullscreen");
   });
 
-  test("Ctrl+I is swallowed in prompt mode", () => {
+  test("Ctrl+G is swallowed in prompt mode", () => {
     const { actions, log } = mockActions();
-    const handled = routeRunningKey(keyEvent("i", { ctrl: true }), promptState, actions);
+    const handled = routeRunningKey(keyEvent("g", { ctrl: true }), promptState, actions);
     expect(handled).toBe(true);
     expect(log.calls).not.toContain("enterInspect");
   });
@@ -824,9 +824,9 @@ describe("Trace panel mode", () => {
     expect(log.calls).toContain("toggleHelp");
   });
 
-  test("Ctrl+I still enters inspect when Trace is expanded", () => {
+  test("Ctrl+G still enters inspect when Trace is expanded", () => {
     const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("i", { ctrl: true }), traceState(), actions);
+    routeRunningKey(keyEvent("g", { ctrl: true }), traceState(), actions);
     expect(log.calls).toContain("enterInspect");
   });
 });

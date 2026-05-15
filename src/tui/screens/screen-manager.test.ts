@@ -143,7 +143,7 @@ mock.module("@opentui/react", () => ({
 mock.module("../app.js", () => ({
   App: (): null => null,
   INSPECT_HINTS: Object.freeze([
-    { key: "Ctrl+I", label: "Back" },
+    { key: "Ctrl+G", label: "Back" },
     { key: "Esc", label: "Back" },
     { key: "?", label: "Help" },
     { key: "q", label: "Quit" },
@@ -1205,7 +1205,7 @@ describe("InspectModeWrapper exit shortcuts", () => {
     }
   });
 
-  test("Ctrl+I inside inspect overlay calls onBack", async () => {
+  test("Ctrl+G inside inspect overlay calls onBack", async () => {
     const { InspectModeWrapper } = await import("./screen-manager.js");
     const onBack = mock(() => undefined);
 
@@ -1221,7 +1221,7 @@ describe("InspectModeWrapper exit shortcuts", () => {
     });
 
     try {
-      await pressKey({ ctrl: true, name: "i" });
+      await pressKey({ ctrl: true, name: "g" });
       expect(onBack).toHaveBeenCalledTimes(1);
     } finally {
       renderer.unmount();

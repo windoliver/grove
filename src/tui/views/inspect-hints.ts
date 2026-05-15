@@ -8,7 +8,7 @@
 import { defineHints, type KeyAction } from "../data/hint-map.js";
 
 export const INSPECT_HINTS: readonly KeyAction[] = defineHints([
-  { key: "Ctrl+I", label: "Back" },
+  { key: "Ctrl+G", label: "Back" },
   { key: "Esc", label: "Back" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },

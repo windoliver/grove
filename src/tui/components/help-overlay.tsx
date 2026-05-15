@@ -42,7 +42,7 @@ function globalBindings(overrides: KeybindingOverrides | undefined): readonly Ke
     { key: activeKey("help", overrides), description: "Toggle this help" },
     { key: activeKey("quit", overrides), description: "Quit" },
     { key: activeKey("zoom_reset", overrides), description: "Back / dismiss / reduce zoom" },
-    { key: "Ctrl+I", description: "Back to Session View (or press Esc)" },
+    { key: "Ctrl+G", description: "Back to Session View (or press Esc)" },
     { key: "Ctrl+P", description: "Command palette" },
     { key: "Tab", description: "Cycle panel focus" },
     { key: "Shift+Tab", description: "Cycle panel focus (reverse)" },

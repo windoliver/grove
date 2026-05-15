@@ -288,8 +288,8 @@ export function routeRunningKey(
     return true;
   }
 
-  // Ctrl+I: enter inspect mode
-  if (isCtrl && input === "i") {
+  // Ctrl+G: enter inspect mode (Ctrl+I shares byte 0x09 with Tab — unusable in terminals)
+  if (isCtrl && input === "g") {
     actions.enterInspect();
     return true;
   }

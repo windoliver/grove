@@ -9,7 +9,7 @@
  * After the user picks an action, services start inside the TUI with
  * progress feedback, then transitions to the simplified 5-screen flow
  * (ScreenManager). The boardroom App is reachable only as a deep-inspect
- * overlay via Ctrl+I from RunningView.
+ * overlay via Ctrl+G from RunningView.
  */
 
 import { join } from "node:path";

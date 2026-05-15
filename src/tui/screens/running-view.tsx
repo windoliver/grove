@@ -9,7 +9,7 @@
  * Number keys 1-4 expand panels: 1=Feed, 2=Agents, 3=DAG, 4=Terminal
  * f: toggle fullscreen on expanded panel
  * Esc: collapse expanded panel → dismiss overlay → cancel quit
- * Ctrl+I: open inspect overlay
+ * Ctrl+G: open inspect overlay (Ctrl+I would collide with Tab — same byte)
  * Ctrl+F: Nexus folder browser overlay
  * q: confirm quit (double-tap)
  */
@@ -1854,7 +1854,7 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>
-      <text color={theme.text}> Ctrl+I Inspect overlay (Ctrl+I or Esc to return)</text>
+      <text color={theme.text}> Ctrl+G Inspect overlay (Ctrl+G or Esc to return)</text>
       <text color={theme.text}> y/n Approve/deny permission</text>
       <text color={theme.text}> ? Toggle this help</text>
       <text color={theme.text}> Esc Collapse panel / close overlay</text>
