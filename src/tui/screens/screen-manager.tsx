@@ -1088,6 +1088,8 @@ export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperPr
         [onBack],
       ),
     );
-    return React.createElement(App, appProps);
+    // Pass screenContext="inspect" so the StatusBar shows the [INSPECT] chip
+    // whenever the inspect overlay is on screen (#191).
+    return React.createElement(App, { ...appProps, screenContext: "inspect" });
   },
 );
