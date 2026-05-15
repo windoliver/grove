@@ -684,27 +684,32 @@ type OwnedReadiness =
   | { ok: false; kind: "owned-but-unresponsive"; lastError: string };
 
 /**
- * Race-free readiness check for a spawned service (issue #219, review rounds 2-4).
+ * Race-free readiness check for a spawned service (issue #219, review rounds 2-5).
  *
- * **Authority model**: the `Grove-Health-Token` header is the canonical
- * proof. spawnService generates an unpredictable per-spawn token, injects
- * it into the child via env (`GROVE_HEALTH_TOKEN`), and the child echoes
- * it on every /health response. A foreign listener cannot guess the token,
- * so it cannot spoof the readiness signal (round-4 finding: pid header
- * alone is forgeable on an unauthenticated endpoint).
+ * **Authority model** (round 5): lsof PID attribution is the FOUNDATION.
+ * /health's Grove-Health-Token is a secondary signal — useful on lsof-blind
+ * hosts but never trusted on its own when lsof can speak. The env-injected
+ * token can be read out of /proc/<pid>/environ by a same-UID process; a
+ * spoof attempt nonetheless cannot also bind a port already held by our
+ * spawned child, so requiring lsof PID match closes the leak.
  *
- * `Grove-Server-Pid` is kept as a diagnostic but not as authority.
+ * When lsof is unavailable on the host (`probe.kind === "unavailable"`),
+ * the predicate degrades to token-only. Documented limitation.
  *
  * Verdicts:
- *   - ok                       header token matches AND status 2xx
+ *   - ok                       lsof confirms our PID owns the port AND
+ *                              /health returned 2xx (token-bearing
+ *                              preferred; legacy 2xx-without-token is
+ *                              accepted on PID-confirmed listener so
+ *                              older child builds without /health-token
+ *                              still spawn)
  *   - child-exited             spawnedExit resolved
- *   - owned-but-unhealthy      token matches BUT /health returned non-2xx
+ *   - owned-but-unhealthy      lsof confirms our PID, /health returned non-2xx
  *                              across OWNED_UNHEALTHY_REPEATS polls
- *   - owned-but-unresponsive   token-bearing /health never returned in time,
- *                              but the listener IS our spawned PID (lsof) —
- *                              dependency stall; do NOT kill our child
- *   - owned-by-foreign         a different stable PID held the port AND
- *                              never echoed the token across
+ *   - owned-but-unresponsive   lsof confirms our PID but /health never
+ *                              answered — dependency stall; spawnService
+ *                              leaves the child running for inspection
+ *   - owned-by-foreign         lsof showed a different stable PID across
  *                              FOREIGN_STABILITY_REPEATS samples
  *   - no-listener              deadline with no listener at all
  */
@@ -732,10 +737,32 @@ async function waitForOwnedReadiness(opts: {
   });
   let delay = 250;
   while (Date.now() < deadline) {
-    // Yield once so any already-settled `spawnedExit` resolves its .then
-    // before we make any syscall (round-4 microtask-race fix).
     await Promise.resolve();
     if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
+
+    // Step 1 — lsof attribution comes first. A foreign PID that holds the
+    // port is the only authoritative signal that we lost the bind race;
+    // accept it before doing any HTTP work that could be spoofed.
+    const probe = await probeListenerPid(port);
+    if (probe.kind === "pid" && probe.pid !== spawnedPid) {
+      if (probe.pid === lastForeignPid) foreignSeen += 1;
+      else {
+        lastForeignPid = probe.pid;
+        foreignSeen = 1;
+      }
+      if (foreignSeen >= FOREIGN_STABILITY_REPEATS) {
+        const owner = await describePortOwner(port);
+        return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      continue;
+    }
+    // probe is one of: pid==spawnedPid, no-listener, unavailable. Any of
+    // these reset the foreign-stability counter.
+    foreignSeen = 0;
+    lastForeignPid = 0;
+
     let resp: Response | undefined;
     try {
       resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
@@ -745,19 +772,21 @@ async function waitForOwnedReadiness(opts: {
       delay = Math.min(delay * 1.5, 2_000);
       continue;
     }
-    // Re-check exit AFTER the network call settles — the child may have
-    // exited while we awaited the response (round-4 recommendation).
     await Promise.resolve();
     if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
 
     const responseToken = resp.headers.get("Grove-Health-Token");
-    const headerPid = parseHeaderPid(resp.headers.get("Grove-Server-Pid"));
+    const tokenMatch = responseToken !== null && timingSafeEq(responseToken, readinessToken);
+    const pidConfirmed = probe.kind === "pid" && probe.pid === spawnedPid;
+    const lsofUnavailable = probe.kind === "unavailable";
 
-    // Path A: token matches — authoritatively ours.
-    if (responseToken && responseToken === readinessToken) {
-      foreignSeen = 0;
-      lastForeignPid = 0;
-      if (resp.ok) return { ok: true };
+    if (resp.ok) {
+      if (pidConfirmed) return { ok: true };
+      if (lsofUnavailable && tokenMatch) return { ok: true };
+      // resp.ok but neither lsof-confirmed nor token-on-lsof-blind: keep
+      // polling — likely the listener hasn't fully bound yet.
+    } else if (pidConfirmed) {
+      // Our listener BUT degraded (e.g. grove-server 503 from store error).
       lastStatus = resp.status;
       try {
         lastBody = (await resp.text()).slice(0, 500);
@@ -768,39 +797,8 @@ async function waitForOwnedReadiness(opts: {
       if (ownedUnhealthySeen >= OWNED_UNHEALTHY_REPEATS) {
         return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
       }
-    } else {
-      // Path B: no token (or wrong token). Could be a foreign listener
-      // or an old build of our service that doesn't emit the token yet.
-      // Use lsof to attribute, but never let probe failure count as
-      // foreign — only a stable, DIFFERENT pid does.
-      const probe = await probeListenerPid(port);
-      if (probe.kind === "pid" && probe.pid === spawnedPid && resp.ok) {
-        // Listener IS us — diagnostic header pid likely matches too. Treat
-        // as success only if BOTH lsof says spawnedPid AND status is ok;
-        // this is the legacy-no-token fallback that older builds need.
-        return { ok: true };
-      }
-      if (probe.kind === "pid" && probe.pid !== spawnedPid) {
-        if (probe.pid === lastForeignPid) foreignSeen += 1;
-        else {
-          lastForeignPid = probe.pid;
-          foreignSeen = 1;
-        }
-        if (foreignSeen >= FOREIGN_STABILITY_REPEATS) {
-          const owner = await describePortOwner(port);
-          return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
-        }
-      } else if (headerPid !== undefined && headerPid !== spawnedPid && probe.kind !== "pid") {
-        // lsof unavailable, diagnostic header says foreign — soft signal,
-        // count toward foreign-stability but don't treat as authoritative.
-        if (headerPid === lastForeignPid) foreignSeen += 1;
-        else {
-          lastForeignPid = headerPid;
-          foreignSeen = 1;
-        }
-      }
-      // Other cases: indeterminate, keep polling.
     }
+    // Else: indeterminate, keep polling.
     await sleep(delay);
     delay = Math.min(delay * 1.5, 2_000);
   }
@@ -811,12 +809,9 @@ async function waitForOwnedReadiness(opts: {
   if (ownedUnhealthySeen > 0) {
     return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
   }
-  const probe = await probeListenerPid(port);
-  if (probe.kind === "pid") {
-    if (probe.pid === spawnedPid) {
-      // Listener IS our child but /health never answered with the token
-      // within the deadline — dependency stall, NOT a bind-race. Operator
-      // must investigate the child, not assume the port is being squatted.
+  const finalProbe = await probeListenerPid(port);
+  if (finalProbe.kind === "pid") {
+    if (finalProbe.pid === spawnedPid) {
       return {
         ok: false,
         kind: "owned-but-unresponsive",
@@ -824,15 +819,19 @@ async function waitForOwnedReadiness(opts: {
       };
     }
     const owner = await describePortOwner(port);
-    return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
+    return { ok: false, kind: "owned-by-foreign", foreignPid: finalProbe.pid, owner };
   }
   return { ok: false, kind: "no-listener" };
 }
 
-function parseHeaderPid(raw: string | null): number | undefined {
-  if (!raw) return undefined;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+/** Constant-time string comparison — see waitForOwnedReadiness. */
+function timingSafeEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -1258,10 +1257,15 @@ async function spawnService(
         timeoutMs: SERVICE_HEALTH_TIMEOUT_MS,
       });
       if (!readiness.ok) {
-        // Only kill the child when WE need to clean it up; if readiness
-        // says the child already exited, signalling its PID risks hitting
-        // a recycled process (round 4 finding).
-        if (readiness.kind !== "child-exited") {
+        // Teardown policy:
+        //   child-exited           — already dead; signal would risk PID reuse (round 4)
+        //   owned-but-unhealthy    — service is dependency-degraded; keep alive
+        //                            so operator can inspect (round 5)
+        //   owned-but-unresponsive — bound, /health hung; same rationale
+        //   owned-by-foreign / no-listener — our spawn lost; reap it
+        const shouldTerminate =
+          readiness.kind === "owned-by-foreign" || readiness.kind === "no-listener";
+        if (shouldTerminate) {
           await terminateChild(pid, exited);
         }
         const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
