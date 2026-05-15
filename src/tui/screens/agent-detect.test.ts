@@ -9,7 +9,11 @@ describe("AgentDetect CLI availability", () => {
   });
 
   test("returns false for unsupported missing commands", () => {
-    expect(detectCli("definitely-not-a-grove-agent")).toBe(false);
+    expect(detectCli("definitely-not-a-grove-agent", { which: () => null })).toBe(false);
+  });
+
+  test("uses injected command lookup for deterministic unsupported command tests", () => {
+    expect(detectCli("sh", { which: () => null })).toBe(false);
   });
 });
 
