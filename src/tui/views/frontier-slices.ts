@@ -29,9 +29,44 @@ const SCALAR_DESCRIPTIONS: Record<string, string> = {
   reproduction: "Reproduction — most-reproduced contributions",
 };
 
-function placeholderBadge(_entry: FrontierEntry): string {
-  return "";
+function formatRelativeMs(ms: number): string {
+  const diff = Date.now() - ms;
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${String(seconds)}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${String(minutes)}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${String(days)}d ago`;
 }
+
+function adoptionBadge(entry: FrontierEntry): string {
+  return `×${String(entry.value)} adopters`;
+}
+
+function reproductionBadge(entry: FrontierEntry): string {
+  return `▲${String(entry.value)} confirmed`;
+}
+
+function reviewBadge(entry: FrontierEntry): string {
+  return `${entry.value.toFixed(1)}⋆`;
+}
+
+function recencyBadge(entry: FrontierEntry): string {
+  return formatRelativeMs(entry.value);
+}
+
+function metricBadge(name: string): (entry: FrontierEntry) => string {
+  return (entry) => `${entry.value.toFixed(3)} ${name}`;
+}
+
+const SCALAR_BADGES: Record<string, (entry: FrontierEntry) => string> = {
+  adoption: adoptionBadge,
+  recency: recencyBadge,
+  review: reviewBadge,
+  reproduction: reproductionBadge,
+};
 
 /** Project a Frontier into ordered, non-empty slices. */
 export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
@@ -49,7 +84,7 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
       label: key,
       signalDescription: SCALAR_DESCRIPTIONS[key] ?? key,
       entries,
-      formatBadge: placeholderBadge,
+      formatBadge: SCALAR_BADGES[key] ?? ((): string => ""),
     });
   }
   const metricNames = Object.keys(frontier.byMetric ?? {}).sort();
@@ -61,7 +96,7 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
       label: name,
       signalDescription: `${name} — per-contribution score`,
       entries,
-      formatBadge: placeholderBadge,
+      formatBadge: metricBadge(name),
     });
   }
   return slices;

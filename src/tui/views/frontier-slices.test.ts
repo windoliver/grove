@@ -102,3 +102,39 @@ describe("toSlices — metric:* dimensions", () => {
     expect(slices[0]?.signalDescription).toContain("rouge_l");
   });
 });
+
+describe("toSlices — formatBadge per signal", () => {
+  test("adoption: '×N adopters'", () => {
+    const slices = toSlices(makeFrontier({ byAdoption: [{ cid: "a", value: 12, summary: "" }] }));
+    expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toBe("×12 adopters");
+  });
+
+  test("reproduction: '▲N confirmed'", () => {
+    const slices = toSlices(
+      makeFrontier({ byReproduction: [{ cid: "r", value: 3, summary: "" }] }),
+    );
+    expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toBe("▲3 confirmed");
+  });
+
+  test("review: 'X.X⋆' rounded to one decimal", () => {
+    const slices = toSlices(
+      makeFrontier({ byReviewScore: [{ cid: "v", value: 4.73, summary: "" }] }),
+    );
+    expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toBe("4.7⋆");
+  });
+
+  test("recency: relative time string", () => {
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    const slices = toSlices(
+      makeFrontier({ byRecency: [{ cid: "rc", value: fiveMinAgo, summary: "" }] }),
+    );
+    expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toMatch(/^\d+m ago$/);
+  });
+
+  test("metric:*: '0.812 <name>' to 3 decimals", () => {
+    const slices = toSlices(
+      makeFrontier({ byMetric: { rouge_l: [{ cid: "m", value: 0.812345, summary: "" }] } }),
+    );
+    expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toBe("0.812 rouge_l");
+  });
+});
