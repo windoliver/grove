@@ -21,6 +21,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
+import { dangerous } from "../middleware/dangerous.js";
 import { CID_REGEX } from "../schemas.js";
 import { contributionStoreForSession, notConfigured, readJsonBody } from "./shared.js";
 
@@ -249,28 +250,61 @@ sessions.get("/:id", async (c) => {
   return c.json(toSessionResponse(session));
 });
 
-/** DELETE /api/sessions/:id — Delete a session. */
-sessions.delete("/:id", async (c) => {
-  const { goalSessionStore } = c.get("deps");
-  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+/**
+ * DELETE /api/sessions/:id — Delete a session.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. When the supplied If-Match no longer matches the
+ * persisted session resource version, the store returns `rv-mismatch`
+ * and this handler responds with `409 Conflict` carrying the current
+ * snapshot so clients can re-fetch and retry.
+ */
+sessions.delete(
+  "/:id",
+  dangerous<"/:id">(async (c) => {
+    const { goalSessionStore } = c.get("deps");
+    if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  const sessionId = c.req.param("id");
-  const session = await goalSessionStore.getSession(sessionId);
-  if (!session) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
-      404,
-    );
-  }
+    const sessionId = c.req.param("id");
+    const session = await goalSessionStore.getSession(sessionId);
+    if (!session) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+        404,
+      );
+    }
 
-  const deleteResult = await goalSessionStore.deleteSession(sessionId, {
-    force: c.req.query("force") === "true",
-    actor: "http",
-  });
-  const result = expectCasOk(deleteResult, `DELETE /api/sessions/${sessionId}`);
-  const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
-  return c.json(result, status);
-});
+    // `dangerous()` middleware guarantees a non-empty `ifMatch` is set —
+    // narrow defensively so the type stays `string`.
+    const ifMatch = c.get("ifMatch");
+    if (ifMatch === undefined) {
+      throw new Error("invariant: dangerous() must set ifMatch before invoking handler");
+    }
+    const deleteResult = await goalSessionStore.deleteSession(sessionId, {
+      ifMatch,
+      force: c.req.query("force") === "true",
+      actor: "http",
+    });
+
+    if (deleteResult.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Session ${sessionId} resourceVersion changed`,
+            current: deleteResult.current,
+          },
+        },
+        409,
+      );
+    }
+
+    const result = deleteResult.view;
+    const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
+    return c.json(result, status);
+  }),
+);
 
 /** PUT /api/sessions/:id/archive — Archive a session. */
 sessions.put("/:id/archive", async (c) => {

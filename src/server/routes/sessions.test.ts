@@ -21,7 +21,7 @@ class TestGoalSessionStore implements GoalSessionStore {
   private readonly blockedSessionIds = new Set<string>();
   readonly deleteCalls: {
     readonly id: string;
-    readonly options: SessionDeleteOptions | undefined;
+    readonly options: (SessionDeleteOptions & CasOpts) | undefined;
   }[] = [];
 
   blockDelete(sessionId: string): void {
@@ -195,7 +195,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(200);
@@ -207,7 +207,7 @@ describe("session routes", () => {
     });
     expect(await goalSessionStore.getSession(session.id)).toBeUndefined();
     expect(goalSessionStore.deleteCalls).toEqual([
-      { id: session.id, options: { force: false, actor: "http" } },
+      { id: session.id, options: { ifMatch: "1", force: false, actor: "http" } },
     ]);
   });
 
@@ -219,7 +219,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(409);
@@ -240,7 +240,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}?force=true`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(200);
@@ -248,7 +248,7 @@ describe("session routes", () => {
     expect(data.deleted).toBe(true);
     expect(data.forced).toBe(true);
     expect(goalSessionStore.deleteCalls).toEqual([
-      { id: session.id, options: { force: true, actor: "http" } },
+      { id: session.id, options: { ifMatch: "1", force: true, actor: "http" } },
     ]);
   });
 
@@ -257,7 +257,7 @@ describe("session routes", () => {
 
     const res = await app.request("/api/sessions/missing", {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(404);
@@ -271,12 +271,82 @@ describe("session routes", () => {
 
     const res = await app.request("/api/sessions/missing", {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(501);
     expect(await res.json()).toEqual({
       error: { code: "NOT_CONFIGURED", message: "Goal/session store is not configured" },
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // C6 #304: @Dangerous middleware + If-Match plumbing on DELETE
+  // -----------------------------------------------------------------------
+
+  test("DELETE /api/sessions/:id without If-Match → 428 and store.deleteSession not called", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "no-if-match" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(428);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("PRECONDITION_REQUIRED");
+    // Critical: middleware must short-circuit before the handler/store —
+    // not even getSession should have been touched, but deleteSession
+    // is the surface we explicitly guard so assert on it.
+    expect(goalSessionStore.deleteCalls).toHaveLength(0);
+    // Session must still exist.
+    expect(await goalSessionStore.getSession(session.id)).toBeDefined();
+  });
+
+  test("DELETE /api/sessions/:id with stale If-Match → 409 with current snapshot", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "stale" });
+    // External mutation: bump RV so the caller's If-Match=1 becomes stale.
+    await goalSessionStore.updateSession(session.id, { status: "active" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(409);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("CONFLICT");
+    // The store bumped RV from 1 → 2 on the external updateSession.
+    expect(body.error.current.resourceVersion).toBe("2");
+    expect(body.error.current.generation).toBe(2);
+    // Session must still exist — CAS mismatch must not delete.
+    expect(await goalSessionStore.getSession(session.id)).toBeDefined();
+  });
+
+  test("DELETE /api/sessions/:id with fresh If-Match → 200 and store called with ifMatch", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "fresh" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.deleted).toBe(true);
+    // Store received the ifMatch in the options bag.
+    expect(goalSessionStore.deleteCalls.at(-1)).toMatchObject({
+      id: session.id,
+      options: { ifMatch: "1", force: false, actor: "http" },
     });
   });
 });

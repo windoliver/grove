@@ -8,8 +8,14 @@ import type { ServerEnv } from "../deps.js";
  * to call from inside it. Typed against {@link ServerEnv} so the inner
  * handler reads `c.get("ifMatch")` as `string | undefined` (non-undefined
  * for any handler that ran past the `dangerous` guard).
+ *
+ * Generic over `P` (the route path string) so that Hono's path-aware
+ * parameter inference (`c.req.param("id")` → `string` instead of
+ * `string | undefined`) survives the wrapper.
  */
-type DangerousInnerHandler = (c: Context<ServerEnv>) => Promise<Response> | Response;
+type DangerousInnerHandler<P extends string = string> = (
+  c: Context<ServerEnv, P>,
+) => Promise<Response> | Response;
 
 /**
  * Server-side `@Dangerous` enforcement: wraps a Hono handler so the route
@@ -34,7 +40,9 @@ type DangerousInnerHandler = (c: Context<ServerEnv>) => Promise<Response> | Resp
  *
  * Reference: RFC 7232 §3.1, k8s `metav1.UpdateOptions`.
  */
-export function dangerous(handler: DangerousInnerHandler): Handler<ServerEnv> {
+export function dangerous<P extends string = string>(
+  handler: DangerousInnerHandler<P>,
+): Handler<ServerEnv, P> {
   return async (c) => {
     const ifMatch = c.req.header("If-Match");
     if (ifMatch === undefined || ifMatch === "") {
