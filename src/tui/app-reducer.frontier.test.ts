@@ -63,13 +63,15 @@ describe("frontier reducer slice", () => {
     expect(s2.adoptContext).toBeUndefined();
   });
 
-  test("COMPARE_ADOPT clears adoptContext too", () => {
+  test("COMPARE_ADOPT preserves adoptContext (the compare-adopt flow sets it just before)", () => {
     const s1 = tuiReducer(INITIAL_KEYBOARD_STATE, {
       type: "ADOPT_SET",
       targetCid: "cid-1",
       summary: "x",
     });
     const s2 = tuiReducer(s1, { type: "COMPARE_ADOPT" });
-    expect(s2.adoptContext).toBeUndefined();
+    expect(s2.adoptContext).toEqual({ targetCid: "cid-1", summary: "x" });
+    expect(s2.compareMode).toBe(false);
+    expect(s2.compareCids).toEqual([]);
   });
 });

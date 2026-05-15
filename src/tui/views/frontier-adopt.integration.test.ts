@@ -51,8 +51,8 @@ describe("frontier adopt integration (reducer + spawn shape)", () => {
     });
     expect(s1.adoptContext?.targetCid).toBe("cid-A");
     const s2 = tuiReducer(s1, { type: "COMPARE_ADOPT" });
-    // COMPARE_ADOPT also clears adoptContext as a side effect.
-    expect(s2.adoptContext).toBeUndefined();
+    // COMPARE_ADOPT must preserve adoptContext so the palette spawn carries it.
+    expect(s2.adoptContext?.targetCid).toBe("cid-A");
     expect(s2.compareMode).toBe(false);
     expect(s2.compareCids).toEqual([]);
   });

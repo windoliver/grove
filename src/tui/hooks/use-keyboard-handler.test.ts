@@ -775,3 +775,50 @@ describe("routeKey — registry-driven panel dispatch", () => {
     }
   });
 });
+
+describe("routeKey — Frontier panel tab nav + adopt", () => {
+  test("Tab dispatches onFrontierTabNext when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("tab"), actions);
+    expect(log.calls).toContain("onFrontierTabNext");
+  });
+
+  test("Shift+Tab dispatches onFrontierTabPrev when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("tab", { shift: true }), actions);
+    expect(log.calls).toContain("onFrontierTabPrev");
+  });
+
+  test("digit '3' dispatches onFrontierTabJump(2) when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("3"), actions);
+    expect(log.calls).toContain("onFrontierTabJump");
+    expect(log.args.onFrontierTabJump).toEqual([2]);
+  });
+
+  test("'a' on a frontier row dispatches onFrontierAdopt with cid + summary", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      frontierEntries: [{ cid: "cid-z", summary: "do thing" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).toContain("onFrontierAdopt");
+    expect(log.args.onFrontierAdopt).toEqual(["cid-z", "do thing"]);
+  });
+
+  test("'a' suppressed when in compareMode", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      compareMode: true,
+      frontierEntries: [{ cid: "cid-z", summary: "x" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).not.toContain("onFrontierAdopt");
+  });
+
+  test("Tab does NOT dispatch onFrontierTabNext when a different panel is focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    routeKey(keyEvent("tab"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+});

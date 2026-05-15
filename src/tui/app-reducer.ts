@@ -149,7 +149,7 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
       return { ...state, compareCids: [...prev, action.cid] };
     }
     case "COMPARE_ADOPT":
-      return { ...state, compareMode: false, compareCids: [], adoptContext: undefined };
+      return { ...state, compareMode: false, compareCids: [] };
     case "FRONTIER_SET_TABS": {
       const keys = action.keys.length > 0 ? action.keys : ["overview"];
       const stillValid = keys.includes(state.activeFrontierSlice);

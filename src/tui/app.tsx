@@ -775,7 +775,10 @@ export function App({
       onCompareAdopt: (side: "a" | "b") => {
         const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
         if (!cid) return;
-        const summary = frontierEntries.find((e) => e.cid === cid)?.summary ?? "";
+        const summary =
+          frontierEntries.find((e) => e.cid === cid)?.summary ??
+          contributionList.find((c) => c.cid === cid)?.summary ??
+          "";
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         dispatch({ type: "COMPARE_ADOPT" });
         panels.setMode(InputMode.CommandPalette);
@@ -960,6 +963,7 @@ export function App({
       ks.goalBuffer,
       ks.paletteIndex,
       ks.frontierTabKeys,
+      contributionList,
       frontierCids,
       frontierEntries,
       agentProfiles,
