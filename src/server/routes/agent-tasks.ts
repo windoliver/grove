@@ -13,10 +13,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
 import { AgentTaskPhase } from "../../core/agent-task.js";
-import { expectCasOk } from "../../core/cas.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
+import { dangerous, getIfMatch } from "../middleware/dangerous.js";
 
 const phaseSchema = z.enum([
   AgentTaskPhase.Pending,
@@ -154,32 +154,59 @@ export const agentTasks: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 agentTasks.use("*", requireAgentTaskStore);
 
-agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
-  const taskId = c.req.param("id");
-  const body = c.req.valid("json");
-  const store = c.get("deps").agentTaskStore;
-  if (store === undefined) throw new Error("AgentTask store middleware did not run");
+/**
+ * PUT /api/agent-tasks/:id — Create or update user-owned agent task spec.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` with the
+ * store's current spec RV so callers can re-fetch and retry.
+ */
+agentTasks.put(
+  "/:id",
+  zValidator("json", specBodySchema),
+  dangerous<"/:id">(async (c) => {
+    const taskId = c.req.param("id");
+    // Re-narrow validator output — `dangerous()` wraps as `Handler<ServerEnv, P>`
+    // which discards the zValidator typing contribution.
+    const body = c.req.valid("json" as never) as z.infer<typeof specBodySchema>;
+    const store = c.get("deps").agentTaskStore;
+    if (store === undefined) throw new Error("AgentTask store middleware did not run");
 
-  const existing = await store.getAgentTask(taskId);
-  const spec: AgentTaskSpecRecord = {
-    id: taskId,
-    worktree: body.worktree,
-    runtime: body.runtime,
-    role: body.role,
-    prompt: body.prompt,
-    dependsOn: body.dependsOn,
-    maxTurns: body.maxTurns,
-    budget: body.budget as Readonly<Record<string, JsonValue>> | undefined,
-    generation: 0,
-    createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
-    ownerRef: existing?.spec.ownerRef,
-    finalizers: existing?.spec.finalizers,
-    deletionTimestamp: existing?.spec.deletionTimestamp,
-  };
+    const existing = await store.getAgentTask(taskId);
+    const spec: AgentTaskSpecRecord = {
+      id: taskId,
+      worktree: body.worktree,
+      runtime: body.runtime,
+      role: body.role,
+      prompt: body.prompt,
+      dependsOn: body.dependsOn,
+      maxTurns: body.maxTurns,
+      budget: body.budget as Readonly<Record<string, JsonValue>> | undefined,
+      generation: 0,
+      createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
+      ownerRef: existing?.spec.ownerRef,
+      finalizers: existing?.spec.finalizers,
+      deletionTimestamp: existing?.spec.deletionTimestamp,
+    };
 
-  const view = expectCasOk(await store.putAgentTaskSpec(spec), `PUT /api/agent-tasks/${taskId}`);
-  return c.json(view, existing === undefined ? 201 : 200);
-});
+    const ifMatch = getIfMatch(c);
+    const result = await store.putAgentTaskSpec(spec, { ifMatch });
+    if (result.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `AgentTask ${taskId} resourceVersion changed`,
+            current: result.current,
+          },
+        },
+        409,
+      );
+    }
+    return c.json(result.view, existing === undefined ? 201 : 200);
+  }),
+);
 
 agentTasks.get("/", zValidator("query", listQuerySchema), async (c) => {
   const store = c.get("deps").agentTaskStore;
@@ -207,14 +234,23 @@ agentTasks.get("/:id", async (c) => {
   return c.json(view);
 });
 
+/**
+ * PATCH /api/agent-tasks/:id/status — Controller-owned task status patch.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` with the
+ * store's current status RV.
+ */
 agentTasks.patch(
   "/:id/status",
   requireControllerToken,
   zValidator("json", statusBodySchema),
-  async (c) => {
+  dangerous<"/:id/status">(async (c) => {
     const store = c.get("deps").agentTaskStore;
     if (store === undefined) throw new Error("AgentTask store middleware did not run");
-    const body = c.req.valid("json");
+    // Re-narrow validator output — see PUT /:id for rationale.
+    const body = c.req.valid("json" as never) as z.infer<typeof statusBodySchema>;
     const patch: AgentTaskStatusPatch = {
       phase: body.phase,
       sessionId: body.sessionId,
@@ -223,10 +259,21 @@ agentTasks.patch(
       observedGeneration: body.observedGeneration,
       lastTransitionAt: body.lastTransitionAt,
     };
-    const view = expectCasOk(
-      await store.patchAgentTaskStatus(c.req.param("id"), patch),
-      `PATCH /api/agent-tasks/${c.req.param("id")}/status`,
-    );
-    return c.json(view);
-  },
+    const ifMatch = getIfMatch(c);
+    const taskId = c.req.param("id");
+    const result = await store.patchAgentTaskStatus(taskId, patch, { ifMatch });
+    if (result.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `AgentTask ${taskId} status resourceVersion changed`,
+            current: result.current,
+          },
+        },
+        409,
+      );
+    }
+    return c.json(result.view);
+  }),
 );
