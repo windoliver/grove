@@ -1940,7 +1940,7 @@ export class SpawnManager {
           },
           null,
           2,
-        )}\n\`\`\`\n\nCall \`grove_adopt\` with the \`targetCid\` from the JSON above and your own role as your **first action** to check out the artifact before making changes.\n`
+        )}\n\`\`\`\n\n**First action**: call \`grove_checkout\` with the \`targetCid\` from the JSON above to materialize the artifacts into your workspace. After you've inspected what's there and committed to building on it, call \`grove_adopt\` to record the adoption — \`grove_adopt\` creates a ranking-mutating contribution, so do it only when you're actually adopting, not as a side effect of inspecting.\n`
       : "";
 
     const instructions = `# Grove Agent: ${roleId}
@@ -2090,7 +2090,7 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
         ),
         "```",
         "",
-        "Call `grove_adopt` with the `targetCid` from the JSON above as your first action.",
+        "First action: call `grove_checkout` with the `targetCid` above to materialize artifacts. Call `grove_adopt` only when you actually commit to adopting — it creates a ranking-mutating contribution.",
         "",
       );
     }

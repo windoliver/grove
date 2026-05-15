@@ -133,17 +133,20 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   // BEFORE any break can trigger. Use for...in + Object.hasOwn so we walk
   // own properties one at a time and bail at the scan budget without
   // touching the rest of the keyspace.
-  // Two-stage selection:
-  //   1. Iterate own keys up to MAX_RAW_METRIC_KEYS, collecting valid
-  //      sanitized candidates until MAX_METRIC_SLICES are gathered. Junk
-  //      early keys don't consume the display cap.
-  //   2. Sort the collected candidates alphabetically for stable display.
+  //
+  // Three-stage selection:
+  //   1. Iterate own keys up to MAX_RAW_METRIC_KEYS, collecting EVERY
+  //      valid sanitized candidate (no early break on count).
+  //   2. Sort all collected candidates alphabetically.
+  //   3. Cap the sorted list at MAX_METRIC_SLICES. This way, "zzz" metrics
+  //      can't fill the cap before "aaa" gets a chance — the alphabetically
+  //      first valid metrics always win, regardless of producer iteration
+  //      order. The scan budget still bounds work per projection.
   const byMetric = frontier.byMetric ?? {};
   let scanned = 0;
   for (const rawName in byMetric) {
     if (!Object.hasOwn(byMetric, rawName)) continue;
     if (scanned >= MAX_RAW_METRIC_KEYS) break;
-    if (metricCandidates.length >= MAX_METRIC_SLICES) break;
     scanned++;
     const entries = byMetric[rawName];
     if (!entries || entries.length === 0) continue;
@@ -158,7 +161,7 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
     metricCandidates.push({ rawName, safeName });
   }
   metricCandidates.sort((a, b) => (a.safeName < b.safeName ? -1 : a.safeName > b.safeName ? 1 : 0));
-  for (const { rawName, safeName } of metricCandidates) {
+  for (const { rawName, safeName } of metricCandidates.slice(0, MAX_METRIC_SLICES)) {
     const entries = byMetric[rawName] ?? [];
     slices.push({
       key: `metric:${safeName}`,

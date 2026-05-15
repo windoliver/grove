@@ -208,6 +208,26 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       onRowCountChanged(activeCids.length);
     }, [activeCids.length, onRowCountChanged, cursor]);
 
+    // Cleanup on unmount: clear refs in the parent so a remounted FrontierView
+    // doesn't expose stale entries between mount and the first effect commit.
+    // Without this, the sequence (focus away → frontier re-renders elsewhere
+    // → focus back → press 'a') would adopt against a row from before the
+    // panel was hidden.
+    //
+    // We capture the callbacks via refs so the cleanup runs only on real
+    // unmount, not on every callback identity change (which would clobber
+    // freshly-published entries with [] mid-flight).
+    const onFrontierEntriesChangedRef = useRef(onFrontierEntriesChanged);
+    onFrontierEntriesChangedRef.current = onFrontierEntriesChanged;
+    const onFrontierCidsChangedRef = useRef(onFrontierCidsChanged);
+    onFrontierCidsChangedRef.current = onFrontierCidsChanged;
+    useEffect(() => {
+      return () => {
+        if (onFrontierEntriesChangedRef.current) onFrontierEntriesChangedRef.current([]);
+        if (onFrontierCidsChangedRef.current) onFrontierCidsChangedRef.current([]);
+      };
+    }, []);
+
     if (loading && !data) {
       return (
         <box>

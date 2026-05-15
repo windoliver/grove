@@ -255,7 +255,7 @@ describe("toSlices — metric bounds + sanitization", () => {
       // \\x01..\\x10 — each sanitizes to "" so all should be skipped.
       byMetric[String.fromCharCode(i).repeat(3)] = [{ cid: `bad-${i}`, value: i, summary: "" }];
     }
-    byMetric["valid_metric"] = [{ cid: "ok", value: 1, summary: "" }];
+    byMetric.valid_metric = [{ cid: "ok", value: 1, summary: "" }];
     const slices = toSlices(makeFrontier({ byMetric }));
     const labels = slices.filter((s) => s.key.startsWith("metric:")).map((s) => s.label);
     expect(labels).toContain("valid_metric");
@@ -276,6 +276,24 @@ describe("toSlices — metric bounds + sanitization", () => {
     const elapsed = Date.now() - start;
     expect(slices.filter((s) => s.key.startsWith("metric:")).length).toBe(16);
     expect(elapsed).toBeLessThan(200);
+  });
+
+  test("metric cap takes alphabetically-first valid metrics, not enumeration order", () => {
+    // Insert 16 'zzz_' metrics first (V8 iteration order), then a single
+    // 'aaa_' metric. Pre-fix: cap fills on the 16 zzz before reaching aaa
+    // and aaa is hidden. Post-fix: collect all valid, sort, then cap →
+    // aaa_important is included.
+    const byMetric: Record<string, readonly { cid: string; value: number; summary: string }[]> = {};
+    for (let i = 0; i < 16; i++) {
+      byMetric[`zzz_filler_${String(i).padStart(2, "0")}`] = [
+        { cid: `f-${i}`, value: i, summary: "" },
+      ];
+    }
+    byMetric.aaa_important = [{ cid: "ok", value: 99, summary: "" }];
+    const slices = toSlices(makeFrontier({ byMetric }));
+    const labels = slices.filter((s) => s.key.startsWith("metric:")).map((s) => s.label);
+    expect(labels[0]).toBe("aaa_important");
+    expect(labels.length).toBe(16);
   });
 
   test("two raw names that sanitize to the same string both render with ordinal suffix", () => {
