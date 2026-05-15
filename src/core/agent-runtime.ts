@@ -56,6 +56,8 @@ export interface AgentSession {
   readonly role: string;
   readonly pid?: number | undefined;
   readonly status: "running" | "idle" | "stopped" | "crashed";
+  /** Optional human-readable reason for the current status. */
+  readonly statusMessage?: string | undefined;
   /** Agent platform used for this session (e.g. "claude-code", "codex"). */
   readonly platform?: AgentPlatformType | undefined;
   /** Model identifier used for this session. */

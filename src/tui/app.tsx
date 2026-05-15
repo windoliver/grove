@@ -8,7 +8,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -25,6 +25,7 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { createTuiConfigWatcher } from "./config-watcher.js";
 import { DagStateStore } from "./data/dag-state-store.js";
 import { DagStateProvider } from "./hooks/dag-state-context.js";
 
@@ -34,7 +35,11 @@ export { tuiReducer } from "./app-reducer.js";
 import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
-import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
+import {
+  buildKeyActionMap,
+  type KeybindingOverrides,
+  useKeybindingOverrides,
+} from "./hooks/use-keybinding-overrides.js";
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
@@ -51,7 +56,7 @@ import {
   type TuiDataProvider,
 } from "./provider.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
-import { theme } from "./theme.js";
+import { replaceTheme, theme } from "./theme.js";
 
 /** Props for the root App component. */
 export interface AppProps {
@@ -113,10 +118,12 @@ export function App({
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
   const fileOverrides = useKeybindingOverrides();
-  // Merge config.json keymap (lower priority) with file-based overrides (higher priority).
+  const [hotkeyOverrides, setHotkeyOverrides] = useState<KeybindingOverrides>({});
+  const [, setThemeRevision] = useState(0);
+  // Merge config.json keymap (lower priority), hotkeys.yaml, then file-based overrides.
   const keybindingOverrides = useMemo(
-    () => ({ ...userConfig?.keymap, ...fileOverrides }),
-    [userConfig?.keymap, fileOverrides],
+    () => ({ ...userConfig?.keymap, ...hotkeyOverrides, ...fileOverrides }),
+    [userConfig?.keymap, hotkeyOverrides, fileOverrides],
   );
   const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
@@ -186,6 +193,43 @@ export function App({
     setLastError(message);
     errorTimerRef.current = setTimeout(() => setLastError(undefined), 5_000);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const projectRoot = groveDir !== undefined ? dirname(groveDir) : undefined;
+    const watcher = createTuiConfigWatcher({ projectRoot });
+    const unsubscribe = watcher.subscribe((event) => {
+      if (cancelled) return;
+      if (event.type === "ConfigError") {
+        showError(event.message);
+        return;
+      }
+      if (event.changed === "hotkeys") {
+        setHotkeyOverrides(event.config.hotkeys);
+      }
+      if (event.changed === "theme") {
+        replaceTheme({ ...userConfig?.theme, ...event.config.theme });
+        setThemeRevision((revision) => revision + 1);
+      }
+    });
+    void watcher
+      .start()
+      .then(() => {
+        if (cancelled) return;
+        const config = watcher.current();
+        setHotkeyOverrides(config.hotkeys);
+        replaceTheme({ ...userConfig?.theme, ...config.theme });
+        setThemeRevision((revision) => revision + 1);
+      })
+      .catch((err) => {
+        if (!cancelled) showError(err instanceof Error ? err.message : "config watcher failed");
+      });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      void watcher.stop();
+    };
+  }, [groveDir, showError, userConfig?.theme]);
 
   // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
   const spawnManager = useSpawnManager();

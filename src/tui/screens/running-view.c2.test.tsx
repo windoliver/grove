@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { DEFAULT_ALIASES, resolveAlias } from "../data/aliases.js";
 import { loadAliases } from "../data/aliases-loader.js";
 import { PagesStore } from "../data/pages-store.js";
+import { emptyFeedHint } from "./empty-feed-hint.js";
 import { expandPanel as expandPanelTransition, RunningPanel } from "./running-keyboard.js";
 
 async function makeTmp(): Promise<string> {
@@ -63,6 +64,15 @@ describe("C2 acceptance — issue #302", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  test("empty feed does not say agents are working after startup failure", () => {
+    expect(emptyFeedHint([], new Map([["coder", "Internal error"]]))).toBe(
+      "Agent startup failed; check agent status",
+    );
+    expect(emptyFeedHint(["reviewer"], new Map([["coder", "Internal error"]]))).toBe(
+      "Agent startup failed; check agent status",
+    );
   });
 });
 

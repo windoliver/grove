@@ -3,6 +3,7 @@ import {
   type Agent,
   AgentSideConnection,
   ndJsonStream,
+  RequestError,
   type RequestPermissionRequest,
 } from "@agentclientprotocol/sdk";
 import { AcpRuntime, type AcpRuntimeEvent, type LaunchOverride } from "./acp-runtime.js";
@@ -14,6 +15,7 @@ interface AgentStubHandlers {
     sessionId: string;
     agentSide: AgentSideConnection;
   }) => Promise<{ stopReason: "end_turn" | "cancelled" | "error" | "max_tokens" }>;
+  onDispose?: () => Promise<void> | void;
   capture?: (ref: { agentSide: AgentSideConnection | null }) => void;
 }
 
@@ -59,7 +61,9 @@ function makeInProcessAgent(handlers: AgentStubHandlers = {}): {
 
     return {
       clientStream,
-      dispose: async () => undefined,
+      dispose: async () => {
+        await handlers.onDispose?.();
+      },
     };
   };
   return { launchOverride, ref };
@@ -264,6 +268,64 @@ describe("AcpRuntime.send", () => {
 
     const result = await turn.result;
     expect(result.stopReason).toBe("cancelled");
+  });
+
+  test("close is bounded when an adapter ignores cancel", async () => {
+    const promptStarted = deferred();
+    let disposed = false;
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt() {
+        promptStarted.resolve();
+        await new Promise(() => undefined);
+        return { stopReason: "cancelled" };
+      },
+      onDispose() {
+        disposed = true;
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    const turn = await rt.send(session, "slow task");
+    await promptStarted.promise;
+    const start = Date.now();
+    await rt.close(session);
+
+    expect(Date.now() - start).toBeLessThan(3_000);
+    expect(disposed).toBe(true);
+    expect(await rt.listSessions()).toEqual([]);
+
+    void turn.result;
+  });
+
+  test("surfaces ACP RequestError data messages on prompt failure", async () => {
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt() {
+        throw new RequestError(-32603, "Internal error", {
+          message: "Your access token could not be refreshed. Please log out and sign in again.",
+        });
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    const turn = await rt.send(session, "hello");
+    const result = await turn.result;
+
+    expect(result.stopReason).toBe("error");
+    expect(result.error?.message).toBe(
+      "Your access token could not be refreshed. Please log out and sign in again.",
+    );
+    await rt.close(session);
   });
 
   test("emits direct ACP messages and results to the event sink", async () => {

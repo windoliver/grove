@@ -262,6 +262,39 @@ const _themeStore: {
  */
 export const theme: Readonly<typeof _themeStore> = _themeStore;
 
+const DEFAULT_THEME_COLOR_TOKENS: ThemeColorTokens = {
+  focus: _themeStore.focus,
+  inactive: _themeStore.inactive,
+  border: _themeStore.border,
+  running: _themeStore.running,
+  waiting: _themeStore.waiting,
+  idle: _themeStore.idle,
+  error: _themeStore.error,
+  stale: _themeStore.stale,
+  work: _themeStore.work,
+  review: _themeStore.review,
+  discussion: _themeStore.discussion,
+  adoption: _themeStore.adoption,
+  reproduction: _themeStore.reproduction,
+  text: _themeStore.text,
+  secondary: _themeStore.secondary,
+  disabled: _themeStore.disabled,
+  panelBg: _themeStore.panelBg,
+  headerBg: _themeStore.headerBg,
+  selectedBg: _themeStore.selectedBg,
+  success: _themeStore.success,
+  warning: _themeStore.warning,
+  info: _themeStore.info,
+  compare: _themeStore.compare,
+  statusRunning: _themeStore.statusRunning,
+  statusDone: _themeStore.statusDone,
+  statusFailed: _themeStore.statusFailed,
+  statusBlocked: _themeStore.statusBlocked,
+  statusAwaitingReview: _themeStore.statusAwaitingReview,
+  statusIdle: _themeStore.statusIdle,
+  highlightMatch: _themeStore.highlightMatch,
+};
+
 /**
  * Apply user theme overrides from config.
  *
@@ -275,6 +308,19 @@ export function configureTheme(overrides: Partial<ThemeColorTokens>): void {
       (_themeStore as Record<string, unknown>)[key] = resolveColor(value);
     }
   }
+}
+
+/**
+ * Replace all overridable color tokens with defaults plus the provided overrides.
+ *
+ * This is used by hot reload so removing a key from theme.yaml restores the
+ * lower-priority color instead of leaving the previous override behind.
+ */
+export function replaceTheme(overrides: Partial<ThemeColorTokens>): void {
+  for (const [key, value] of Object.entries(DEFAULT_THEME_COLOR_TOKENS)) {
+    (_themeStore as Record<string, unknown>)[key] = value;
+  }
+  configureTheme(overrides);
 }
 
 /** Return the current theme (same as the exported `theme` constant). */
