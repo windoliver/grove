@@ -288,8 +288,8 @@ export function routeRunningKey(
     return true;
   }
 
-  // Ctrl+A: toggle advanced mode
-  if (isCtrl && input === "a") {
+  // Ctrl+I: enter inspect mode
+  if (isCtrl && input === "i") {
     actions.enterInspect();
     return true;
   }

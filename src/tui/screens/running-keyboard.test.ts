@@ -350,10 +350,16 @@ describe("routeRunningKey — normal mode misc", () => {
     expect(log.calls).toContain("toggleVfs");
   });
 
-  test("Ctrl+A toggles advanced", () => {
+  test("Ctrl+I calls enterInspect", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("i", { ctrl: true }), defaultState(), actions);
+    expect(log.calls).toContain("enterInspect");
+  });
+
+  test("Ctrl+A no longer calls enterInspect", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("a", { ctrl: true }), defaultState(), actions);
-    expect(log.calls).toContain("enterInspect");
+    expect(log.calls).not.toContain("enterInspect");
   });
 
   test("Enter opens detail when feed has items", () => {
@@ -640,9 +646,9 @@ describe("routeRunningKey — prompt mode", () => {
     expect(log.calls).not.toContain("toggleFullscreen");
   });
 
-  test("Ctrl+A is swallowed in prompt mode", () => {
+  test("Ctrl+I is swallowed in prompt mode", () => {
     const { actions, log } = mockActions();
-    const handled = routeRunningKey(keyEvent("a", { ctrl: true }), promptState, actions);
+    const handled = routeRunningKey(keyEvent("i", { ctrl: true }), promptState, actions);
     expect(handled).toBe(true);
     expect(log.calls).not.toContain("enterInspect");
   });
@@ -818,9 +824,9 @@ describe("Trace panel mode", () => {
     expect(log.calls).toContain("toggleHelp");
   });
 
-  test("Ctrl+A still toggles advanced when Trace is expanded", () => {
+  test("Ctrl+I still enters inspect when Trace is expanded", () => {
     const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("a", { ctrl: true }), traceState(), actions);
+    routeRunningKey(keyEvent("i", { ctrl: true }), traceState(), actions);
     expect(log.calls).toContain("enterInspect");
   });
 });
