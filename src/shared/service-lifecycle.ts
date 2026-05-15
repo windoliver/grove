@@ -374,8 +374,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   // old default port (held by a foreign process). Resolving sequentially
   // here mutates process.env so every subsequent serviceEnv() call sees
   // the settled values. (#191 follow-up.)
+  let serverPortShifted = false;
   if (config.services?.server) {
-    await preResolvePort("server", groveDir);
+    const before = resolveServicePort("server");
+    const after = await preResolvePort("server", groveDir);
+    serverPortShifted = before !== after;
   }
   if (config.services?.mcp) {
     await preResolvePort("mcp", groveDir);
@@ -406,7 +409,15 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
 
   if (config.services?.mcp) {
     options.onProgress?.("Starting MCP server...");
-    spawnPromises.push(spawnService("mcp", resolveEntry("src/mcp/serve-http.ts"), groveDir));
+    // If the server was rebound to a fallback port, an adopted MCP from a
+    // prior run still points its bridge at the old GROVE_SERVER_PORT
+    // (set in its env at start). Force-restart MCP in that case so its
+    // bridge URL matches the freshly-resolved server port.
+    spawnPromises.push(
+      spawnService("mcp", resolveEntry("src/mcp/serve-http.ts"), groveDir, {
+        forceFreshSpawn: serverPortShifted,
+      }),
+    );
   }
 
   // Use allSettled so a single failed spawn doesn't abandon successfully
@@ -1000,9 +1011,26 @@ async function spawnService(
   name: string,
   entryPoint: string,
   groveDir: string,
+  opts?: { readonly forceFreshSpawn?: boolean },
 ): Promise<ManagedChildProcess | null> {
-  let port = resolveServicePort(name);
-  if (port) {
+  // forceFreshSpawn: caller (startServices) detected that the upstream
+  // server port shifted during pre-resolve, so any prior child of `name`
+  // would still hold a stale GROVE_SERVER_PORT in its env. Skip adoption
+  // and rebind to a fresh port so the new child links to the new server.
+  if (opts?.forceFreshSpawn) {
+    const desiredPort = resolveServicePort(name);
+    if (desiredPort && (await isPortBound(desiredPort))) {
+      const freePort = await pickFreePort();
+      const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
+      process.env[portEnvVar] = String(freePort);
+      if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
+      process.stderr.write(
+        `[grove] ${name} forced fresh spawn (server port shifted); using free port ${freePort}.\n`,
+      );
+    }
+  }
+  const port = resolveServicePort(name);
+  if (port && !opts?.forceFreshSpawn) {
     // Identity gate (NO credentials): if the port is bound, the listening
     // PID must match a record in our pidfile for this service name. Any
     // mismatch — including no pidfile at all — is treated as foreign.
@@ -1011,50 +1039,49 @@ async function spawnService(
     // otherwise receive the real key on the second probe.
     const bound = await isPortBound(port);
     if (bound) {
+      // Pre-spawn (preResolvePort) already handled the foreign-owner case
+      // by rebinding to a free port. By the time spawnService runs, a
+      // bound port should always be one of OUR pidfile-recorded children
+      // (adoption path) or — if foreign now — a TOCTOU race that leaks
+      // late. Either way we do NOT mutate process.env here: env mutation
+      // after the parallel spawn is already in flight risks giving MCP
+      // a stale GROVE_SERVER_PORT (#191 round 2).
       const pidFilePath = join(groveDir, "grove.pid");
       const identity = await verifyPortIdentity(port, pidFilePath, name);
       if (!identity.ok) {
-        // Foreign owner — most commonly another grove worktree's server on
-        // the same host. Auto-fall-back to an OS-assigned ephemeral port
-        // instead of failing. Update the matching env var so serviceEnv()
-        // (called below to build the child's env) and downstream services
-        // that read GROVE_SERVER_PORT see the rebound port.
+        // Late TOCTOU collision — fail loudly rather than rewrite env
+        // mid-spawn. preResolvePort would normally have caught this.
         const owner = await describePortOwner(port);
-        const freePort = await pickFreePort();
-        process.stderr.write(
-          `[grove] ${name} port ${port} held by foreign process (${owner.split("\n")[0]}); ` +
-            `using free port ${freePort} instead.\n`,
+        throw new Error(
+          `${name} port ${port} became foreign-held between pre-resolve and spawn ` +
+            `(owner: ${owner.split("\n")[0]}). ${identity.reason}\n` +
+            `This is a TOCTOU race; restart \`grove up\` to retry.`,
         );
-        port = freePort;
-        const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
-        process.env[portEnvVar] = String(freePort);
-        if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
-      } else {
-        // PID identity matches our pidfile record — but a detached child
-        // can survive a crashed parent, and `grove init --force` rotates
-        // .grove/api-key without removing grove.pid. After identity is
-        // proven, also confirm the live server still accepts the current
-        // api-key; if not, the recorded child is stale relative to the
-        // current credentials and must be restarted.
-        if (name === "server") {
-          const ownership = await verifyServerOwnership(port, groveDir);
-          if (!ownership.ok) {
-            throw new Error(
-              `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
-                `${ownership.reason}\n` +
-                `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
-                `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
-            );
-          }
-        }
-        // Identity + ownership both verified — adopt the existing PID into
-        // our managed-child set so the rewritten pidfile records it AND
-        // stopServices/grove-down can kill it. Returning null here would
-        // drop the live process from RunningServices: a subsequent
-        // pidfile rewrite (other children may still spawn fresh) would
-        // forget the server PID, breaking shutdown.
-        return adoptExistingChild(name, identity.pid);
       }
+      // PID identity matches our pidfile record — but a detached child
+      // can survive a crashed parent, and `grove init --force` rotates
+      // .grove/api-key without removing grove.pid. After identity is
+      // proven, also confirm the live server still accepts the current
+      // api-key; if not, the recorded child is stale relative to the
+      // current credentials and must be restarted.
+      if (name === "server") {
+        const ownership = await verifyServerOwnership(port, groveDir);
+        if (!ownership.ok) {
+          throw new Error(
+            `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
+              `${ownership.reason}\n` +
+              `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
+              `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
+          );
+        }
+      }
+      // Identity + ownership both verified — adopt the existing PID into
+      // our managed-child set so the rewritten pidfile records it AND
+      // stopServices/grove-down can kill it. Returning null here would
+      // drop the live process from RunningServices: a subsequent
+      // pidfile rewrite (other children may still spawn fresh) would
+      // forget the server PID, breaking shutdown.
+      return adoptExistingChild(name, identity.pid);
     }
   }
 
