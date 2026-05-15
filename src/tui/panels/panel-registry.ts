@@ -382,7 +382,8 @@ export function getActivePanelsForLayout(
   registry: readonly PanelDef[] = PANEL_REGISTRY,
 ): ReadonlySet<Panel> {
   if (mode === "tab") {
-    return new Set([panelState.focused]);
+    const def = registry.find((d) => d.panel === panelState.focused);
+    return def !== undefined ? new Set([panelState.focused]) : new Set();
   }
 
   // Grid mode: every visible panel is active.

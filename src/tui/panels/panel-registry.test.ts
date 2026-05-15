@@ -512,4 +512,18 @@ describe("injectable registry helpers", () => {
     const active = getActivePanelsForLayout(initialPanelState(), "grid", registry);
     expect([...active]).toEqual([Panel.Dag, Panel.Claims]);
   });
+
+  it("computes active tab panels when injected registry includes the focused panel", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const state = panelFocus(initialPanelState(), Panel.Claims);
+    const active = getActivePanelsForLayout(state, "tab", registry);
+    expect([...active]).toEqual([Panel.Claims]);
+  });
+
+  it("computes no active tab panels when injected registry excludes the focused panel", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const state = panelFocus(initialPanelState(), Panel.Dag);
+    const active = getActivePanelsForLayout(state, "tab", registry);
+    expect([...active]).toEqual([]);
+  });
 });
