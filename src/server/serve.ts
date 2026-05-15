@@ -416,19 +416,6 @@ const getSharedAgentRuntime = async (): Promise<
 };
 
 let taskController: TaskController | undefined;
-if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
-  taskController = new TaskController({
-    taskStore: runtime.agentTaskStore,
-    runtime: await getSharedAgentRuntime(),
-    onError(error, taskId) {
-      const detail = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
-    },
-  });
-  await taskController.resync();
-  taskController.start();
-  console.log("task-controller enabled");
-}
 
 // ---------------------------------------------------------------------------
 // Background sweep reconciler
@@ -500,6 +487,36 @@ const claimExpiryTimer = setInterval(async () => {
 (claimExpiryTimer as unknown as { unref?: () => void }).unref?.();
 
 // ---------------------------------------------------------------------------
+// Server bind safety checks
+// ---------------------------------------------------------------------------
+
+// Refuse to bind a non-localhost address without an explicit operator
+// opt-in. The HTTP surface has no authentication (role-sensitive mutations
+// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
+// caller-asserted), so the deployment trust boundary is the localhost
+// binding. Operators who want remote access MUST set
+// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
+// typical production usage places the server behind an authenticated
+// reverse proxy.
+//
+// MUST run before SessionService/task-controller setup or Bun.serve() —
+// otherwise we could spawn sessions or bind the socket before deciding to exit.
+const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
+if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
+  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
+    console.error(
+      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
+        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
+        "  or front this process with an authenticated reverse proxy and bind to localhost.",
+    );
+    process.exit(1);
+  }
+  console.warn(
+    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Optional SessionService + WebSocket push
 // ---------------------------------------------------------------------------
 
@@ -525,32 +542,6 @@ if (runtime.contract?.topology !== undefined) {
 // ---------------------------------------------------------------------------
 // Start server (with optional WebSocket upgrade)
 // ---------------------------------------------------------------------------
-
-// Refuse to bind a non-localhost address without an explicit operator
-// opt-in. The HTTP surface has no authentication (role-sensitive mutations
-// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
-// caller-asserted), so the deployment trust boundary is the localhost
-// binding. Operators who want remote access MUST set
-// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
-// typical production usage places the server behind an authenticated
-// reverse proxy.
-//
-// MUST run BEFORE Bun.serve() — otherwise the socket would already be
-// bound and listening before we decided to exit.
-const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
-if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
-  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
-    console.error(
-      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
-        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
-        "  or front this process with an authenticated reverse proxy and bind to localhost.",
-    );
-    process.exit(1);
-  }
-  console.warn(
-    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
-  );
-}
 
 function startServer() {
   const hostnameOpts = HOST ? { hostname: HOST } : {};
@@ -615,6 +606,20 @@ function startServer() {
 }
 
 const server = startServer();
+
+if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
+  taskController = new TaskController({
+    taskStore: runtime.agentTaskStore,
+    runtime: await getSharedAgentRuntime(),
+    onError(error, taskId) {
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
+    },
+  });
+  await taskController.resync();
+  taskController.start();
+  console.log("task-controller enabled");
+}
 
 // Start gossip after server is listening
 if (gossipService) {
