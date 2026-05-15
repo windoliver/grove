@@ -1894,12 +1894,18 @@ export class SpawnManager {
     const rolePrompt = context?.rolePrompt ?? "";
     const roleGoal = context?.roleGoal ?? "";
     const sessionGoal = this.sessionGoal || "Follow your role instructions below.";
+    const adoptTarget = context?.adoptTarget as string | undefined;
+    const adoptSummary = context?.adoptSummary as string | undefined;
+
+    const adoptSection = adoptTarget
+      ? `\n## Adopt Context\n\nYou are spawned to build on an existing contribution.\n- **Target CID**: \`${adoptTarget}\`\n${adoptSummary ? `- **Summary**: ${adoptSummary}\n` : ""}Call \`grove_adopt({ targetCid: "${adoptTarget}", agent: { role: "${roleId}" } })\` as your **first action** to check out the artifact before making changes.\n`
+      : "";
 
     const instructions = `# Grove Agent: ${roleId}
 
 ## Session Goal
 ${sessionGoal}
-
+${adoptSection}
 ## Your Role: ${roleId}
 ${roleDescription}
 ${roleGoal ? `\nObjective: ${roleGoal}\n` : ""}
@@ -2019,6 +2025,17 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     }
     if (context.rolePrompt) {
       lines.push(`## Instructions`, "", String(context.rolePrompt), "");
+    }
+    if (context.adoptTarget) {
+      lines.push(`## Adopt Target`, "", `CID: \`${String(context.adoptTarget)}\``);
+      if (context.adoptSummary) {
+        lines.push(`Summary: ${String(context.adoptSummary)}`);
+      }
+      lines.push(
+        "",
+        `Call \`grove_adopt({ targetCid: "${String(context.adoptTarget)}", agent: { role: "${roleId}" } })\` as your first action.`,
+        "",
+      );
     }
     lines.push(
       `## Available MCP Tools`,
