@@ -33,7 +33,7 @@ describe("hintsForPage - all non-panel/non-detail page kinds", () => {
     "spawning",
     "running",
     "complete",
-    "advanced",
+    "inspect",
     "panel",
     "entity-detail",
   ];
@@ -89,7 +89,7 @@ describe("KeyAction deep-freeze contract", () => {
     { kind: "running" },
     { kind: "goal-input" },
     { kind: "complete" },
-    { kind: "advanced" },
+    { kind: "inspect" },
     { kind: "preset-select" },
     { kind: "agent-detect" },
     { kind: "launch-preview" },

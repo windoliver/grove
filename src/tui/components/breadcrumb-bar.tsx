@@ -33,7 +33,7 @@ const PAGE_LABELS: Record<PageKind, string> = {
   spawning: "Spawning",
   running: "Running",
   complete: "Complete",
-  advanced: "Advanced",
+  inspect: "Inspect",
   panel: "Panel",
   "entity-detail": "Detail",
 };

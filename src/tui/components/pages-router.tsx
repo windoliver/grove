@@ -116,7 +116,7 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
     const Component = components[top.kind];
 
     // Column layout with explicit row reservations so a page component
-    // that renders `height="100%"` (RunningView, advanced/boardroom) can't
+    // that renders `height="100%"` (RunningView, inspect overlay) can't
     // push the HintBar off-screen. Breadcrumb and HintBar are auto-height,
     // page content gets flexGrow=1 to fill the middle.
     return (
