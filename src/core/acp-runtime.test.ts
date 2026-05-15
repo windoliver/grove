@@ -313,6 +313,8 @@ describe("prepareIsolatedCodexHome", () => {
       expect(config).toContain('GROVE_SESSION_ID = "session-1"');
       expect(config).not.toContain("secret-key");
       expect(existsSync(join(isolated, "auth.json"))).toBe(true);
+      writeFileSync(join(userHome, "auth.json"), '{"token":"rotated"}', "utf-8");
+      expect(readFileSync(join(isolated, "auth.json"), "utf-8")).toBe('{"token":"rotated"}');
     } finally {
       if (isolated) rmSync(isolated, { recursive: true, force: true });
       rmSync(userHome, { recursive: true, force: true });

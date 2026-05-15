@@ -17,6 +17,7 @@ let stdout: string[];
 let stderr: string[];
 
 beforeEach(() => {
+  process.exitCode = 0;
   db = new Database(":memory:");
   db.run("PRAGMA busy_timeout = 5000");
   outcomeStore = new SqliteOutcomeStore(db);
@@ -32,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   outcomeStore.close();
   db.close();
+  process.exitCode = 0;
 });
 
 // ---------------------------------------------------------------------------
