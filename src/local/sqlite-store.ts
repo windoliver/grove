@@ -2090,8 +2090,9 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   private emitAgentTaskWrite(op: "ADDED" | "MODIFIED", view: AgentTaskView): void {
     try {
       this.onAgentTaskWrite?.(op, view);
-    } catch {
-      // Local watch fan-out must not make the underlying SQLite write fail.
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[sqlite-agent-task-store] onAgentTaskWrite failed: ${detail}\n`);
     }
   }
 }
