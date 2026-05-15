@@ -26,13 +26,29 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import type { Page, PageKind, PagesStore } from "../data/pages-store.js";
+import { useEntityStoreFactoryOptional } from "../hooks/entity-store-context.js";
 import { useHints } from "../hooks/use-hints.js";
 import { useScreenStack } from "../hooks/use-screen-stack.js";
+import {
+  type ConfirmAndMutateEntityBus,
+  ConfirmAndMutateProvider,
+  makeEntityBusFromStore,
+} from "../safety/index.js";
 import { BreadcrumbBar } from "./breadcrumb-bar.js";
 import { ConfirmPopDialog } from "./confirm-pop-dialog.js";
 import { HintBar } from "./hint-bar.js";
+
+// Fallback bus used when no EntityStoreProvider is in scope (e.g., during
+// early bootstrap before the informer factory is constructed, or in test
+// trees that mount PagesRouter without the watch infrastructure). The
+// banner stays off; the provider's CAS retry loop still works via the
+// snapshot supplied by each trigger() call.
+const NULL_BUS: ConfirmAndMutateEntityBus = {
+  get: () => undefined,
+  subscribe: () => () => undefined,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -78,6 +94,17 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
     const hints = useHints(store);
     const [dialogOpen, setDialogOpen] = useState(false);
 
+    // ConfirmAndMutateProvider needs a live-entity feed to flip the
+    // concurrent-mutation banner. Adapt the production EntityStoreFactory
+    // when present, fall back to a no-op bus otherwise so PagesRouter
+    // stays mountable in trees that haven't wired the watch infrastructure
+    // (legacy tests; bootstrap before informer factory).
+    const entityStoreFactory = useEntityStoreFactoryOptional();
+    const entityBus = useMemo<ConfirmAndMutateEntityBus>(
+      () => (entityStoreFactory ? makeEntityBusFromStore(entityStoreFactory) : NULL_BUS),
+      [entityStoreFactory],
+    );
+
     const handleConfirm = useCallback(() => {
       store.pop();
       setDialogOpen(false);
@@ -119,24 +146,35 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
     // that renders `height="100%"` (RunningView, advanced/boardroom) can't
     // push the HintBar off-screen. Breadcrumb and HintBar are auto-height,
     // page content gets flexGrow=1 to fill the middle.
+    //
+    // ConfirmAndMutateProvider wraps the children so any screen below can
+    // invoke `useConfirmAndMutate()` for dangerous mutations. The modal
+    // (rendered by the provider itself) overlays at the same depth as the
+    // dirty-pop dialog — both sit above the column layout.
     return (
-      <box flexDirection="column" width="100%" height="100%">
-        <box flexShrink={0}>
-          <BreadcrumbBar
-            stack={snapshot}
-            presetName={presetName}
-            sessionId={sessionId}
-            width={width}
+      <ConfirmAndMutateProvider entityBus={entityBus}>
+        <box flexDirection="column" width="100%" height="100%">
+          <box flexShrink={0}>
+            <BreadcrumbBar
+              stack={snapshot}
+              presetName={presetName}
+              sessionId={sessionId}
+              width={width}
+            />
+          </box>
+          <box flexGrow={1} flexShrink={1}>
+            {React.createElement(Component, { page: top })}
+          </box>
+          <box flexShrink={0}>
+            <HintBar hints={hints} width={width} />
+          </box>
+          <ConfirmPopDialog
+            visible={dialogOpen}
+            onConfirm={handleConfirm}
+            onCancel={handleCancel}
           />
         </box>
-        <box flexGrow={1} flexShrink={1}>
-          {React.createElement(Component, { page: top })}
-        </box>
-        <box flexShrink={0}>
-          <HintBar hints={hints} width={width} />
-        </box>
-        <ConfirmPopDialog visible={dialogOpen} onConfirm={handleConfirm} onCancel={handleCancel} />
-      </box>
+      </ConfirmAndMutateProvider>
     );
   },
 );
