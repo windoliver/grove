@@ -132,7 +132,6 @@ let captured: CapturedScreens = {};
 // keystrokes (registered by the ancestor provider) reach it alongside
 // ScreenManager / PagesRouter handlers (registered by descendants).
 const keyboardHandlers: KeyboardHandler[] = [];
-let keyboardHandler: KeyboardHandler | undefined;
 let rendererDestroy = mock(() => undefined);
 
 mock.module("@opentui/react", () => ({
@@ -143,7 +142,6 @@ mock.module("@opentui/react", () => ({
   useKeyboard: (handler: KeyboardHandler): void => {
     React.useEffect(() => {
       keyboardHandlers.push(handler);
-      keyboardHandler = handler;
       (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
       return () => {
         const idx = keyboardHandlers.indexOf(handler);
@@ -271,7 +269,6 @@ const mountedRenderers: TestRenderer.ReactTestRenderer[] = [];
 
 beforeEach(() => {
   captured = {};
-  keyboardHandler = undefined;
   keyboardHandlers.length = 0;
   rendererDestroy = mock(() => undefined);
 });
