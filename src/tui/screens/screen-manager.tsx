@@ -167,9 +167,13 @@ async function archiveSessionForCompensation(
       if (status !== 409) break;
       const conflictRv = (err as { current?: { resourceVersion?: string } } | undefined)?.current
         ?.resourceVersion;
-      // Prefer the server-supplied current RV; if absent, fall through
-      // to getSession again on the next iteration.
-      nextIfMatch = typeof conflictRv === "string" ? conflictRv : undefined;
+      // C6 (#304) round-7: only trust digit-only RV strings. The HTTP
+      // helper synthesizes "?" when the 409 body is unparsable; pinning
+      // the retry to that sentinel would defeat re-reading. For any
+      // non-numeric value, clear nextIfMatch so the next iteration
+      // falls back to getSession.
+      nextIfMatch =
+        typeof conflictRv === "string" && /^\d+$/.test(conflictRv) ? conflictRv : undefined;
     }
   }
   debugLog(
