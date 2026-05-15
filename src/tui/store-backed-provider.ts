@@ -9,7 +9,6 @@
  */
 
 import type { AgentTaskView } from "../core/agent-task.js";
-import { expectCasOk } from "../core/cas.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
@@ -69,6 +68,7 @@ import {
   contributionDetailFromStore,
   dagFromStore,
   diffArtifactsFromBuffers,
+  HttpConflictError,
   outcomeStatsFromStore,
 } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
@@ -596,7 +596,17 @@ export abstract class StoreBackedProvider
     const result = await this.goalSession.setGoal(goal, acceptance, "tui-operator", {
       ifMatch: token.ifMatch,
     });
-    return expectCasOk(result, "TuiGoalProvider.setGoal");
+    if (result.kind === "rv-mismatch") {
+      // C6 (#304): emit a structured conflict so confirmAndMutate's
+      // parseConflict matches and the modal enters the retry path with
+      // the fresh RV. Generic Error from expectCasOk would lose `current`
+      // and short-circuit the retry as a generic failure.
+      throw new HttpConflictError(
+        `setGoal: stale ifMatch=${token.ifMatch}; current rv=${result.current.resourceVersion}`,
+        result.current,
+      );
+    }
+    return result.view;
   }
 
   // ---------------------------------------------------------------------------
@@ -636,7 +646,14 @@ export abstract class StoreBackedProvider
       throw new Error("Session management is not supported by this provider");
     }
     const result = await this.goalSession.archiveSession(token.id, { ifMatch: token.ifMatch });
-    expectCasOk(result, `TuiSessionProvider.archiveSession(${token.id})`);
+    if (result.kind === "rv-mismatch") {
+      // C6 (#304): structured conflict so confirmAndMutate's parseConflict
+      // matches and the modal retries with the fresh RV.
+      throw new HttpConflictError(
+        `archiveSession(${token.id}): stale ifMatch=${token.ifMatch}; current rv=${result.current.resourceVersion}`,
+        result.current,
+      );
+    }
   }
 
   /** Associate a contribution with a session. Throws when no store is configured. */

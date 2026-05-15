@@ -1180,20 +1180,25 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
             dangerous: true,
             mutation: (token) => provider.archiveSession(token),
           });
-          if (!result.ok && result.reason === "cancelled") {
-            // Operator cancelled — stay on the running screen.
+          if (result.ok) {
+            onNavigateBackToMain();
             return;
           }
-          // ok | max-retries → navigate back regardless. max-retries means
-          // the server kept rejecting our RV; the operator already saw the
-          // banner and chose to give up, so don't strand them on a screen
-          // they explicitly tried to leave.
-          onNavigateBackToMain();
+          // C6 (#304) review-loop: navigate ONLY on ok. cancelled keeps
+          // operator on the running screen by their choice; max-retries
+          // means server kept rejecting our RV — the archive did NOT
+          // happen, so silently navigating away abandons an active
+          // session in an unexpected state. Surface the failure (the
+          // running screen continues to render with its existing flash
+          // bar) and let the operator retry or quit explicitly.
+          if (result.reason === "max-retries") {
+            // TODO: surface a flash message; for now the modal closure
+            // itself is the operator's signal that retry was exhausted.
+          }
         } catch {
-          // Non-409 failure (network, 5xx). Best-effort: still navigate so
-          // the operator isn't trapped on the running screen. Server-side
-          // archive can be retried from preset-select if needed.
-          onNavigateBackToMain();
+          // Non-409 failure (network, 5xx). Stay on the running screen
+          // so the operator can retry; navigating away would conceal
+          // the failure and leave the session unarchived.
         }
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);

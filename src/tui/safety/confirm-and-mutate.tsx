@@ -146,6 +146,25 @@ type TriggerFn = <K extends WatchKind, R>(
 const ConfirmAndMutateContext = createContext<TriggerFn | null>(null);
 ConfirmAndMutateContext.displayName = "ConfirmAndMutateContext";
 
+// C6 (#304): separate context for the "is the modal currently open?"
+// signal. Handlers that bind y/n/escape elsewhere (permission detection,
+// running-screen shortcuts) read this and defer their handling while
+// the modal is open so confirm/cancel keys don't double-fire.
+const ConfirmAndMutateOpenContext = createContext<boolean>(false);
+ConfirmAndMutateOpenContext.displayName = "ConfirmAndMutateOpenContext";
+
+/**
+ * Returns true while a confirmAndMutate modal is on screen.
+ *
+ * Other useKeyboard handlers in the TUI MUST consult this hook and
+ * defer their y/n/escape handling while it returns true — otherwise a
+ * confirm/cancel keystroke also approves a permission prompt or fires
+ * an unrelated screen shortcut.
+ */
+export function useConfirmAndMutateOpen(): boolean {
+  return useContext(ConfirmAndMutateOpenContext);
+}
+
 /**
  * Returns a function the caller invokes for each dangerous mutation:
  *
@@ -246,6 +265,19 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
     <K extends WatchKind, R>(req: ConfirmAndMutateRequest<K, R>) => {
       return new Promise<ConfirmAndMutateResult<R>>((resolve, reject) => {
         const wideReq = req as unknown as ConfirmAndMutateRequest<WatchKind, unknown>;
+        // C6 (#304) re-entry guard: if a prior request is still pending
+        // (modal already open or mid-submit), reject the prior promise
+        // before installing the new one. Without this, the prior caller's
+        // workflow hangs forever and the prior modal silently disappears.
+        // This is rare (operator would have to trigger two flows from
+        // separate handlers in the same tick) but the silent leak is
+        // worse than the loud rejection.
+        const prior = activeRef.current;
+        if (prior) {
+          prior.reject(
+            new Error("ConfirmAndMutateProvider: pre-empted by a new trigger() before completion"),
+          );
+        }
         activeRef.current = {
           request: wideReq,
           resolve: resolve as (r: ConfirmAndMutateResult<unknown>) => void,
@@ -280,9 +312,16 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
     // useCallback captures the initial state, so we must indirect through
     // a ref to see post-409 RV bumps.
     const current = stateRef.current;
+    if (current.submitting) return; // re-entrancy guard for double-y races
     const snap = current.snapshot;
     const retryCount = current.retryCount;
     if (!snap) return;
+    // C6 (#304): set submitting=true SYNCHRONOUSLY in the ref before
+    // the async setState commits. The keyboard handler reads from the
+    // ref, so without this a key-repeat or fast double-y can re-enter
+    // submit() with the same snapshot/token and duplicate the dangerous
+    // mutation call. setState still queues the visible re-render.
+    stateRef.current = { ...current, submitting: true };
     setState((s) => ({ ...s, submitting: true }));
     const token = mintDangerousToken(snap.kind, snap.id, snap.resourceVersion);
     try {
@@ -403,15 +442,17 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
 
   return (
     <ConfirmAndMutateContext.Provider value={trigger}>
-      {children}
-      {state.request && state.snapshot && (
-        <ConfirmAndMutateModal
-          message={state.request.message}
-          snapshot={state.snapshot}
-          banner={state.banner}
-          liveResourceVersion={state.liveResourceVersion}
-        />
-      )}
+      <ConfirmAndMutateOpenContext.Provider value={state.request !== null}>
+        {children}
+        {state.request && state.snapshot && (
+          <ConfirmAndMutateModal
+            message={state.request.message}
+            snapshot={state.snapshot}
+            banner={state.banner}
+            liveResourceVersion={state.liveResourceVersion}
+          />
+        )}
+      </ConfirmAndMutateOpenContext.Provider>
     </ConfirmAndMutateContext.Provider>
   );
 }
