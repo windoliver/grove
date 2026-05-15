@@ -97,10 +97,12 @@ console.log(`[setup] workDir=${workDir}`);
 let driverPathToCleanup: string | undefined;
 
 function cleanup() {
-  try {
-    execSync(`tmux -L ${SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" });
-  } catch {
-    /* already dead */
+  if (!KEEP) {
+    try {
+      execSync(`tmux -L ${SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" });
+    } catch {
+      /* already dead */
+    }
   }
   if (driverPathToCleanup && existsSync(driverPathToCleanup) && !KEEP) {
     try {
