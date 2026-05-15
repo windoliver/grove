@@ -1018,6 +1018,7 @@ export function App({
               parentAgentId={paletteParentId}
               items={paletteItems}
               query={ks.paletteQuery}
+              adoptContext={ks.adoptContext}
             />
           </box>
         )}

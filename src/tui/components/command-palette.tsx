@@ -134,6 +134,8 @@ export interface CommandPaletteProps {
   readonly items?: readonly PaletteItem[] | undefined;
   /** Current fuzzy filter query (controlled by parent). */
   readonly query?: string | undefined;
+  /** When set, palette is being opened to adopt a contribution. */
+  readonly adoptContext?: { readonly targetCid: string; readonly summary: string } | undefined;
 }
 
 /** An agent profile loaded from .grove/agents.json. */
@@ -283,6 +285,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     activeSpawnCounts: _activeSpawnCounts,
     items: externalItems,
     query,
+    adoptContext,
   }: CommandPaletteProps): React.ReactNode {
     const hasSpawnRuntime = tmux !== undefined || onSpawn !== undefined;
 
@@ -353,6 +356,9 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>
         <box flexDirection="row">
           <text color={theme.focus}>Command Palette</text>
+          {adoptContext ? (
+            <text color={theme.compare}>{` Adopt: ${adoptContext.targetCid.slice(0, 12)}…`}</text>
+          ) : null}
           {q ? (
             <text color={theme.secondary}> — filter: </text>
           ) : (
