@@ -169,6 +169,24 @@ mock.module("@opentui/react", () => ({
   extend: (_components: Record<string, unknown>): void => undefined,
 }));
 
+// C6 (#304): mock toast directly so its module-level extend() call never
+// fires (bun 1.3.14 in CI evaluates @opentui-ui/toast's `extend({ toaster })`
+// before mock.module("@opentui/react") above can intercept the import).
+mock.module("@opentui-ui/toast/react", () => ({
+  toast: {
+    error: (): void => undefined,
+    success: (): void => undefined,
+    warning: (): void => undefined,
+    info: (): void => undefined,
+    loading: (): string => "stub",
+    promise: (): unknown => undefined,
+    dismiss: (): void => undefined,
+    custom: (): void => undefined,
+  },
+  Toaster: (): null => null,
+  useToasts: (): unknown[] => [],
+}));
+
 mock.module("../app.js", () => ({
   App: (): null => null,
   ADVANCED_HINTS: Object.freeze([
