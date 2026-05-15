@@ -25,7 +25,7 @@ import {
   writeClientKey,
   writeNamespace,
 } from "../core/project-key.js";
-import { TmuxRuntime } from "../core/tmux-runtime.js";
+import { TaskController } from "../core/task-controller.js";
 import type { WatchEntity, WatchKind } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
@@ -39,6 +39,7 @@ import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
+import { createServerAgentRuntime, taskControllerEnabled } from "./task-controller-wiring.js";
 import { resolveWatchHubConfig } from "./watch-hub-config.js";
 import { createWsHandler } from "./ws-handler.js";
 
@@ -406,6 +407,29 @@ const deps: ServerDeps = {
 
 const app = createApp(deps, registry);
 
+let sharedAgentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
+const getSharedAgentRuntime = async (): Promise<
+  import("../core/agent-runtime.js").AgentRuntime
+> => {
+  sharedAgentRuntime ??= await createServerAgentRuntime();
+  return sharedAgentRuntime;
+};
+
+let taskController: TaskController | undefined;
+if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
+  taskController = new TaskController({
+    taskStore: runtime.agentTaskStore,
+    runtime: await getSharedAgentRuntime(),
+    onError(error, taskId) {
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
+    },
+  });
+  await taskController.resync();
+  taskController.start();
+  console.log("task-controller enabled");
+}
+
 // ---------------------------------------------------------------------------
 // Background sweep reconciler
 // ---------------------------------------------------------------------------
@@ -483,19 +507,7 @@ let sessionService: SessionService | undefined;
 let wsHandler: ReturnType<typeof createWsHandler> | undefined;
 
 if (runtime.contract?.topology !== undefined) {
-  // Create an agent runtime via selectRuntime (honors GROVE_RUNTIME env),
-  // fall back to tmux when neither acp nor acpx is available
-  let agentRuntime: import("../core/agent-runtime.js").AgentRuntime;
-  {
-    const { selectRuntime } = await import("../core/select-runtime.js");
-    const picked = selectRuntime();
-    if (await picked.isAvailable()) {
-      agentRuntime = picked;
-    } else {
-      agentRuntime = new TmuxRuntime();
-    }
-  }
-
+  const agentRuntime = await getSharedAgentRuntime();
   const eventBus = new LocalEventBus();
 
   sessionService = new SessionService({
@@ -618,6 +630,7 @@ async function shutdown(): Promise<void> {
   if (sweepReconciler) {
     sweepReconciler.stop();
   }
+  await taskController?.stop();
   if (sessionService) {
     sessionService.destroy();
   }
