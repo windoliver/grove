@@ -109,17 +109,20 @@ Options:
       if (identity.portHeldBy === undefined) {
         console.log(`${child.name} (PID ${child.pid}) already stopped`);
       } else {
-        // Round-9: don't write the DEAD PID back as a survivor — the next
-        // `grove down` would just hit the same dead-pid branch in a loop.
-        // Persist the actual current holder instead so future runs target
-        // the right process (with --force, since we can't be sure the
-        // current holder belongs to this grove project).
-        console.warn(
-          `${child.name} recorded PID ${child.pid} exited, but port is now ` +
-            `held by PID ${identity.portHeldBy} — updating pidfile to the ` +
-            `current holder. Re-run with --force to stop it.`,
+        // Round-10: the previous run promoted the current port holder
+        // into a normal `child` entry, which the next `grove down` would
+        // then trust and signal without --force — turning a stale pidfile
+        // into authority to kill an unrelated process. Do NOT persist.
+        // Drop the dead entry, leave the unverified holder alone, and
+        // emit a clear manual-cleanup instruction.
+        console.error(
+          `${child.name}: recorded PID ${child.pid} is dead, but expected port ` +
+            `is now held by an unverified PID ${identity.portHeldBy}. Grove cannot ` +
+            `prove that listener belongs to this project. Investigate manually:\n` +
+            `  lsof -iTCP -sTCP:LISTEN -Pn -p ${identity.portHeldBy}\n` +
+            `If it really is a stale grove service, stop it with:\n` +
+            `  kill ${identity.portHeldBy}`,
         );
-        survivors.push({ name: child.name, pid: identity.portHeldBy });
       }
       continue;
     }
