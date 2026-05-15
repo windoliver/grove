@@ -484,6 +484,29 @@ distribution is tracked in
 into your global Claude/Codex skill directories for manual assistant use
 outside a Grove-provisioned workspace.
 
+### Runtime skill requests
+
+Bootstrap `skills:` remain the default way to give agents capabilities. A Grove
+can also opt into runtime skill requests for stdio MCP agents by adding a
+`runtimeSkills` allowlist to `.grove/grove.json`:
+
+```json
+{
+  "runtimeSkills": {
+    "mode": "role-allowlist",
+    "roles": {
+      "coder": ["grove", "review"]
+    }
+  }
+}
+```
+
+An allowed agent can call `grove_request_skill({ "skillName": "review" })`.
+Grove installs the skill into the live workspace, returns bounded `SKILL.md`
+content for immediate use, and appends the skill to the session's effective
+role skills for reattach or restart. HTTP MCP does not expose this mutation
+tool.
+
 ### Environment Variables
 
 | Variable | Purpose | Default |

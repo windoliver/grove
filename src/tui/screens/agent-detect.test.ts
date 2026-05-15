@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { detectCli } from "./agent-cli-detect.js";
 import { matchesKey } from "./key-match.js";
+
+const agentCliDetectModulePath = "./agent-cli-detect.js?agent-detect-availability";
+const { detectCli } = (await import(
+  agentCliDetectModulePath
+)) as typeof import("./agent-cli-detect.js");
 
 describe("AgentDetect CLI availability", () => {
   test("detects bundled ACP adapters even without shell shims", () => {
@@ -9,7 +13,11 @@ describe("AgentDetect CLI availability", () => {
   });
 
   test("returns false for unsupported missing commands", () => {
-    expect(detectCli("definitely-not-a-grove-agent")).toBe(false);
+    expect(detectCli("definitely-not-a-grove-agent", { which: () => null })).toBe(false);
+  });
+
+  test("uses injected command lookup for deterministic unsupported command tests", () => {
+    expect(detectCli("sh", { which: () => null })).toBe(false);
   });
 });
 
