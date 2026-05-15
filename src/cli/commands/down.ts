@@ -86,7 +86,7 @@ Options:
 
   let stopped = 0;
   const targetedPids: number[] = [];
-  const survivors: typeof pidData.children = [];
+  const survivors: { name: string; pid: number }[] = [];
 
   for (const child of pidData.children) {
     // Liveness + port probe in one go (round-8): even when the recorded
