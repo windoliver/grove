@@ -191,6 +191,20 @@ export interface GossipTransport {
   exchange(peer: PeerInfo, message: GossipMessage): Promise<GossipMessage>;
   /** Send a CYCLON shuffle request to a peer. Returns the shuffle response. */
   shuffle(peer: PeerInfo, request: ShuffleRequest): Promise<ShuffleResponse>;
+  /**
+   * Fetch a contribution manifest from a peer by CID. Returns undefined when the
+   * peer responds 404. Throws PeerUnreachableError / GossipTimeoutError for
+   * network failures.
+   */
+  fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined>;
+
+  /**
+   * Fetch raw artifact bytes from a peer's CAS by content hash. Returns
+   * undefined when the peer responds 404. Throws PeerUnreachableError /
+   * GossipTimeoutError for network failures. Callers MUST re-hash the returned
+   * bytes and compare to the requested hash before storing them locally.
+   */
+  fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined>;
 }
 
 /** Protocol for the gossip service. */

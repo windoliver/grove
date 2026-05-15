@@ -54,6 +54,12 @@ class NoOpTransport implements GossipTransport {
   async shuffle(_peer: PeerInfo, _request: ShuffleRequest): Promise<ShuffleResponse> {
     return { offered: [] };
   }
+  async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
+    return undefined;
+  }
+  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+    return undefined;
+  }
 }
 
 class CapturingGossipService implements GossipService {

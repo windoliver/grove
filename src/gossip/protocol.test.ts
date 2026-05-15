@@ -56,6 +56,14 @@ class MockGossipTransport implements GossipTransport {
     if (this.shuffleResponse) return this.shuffleResponse;
     return { offered: [] };
   }
+
+  async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
+    return undefined;
+  }
+
+  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+    return undefined;
+  }
 }
 
 /** Mock frontier calculator returning configurable frontier data. */

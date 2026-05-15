@@ -315,6 +315,99 @@ describe("HttpGossipTransport", () => {
       await expect(transport.shuffle(peer, request)).rejects.toThrow(/private\/reserved/);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // fetchContribution()
+  // -----------------------------------------------------------------------
+
+  describe("fetchContribution()", () => {
+    it("GETs /api/contributions/:cid and returns the JSON body", async () => {
+      const cid = "blake3:" + "a".repeat(64);
+      const manifest = { cid, summary: "hi" };
+      const server = Bun.serve({
+        port: 0,
+        fetch: (req) => {
+          const url = new URL(req.url);
+          // Hono auto-decodes path params; mirror that here so the test
+          // matches whether the transport percent-encodes the CID or not.
+          if (decodeURIComponent(url.pathname) === `/api/contributions/${cid}`) {
+            return new Response(JSON.stringify(manifest), {
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      });
+      try {
+        const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+        const peer: PeerInfo = {
+          peerId: "p",
+          address: `http://localhost:${server.port}`,
+          age: 0,
+          lastSeen: new Date().toISOString(),
+        };
+        const result = await transport.fetchContribution(peer, cid);
+        expect(result).toEqual(manifest);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns undefined on 404", async () => {
+      const server = Bun.serve({ port: 0, fetch: () => new Response("x", { status: 404 }) });
+      try {
+        const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+        const peer: PeerInfo = {
+          peerId: "p",
+          address: `http://localhost:${server.port}`,
+          age: 0,
+          lastSeen: new Date().toISOString(),
+        };
+        expect(await transport.fetchContribution(peer, "blake3:" + "0".repeat(64))).toBeUndefined();
+      } finally {
+        server.stop();
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // fetchArtifact()
+  // -----------------------------------------------------------------------
+
+  describe("fetchArtifact()", () => {
+    it("GETs /api/cas/:hash and returns the raw bytes", async () => {
+      const hash = "blake3:" + "f".repeat(64);
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      const server = Bun.serve({
+        port: 0,
+        fetch: (req) => {
+          const url = new URL(req.url);
+          // Hono auto-decodes path params; mirror that here so the test
+          // matches whether the transport percent-encodes the hash or not.
+          if (decodeURIComponent(url.pathname) === `/api/cas/${hash}`) {
+            return new Response(bytes, {
+              headers: { "Content-Type": "application/octet-stream" },
+            });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      });
+      try {
+        const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+        const peer: PeerInfo = {
+          peerId: "p",
+          address: `http://localhost:${server.port}`,
+          age: 0,
+          lastSeen: new Date().toISOString(),
+        };
+        const result = await transport.fetchArtifact(peer, hash);
+        expect(result).toBeInstanceOf(Uint8Array);
+        expect([...(result as Uint8Array)]).toEqual([1, 2, 3, 4]);
+      } finally {
+        server.stop();
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

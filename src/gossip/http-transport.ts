@@ -346,6 +346,18 @@ export class HttpGossipTransport implements GossipTransport {
     return response;
   }
 
+  async fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined> {
+    const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}`;
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    return this.getJson<unknown>(validated, peer.peerId);
+  }
+
+  async fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined> {
+    const url = `${peer.address}/api/cas/${encodeURIComponent(contentHash)}`;
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    return this.getBytes(validated, peer.peerId);
+  }
+
   private async post<T>(validated: ValidatedUrl, body: unknown, peerId: string): Promise<T> {
     const { pinnedUrl, hostHeader } = validated;
     try {
@@ -386,6 +398,81 @@ export class HttpGossipTransport implements GossipTransport {
       }
 
       // Network errors (connection refused, DNS failure, etc.)
+      throw new PeerUnreachableError({
+        peerId,
+        address: pinnedUrl,
+        cause: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+
+  private async getJson<T>(validated: ValidatedUrl, peerId: string): Promise<T | undefined> {
+    const { pinnedUrl, hostHeader } = validated;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await fetch(pinnedUrl, {
+          method: "GET",
+          headers: { Host: hostHeader, Accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (response.status === 404) return undefined;
+        if (!response.ok) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
+          });
+        }
+        return (await response.json()) as T;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      if (err instanceof PeerUnreachableError || err instanceof GossipTimeoutError) throw err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new GossipTimeoutError({ peerId, timeoutMs: this.timeoutMs });
+      }
+      throw new PeerUnreachableError({
+        peerId,
+        address: pinnedUrl,
+        cause: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+
+  private async getBytes(
+    validated: ValidatedUrl,
+    peerId: string,
+  ): Promise<Uint8Array | undefined> {
+    const { pinnedUrl, hostHeader } = validated;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await fetch(pinnedUrl, {
+          method: "GET",
+          headers: { Host: hostHeader },
+          signal: controller.signal,
+        });
+        if (response.status === 404) return undefined;
+        if (!response.ok) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
+          });
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      if (err instanceof PeerUnreachableError || err instanceof GossipTimeoutError) throw err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new GossipTimeoutError({ peerId, timeoutMs: this.timeoutMs });
+      }
       throw new PeerUnreachableError({
         peerId,
         address: pinnedUrl,

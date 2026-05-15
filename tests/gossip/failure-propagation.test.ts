@@ -106,6 +106,14 @@ class MockGossipTransport implements GossipTransport {
     // Return an empty shuffle response
     return { offered: [] };
   }
+
+  async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
+    return undefined;
+  }
+
+  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+    return undefined;
+  }
 }
 
 /** Mock frontier calculator that returns an empty frontier. */
