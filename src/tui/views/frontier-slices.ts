@@ -68,6 +68,28 @@ const SCALAR_BADGES: Record<string, (entry: FrontierEntry) => string> = {
   reproduction: reproductionBadge,
 };
 
+/**
+ * Structural equality across slice arrays. Compares slice key + entry count
+ * + (cid, value) tuples in order. summary deltas don't trigger re-render
+ * (purely cosmetic, server-driven).
+ */
+export function slicesEqual(a: readonly FrontierSlice[], b: readonly FrontierSlice[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const sa = a[i] as FrontierSlice;
+    const sb = b[i] as FrontierSlice;
+    if (sa.key !== sb.key) return false;
+    if (sa.entries.length !== sb.entries.length) return false;
+    for (let j = 0; j < sa.entries.length; j++) {
+      const ea = sa.entries[j] as FrontierEntry;
+      const eb = sb.entries[j] as FrontierEntry;
+      if (ea.cid !== eb.cid || ea.value !== eb.value) return false;
+    }
+  }
+  return true;
+}
+
 /** Project a Frontier into ordered, non-empty slices. */
 export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   const slices: FrontierSlice[] = [];

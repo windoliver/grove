@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Frontier } from "../../core/frontier.js";
-import { toSlices } from "./frontier-slices.js";
+import { slicesEqual, toSlices } from "./frontier-slices.js";
 
 function makeFrontier(partial: Partial<Frontier> = {}): Frontier {
   return {
@@ -136,5 +136,67 @@ describe("toSlices — formatBadge per signal", () => {
       makeFrontier({ byMetric: { rouge_l: [{ cid: "m", value: 0.812345, summary: "" }] } }),
     );
     expect(slices[0]?.formatBadge(slices[0].entries[0]!)).toBe("0.812 rouge_l");
+  });
+});
+
+describe("slicesEqual", () => {
+  function fixture() {
+    return makeFrontier({
+      byAdoption: [{ cid: "a", value: 5, summary: "s" }],
+      byMetric: { acc: [{ cid: "m", value: 0.9, summary: "ms" }] },
+    });
+  }
+
+  test("same array reference → true", () => {
+    const slices = toSlices(fixture());
+    expect(slicesEqual(slices, slices)).toBe(true);
+  });
+
+  test("equal content, different references → true", () => {
+    expect(slicesEqual(toSlices(fixture()), toSlices(fixture()))).toBe(true);
+  });
+
+  test("different lengths → false", () => {
+    const a = toSlices(fixture());
+    const b = toSlices(makeFrontier({ byAdoption: [{ cid: "a", value: 5, summary: "s" }] }));
+    expect(slicesEqual(a, b)).toBe(false);
+  });
+
+  test("different value → false", () => {
+    const a = toSlices(makeFrontier({ byAdoption: [{ cid: "a", value: 5, summary: "" }] }));
+    const b = toSlices(makeFrontier({ byAdoption: [{ cid: "a", value: 6, summary: "" }] }));
+    expect(slicesEqual(a, b)).toBe(false);
+  });
+
+  test("different cid → false", () => {
+    const a = toSlices(makeFrontier({ byAdoption: [{ cid: "a", value: 5, summary: "" }] }));
+    const b = toSlices(makeFrontier({ byAdoption: [{ cid: "b", value: 5, summary: "" }] }));
+    expect(slicesEqual(a, b)).toBe(false);
+  });
+
+  test("different slice key → false", () => {
+    const a = toSlices(makeFrontier({ byAdoption: [{ cid: "x", value: 1, summary: "" }] }));
+    const b = toSlices(makeFrontier({ byRecency: [{ cid: "x", value: 1, summary: "" }] }));
+    expect(slicesEqual(a, b)).toBe(false);
+  });
+
+  test("different entry order → false", () => {
+    const a = toSlices(
+      makeFrontier({
+        byAdoption: [
+          { cid: "x", value: 5, summary: "" },
+          { cid: "y", value: 4, summary: "" },
+        ],
+      }),
+    );
+    const b = toSlices(
+      makeFrontier({
+        byAdoption: [
+          { cid: "y", value: 4, summary: "" },
+          { cid: "x", value: 5, summary: "" },
+        ],
+      }),
+    );
+    expect(slicesEqual(a, b)).toBe(false);
   });
 });
