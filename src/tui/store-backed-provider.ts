@@ -581,7 +581,8 @@ export abstract class StoreBackedProvider
     if (!this.goalSession) {
       throw new Error("Goal management is not supported by this provider");
     }
-    return this.goalSession.setGoal(goal, acceptance, "tui-operator");
+    const result = await this.goalSession.setGoal(goal, acceptance, "tui-operator");
+    return expectCasOk(result, "TuiGoalProvider.setGoal");
   }
 
   // ---------------------------------------------------------------------------

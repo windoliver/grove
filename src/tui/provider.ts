@@ -207,6 +207,12 @@ export interface GoalData {
   readonly status: "active" | "completed" | "abandoned";
   readonly setAt: string;
   readonly setBy: string;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case CAS callers should treat the entity as version "1".
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 // Session types — re-exported from core for convenience.

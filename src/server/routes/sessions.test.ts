@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
 import { type CasMutationResult, type CasOpts, casOk } from "../../core/cas.js";
-// casOk is still used below (delete blocker stub).
 import type { GroveContract } from "../../core/contract.js";
 import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { Finalizer } from "../../core/lifecycle-metadata.js";
@@ -33,14 +32,19 @@ class TestGoalSessionStore implements GoalSessionStore {
     return undefined;
   }
 
-  async setGoal(goal: string, acceptance: readonly string[], setBy: string): Promise<GoalData> {
-    return {
+  async setGoal(
+    goal: string,
+    acceptance: readonly string[],
+    setBy: string,
+  ): Promise<CasMutationResult<GoalData>> {
+    return casOk({
       goal,
       acceptance,
       status: "active",
       setAt: new Date().toISOString(),
       setBy,
-    };
+      resourceVersion: 1,
+    });
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {

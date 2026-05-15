@@ -10,6 +10,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { expectCasOk } from "../../core/cas.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
 
@@ -87,7 +88,8 @@ export function registerGoalTools(server: McpServer, deps: McpDeps): void {
         return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
       }
 
-      const result = await store.setGoal(args.goal, args.acceptance, "mcp");
+      const setResult = await store.setGoal(args.goal, args.acceptance, "mcp");
+      const result = expectCasOk(setResult, "mcp grove_set_goal");
       return {
         content: [
           {

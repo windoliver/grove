@@ -347,6 +347,8 @@ interface GoalRow {
   status: string;
   set_at: string;
   set_by: string;
+  /** C6 (#304): optimistic-concurrency resource version, added by v16 migration. */
+  resource_version: number;
 }
 
 interface SessionRow {
@@ -402,8 +404,21 @@ export interface GoalSessionStore {
   /** Get the current goal (single-row table). */
   getGoal(): Promise<GoalData | undefined>;
 
-  /** Set (upsert) the current goal. */
-  setGoal(goal: string, acceptance: readonly string[], setBy: string): Promise<GoalData>;
+  /**
+   * Set (upsert) the current goal.
+   *
+   * C6 (#304): When `opts.ifMatch` is supplied AND a goal row already exists,
+   * the store performs a compare-and-set against the persisted goal
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing. The insert (no-existing-row) path bypasses CAS — there
+   * is nothing to compare against yet.
+   */
+  setGoal(
+    goal: string,
+    acceptance: readonly string[],
+    setBy: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<GoalData>>;
 
   /** List sessions, optionally filtered by status and/or preset. */
   listSessions(query?: SessionQuery): Promise<readonly Session[]>;
@@ -496,6 +511,7 @@ function rowToGoalData(row: GoalRow): GoalData {
     status: row.status as GoalData["status"],
     setAt: row.set_at,
     setBy: row.set_by,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -636,7 +652,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
   // Prepared statements (lazy init)
   private stmtGetGoal: Statement | undefined;
-  private stmtUpsertGoal: Statement | undefined;
+  // NOTE: stmtUpsertGoal was removed in C6 (#304) — setGoal now branches on
+  // existing-row presence to perform CAS, so a single upsert statement no
+  // longer captures the path semantics.
   private stmtGetSession: Statement | undefined;
   private stmtInsertSession: Statement | undefined;
   // NOTE: stmtArchiveSession was removed in C6 (#304) — archiveSession is now
@@ -671,33 +689,83 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     return row !== null ? rowToGoalData(row) : undefined;
   };
 
-  /** Set (upsert) the current goal. Replaces any existing goal. */
+  /**
+   * Set (upsert) the current goal. Replaces any existing goal.
+   *
+   * C6 (#304): When `opts.ifMatch` is supplied AND a goal row already exists,
+   * the store compares it to the persisted `resource_version`. On match the
+   * UPDATE bumps `resource_version + 1` atomically; on mismatch nothing is
+   * written and `{ kind: "rv-mismatch", current }` is returned. The
+   * no-existing-row INSERT path bypasses CAS — there is nothing to compare
+   * against yet.
+   */
   setGoal = async (
     goal: string,
     acceptance: readonly string[],
     setBy: string,
-  ): Promise<GoalData> => {
-    this.stmtUpsertGoal ??= this.db.prepare(`
-      INSERT INTO goals (id, goal, acceptance, status, set_at, set_by)
-      VALUES (1, ?, ?, 'active', ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        goal = excluded.goal,
-        acceptance = excluded.acceptance,
-        status = excluded.status,
-        set_at = excluded.set_at,
-        set_by = excluded.set_by
-    `);
-
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<GoalData>> => {
     const setAt = new Date().toISOString();
     const acceptanceJson = JSON.stringify(acceptance);
-    this.stmtUpsertGoal.run(goal, acceptanceJson, setAt, setBy);
+
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let nextRv = 1;
+
+    const tx = this.db.transaction(() => {
+      this.stmtGetGoal ??= this.db.prepare("SELECT * FROM goals WHERE id = 1");
+      const existing = this.stmtGetGoal.get() as GoalRow | null;
+
+      if (existing === null) {
+        // Insert path — no existing row to CAS against. INSERT will set
+        // resource_version via the DDL DEFAULT 1.
+        this.db
+          .prepare(
+            `INSERT INTO goals (id, goal, acceptance, status, set_at, set_by)
+             VALUES (1, ?, ?, 'active', ?, ?)`,
+          )
+          .run(goal, acceptanceJson, setAt, setBy);
+        nextRv = 1;
+        return;
+      }
+
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existing.resource_version ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            // Goals have no separate generation column; surface RV for both.
+            generation: existing.resource_version ?? 1,
+          };
+          return;
+        }
+      }
+
+      nextRv = (existing.resource_version ?? 1) + 1;
+      this.db
+        .prepare(
+          `UPDATE goals
+           SET goal = ?, acceptance = ?, status = 'active', set_at = ?, set_by = ?,
+               resource_version = ?
+           WHERE id = 1`,
+        )
+        .run(goal, acceptanceJson, setAt, setBy, nextRv);
+    });
+    tx();
+
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
 
     return {
-      goal,
-      acceptance,
-      status: "active",
-      setAt,
-      setBy,
+      kind: "ok",
+      view: {
+        goal,
+        acceptance,
+        status: "active",
+        setAt,
+        setBy,
+        resourceVersion: nextRv,
+      },
     };
   };
 

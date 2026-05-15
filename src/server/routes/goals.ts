@@ -7,6 +7,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { expectCasOk } from "../../core/cas.js";
 import type { ServerEnv } from "../deps.js";
 import { notConfigured, readJsonBody } from "./shared.js";
 
@@ -40,7 +41,8 @@ goals.put("/goal", async (c) => {
   }
 
   const { goal, acceptance, setBy } = parsed.data;
-  const result = await goalSessionStore.setGoal(goal, acceptance, setBy ?? "operator");
+  const goalResult = await goalSessionStore.setGoal(goal, acceptance, setBy ?? "operator");
+  const result = expectCasOk(goalResult, "PUT /api/session/goal");
   return c.json(result);
 });
 
