@@ -121,14 +121,52 @@ export interface ScreenManagerProps {
 // means the work was already done.
 // ---------------------------------------------------------------------------
 
+/**
+ * Bounded CAS retry for compensation archive (C6 #304 round-5). One-shot
+ * archives at completion/quit/back lose the race when the session row's
+ * resource_version advances between getSession and archiveSession; the
+ * server then 409s and the session stays active with no operator signal.
+ *
+ * Retry up to MAX_RETRIES times, re-reading RV between attempts. On
+ * final failure the error is logged via debugLog (no toast — these
+ * compensation paths are fire-and-forget by design and the operator may
+ * already be off the running screen) but propagates so callers can
+ * inspect via the .catch() chain at each callsite.
+ */
+const COMPENSATION_MAX_RETRIES = 3;
+
 async function archiveSessionForCompensation(
   provider: TuiDataProvider & TuiSessionProvider,
   sessionId: string,
 ): Promise<void> {
-  const fresh = await provider.getSession(sessionId).catch(() => undefined);
-  const rv = String(fresh?.resourceVersion ?? 0);
-  const token = mintTokenForCompensation("AgentSession", sessionId, rv);
-  await provider.archiveSession(token);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= COMPENSATION_MAX_RETRIES; attempt++) {
+    // Re-read RV between attempts. Provider implementations whose
+    // getSession returns undefined for the requested id (e.g., session
+    // not yet replicated to a remote provider, or test fixtures with
+    // synthetic ids) fall back to "0" — the server's CAS check will
+    // 409 if the row exists at a higher RV, prompting another retry.
+    const fresh = await provider.getSession(sessionId).catch(() => undefined);
+    const rv = String(fresh?.resourceVersion ?? 0);
+    const token = mintTokenForCompensation("AgentSession", sessionId, rv);
+    try {
+      await provider.archiveSession(token);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // 409 = stale RV — re-read and retry. Other errors (network, 500)
+      // bail immediately; retry won't help.
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status !== 409) break;
+    }
+  }
+  debugLog(
+    "compensation",
+    `archiveSession(${sessionId}) failed after ${COMPENSATION_MAX_RETRIES + 1} attempts: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+  throw lastErr;
 }
 
 async function setGoalForCompensation(

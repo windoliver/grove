@@ -466,12 +466,29 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
       <ConfirmAndMutateOpenContext.Provider value={state.request !== null}>
         {children}
         {state.request && state.snapshot && (
-          <ConfirmAndMutateModal
-            message={state.request.message}
-            snapshot={state.snapshot}
-            banner={state.banner}
-            liveResourceVersion={state.liveResourceVersion}
-          />
+          // C6 (#304) round-5: render the modal as an absolutely-positioned
+          // overlay covering the full terminal so it sits ABOVE the
+          // ScreenManager / PagesRouter tree instead of being laid out
+          // after the height=100% children. zIndex=100 keeps it above
+          // any other overlays (toasts, dialog popups). Without this the
+          // modal can render off-screen or push existing layout.
+          <box
+            position="absolute"
+            top={0}
+            left={0}
+            right={0}
+            bottom={0}
+            zIndex={100}
+            justifyContent="center"
+            alignItems="center"
+          >
+            <ConfirmAndMutateModal
+              message={state.request.message}
+              snapshot={state.snapshot}
+              banner={state.banner}
+              liveResourceVersion={state.liveResourceVersion}
+            />
+          </box>
         )}
       </ConfirmAndMutateOpenContext.Provider>
     </ConfirmAndMutateContext.Provider>

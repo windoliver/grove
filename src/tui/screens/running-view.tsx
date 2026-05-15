@@ -983,6 +983,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useKeyboard(
       useCallback(
         (key) => {
+          // C6 (#304) round-5: when the confirmAndMutate modal is open,
+          // swallow ALL RunningView keys. The modal owns y/n/escape; any
+          // other key (q, Ctrl+A, panel shortcuts) operating on the
+          // running screen behind a confirmation modal is unsafe — it
+          // changes state the operator cannot see. opentui dispatches
+          // every key to every handler, so suppression must happen at
+          // each handler.
+          if (confirmModalOpen) return;
           // VFS overlay intercepts navigation keys
           if (showVfs) {
             if (key.name === "j" || key.name === "down") {
