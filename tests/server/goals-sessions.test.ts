@@ -98,7 +98,7 @@ describe("PUT /api/session/goal", () => {
   test("creates a goal", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         goal: "Ship feature X",
         acceptance: ["Tests pass", "Docs updated"],
@@ -117,7 +117,7 @@ describe("PUT /api/session/goal", () => {
   test("validates input (missing goal field returns 400)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         acceptance: ["Something"],
       }),
@@ -132,7 +132,7 @@ describe("PUT /api/session/goal", () => {
   test("accepts missing acceptance field (defaults to empty array)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         goal: "Ship it",
       }),
@@ -147,7 +147,7 @@ describe("PUT /api/session/goal", () => {
   test("accepts empty acceptance array (goal without criteria)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         goal: "Ship it",
         acceptance: [],
@@ -163,7 +163,7 @@ describe("PUT /api/session/goal", () => {
   test("rejects malformed JSON with 400", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: "not-json{{{",
     });
 
@@ -185,7 +185,7 @@ describe("GET /api/session/goal", () => {
     // Set a goal first
     await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         goal: "Build the widget",
         acceptance: ["Widget works"],
@@ -283,7 +283,7 @@ describe("GET /api/sessions", () => {
     // Archive the first
     await ctx.app.request(`/api/sessions/${s1.sessionId}/archive`, {
       method: "PUT",
-      headers: GS_TEST_AUTH_HEADERS,
+      headers: { ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
     });
 
     const res = await ctx.app.request("/api/sessions?status=active", {
@@ -334,7 +334,7 @@ describe("PUT /api/sessions/:id/archive", () => {
 
     const res = await ctx.app.request(`/api/sessions/${created.sessionId}/archive`, {
       method: "PUT",
-      headers: GS_TEST_AUTH_HEADERS,
+      headers: { ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
     });
     expect(res.status).toBe(204);
 
@@ -350,7 +350,7 @@ describe("PUT /api/sessions/:id/archive", () => {
   test("returns 404 for missing session", async () => {
     const res = await ctx.app.request("/api/sessions/nonexistent-id/archive", {
       method: "PUT",
-      headers: GS_TEST_AUTH_HEADERS,
+      headers: { ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
     });
     expect(res.status).toBe(404);
   });
@@ -756,7 +756,7 @@ describe("POST /api/sessions (config snapshot)", () => {
     // Archive session
     const archiveRes = await ctx.app.request(`/api/sessions/${sessionId}/archive`, {
       method: "PUT",
-      headers: GS_TEST_AUTH_HEADERS,
+      headers: { ...GS_TEST_AUTH_HEADERS, "If-Match": "1" },
     });
     expect(archiveRes.status).toBe(204);
 

@@ -114,7 +114,7 @@ class StubGoalSessionStore {
     return undefined;
   }
 
-  async setGoal(): Promise<GoalData> {
+  async setGoal(): Promise<never> {
     throw new Error("setGoal is not used by this test");
   }
 
@@ -130,11 +130,11 @@ class StubGoalSessionStore {
     return sessionId === SESSION_ID ? this.session : undefined;
   }
 
-  async updateSession(): Promise<void> {
+  async updateSession(): Promise<never> {
     throw new Error("updateSession is not used by this test");
   }
 
-  async archiveSession(): Promise<void> {
+  async archiveSession(): Promise<never> {
     throw new Error("archiveSession is not used by this test");
   }
 

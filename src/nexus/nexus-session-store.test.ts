@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { expectOk } from "../core/cas.js";
 import type { EventBus, GroveEvent, PublishResult } from "../core/event-bus.js";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import type { Session } from "../core/session.js";
@@ -170,7 +171,7 @@ describe("NexusSessionStore", () => {
       finalizers?: readonly string[];
     };
     const blockers = await store.listSessionDeleteBlockers("legacy");
-    const result = await store.deleteSession("legacy");
+    const result = expectOk(await store.deleteSession("legacy"));
 
     expect(fetched?.uid).toBe("legacy");
     expect(rawAfterRead.uid).toBe("legacy");
@@ -267,7 +268,7 @@ describe("NexusSessionStore", () => {
       encoder.encode(JSON.stringify({ cid: "blake3:session-link" })),
     );
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result).toEqual({
       sessionId: session.id,
@@ -327,7 +328,7 @@ describe("NexusSessionStore", () => {
     };
     const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result).toEqual({
       sessionId: session.id,
@@ -368,7 +369,7 @@ describe("NexusSessionStore", () => {
     };
     const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(conflicted).toBe(true);
     expect(result).toEqual({
@@ -426,7 +427,7 @@ describe("NexusSessionStore", () => {
     };
     const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
 
-    const result = await store.deleteSession("legacy-cas");
+    const result = expectOk(await store.deleteSession("legacy-cas"));
 
     expect(conflicted).toBe(true);
     expect(result).toEqual({
@@ -477,7 +478,7 @@ describe("NexusSessionStore", () => {
     };
     const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
     const fetched = await store.getSession(session.id);
 
     expect(conflicted).toBe(true);
@@ -523,7 +524,7 @@ describe("NexusSessionStore", () => {
     };
     const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(conflicted).toBe(true);
     expect(result).toEqual({
@@ -549,7 +550,7 @@ describe("NexusSessionStore", () => {
     );
     await store.addContribution(session.id, "blake3:blocking");
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
     const fetched = await store.getSession(session.id);
 
     expect(result).toEqual({
@@ -591,7 +592,7 @@ describe("NexusSessionStore", () => {
       ),
     );
 
-    const result = await store.deleteSession(session.id, { force: true, actor: "test" });
+    const result = expectOk(await store.deleteSession(session.id, { force: true, actor: "test" }));
 
     expect(result).toEqual({
       sessionId: session.id,
@@ -666,9 +667,9 @@ describe("NexusSessionStore", () => {
       ),
     );
 
-    const normal = await store.deleteSession(session.id);
+    const normal = expectOk(await store.deleteSession(session.id));
     const fetched = await store.getSession(session.id);
-    const forced = await store.deleteSession(session.id, { force: true, actor: "test" });
+    const forced = expectOk(await store.deleteSession(session.id, { force: true, actor: "test" }));
 
     expect(normal).toEqual({
       sessionId: session.id,
@@ -702,7 +703,7 @@ describe("NexusSessionStore", () => {
     )) as {
       finalizers?: readonly string[];
     };
-    const deleted = await store.deleteSession(session.id);
+    const deleted = expectOk(await store.deleteSession(session.id));
 
     expect(fetched?.finalizers).toEqual([]);
     expect(listed.find((item) => item.id === session.id)?.finalizers).toEqual([]);
@@ -746,7 +747,7 @@ describe("NexusSessionStore", () => {
     )) as {
       finalizers?: readonly string[];
     };
-    const deleted = await store.deleteSession(session.id);
+    const deleted = expectOk(await store.deleteSession(session.id));
 
     expect(fetched?.finalizers).toEqual([]);
     expect(rawAfterRead.finalizers).toBeUndefined();
@@ -847,10 +848,13 @@ describe("NexusSessionStore", () => {
     expect(rawAfterAppend.finalizers).toBeUndefined();
     expect(rawAfterAppend.topology?.roles?.[0]?.skills).toEqual(["grove", "review"]);
     expect(deleted).toEqual({
-      sessionId,
-      deleted: true,
-      forced: false,
-      blockers: [],
+      kind: "ok",
+      view: {
+        sessionId,
+        deleted: true,
+        forced: false,
+        blockers: [],
+      },
     });
     expect(await claimStore.getClaim("legacy-append-claim")).toBeUndefined();
   });

@@ -5,6 +5,7 @@
  * SessionRecord (tui/provider.ts) types with a single source of truth.
  */
 
+import type { CasMutationResult, CasOpts } from "./cas.js";
 import type { GroveContract } from "./contract.js";
 import type { DeletionAuditEvent, SessionFinalizer } from "./lifecycle-metadata.js";
 import type { LoopStopStatus } from "./loop-runner.js";
@@ -60,6 +61,12 @@ export interface Session {
    * Edges with `workspace: "branch_from_source"` make the target branch off the source.
    */
   readonly worktreeStrategies?: Record<string, string> | undefined;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case CAS callers should treat the entity as version "1".
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,21 +131,53 @@ export interface SessionStore {
   /** Get a session by ID. Returns undefined if not found. */
   getSession(id: string): Promise<Session | undefined>;
 
-  /** Update mutable session fields (status, completedAt, stopReason, stopStatus). */
+  /**
+   * Update mutable session fields (status, completedAt, stopReason, stopStatus).
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted session
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes and
+   * returns `{ kind: "ok", view }` with the bumped session RV.
+   *
+   * Missing-session is a no-op (returns `{ kind: "ok", view: undefined }`)
+   * to preserve the legacy idempotency contract.
+   */
   updateSession(
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void>;
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>>;
 
   /** List sessions with optional filters, ordered by creation time descending. */
   listSessions(query?: SessionQuery): Promise<readonly Session[]>;
 
-  deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult>;
+  /**
+   * Delete a session.
+   *
+   * C6 (#304): The supplied `options` may carry an `ifMatch` resource version.
+   * When supplied, the store performs a compare-and-set against the persisted
+   * session `resource_version` BEFORE running finalizers / removing the row.
+   * Mismatch returns `{ kind: "rv-mismatch", current }` without writing; match
+   * (or absent ifMatch on back-compat path) proceeds with the delete and
+   * returns `{ kind: "ok", view }`.
+   */
+  deleteSession(
+    id: string,
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>>;
 
   listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]>;
 
-  /** Archive a session, setting its completedAt timestamp. */
-  archiveSession(id: string): Promise<void>;
+  /**
+   * Archive a session, setting its completedAt timestamp.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. Semantics
+   * mirror `updateSession`: mismatch returns rv-mismatch without writing,
+   * match writes and bumps RV. Missing-session is a no-op (kind: "ok",
+   * view: undefined) for back-compat.
+   */
+  archiveSession(id: string, opts?: CasOpts): Promise<CasMutationResult<Session | undefined>>;
 
   /** Record a contribution CID against a session. */
   addContribution(sessionId: string, cid: string): Promise<void>;

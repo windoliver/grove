@@ -9,13 +9,17 @@ import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore, ThreadNode } from "../core/store.js";
 import {
   activityFromStore,
+  archiveSessionHttp,
   claimsFromStore,
   contributionDetailFromStore,
   dagFromStore,
   dashboardFromStores,
   diffArtifactsFromBuffers,
+  HttpConflictError,
   outcomeStatsFromStore,
+  setGoalHttp,
 } from "./provider-shared.js";
+import { __test_only_mintToken } from "./safety/testing.js";
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -296,6 +300,101 @@ describe("provider-shared", () => {
       const result = diffArtifactsFromBuffers(parent, child);
       expect(result.parent).toBe("hello");
       expect(result.child).toBe("world");
+    });
+  });
+
+  describe("HttpConflictError", () => {
+    // C6 (#304) T11 critical item A: dangerous HTTP helpers must throw a
+    // structured HttpConflictError on 409 so the ConfirmAndMutateProvider's
+    // retry loop can bump its snapshot RV from `current` and re-open.
+
+    const ORIGINAL_FETCH = globalThis.fetch;
+
+    function withMockFetch(responder: (input: string, init?: RequestInit) => Response): void {
+      globalThis.fetch = (async (input: unknown, init?: unknown) =>
+        responder(String(input), init as RequestInit | undefined)) as typeof globalThis.fetch;
+    }
+
+    function restoreFetch(): void {
+      globalThis.fetch = ORIGINAL_FETCH;
+    }
+
+    test("archiveSessionHttp parses 409 body into HttpConflictError.current", async () => {
+      withMockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "CONFLICT",
+                message: "session changed",
+                current: { resourceVersion: "42", generation: 7 },
+              },
+            }),
+            { status: 409, headers: { "content-type": "application/json" } },
+          ),
+      );
+      try {
+        const token = __test_only_mintToken("AgentSession", "sess-1", "1");
+        await expect(archiveSessionHttp(token, "http://x")).rejects.toMatchObject({
+          name: "HttpConflictError",
+          status: 409,
+          current: { resourceVersion: "42", generation: 7 },
+        });
+      } finally {
+        restoreFetch();
+      }
+    });
+
+    test("setGoalHttp parses 409 body into HttpConflictError.current", async () => {
+      withMockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "CONFLICT",
+                message: "goal changed",
+                current: { resourceVersion: "9", generation: 2 },
+              },
+            }),
+            { status: 409, headers: { "content-type": "application/json" } },
+          ),
+      );
+      try {
+        const token = __test_only_mintToken("Goal", "goal", "1");
+        await expect(setGoalHttp(token, "http://x", "do thing", [])).rejects.toMatchObject({
+          name: "HttpConflictError",
+          status: 409,
+          current: { resourceVersion: "9", generation: 2 },
+        });
+      } finally {
+        restoreFetch();
+      }
+    });
+
+    test("falls back to safe defaults when 409 body is unparseable", async () => {
+      withMockFetch(() => new Response("not json", { status: 409 }));
+      try {
+        const token = __test_only_mintToken("AgentSession", "sess-1", "1");
+        const err = await archiveSessionHttp(token, "http://x").catch((e) => e);
+        expect(err).toBeInstanceOf(HttpConflictError);
+        expect(err.status).toBe(409);
+        expect(err.current.resourceVersion).toBe("?");
+        expect(err.current.generation).toBe(0);
+      } finally {
+        restoreFetch();
+      }
+    });
+
+    test("non-409 errors stay as plain Error", async () => {
+      withMockFetch(() => new Response("server error", { status: 500 }));
+      try {
+        const token = __test_only_mintToken("AgentSession", "sess-1", "1");
+        const err = await archiveSessionHttp(token, "http://x").catch((e) => e);
+        expect(err).toBeInstanceOf(Error);
+        expect(err).not.toBeInstanceOf(HttpConflictError);
+      } finally {
+        restoreFetch();
+      }
     });
   });
 });

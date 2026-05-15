@@ -39,6 +39,13 @@ export interface AgentTaskSpecRecord {
   readonly finalizers?: readonly Finalizer[] | undefined;
   readonly deletionTimestamp?: string | undefined;
   readonly createdAt: string;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to deriving RV from
+   * `generation`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 export interface AgentTaskStatusRecord {
@@ -50,6 +57,13 @@ export interface AgentTaskStatusRecord {
   readonly observedGeneration: number;
   readonly lastTransitionAt: string;
   readonly revision: number;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to deriving RV from
+   * `revision`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 export interface AgentTaskView {
@@ -79,8 +93,13 @@ export type AgentTaskEntity = Entity<"AgentTask", AgentTaskSpec, AgentTaskStatus
 
 export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"): AgentTaskEntity {
   // WatchClient parses the leading numeric prefix for snapshot dedup ordering.
-  const resourceVersionPrefix = view.spec.generation + view.status.revision;
-  const resourceVersion = `${resourceVersionPrefix}:${view.spec.generation}:${view.status.revision}`;
+  // C6 (#304): prefer the persisted `resource_version` columns (bumped per
+  // CAS write by `putAgentTaskSpec` / `patchAgentTaskStatus`); fall back to
+  // generation/revision for stores that haven't migrated yet.
+  const specRv = view.spec.resourceVersion ?? view.spec.generation;
+  const statusRv = view.status.resourceVersion ?? view.status.revision;
+  const resourceVersionPrefix = specRv + statusRv;
+  const resourceVersion = `${resourceVersionPrefix}:${specRv}:${statusRv}`;
   return {
     kind: "AgentTask",
     namespace,

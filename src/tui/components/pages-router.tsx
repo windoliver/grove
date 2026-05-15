@@ -34,6 +34,12 @@ import { BreadcrumbBar } from "./breadcrumb-bar.js";
 import { ConfirmPopDialog } from "./confirm-pop-dialog.js";
 import { HintBar } from "./hint-bar.js";
 
+// C6 (#304) round-3: ConfirmAndMutateProvider was hoisted to tui-app.tsx
+// (BoardroomShell) so the open-state context propagates to
+// usePermissionDetection (called inside ScreenManager, which is a
+// PagesRouter ancestor). PagesRouter no longer mounts the provider; it
+// just renders children that consume the hook.
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -119,6 +125,11 @@ export const PagesRouter: React.NamedExoticComponent<PagesRouterProps> = React.m
     // that renders `height="100%"` (RunningView, advanced/boardroom) can't
     // push the HintBar off-screen. Breadcrumb and HintBar are auto-height,
     // page content gets flexGrow=1 to fill the middle.
+    //
+    // ConfirmAndMutateProvider wraps the children so any screen below can
+    // invoke `useConfirmAndMutate()` for dangerous mutations. The modal
+    // (rendered by the provider itself) overlays at the same depth as the
+    // dirty-pop dialog — both sit above the column layout.
     return (
       <box flexDirection="column" width="100%" height="100%">
         <box flexShrink={0}>

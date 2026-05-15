@@ -70,9 +70,11 @@ import {
   contributionDetailFromStore,
   dagFromStore,
   diffArtifactsFromBuffers,
+  HttpConflictError,
   outcomeStatsFromStore,
 } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
+import type { DangerousToken } from "./safety/index.js";
 
 // ---------------------------------------------------------------------------
 // Dependency bundle accepted by the constructor
@@ -625,12 +627,36 @@ export abstract class StoreBackedProvider
     return this.goalSession?.getGoal();
   }
 
-  /** Set a goal. Throws when no store is configured. */
-  async setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData> {
+  /**
+   * Set a goal. Throws when no store is configured.
+   *
+   * C6 (#304): `token.ifMatch` is forwarded to the store as CAS opts.
+   * A stale RV causes the store to return `rv-mismatch`; expectCasOk
+   * throws, which the TUI callsite (via confirmAndMutate, T10) catches
+   * to drive the refetch+retry loop.
+   */
+  async setGoal(
+    token: DangerousToken<"Goal">,
+    goal: string,
+    acceptance: readonly string[],
+  ): Promise<GoalData> {
     if (!this.goalSession) {
       throw new Error("Goal management is not supported by this provider");
     }
-    return this.goalSession.setGoal(goal, acceptance, "tui-operator");
+    const result = await this.goalSession.setGoal(goal, acceptance, "tui-operator", {
+      ifMatch: token.ifMatch,
+    });
+    if (result.kind === "rv-mismatch") {
+      // C6 (#304): emit a structured conflict so confirmAndMutate's
+      // parseConflict matches and the modal enters the retry path with
+      // the fresh RV. Generic Error from expectCasOk would lose `current`
+      // and short-circuit the retry as a generic failure.
+      throw new HttpConflictError(
+        `setGoal: stale ifMatch=${token.ifMatch}; current rv=${result.current.resourceVersion}`,
+        result.current,
+      );
+    }
+    return result.view;
   }
 
   // ---------------------------------------------------------------------------
@@ -658,12 +684,26 @@ export abstract class StoreBackedProvider
     return this.goalSession?.getSession(sessionId);
   }
 
-  /** Archive a session. Throws when no store is configured. */
-  async archiveSession(sessionId: string): Promise<void> {
+  /**
+   * Archive a session. Throws when no store is configured.
+   *
+   * C6 (#304): `token.id` is the session id; `token.ifMatch` flows to
+   * the store as CAS opts. Stale RV → `rv-mismatch` → expectCasOk throws
+   * → caller (via confirmAndMutate, T10) refetches and retries.
+   */
+  async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {
     if (!this.goalSession) {
       throw new Error("Session management is not supported by this provider");
     }
-    return this.goalSession.archiveSession(sessionId);
+    const result = await this.goalSession.archiveSession(token.id, { ifMatch: token.ifMatch });
+    if (result.kind === "rv-mismatch") {
+      // C6 (#304): structured conflict so confirmAndMutate's parseConflict
+      // matches and the modal retries with the fresh RV.
+      throw new HttpConflictError(
+        `archiveSession(${token.id}): stale ifMatch=${token.ifMatch}; current rv=${result.current.resourceVersion}`,
+        result.current,
+      );
+    }
   }
 
   /** Associate a contribution with a session. Throws when no store is configured. */

@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { expectOk } from "./cas.js";
 import { ownerRefsEqual } from "./lifecycle-metadata.js";
 import type { RuntimeSkillSessionStore, SessionStore } from "./session.js";
 import type { AgentTopology } from "./topology.js";
@@ -262,7 +263,7 @@ export function sessionStoreConformance(
     test("deleteSession removes an unblocked session", async () => {
       const session = await store.createSession({ goal: "delete me" });
 
-      const result = await store.deleteSession(session.id);
+      const result = expectOk(await store.deleteSession(session.id));
 
       expect(result).toEqual({
         sessionId: session.id,
@@ -274,7 +275,7 @@ export function sessionStoreConformance(
     });
 
     test("deleteSession is idempotent for a missing session", async () => {
-      const result = await store.deleteSession("missing-session");
+      const result = expectOk(await store.deleteSession("missing-session"));
 
       expect(result).toEqual({
         sessionId: "missing-session",
@@ -296,10 +297,12 @@ export function sessionStoreConformance(
     test("deleteSession force returns forced true and warning", async () => {
       const session = await store.createSession({ goal: "force delete me" });
 
-      const result = await store.deleteSession(session.id, {
-        force: true,
-        actor: "test-operator",
-      });
+      const result = expectOk(
+        await store.deleteSession(session.id, {
+          force: true,
+          actor: "test-operator",
+        }),
+      );
 
       expect(result).toEqual({
         sessionId: session.id,
@@ -329,6 +332,168 @@ export function sessionStoreConformance(
       expect(ownerRefsEqual(ownerRef, { ...ownerRef })).toBe(true);
       expect(ownerRefsEqual(ownerRef, { ...ownerRef, uid: `${session.uid}-other` })).toBe(false);
       expect(ownerRefsEqual(ownerRef, undefined)).toBe(false);
+    });
+
+    // ------------------------------------------------------------------
+    // CAS (#304, C6 T3b) — updateSession + archiveSession + deleteSession
+    // ------------------------------------------------------------------
+
+    describe("CAS (C6 #304) — updateSession", () => {
+      test("stale ifMatch → rv-mismatch carries current RV; row unchanged", async () => {
+        const session = await store.createSession({ goal: "cas update stale" });
+        const result = await store.updateSession(
+          session.id,
+          { status: "completed" },
+          { ifMatch: "999" },
+        );
+        expect(result.kind).toBe("rv-mismatch");
+        if (result.kind === "rv-mismatch") {
+          expect(result.current.resourceVersion).not.toBe("999");
+        }
+        const fetched = await store.getSession(session.id);
+        // Status must still be the initial create-time value (NOT "completed")
+        expect(fetched?.status).not.toBe("completed");
+      });
+
+      test("fresh ifMatch → ok with bumped RV", async () => {
+        const session = await store.createSession({ goal: "cas update fresh" });
+        const initialRv = String(session.resourceVersion ?? 1);
+        const result = await store.updateSession(
+          session.id,
+          { status: "completed" },
+          { ifMatch: initialRv },
+        );
+        expect(result.kind).toBe("ok");
+        if (result.kind === "ok") {
+          expect(result.view).toBeDefined();
+          expect(result.view?.status).toBe("completed");
+          // Bumped: post-write RV must be strictly greater than the supplied ifMatch
+          const newRv = result.view?.resourceVersion ?? 0;
+          expect(newRv).toBeGreaterThan(Number(initialRv));
+        }
+      });
+
+      test("missing ifMatch → ok (back-compat)", async () => {
+        const session = await store.createSession({ goal: "cas update legacy" });
+        const result = await store.updateSession(session.id, { status: "completed" });
+        expect(result.kind).toBe("ok");
+        const fetched = await store.getSession(session.id);
+        expect(fetched?.status).toBe("completed");
+      });
+
+      test("ifMatch against non-existent session → ok with undefined view", async () => {
+        const result = await store.updateSession(
+          "definitely-not-a-session-id",
+          { status: "completed" },
+          { ifMatch: "1" },
+        );
+        // Per the contract: missing-session is idempotent, returns ok/undefined.
+        expect(result.kind).toBe("ok");
+        if (result.kind === "ok") {
+          expect(result.view).toBeUndefined();
+        }
+      });
+    });
+
+    describe("CAS (C6 #304) — archiveSession", () => {
+      test("stale ifMatch → rv-mismatch; session not archived", async () => {
+        const session = await store.createSession({ goal: "cas archive stale" });
+        const result = await store.archiveSession(session.id, { ifMatch: "999" });
+        expect(result.kind).toBe("rv-mismatch");
+        const fetched = await store.getSession(session.id);
+        expect(fetched?.status).not.toBe("archived");
+      });
+
+      test("fresh ifMatch → ok and session is archived", async () => {
+        const session = await store.createSession({ goal: "cas archive fresh" });
+        const initialRv = String(session.resourceVersion ?? 1);
+        const result = await store.archiveSession(session.id, { ifMatch: initialRv });
+        expect(result.kind).toBe("ok");
+        const fetched = await store.getSession(session.id);
+        expect(fetched?.status).toBe("archived");
+      });
+
+      test("missing ifMatch → ok (back-compat)", async () => {
+        const session = await store.createSession({ goal: "cas archive legacy" });
+        const result = await store.archiveSession(session.id);
+        expect(result.kind).toBe("ok");
+        const fetched = await store.getSession(session.id);
+        expect(fetched?.status).toBe("archived");
+      });
+
+      test("ifMatch against non-existent session → ok with undefined view", async () => {
+        const result = await store.archiveSession("definitely-not-a-session-id", {
+          ifMatch: "1",
+        });
+        expect(result.kind).toBe("ok");
+        if (result.kind === "ok") {
+          expect(result.view).toBeUndefined();
+        }
+      });
+    });
+
+    describe("CAS (C6 #304) — deleteSession", () => {
+      test("stale ifMatch → rv-mismatch; session not deleted", async () => {
+        const session = await store.createSession({ goal: "cas delete stale" });
+        const result = await store.deleteSession(session.id, { ifMatch: "999" });
+        expect(result.kind).toBe("rv-mismatch");
+        // Session must still exist
+        expect(await store.getSession(session.id)).toBeDefined();
+      });
+
+      test("fresh ifMatch → ok and session is deleted", async () => {
+        const session = await store.createSession({ goal: "cas delete fresh" });
+        const initialRv = String(session.resourceVersion ?? 1);
+        const result = await store.deleteSession(session.id, { ifMatch: initialRv });
+        expect(result.kind).toBe("ok");
+        if (result.kind === "ok") {
+          expect(result.view.deleted).toBe(true);
+        }
+        expect(await store.getSession(session.id)).toBeUndefined();
+      });
+
+      test("missing ifMatch → ok (back-compat)", async () => {
+        const session = await store.createSession({ goal: "cas delete legacy" });
+        const result = await store.deleteSession(session.id);
+        expect(result.kind).toBe("ok");
+        expect(await store.getSession(session.id)).toBeUndefined();
+      });
+
+      test("ifMatch against non-existent session → ok with not-found blocker", async () => {
+        const result = await store.deleteSession("definitely-not-a-session-id", {
+          ifMatch: "1",
+        });
+        // deleteSession's existing not-found contract returns an "ok" result with
+        // `deleted: false` and a release-slots blocker. The CAS check sits BEHIND
+        // the not-found guard so a missing record never produces rv-mismatch.
+        expect(result.kind).toBe("ok");
+        if (result.kind === "ok") {
+          expect(result.view.deleted).toBe(false);
+          expect(result.view.blockers.length).toBeGreaterThan(0);
+        }
+      });
+
+      test("deleteSession with merged-options carrying both ifMatch and force returns rv-mismatch without force-deleting", async () => {
+        // Regression guard for the merged-options pattern (SessionDeleteOptions
+        // & CasOpts). A caller spread-pulling { ...userOpts, force: true } that
+        // accidentally carries an ifMatch must surface a rv-mismatch, not
+        // silently force-delete and lose the user's CAS protection.
+        const session = await store.createSession({ goal: "cas force spread footgun" });
+        // Bump RV with an unrelated update so the original RV is now stale.
+        const bumped = await store.updateSession(session.id, { status: "completed" });
+        expect(bumped.kind).toBe("ok");
+        const staleRv = String(session.resourceVersion ?? 1);
+
+        const result = await store.deleteSession(session.id, {
+          force: true,
+          actor: "test",
+          ifMatch: staleRv,
+        });
+        expect(result.kind).toBe("rv-mismatch");
+        // Verify no force-delete side effects: session still exists.
+        const stillThere = await store.getSession(session.id);
+        expect(stillThere).toBeDefined();
+      });
     });
 
     test("appendSessionRoleSkill appends and dedupes role skills", async () => {

@@ -58,7 +58,7 @@ describe("Agent task routes", () => {
   test("PUT /api/agent-tasks/:id writes spec only and returns merged view", async () => {
     const res = await ctx.app.request("/api/agent-tasks/task-put", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
 
@@ -77,7 +77,7 @@ describe("Agent task routes", () => {
 
     const createRes = await ctx.app.request("/api/agent-tasks/task-watch-put", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
 
@@ -86,7 +86,7 @@ describe("Agent task routes", () => {
 
     const updateRes = await ctx.app.request("/api/agent-tasks/task-watch-put", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({ ...SPEC_BODY, prompt: "Updated prompt" }),
     });
 
@@ -115,7 +115,7 @@ describe("Agent task routes", () => {
 
     const createRes = await ctx.app.request("/api/agent-tasks/task-watch-store", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
 
@@ -127,7 +127,7 @@ describe("Agent task routes", () => {
   test("PUT /api/agent-tasks/:id rejects status-owned fields from the TUI path", async () => {
     const res = await ctx.app.request("/api/agent-tasks/task-status-rejected", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({
         ...SPEC_BODY,
         phase: AgentTaskPhase.Succeeded,
@@ -152,7 +152,7 @@ describe("Agent task routes", () => {
 
     const res = await ctx.app.request("/api/agent-tasks/task-metadata", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify({ ...SPEC_BODY, prompt: "Updated prompt" }),
     });
 
@@ -167,11 +167,13 @@ describe("Agent task routes", () => {
   test("PATCH /api/agent-tasks/:id/status requires controller token before body validation", async () => {
     const putRes = await ctx.app.request("/api/agent-tasks/task-status-auth", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
     expect(putRes.status).toBe(201);
 
+    // Controller-token check runs BEFORE the dangerous() guard, so absence
+    // of If-Match should not affect the 403 outcome here.
     const res = await ctx.app.request("/api/agent-tasks/task-status-auth/status", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
@@ -187,7 +189,7 @@ describe("Agent task routes", () => {
   test("PATCH /api/agent-tasks/:id/status writes status only with controller token", async () => {
     const putRes = await ctx.app.request("/api/agent-tasks/task-status-patch", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
     expect(putRes.status).toBe(201);
@@ -199,6 +201,7 @@ describe("Agent task routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({
         phase: AgentTaskPhase.Running,
@@ -232,7 +235,7 @@ describe("Agent task routes", () => {
 
     const putRes = await ctx.app.request("/api/agent-tasks/task-watch-status-source", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(SPEC_BODY),
     });
     expect(putRes.status).toBe(201);
@@ -245,6 +248,7 @@ describe("Agent task routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({
         phase: AgentTaskPhase.Running,

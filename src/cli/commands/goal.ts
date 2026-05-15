@@ -9,6 +9,7 @@
 
 import { parseArgs } from "node:util";
 
+import { expectCasOk } from "../../core/cas.js";
 import { createSqliteStores } from "../../local/sqlite-store.js";
 import { resolveAgentId, resolveGroveDir } from "../utils/grove-dir.js";
 
@@ -95,7 +96,8 @@ async function setGoal(args: readonly string[]): Promise<void> {
   const { dbPath } = resolveGroveDir();
   const stores = createSqliteStores(dbPath);
   try {
-    const goal = await stores.goalSessionStore.setGoal(goalText, acceptance, setBy);
+    const setResult = await stores.goalSessionStore.setGoal(goalText, acceptance, setBy);
+    const goal = expectCasOk(setResult, "cli grove goal set");
     console.log(`Goal set: ${goal.goal}`);
     if (goal.acceptance.length > 0) {
       console.log("Acceptance criteria:");

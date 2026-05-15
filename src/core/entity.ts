@@ -7,6 +7,7 @@
  */
 
 import type { AgentSession } from "./agent-runtime.js";
+import { rvComposite } from "./cas.js";
 import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
@@ -83,7 +84,21 @@ export type ContributionStatus = Record<string, never>;
 
 export type ContributionEntity = Entity<"Contribution", ContributionSpec, ContributionStatus>;
 
-export function contributionToEntity(c: Contribution, namespace: string): ContributionEntity {
+/**
+ * Project a Contribution into the Entity envelope.
+ *
+ * Contributions are immutable, so the resourceVersion ordinarily stays at
+ * its initial value. C6 (#304) introduced an optional, store-provided
+ * `resourceVersion` so the Entity reflects the real persisted column rather
+ * than the legacy hardcoded `"0"`. Callers that do not have a stored value
+ * (in-memory stores, fixture builders, projection-only tests) may omit it;
+ * the projection then falls back to `"0"` for backward compatibility.
+ */
+export function contributionToEntity(
+  c: Contribution,
+  namespace: string,
+  resourceVersion?: number,
+): ContributionEntity {
   const published: Condition = {
     type: "Published",
     status: "True",
@@ -112,7 +127,7 @@ export function contributionToEntity(c: Contribution, namespace: string): Contri
     status: {},
     conditions: [published],
     observedGeneration: 0,
-    resourceVersion: "0",
+    resourceVersion: String(resourceVersion ?? 0),
     metadata: {
       generation: 1,
       creationTimestamp: c.createdAt,
@@ -307,9 +322,29 @@ export function claimViewToEntity(
     // `revision` has not. Encode the lease-crossed boundary in the
     // resourceVersion so caches/informers see a version change at the
     // boundary and do not conflate the two snapshots.
+    //
+    // C6 (#304): The Entity's `resourceVersion` is a composite of the
+    // persisted spec `resource_version` (bumped by `putClaimSpec`, T2)
+    // and the status `revision` (advanced by every status-side write
+    // — heartbeat, release, complete, expireStale, patchClaimStatus).
+    // T3 will land status `resource_version` bumping; once that's in,
+    // this composite can collapse to `spec.resource_version +
+    // status.resource_version - 1`. For now the formula keeps both the
+    // "init RV='1'" and "heartbeat/transition advances RV" invariants
+    // true while letting spec writes also bump the entity-level RV.
+    // Claim's status RV input remains `view.status.revision` (NOT the
+    // resourceVersion fallback used by agent-task): heartbeat/release/
+    // complete/expireStale still bump `revision` directly without going
+    // through `patchClaimStatus`, so `status.resourceVersion` would stay
+    // pinned at its initial value across those mutations. Switching to
+    // `resourceVersion ?? revision` would regress the conformance test
+    // "listEntities resourceVersion advances after heartbeat and transition".
+    // T3b (or its successor) will bring those direct paths under
+    // resource_version bumping; once that lands, this can flip to mirror
+    // the agent-task call shape.
     resourceVersion: leaseIsExpired
-      ? `${view.status.revision}-lease-expired`
-      : String(view.status.revision),
+      ? `${rvComposite(view.spec.resourceVersion, view.status.revision)}-lease-expired`
+      : String(rvComposite(view.spec.resourceVersion, view.status.revision)),
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,

@@ -26,9 +26,19 @@ import type {
   TuiGoalProvider,
   TuiSessionProvider,
 } from "../provider.js";
+import { type ConfirmAndMutateEntityBus, ConfirmAndMutateProvider } from "../safety/index.js";
 import type { SpawnManager, SpawnResult } from "../spawn-manager.js";
 import { SpawnManagerContext } from "../spawn-manager-context.js";
 import type { TuiPresetEntry } from "../tui-app.js";
+
+// C6 (#304) round-3+: ScreenManager now requires the provider as an
+// ancestor. Production wires it via BoardroomShell; tests mount it
+// inline with a no-op entity bus.
+const TEST_ENTITY_BUS: ConfirmAndMutateEntityBus = {
+  get: () => undefined,
+  subscribe: () => () => undefined,
+};
+
 import type { AgentDetectProps } from "./agent-detect.js";
 import type { CompleteViewProps } from "./complete-view.js";
 import type { PresetSelectProps } from "./preset-select.js";
@@ -119,13 +129,28 @@ interface TestSpawnManager {
 }
 
 let captured: CapturedScreens = {};
-let keyboardHandler: KeyboardHandler | undefined;
+// C6 (#304) round-3+: track ALL useKeyboard handlers, not just the
+// last one. After hoisting ConfirmAndMutateProvider above ScreenManager,
+// pressKey() needs to dispatch to every registered handler so the modal's
+// keystrokes (registered by the ancestor provider) reach it alongside
+// ScreenManager / PagesRouter handlers (registered by descendants).
+const keyboardHandlers: KeyboardHandler[] = [];
 let rendererDestroy = mock(() => undefined);
 
 mock.module("@opentui/react", () => ({
+  // C6 (#304) round-3+: register/unregister via useEffect so per-render
+  // re-registrations properly cleanup their predecessor. Without this,
+  // every render of a useKeyboard caller leaves a stale closure in the
+  // handlers array, producing duplicated input on text-entry tests.
   useKeyboard: (handler: KeyboardHandler): void => {
-    keyboardHandler = handler;
-    (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
+    React.useEffect(() => {
+      keyboardHandlers.push(handler);
+      (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
+      return () => {
+        const idx = keyboardHandlers.indexOf(handler);
+        if (idx >= 0) keyboardHandlers.splice(idx, 1);
+      };
+    }, [handler]);
   },
   useRenderer: (): { destroy: () => void } => ({
     destroy: rendererDestroy,
@@ -138,6 +163,28 @@ mock.module("@opentui/react", () => ({
     add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
     play: () => undefined,
   }),
+  // C6 (#304) round-2: toast import in screen-manager pulls in
+  // @opentui-ui/toast, which calls extend({ toaster: ... }) at module
+  // init. Stub the call so the module-level side effect succeeds.
+  extend: (_components: Record<string, unknown>): void => undefined,
+}));
+
+// C6 (#304): mock toast directly so its module-level extend() call never
+// fires (bun 1.3.14 in CI evaluates @opentui-ui/toast's `extend({ toaster })`
+// before mock.module("@opentui/react") above can intercept the import).
+mock.module("@opentui-ui/toast/react", () => ({
+  toast: {
+    error: (): void => undefined,
+    success: (): void => undefined,
+    warning: (): void => undefined,
+    info: (): void => undefined,
+    loading: (): string => "stub",
+    promise: (): unknown => undefined,
+    dismiss: (): void => undefined,
+    custom: (): void => undefined,
+  },
+  Toaster: (): null => null,
+  useToasts: (): unknown[] => [],
 }));
 
 mock.module("../app.js", () => ({
@@ -243,7 +290,7 @@ const mountedRenderers: TestRenderer.ReactTestRenderer[] = [];
 
 beforeEach(() => {
   captured = {};
-  keyboardHandler = undefined;
+  keyboardHandlers.length = 0;
   rendererDestroy = mock(() => undefined);
 });
 
@@ -352,7 +399,10 @@ function makeProvider(options?: {
     getHotThreads: async () => [],
     close: () => undefined,
     getGoal: async () => undefined,
-    setGoal: async (goal: string): Promise<GoalData> => {
+    // C6 (#304): TuiGoalProvider.setGoal now takes a DangerousToken<"Goal">
+    // as its first argument. The test mock ignores the token (no CAS
+    // enforcement in the in-memory fake) but its signature must match.
+    setGoal: async (_token, goal: string): Promise<GoalData> => {
       calls.setGoal.push(goal);
       return {
         goal,
@@ -369,8 +419,12 @@ function makeProvider(options?: {
     },
     getSession: async (sessionId: string) =>
       sessionId === ACTIVE_SESSION.id ? ACTIVE_SESSION : undefined,
-    archiveSession: async (sessionId: string) => {
-      calls.archiveSession.push(sessionId);
+    // C6 (#304): TuiSessionProvider.archiveSession takes a
+    // DangerousToken<"AgentSession"> and pulls the id off of it. The fake
+    // records `token.id` so the assertions in the surrounding tests still
+    // observe the archived sessionId.
+    archiveSession: async (token) => {
+      calls.archiveSession.push(token.id);
     },
     addContributionToSession: async (sessionId: string, cid: string) => {
       calls.addContributionToSession.push({ sessionId, cid });
@@ -489,7 +543,18 @@ function renderScreenManager(options?: {
       React.createElement(
         SpawnManagerContext.Provider,
         { value: spawnManager as unknown as SpawnManager },
-        React.createElement(ScreenManager, props),
+        // C6 (#304) round-3+: ScreenManager calls usePermissionDetection
+        // (which reads useConfirmAndMutateOpen) and the running page
+        // calls useConfirmAndMutate. Both require the provider as an
+        // ancestor; production wires it via BoardroomShell in
+        // tui-app.tsx. Tests mount it directly. createElement passes
+        // children as the third arg; the cast satisfies TS without
+        // tripping biome's noChildrenProp rule.
+        React.createElement(
+          ConfirmAndMutateProvider as React.ComponentType<{ entityBus: ConfirmAndMutateEntityBus }>,
+          { entityBus: TEST_ENTITY_BUS },
+          React.createElement(ScreenManager, props),
+        ),
       ),
     );
   });
@@ -528,12 +593,18 @@ function expectGoalInput(renderer: TestRenderer.ReactTestRenderer): void {
 }
 
 async function pressKey(key: KeyboardKey): Promise<void> {
-  const handler = keyboardHandler;
-  if (!handler) {
+  if (keyboardHandlers.length === 0) {
     throw new Error("No keyboard handler registered");
   }
+  // C6 (#304) round-3+: dispatch to every registered handler. Production
+  // @opentui/react fires all handlers on every key (no stopPropagation).
+  // Snapshot the array so handler-internal state changes that re-register
+  // don't affect this dispatch.
+  const handlers = [...keyboardHandlers];
   await act(async () => {
-    handler(key);
+    for (const handler of handlers) {
+      handler(key);
+    }
     await flushAsync();
   });
 }
@@ -1177,5 +1248,82 @@ describe("ScreenManager navigation and edge cases", () => {
 
     expect(captured.screen).toBe("running");
     expect(providerBundle.calls.setSessionScope).toEqual(["session-active"]);
+  });
+
+  test("running -> back to main: confirmed modal archives and navigates", async () => {
+    // The RunningPageWithBackConfirm wrapper opens the C6 confirm modal
+    // before archiving. When the operator presses 'y', the mutation runs
+    // (archiveSession is called) and we navigate back to preset-select.
+    const providerBundle = makeProvider();
+    const { spawnManager } = renderScreenManager({
+      presets: PRESETS,
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Back to main confirmed",
+        sessionId: "session-back-confirmed",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    // The mock RunningView captures `onBackToMain`. Calling it triggers
+    // the wrapper's modal flow (open → submit on 'y' → archive → navigate).
+    await act(async () => {
+      const onBackToMain = requireRunningView().onBackToMain;
+      if (!onBackToMain) throw new Error("RunningView did not receive onBackToMain");
+      onBackToMain();
+      // Let the async getSession/confirm pipeline open the modal.
+      await flushAsync();
+      await flushAsync();
+    });
+
+    // Modal is open — press 'y' to submit. The provider's keyboard handler
+    // captured by ConfirmAndMutateProvider routes the keystroke to submit.
+    await pressKey({ name: "y" });
+    await act(async () => {
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(providerBundle.calls.archiveSession).toEqual(["session-back-confirmed"]);
+    expect(captured.screen).toBe("preset-select");
+    // Teardown still runs (matches the pre-modal handler).
+    expect(spawnManager.stopLogPollingCalls).toContain("stop");
+    expect(spawnManager.saveTraceCalls).toContain("save");
+  });
+
+  test("running -> back to main: cancelled modal stays on running", async () => {
+    // Pressing 'n' on the modal returns { ok: false, reason: "cancelled" } —
+    // wrapper short-circuits navigation, no archiveSession call.
+    const providerBundle = makeProvider();
+    renderScreenManager({
+      presets: PRESETS,
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Back to main cancelled",
+        sessionId: "session-back-cancelled",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      const onBackToMain = requireRunningView().onBackToMain;
+      if (!onBackToMain) throw new Error("RunningView did not receive onBackToMain");
+      onBackToMain();
+      await flushAsync();
+      await flushAsync();
+    });
+
+    await pressKey({ name: "n" });
+    await act(async () => {
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(providerBundle.calls.archiveSession).toEqual([]);
+    expect(captured.screen).toBe("running");
   });
 });

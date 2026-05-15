@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TuiDataProvider, TuiGoalProvider, TuiSessionProvider } from "./provider.js";
 import { isGoalProvider, isSessionProvider } from "./provider.js";
+import { __test_only_mintToken } from "./safety/testing.js";
 
 /** Factory function that creates a provider with test data pre-loaded. */
 export type ProviderFactory = () => Promise<{
@@ -249,7 +250,10 @@ export function runProviderGoalTests(suiteName: string, factory: ProviderFactory
         }
 
         const goalProvider = provider as TuiDataProvider & TuiGoalProvider;
-        const result = await goalProvider.setGoal("Fix auth", ["Tests pass"]);
+        // First call: no goal exists yet, RV "0" works because the INSERT
+        // path in the store bypasses CAS (see sqlite-goal-session-store.ts).
+        const initialToken = __test_only_mintToken("Goal", "goal", "0");
+        const result = await goalProvider.setGoal(initialToken, "Fix auth", ["Tests pass"]);
         expect(result.goal).toBe("Fix auth");
         expect(result.acceptance).toEqual(["Tests pass"]);
         expect(result.status).toBe("active");
@@ -275,11 +279,20 @@ export function runProviderGoalTests(suiteName: string, factory: ProviderFactory
 
         const goalProvider = provider as TuiDataProvider & TuiGoalProvider;
 
-        // Set initial goal
-        await goalProvider.setGoal("Fix auth", ["Tests pass"]);
+        // Set initial goal (INSERT — RV doesn't matter, CAS bypassed).
+        const insertToken = __test_only_mintToken("Goal", "goal", "0");
+        const first = await goalProvider.setGoal(insertToken, "Fix auth", ["Tests pass"]);
 
-        // Upsert with new goal
-        const updated = await goalProvider.setGoal("Refactor DB", [
+        // Upsert with new goal — must thread the current RV through so CAS
+        // matches. The store returns the freshly bumped RV in the prior
+        // result; the conformance suite mirrors what `confirmAndMutate`
+        // does at runtime by minting a token from that RV.
+        const updateToken = __test_only_mintToken(
+          "Goal",
+          "goal",
+          String(first.resourceVersion ?? 1),
+        );
+        const updated = await goalProvider.setGoal(updateToken, "Refactor DB", [
           "Migrations run",
           "No downtime",
         ]);
@@ -394,7 +407,12 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({ goal: "Archive test" });
 
-        await sessionProvider.archiveSession(session.id);
+        const archiveToken = __test_only_mintToken(
+          "AgentSession",
+          session.id,
+          String(session.resourceVersion ?? 1),
+        );
+        await sessionProvider.archiveSession(archiveToken);
 
         // Verify the session is archived
         const fetched = await sessionProvider.getSession(session.id);
@@ -414,7 +432,12 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
 
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({ goal: "Filter test" });
-        await sessionProvider.archiveSession(session.id);
+        const filterToken = __test_only_mintToken(
+          "AgentSession",
+          session.id,
+          String(session.resourceVersion ?? 1),
+        );
+        await sessionProvider.archiveSession(filterToken);
 
         const activeSessions = await sessionProvider.listSessions({ status: "active" });
         const found = activeSessions.find((s) => s.id === session.id);

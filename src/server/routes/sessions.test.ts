@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { type CasMutationResult, type CasOpts, casOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { Finalizer } from "../../core/lifecycle-metadata.js";
@@ -20,7 +21,11 @@ class TestGoalSessionStore implements GoalSessionStore {
   private readonly blockedSessionIds = new Set<string>();
   readonly deleteCalls: {
     readonly id: string;
-    readonly options: SessionDeleteOptions | undefined;
+    readonly options: (SessionDeleteOptions & CasOpts) | undefined;
+  }[] = [];
+  readonly archiveCalls: {
+    readonly id: string;
+    readonly options: CasOpts | undefined;
   }[] = [];
 
   blockDelete(sessionId: string): void {
@@ -31,14 +36,19 @@ class TestGoalSessionStore implements GoalSessionStore {
     return undefined;
   }
 
-  async setGoal(goal: string, acceptance: readonly string[], setBy: string): Promise<GoalData> {
-    return {
+  async setGoal(
+    goal: string,
+    acceptance: readonly string[],
+    setBy: string,
+  ): Promise<CasMutationResult<GoalData>> {
+    return casOk({
       goal,
       acceptance,
       status: "active",
       setAt: new Date().toISOString(),
       setBy,
-    };
+      resourceVersion: 1,
+    });
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
@@ -56,12 +66,17 @@ class TestGoalSessionStore implements GoalSessionStore {
   async updateSession(
     sessionId: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> {
-    await this.store.updateSession(sessionId, updates);
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
+    return this.store.updateSession(sessionId, updates, opts);
   }
 
-  async archiveSession(sessionId: string): Promise<void> {
-    await this.store.archiveSession(sessionId);
+  async archiveSession(
+    sessionId: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
+    this.archiveCalls.push({ id: sessionId, options: opts });
+    return this.store.archiveSession(sessionId, opts);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
@@ -74,18 +89,18 @@ class TestGoalSessionStore implements GoalSessionStore {
 
   async deleteSession(
     sessionId: string,
-    options?: SessionDeleteOptions,
-  ): Promise<SessionDeleteResult> {
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> {
     this.deleteCalls.push({ id: sessionId, options });
     if (this.blockedSessionIds.has(sessionId) && options?.force !== true) {
       const session = await this.store.getSession(sessionId);
       if (!session) return this.store.deleteSession(sessionId, options);
-      return {
+      return casOk({
         sessionId,
         deleted: false,
         forced: false,
         blockers: await this.listSessionDeleteBlockers(sessionId),
-      };
+      });
     }
     return this.store.deleteSession(sessionId, options);
   }
@@ -185,7 +200,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(200);
@@ -197,7 +212,7 @@ describe("session routes", () => {
     });
     expect(await goalSessionStore.getSession(session.id)).toBeUndefined();
     expect(goalSessionStore.deleteCalls).toEqual([
-      { id: session.id, options: { force: false, actor: "http" } },
+      { id: session.id, options: { ifMatch: "1", force: false, actor: "http" } },
     ]);
   });
 
@@ -209,7 +224,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(409);
@@ -230,7 +245,7 @@ describe("session routes", () => {
 
     const res = await app.request(`/api/sessions/${session.id}?force=true`, {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(200);
@@ -238,7 +253,7 @@ describe("session routes", () => {
     expect(data.deleted).toBe(true);
     expect(data.forced).toBe(true);
     expect(goalSessionStore.deleteCalls).toEqual([
-      { id: session.id, options: { force: true, actor: "http" } },
+      { id: session.id, options: { ifMatch: "1", force: true, actor: "http" } },
     ]);
   });
 
@@ -247,7 +262,7 @@ describe("session routes", () => {
 
     const res = await app.request("/api/sessions/missing", {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(404);
@@ -261,12 +276,144 @@ describe("session routes", () => {
 
     const res = await app.request("/api/sessions/missing", {
       method: "DELETE",
-      headers: TEST_AUTH_HEADERS,
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
     });
 
     expect(res.status).toBe(501);
     expect(await res.json()).toEqual({
       error: { code: "NOT_CONFIGURED", message: "Goal/session store is not configured" },
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // C6 #304: @Dangerous middleware + If-Match plumbing on DELETE
+  // -----------------------------------------------------------------------
+
+  test("DELETE /api/sessions/:id without If-Match → 428 and store.deleteSession not called", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "no-if-match" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(428);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("PRECONDITION_REQUIRED");
+    // Critical: middleware must short-circuit before the handler/store —
+    // not even getSession should have been touched, but deleteSession
+    // is the surface we explicitly guard so assert on it.
+    expect(goalSessionStore.deleteCalls).toHaveLength(0);
+    // Session must still exist.
+    expect(await goalSessionStore.getSession(session.id)).toBeDefined();
+  });
+
+  test("DELETE /api/sessions/:id with stale If-Match → 409 with current snapshot", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "stale" });
+    // External mutation: bump RV so the caller's If-Match=1 becomes stale.
+    await goalSessionStore.updateSession(session.id, { status: "active" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(409);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("CONFLICT");
+    // The store bumped RV from 1 → 2 on the external updateSession.
+    expect(body.error.current.resourceVersion).toBe("2");
+    expect(body.error.current.generation).toBe(2);
+    // Session must still exist — CAS mismatch must not delete.
+    expect(await goalSessionStore.getSession(session.id)).toBeDefined();
+  });
+
+  test("DELETE /api/sessions/:id with fresh If-Match → 200 and store called with ifMatch", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "fresh" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}`, {
+      method: "DELETE",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.deleted).toBe(true);
+    // Store received the ifMatch in the options bag.
+    expect(goalSessionStore.deleteCalls.at(-1)).toMatchObject({
+      id: session.id,
+      options: { ifMatch: "1", force: false, actor: "http" },
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // C6 #304: @Dangerous middleware + If-Match plumbing on PUT /:id/archive
+  // -----------------------------------------------------------------------
+
+  test("PUT /api/sessions/:id/archive without If-Match → 428 and store not called", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "no-if-match-archive" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(428);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("PRECONDITION_REQUIRED");
+    expect(goalSessionStore.archiveCalls).toHaveLength(0);
+    // Session must remain in original state.
+    expect((await goalSessionStore.getSession(session.id))?.status).not.toBe("archived");
+  });
+
+  test("PUT /api/sessions/:id/archive with stale If-Match → 409 with current snapshot", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "stale-archive" });
+    // External mutation bumps RV from 1 → 2 so the caller's If-Match=1 is stale.
+    await goalSessionStore.updateSession(session.id, { status: "active" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(409);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("CONFLICT");
+    expect(body.error.current.resourceVersion).toBe("2");
+    // Session must not have been archived.
+    expect((await goalSessionStore.getSession(session.id))?.status).not.toBe("archived");
+  });
+
+  test("PUT /api/sessions/:id/archive with fresh If-Match → 204 and store called with ifMatch", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "fresh-archive" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(204);
+    expect(goalSessionStore.archiveCalls.at(-1)).toEqual({
+      id: session.id,
+      options: { ifMatch: "1" },
+    });
+    expect((await goalSessionStore.getSession(session.id))?.status).toBe("archived");
   });
 });

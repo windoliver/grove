@@ -23,6 +23,7 @@ import type {
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
 import type { SessionTimeline, WorkBlock } from "../core/timeline.js";
+import type { DangerousToken } from "./safety/index.js";
 
 // ---------------------------------------------------------------------------
 // Capabilities
@@ -221,6 +222,12 @@ export interface GoalData {
   readonly status: "active" | "completed" | "abandoned";
   readonly setAt: string;
   readonly setBy: string;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case CAS callers should treat the entity as version "1".
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 // Session types — re-exported from core for convenience.
@@ -388,7 +395,20 @@ export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
 /** Goal management — available when capabilities.goals is true. */
 export interface TuiGoalProvider {
   getGoal(): Promise<GoalData | undefined>;
-  setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData>;
+  /**
+   * Set (upsert) the current goal.
+   *
+   * C6 (#304): The `token` argument is minted by `confirmAndMutate` (T10)
+   * and carries the goal's current resourceVersion as `ifMatch`. The
+   * implementation wires it through to the `@Dangerous` PUT /api/session/goal
+   * route so a stale RV produces a 409 the caller can retry. Tests mint
+   * tokens via `src/tui/safety/testing.ts`.
+   */
+  setGoal(
+    token: DangerousToken<"Goal">,
+    goal: string,
+    acceptance: readonly string[],
+  ): Promise<GoalData>;
 }
 
 /** Session management — available when capabilities.sessions is true. */
@@ -399,7 +419,15 @@ export interface TuiSessionProvider {
   }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
-  archiveSession(sessionId: string): Promise<void>;
+  /**
+   * Archive a session.
+   *
+   * C6 (#304): The `token` argument is minted by `confirmAndMutate` (T10)
+   * and carries the session id + resourceVersion. The implementation
+   * extracts `token.id` for the URL path and `token.ifMatch` for the
+   * If-Match header. Tests mint tokens via `src/tui/safety/testing.ts`.
+   */
+  archiveSession(token: DangerousToken<"AgentSession">): Promise<void>;
   addContributionToSession(sessionId: string, cid: string): Promise<void>;
 }
 

@@ -64,6 +64,7 @@ import { SQLITE_TIMELINE_DDL, SqliteTimelineStore } from "./sqlite-timeline-stor
 // Constants
 // ---------------------------------------------------------------------------
 
+import { type CasMutationResult, type CasOpts, checkIfMatch } from "../core/cas.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
@@ -72,7 +73,7 @@ import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/e
 import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 const SQLITE_BIND_LIMIT = 900;
 const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
@@ -101,7 +102,8 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     tags_json TEXT NOT NULL DEFAULT '[]',
     content_hash TEXT NOT NULL,
-    manifest_json TEXT NOT NULL
+    manifest_json TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE INDEX IF NOT EXISTS idx_contributions_kind ON contributions(kind);
@@ -188,7 +190,8 @@ const SCHEMA_DDL = `
     owner_ref_json TEXT,
     finalizers_json TEXT NOT NULL DEFAULT '[]',
     deletion_timestamp TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS claim_status (
@@ -203,6 +206,7 @@ const SCHEMA_DDL = `
     last_transition_at TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     revision INTEGER NOT NULL DEFAULT 1,
+    resource_version INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (id) REFERENCES claim_spec(id) ON DELETE CASCADE
   );
 
@@ -224,7 +228,8 @@ const SCHEMA_DDL = `
     owner_ref_json TEXT,
     finalizers_json TEXT NOT NULL DEFAULT '[]',
     deletion_timestamp TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS agent_task_status (
@@ -236,6 +241,7 @@ const SCHEMA_DDL = `
     observed_generation INTEGER NOT NULL DEFAULT 0,
     last_transition_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1,
+    resource_version INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (id) REFERENCES agent_task_spec(id) ON DELETE CASCADE
   );
 
@@ -795,10 +801,41 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
-    db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
-      CURRENT_SCHEMA_VERSION,
-      new Date().toISOString(),
-    ]);
+    // Migration → v16: persist `resource_version` on every mutating-entity table
+    // (C6 #304). Subsequent C6 tasks will bump this column atomically inside
+    // each store mutation; T1 only lays down the column + initial values.
+    //
+    // Init rule:
+    //   - tables with `revision` (claim_status, agent_task_status) → init from revision
+    //   - tables with `generation` (claim_spec, agent_task_spec) → init from generation
+    //   - everything else                                            → init to 1
+    //
+    // Each table existence is guarded because some (sessions, bounties, outcomes)
+    // are created lazily by their own stores and may not exist yet on a fresh DB
+    // that has only ever exercised the contribution path.
+    //
+    // CRITICAL: this block MUST be version-gated. The column-init path inside
+    // `addResourceVersionColumn` issues an unconditional
+    // `UPDATE ... SET resource_version = MAX(<col>, 1)` which would otherwise
+    // clobber Task 2+ CAS-bumped values back to MAX(generation, 1) on every
+    // grove server restart. Run once per DB upgrade, never again.
+    if (currentVersion === null || currentVersion < 16) {
+      addResourceVersionColumn(db, "contributions", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "claim_spec", { initFrom: "column", column: "generation" });
+      addResourceVersionColumn(db, "claim_status", { initFrom: "column", column: "revision" });
+      addResourceVersionColumn(db, "agent_task_spec", { initFrom: "column", column: "generation" });
+      addResourceVersionColumn(db, "agent_task_status", { initFrom: "column", column: "revision" });
+      addResourceVersionColumn(db, "sessions", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "bounties", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "goals", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
+      addResourceVersionColumn(db, "outcomes", { initFrom: "literal", literal: 1 });
+
+      db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
+        CURRENT_SCHEMA_VERSION,
+        new Date().toISOString(),
+      ]);
+    }
 
     if (needsLegacyBackfill) {
       // Backfill junction tables for pre-existing contributions once while
@@ -826,6 +863,73 @@ export function initSqliteDb(dbPath: string): Database {
   initSchema.immediate();
 
   return db;
+}
+
+/**
+ * Idempotently add a `resource_version INTEGER NOT NULL DEFAULT 1` column to
+ * `table`, then backfill existing rows according to `init`.
+ *
+ * Used by migration v16 (#304, C6) to lay down compare-and-set resource
+ * versions on every mutating-entity table. No-op if the table does not yet
+ * exist (some tables — sessions, bounties — are created lazily by their own
+ * stores) or if the column has already been added.
+ *
+ * The `DEFAULT 1` matches the SCHEMA_DDL fresh-table default and the C6
+ * invariant that every row carries `resource_version >= 1`. It is critical
+ * for tables whose DDL is defined lazily in another module (handoffs,
+ * sessions, goals, bounties, outcomes): subsequent INSERTs from those stores
+ * do not mention `resource_version`, so they rely on the column DEFAULT to
+ * supply 1 rather than 0.
+ *
+ * The literal-init path (`initFrom: "literal"`) writes the value to existing
+ * rows that still sit at 0; safe because the column DEFAULT also lifts new
+ * inserts directly to 1. The column-init path (`initFrom: "column"`) copies
+ * an existing monotonic counter (generation / revision) so the first CAS
+ * bump in Task 2+ stays strictly increasing.
+ *
+ * Re-run safety: the column-init path issues an UNCONDITIONAL
+ * `UPDATE ... SET resource_version = MAX(<col>, 1)` (no WHERE clause). This
+ * is correct ONLY because the caller — the v16 migration block in
+ * `initSqliteDb` — is version-gated and runs at most once per DB upgrade.
+ * If the caller were ever re-run on an already-migrated DB, this UPDATE
+ * would clobber Task 2+ CAS-bumped RV values back to MAX(generation, 1).
+ * Do not invoke this helper outside the version-gated migration block.
+ */
+function addResourceVersionColumn(
+  db: Database,
+  table: string,
+  init:
+    | { readonly initFrom: "literal"; readonly literal: number }
+    | { readonly initFrom: "column"; readonly column: string },
+): void {
+  const tableExists =
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table) as {
+      name: string;
+    } | null) !== null;
+  if (!tableExists) return;
+
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as readonly { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("resource_version")) {
+    db.run(`ALTER TABLE ${table} ADD COLUMN resource_version INTEGER NOT NULL DEFAULT 1`);
+  }
+
+  if (init.initFrom === "literal") {
+    // Backfill rows that the DEFAULT didn't catch (e.g. a DB that already ran
+    // the original DEFAULT-0 ALTER from the initial T1 landing).
+    db.run(`UPDATE ${table} SET resource_version = ? WHERE resource_version = 0`, [init.literal]);
+  } else {
+    // Copy from an existing column (generation/revision). Guard against the
+    // unlikely case where the source column is missing on a legacy DB.
+    if (!colNames.has(init.column)) {
+      db.run(`UPDATE ${table} SET resource_version = 1 WHERE resource_version = 0`);
+      return;
+    }
+    // Unconditional: column-init means generation/revision IS the desired RV,
+    // overriding the DEFAULT 1 set by the ALTER above. Floor at 1 so rows
+    // with a 0 source counter still end up with a valid RV.
+    db.run(`UPDATE ${table} SET resource_version = MAX(${init.column}, 1)`);
+  }
 }
 
 /**
@@ -1115,6 +1219,7 @@ interface ClaimSpecRow {
   readonly intent_summary: string;
   readonly context_json: string | null;
   readonly created_at: string;
+  readonly resource_version: number;
 }
 
 interface ClaimStatusRow {
@@ -1129,9 +1234,23 @@ interface ClaimStatusRow {
   readonly last_transition_at: string;
   readonly attempt_count: number;
   readonly revision: number;
+  readonly resource_version: number;
 }
 
-interface ClaimViewRow extends ClaimSpecRow, ClaimStatusRow {}
+/**
+ * Joined-view row. The `resource_version` column appears on both `claim_spec`
+ * and `claim_status`, so the joined SELECT aliases them as
+ * `spec_resource_version` / `status_resource_version` to disambiguate.
+ * Both sides therefore intentionally omit `resource_version` from the merged
+ * interface — `rowToClaimView` re-injects the right alias before calling
+ * `rowToClaimSpec` / `rowToClaimStatus`.
+ */
+interface ClaimViewRow
+  extends Omit<ClaimSpecRow, "resource_version">,
+    Omit<ClaimStatusRow, "resource_version"> {
+  readonly spec_resource_version: number;
+  readonly status_resource_version: number;
+}
 
 function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
   return {
@@ -1158,6 +1277,7 @@ function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
     finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
     ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -1176,13 +1296,14 @@ function rowToClaimStatus(row: ClaimStatusRow): ClaimStatusRecord {
     lastTransitionAt: row.last_transition_at,
     attemptCount: row.attempt_count,
     revision: row.revision,
+    resourceVersion: row.resource_version,
   };
 }
 
 function rowToClaimView(row: ClaimViewRow): ClaimView {
   return {
-    spec: rowToClaimSpec(row),
-    status: rowToClaimStatus(row),
+    spec: rowToClaimSpec({ ...row, resource_version: row.spec_resource_version }),
+    status: rowToClaimStatus({ ...row, resource_version: row.status_resource_version }),
   };
 }
 
@@ -1200,6 +1321,7 @@ interface AgentTaskSpecRow {
   readonly finalizers_json: string;
   readonly deletion_timestamp: string | null;
   readonly created_at: string;
+  readonly resource_version: number;
 }
 
 interface AgentTaskStatusRow {
@@ -1211,9 +1333,19 @@ interface AgentTaskStatusRow {
   readonly observed_generation: number;
   readonly last_transition_at: string;
   readonly revision: number;
+  readonly resource_version: number;
 }
 
-interface AgentTaskViewRow extends AgentTaskSpecRow, AgentTaskStatusRow {}
+/**
+ * Joined-view row. See `ClaimViewRow` for the rationale behind the aliased
+ * `*_resource_version` columns.
+ */
+interface AgentTaskViewRow
+  extends Omit<AgentTaskSpecRow, "resource_version">,
+    Omit<AgentTaskStatusRow, "resource_version"> {
+  readonly spec_resource_version: number;
+  readonly status_resource_version: number;
+}
 
 function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
   return {
@@ -1234,6 +1366,7 @@ function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
     finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
     ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -1247,13 +1380,14 @@ function rowToAgentTaskStatus(row: AgentTaskStatusRow): AgentTaskStatusRecord {
     observedGeneration: row.observed_generation,
     lastTransitionAt: row.last_transition_at,
     revision: row.revision,
+    resourceVersion: row.resource_version,
   };
 }
 
 function rowToAgentTaskView(row: AgentTaskViewRow): AgentTaskView {
   return {
-    spec: rowToAgentTaskSpec(row),
-    status: rowToAgentTaskStatus(row),
+    spec: rowToAgentTaskSpec({ ...row, resource_version: row.spec_resource_version }),
+    status: rowToAgentTaskStatus({ ...row, resource_version: row.status_resource_version }),
   };
 }
 
@@ -1723,7 +1857,23 @@ export class SqliteContributionStore implements ContributionStore {
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
     const namespace = readStoreNamespace(this.db);
-    return items.map((c) => contributionToEntity(c, namespace));
+    if (items.length === 0) return [];
+
+    // Fetch the persisted resource_version per cid so the Entity projection
+    // can surface it (C6, #304). Done as a single bulk lookup to avoid an
+    // N+1 round-trip across the contributions list. Chunked under the SQLite
+    // variable-bind limit because `list()` can return arbitrarily large
+    // result sets when filters are open-ended.
+    const rvByCid = new Map<string, number>();
+    for (let i = 0; i < items.length; i += SQLITE_BIND_LIMIT) {
+      const chunk = items.slice(i, i + SQLITE_BIND_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.db
+        .prepare(`SELECT cid, resource_version FROM contributions WHERE cid IN (${placeholders})`)
+        .all(...chunk.map((c) => c.cid)) as readonly { cid: string; resource_version: number }[];
+      for (const row of rows) rvByCid.set(row.cid, row.resource_version);
+    }
+    return items.map((c) => contributionToEntity(c, namespace, rvByCid.get(c.cid)));
   }
 
   /**
@@ -1857,13 +2007,15 @@ const AGENT_TASK_VIEW_SELECT_COLS = `
   s.finalizers_json AS finalizers_json,
   s.deletion_timestamp AS deletion_timestamp,
   s.created_at AS created_at,
+  s.resource_version AS spec_resource_version,
   st.phase AS phase,
   st.session_id AS session_id,
   st.contributions_json AS contributions_json,
   st.conditions_json AS conditions_json,
   st.observed_generation AS observed_generation,
   st.last_transition_at AS last_transition_at,
-  st.revision AS revision
+  st.revision AS revision,
+  st.resource_version AS status_resource_version
 `;
 
 export class SqliteAgentTaskStore implements AgentTaskStore {
@@ -1885,10 +2037,30 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     `);
   }
 
-  putAgentTaskSpec = async (spec: AgentTaskSpecRecord): Promise<AgentTaskView> => {
+  putAgentTaskSpec = async (
+    spec: AgentTaskSpecRecord,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
     let op: "ADDED" | "MODIFIED" = "MODIFIED";
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(spec.id);
+
+      // C6 (#304): Compare-and-set on the persisted spec resource_version.
+      // Only applies on UPDATE (existing !== null). Inserts have no version
+      // to compare against and proceed unconditionally.
+      if (existing !== null) {
+        const cas = checkIfMatch(
+          existing.spec.resourceVersion,
+          opts?.ifMatch,
+          existing.spec.generation,
+        );
+        if (cas !== null) {
+          mismatch = cas;
+          return;
+        }
+      }
+
       if (existing === null) {
         op = "ADDED";
         const nowIso = new Date().toISOString();
@@ -1918,7 +2090,8 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
                generation = generation + 1,
                owner_ref_json = ?,
                finalizers_json = ?,
-               deletion_timestamp = ?
+               deletion_timestamp = ?,
+               resource_version = resource_version + 1
            WHERE id = ?`,
         )
         .run(
@@ -1937,10 +2110,14 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     });
     tx.immediate();
 
+    if (mismatch !== null) {
+      return mismatch;
+    }
+
     const view = this.readAgentTask(spec.id);
     if (view === null) throw new Error(`Failed to read back agent task '${spec.id}'`);
     this.emitAgentTaskWrite(op, view);
-    return view;
+    return { kind: "ok", view };
   };
 
   getAgentTask = async (taskId: string): Promise<AgentTaskView | undefined> =>
@@ -1978,7 +2155,8 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   patchAgentTaskStatus = async (
     taskId: string,
     patch: AgentTaskStatusPatch,
-  ): Promise<AgentTaskView> => {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
     const assignments: string[] = [];
     const params: SQLQueryBindings[] = [];
     const addAssignment = (column: string, value: SQLQueryBindings): void => {
@@ -2002,8 +2180,11 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     }
 
     assignments.push("revision = revision + 1");
+    // C6 (#304): bump resource_version on the status row alongside revision.
+    assignments.push("resource_version = resource_version + 1");
     params.push(taskId);
 
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(taskId);
       if (existing === null) {
@@ -2013,6 +2194,20 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
           message: `AgentTask '${taskId}' not found`,
         });
       }
+
+      // C6 (#304): Compare-and-set on the persisted status resource_version.
+      // Pre-v16 rows can have resourceVersion === undefined while revision is
+      // set; fall through to revision so legacy data stays comparable.
+      const cas = checkIfMatch(
+        existing.status.resourceVersion ?? existing.status.revision,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return null;
+      }
+
       this.db
         .prepare(`UPDATE agent_task_status SET ${assignments.join(", ")} WHERE id = ?`)
         .run(...params);
@@ -2023,8 +2218,12 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     });
 
     const view = tx.immediate();
+    if (mismatch !== null) {
+      return mismatch;
+    }
+    if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
     this.emitAgentTaskWrite("MODIFIED", view);
-    return view;
+    return { kind: "ok", view };
   };
 
   async listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]> {
@@ -2124,6 +2323,7 @@ const CLAIM_VIEW_SELECT_COLS = `
   s.finalizers_json AS finalizers_json,
   s.deletion_timestamp AS deletion_timestamp,
   s.created_at AS created_at,
+  s.resource_version AS spec_resource_version,
   st.phase AS phase,
   st.observed_generation AS observed_generation,
   st.agent_session_id AS agent_session_id,
@@ -2133,7 +2333,8 @@ const CLAIM_VIEW_SELECT_COLS = `
   st.conditions_json AS conditions_json,
   st.last_transition_at AS last_transition_at,
   st.attempt_count AS attempt_count,
-  st.revision AS revision
+  st.revision AS revision,
+  st.resource_version AS status_resource_version
 `;
 const CLAIM_SPEC_OWNER_REF_PREDICATE = `json_extract(s.owner_ref_json, '$.kind') = ?
   AND json_extract(s.owner_ref_json, '$.id') = ?
@@ -2176,12 +2377,32 @@ export class SqliteClaimStore implements ClaimStore {
     `);
   }
 
-  putClaimSpec = async (spec: ClaimSpecRecord): Promise<ClaimView> => {
+  putClaimSpec = async (
+    spec: ClaimSpecRecord,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> => {
     this.validateSpecContext(spec);
 
     let op: "ADDED" | "MODIFIED" = "MODIFIED";
+    let mismatch: CasMutationResult<ClaimView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(spec.id);
+
+      // C6 (#304): Compare-and-set on the persisted spec resource_version.
+      // Only applies on UPDATE (existing !== null). Inserts have no version
+      // to compare against and proceed unconditionally.
+      if (existing !== null) {
+        const cas = checkIfMatch(
+          existing.spec.resourceVersion,
+          opts?.ifMatch,
+          existing.spec.generation,
+        );
+        if (cas !== null) {
+          mismatch = cas;
+          return;
+        }
+      }
+
       const now = new Date();
       const nowIso = now.toISOString();
       const existingActiveUnexpired =
@@ -2250,7 +2471,8 @@ export class SqliteClaimStore implements ClaimStore {
                context_json = ?,
                owner_ref_json = ?,
                finalizers_json = ?,
-               deletion_timestamp = ?
+               deletion_timestamp = ?,
+               resource_version = resource_version + 1
            WHERE id = ?`,
         )
         .run(
@@ -2274,17 +2496,25 @@ export class SqliteClaimStore implements ClaimStore {
     });
     tx.immediate();
 
+    if (mismatch !== null) {
+      return mismatch;
+    }
+
     const view = this.readClaimView(spec.id);
     if (view === null) throw new Error(`Failed to read back claim '${spec.id}'`);
     this.onClaimWrite?.(op, claimViewToClaim(view));
-    return view;
+    return { kind: "ok", view };
   };
 
   getClaimView = async (claimId: string): Promise<ClaimView | undefined> => {
     return this.readClaimView(claimId) ?? undefined;
   };
 
-  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+  patchClaimStatus = async (
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> => {
     const assignments: string[] = [];
     const params: SQLQueryBindings[] = [];
     const addAssignment = (column: string, value: SQLQueryBindings): void => {
@@ -2318,8 +2548,11 @@ export class SqliteClaimStore implements ClaimStore {
     }
 
     assignments.push("revision = revision + 1");
+    // C6 (#304): bump resource_version on the status row alongside revision.
+    assignments.push("resource_version = resource_version + 1");
     params.push(claimId);
 
+    let mismatch: CasMutationResult<ClaimView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(claimId);
       if (existing === null) {
@@ -2328,6 +2561,20 @@ export class SqliteClaimStore implements ClaimStore {
           identifier: claimId,
           message: `Claim '${claimId}' not found`,
         });
+      }
+
+      // C6 (#304): Compare-and-set on the persisted status resource_version.
+      // Pre-v16 rows may still surface via legacy `revision`; preserve the
+      // fallback. The spec's generation is surfaced alongside status RV so
+      // modals can show both columns.
+      const cas = checkIfMatch(
+        existing.status.resourceVersion ?? existing.status.revision,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return null;
       }
 
       const nowIso = new Date().toISOString();
@@ -2368,8 +2615,12 @@ export class SqliteClaimStore implements ClaimStore {
     });
 
     const view = tx.immediate();
+    if (mismatch !== null) {
+      return mismatch;
+    }
+    if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
     this.onClaimWrite?.("MODIFIED", claimViewToClaim(view));
-    return view;
+    return { kind: "ok", view };
   };
 
   createClaim = async (claim: Claim): Promise<Claim> => {

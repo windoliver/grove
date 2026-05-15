@@ -7,6 +7,7 @@ import {
   type AgentTaskView,
   agentTaskViewToEntity,
 } from "./agent-task.js";
+import { type CasMutationResult, type CasOpts, casOk } from "./cas.js";
 import type { Condition } from "./entity.js";
 import type { AgentTaskStatusPatch } from "./store.js";
 import {
@@ -42,7 +43,8 @@ class FakeTaskStore implements TaskControllerStore {
   patchAgentTaskStatus = async (
     taskId: string,
     patch: AgentTaskStatusPatch,
-  ): Promise<AgentTaskView> => {
+    _opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
     if (this.patchError !== undefined) throw this.patchError;
     const current = this.views.get(taskId);
     if (current === undefined) throw new Error(`missing task ${taskId}`);
@@ -59,7 +61,7 @@ class FakeTaskStore implements TaskControllerStore {
     };
     const updated: AgentTaskView = { spec: current.spec, status };
     this.views.set(taskId, updated);
-    return updated;
+    return casOk(updated);
   };
 
   listAgentTaskEntities = async (): Promise<readonly AgentTaskEntity[]> => {
@@ -700,12 +702,12 @@ describe("TaskController failure injection", () => {
         },
       };
       const originalPatch = store.patchAgentTaskStatus;
-      store.patchAgentTaskStatus = async (taskId, patch) => {
+      store.patchAgentTaskStatus = async (taskId, patch, opts) => {
         if (failurePoint === "patch-running" && patch.phase === AgentTaskPhase.Running && !failed) {
           failed = true;
           throw new Error("injected patch failure");
         }
-        return originalPatch(taskId, patch);
+        return originalPatch(taskId, patch, opts);
       };
       const controller = controllerFor(store, { binder });
 

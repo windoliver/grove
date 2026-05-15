@@ -20,6 +20,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
+import { dangerous, getIfMatch } from "../middleware/dangerous.js";
 import { CID_REGEX } from "../schemas.js";
 import { contributionStoreForSession, notConfigured, readJsonBody } from "./shared.js";
 
@@ -70,6 +71,11 @@ function toSessionResponse(session: Session) {
     // Nexus mode has to fall back to a minimal reconstruction from topology,
     // which loses rate limits / metrics configured in GROVE.md.
     ...(session.config !== undefined && { config: session.config }),
+    // C6 (#304): expose persisted resource_version so the TUI's
+    // confirmAndMutate flow can mint a DangerousToken with a fresh
+    // ifMatch on the first attempt. Omitting this forces every archive
+    // through one wasted 409 retry.
+    ...(session.resourceVersion !== undefined && { resourceVersion: session.resourceVersion }),
   };
 }
 
@@ -248,47 +254,101 @@ sessions.get("/:id", async (c) => {
   return c.json(toSessionResponse(session));
 });
 
-/** DELETE /api/sessions/:id — Delete a session. */
-sessions.delete("/:id", async (c) => {
-  const { goalSessionStore } = c.get("deps");
-  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+/**
+ * DELETE /api/sessions/:id — Delete a session.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. When the supplied If-Match no longer matches the
+ * persisted session resource version, the store returns `rv-mismatch`
+ * and this handler responds with `409 Conflict` carrying the current
+ * snapshot so clients can re-fetch and retry.
+ */
+sessions.delete(
+  "/:id",
+  dangerous<"/:id">(async (c) => {
+    const { goalSessionStore } = c.get("deps");
+    if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  const sessionId = c.req.param("id");
-  const session = await goalSessionStore.getSession(sessionId);
-  if (!session) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
-      404,
-    );
-  }
+    const sessionId = c.req.param("id");
+    const session = await goalSessionStore.getSession(sessionId);
+    if (!session) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+        404,
+      );
+    }
 
-  const result = await goalSessionStore.deleteSession(sessionId, {
-    force: c.req.query("force") === "true",
-    actor: "http",
-  });
-  const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
-  return c.json(result, status);
-});
+    // `dangerous()` middleware guarantees a non-empty `ifMatch` is set;
+    // `getIfMatch` encodes that invariant in one place.
+    const ifMatch = getIfMatch(c);
+    const deleteResult = await goalSessionStore.deleteSession(sessionId, {
+      ifMatch,
+      force: c.req.query("force") === "true",
+      actor: "http",
+    });
 
-/** PUT /api/sessions/:id/archive — Archive a session. */
-sessions.put("/:id/archive", async (c) => {
-  const { goalSessionStore } = c.get("deps");
-  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+    if (deleteResult.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Session ${sessionId} resourceVersion changed`,
+            current: deleteResult.current,
+          },
+        },
+        409,
+      );
+    }
 
-  const sessionId = c.req.param("id");
+    const result = deleteResult.view;
+    const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
+    return c.json(result, status);
+  }),
+);
 
-  // Verify session exists before archiving
-  const session = await goalSessionStore.getSession(sessionId);
-  if (!session) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
-      404,
-    );
-  }
+/**
+ * PUT /api/sessions/:id/archive — Archive a session.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` with the
+ * store's current RV so the caller can re-fetch and retry.
+ */
+sessions.put(
+  "/:id/archive",
+  dangerous<"/:id/archive">(async (c) => {
+    const { goalSessionStore } = c.get("deps");
+    if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  await goalSessionStore.archiveSession(sessionId);
-  return c.body(null, 204);
-});
+    const sessionId = c.req.param("id");
+
+    // Verify session exists before archiving
+    const session = await goalSessionStore.getSession(sessionId);
+    if (!session) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+        404,
+      );
+    }
+
+    const ifMatch = getIfMatch(c);
+    const archiveResult = await goalSessionStore.archiveSession(sessionId, { ifMatch });
+    if (archiveResult.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Session ${sessionId} resourceVersion changed`,
+            current: archiveResult.current,
+          },
+        },
+        409,
+      );
+    }
+    return c.body(null, 204);
+  }),
+);
 
 /** POST /api/sessions/:id/contributions — Record a contribution against a session. */
 sessions.post("/:id/contributions", async (c) => {

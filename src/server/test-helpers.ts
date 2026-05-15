@@ -6,7 +6,13 @@
  */
 
 import type { Hono } from "hono";
-import type { ContentStore, PutOptions } from "../core/cas.js";
+import {
+  type CasMutationResult,
+  type CasOpts,
+  type ContentStore,
+  casOk,
+  type PutOptions,
+} from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
 import {
   claimToEntity,
@@ -148,19 +154,32 @@ export class InMemoryClaimStore implements ClaimStore {
     this.statuses.set(view.status.id, view.status);
   }
 
-  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+  async putClaimSpec(spec: ClaimSpecRecord, opts?: CasOpts): Promise<CasMutationResult<ClaimView>> {
     const existing = this.viewFor(spec.id);
     if (existing !== undefined) {
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existing.spec.resourceVersion ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          return {
+            kind: "rv-mismatch",
+            current: {
+              resourceVersion: currentRv,
+              generation: existing.spec.generation,
+            },
+          };
+        }
+      }
       const updated: ClaimView = {
         spec: {
           ...spec,
           createdAt: existing.spec.createdAt,
           generation: existing.spec.generation + 1,
+          resourceVersion: (existing.spec.resourceVersion ?? 1) + 1,
         },
         status: existing.status,
       };
       this.putView(updated);
-      return updated;
+      return casOk(updated);
     }
 
     const now = new Date().toISOString();
@@ -168,7 +187,7 @@ export class InMemoryClaimStore implements ClaimStore {
     const leaseBaseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
     const leaseDurationSec = spec.leaseDeadlineSec ?? 300;
     const view: ClaimView = {
-      spec: { ...spec, generation: 1 },
+      spec: { ...spec, generation: 1, resourceVersion: 1 },
       status: {
         id: spec.id,
         phase: "active",
@@ -179,17 +198,22 @@ export class InMemoryClaimStore implements ClaimStore {
         lastTransitionAt: now,
         attemptCount: 0,
         revision: 1,
+        resourceVersion: 1,
       },
     };
     this.putView(view);
-    return view;
+    return casOk(view);
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {
     return this.viewFor(claimId);
   }
 
-  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+  async patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>> {
     const view = this.viewFor(claimId);
     if (view === undefined) {
       throw new NotFoundError({
@@ -197,6 +221,19 @@ export class InMemoryClaimStore implements ClaimStore {
         identifier: claimId,
         message: `Claim ${claimId} does not exist`,
       });
+    }
+
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(view.status.resourceVersion ?? view.status.revision ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: view.spec.generation,
+          },
+        };
+      }
     }
 
     const updated: ClaimView = {
@@ -212,10 +249,11 @@ export class InMemoryClaimStore implements ClaimStore {
         conditions: patch.conditions ?? view.status.conditions,
         lastTransitionAt: patch.lastTransitionAt ?? view.status.lastTransitionAt,
         revision: view.status.revision + 1,
+        resourceVersion: (view.status.resourceVersion ?? 1) + 1,
       },
     };
     this.putView(updated);
-    return updated;
+    return casOk(updated);
   }
 
   async createClaim(claim: Claim): Promise<Claim> {
@@ -550,6 +588,8 @@ export interface CreateTestAppOptions {
   readonly eventBus?: EventBus;
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly goalSessionStore?: GoalSessionStore;
+  readonly agentTaskStore?: import("../core/store.js").AgentTaskStore | undefined;
+  readonly controllerToken?: string | undefined;
   readonly timelineStore?: TimelineStore | null;
 }
 
@@ -615,6 +655,8 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     watchSubscriber,
     ...(timelineStore !== undefined ? { timelineStore } : {}),
     ...(opts.outcomeStore !== undefined ? { outcomeStore: opts.outcomeStore } : {}),
+    ...(opts.agentTaskStore !== undefined ? { agentTaskStore: opts.agentTaskStore } : {}),
+    ...(opts.controllerToken !== undefined ? { controllerToken: opts.controllerToken } : {}),
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);

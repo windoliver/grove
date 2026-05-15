@@ -212,6 +212,12 @@ export interface ClaimSpecRecord {
   readonly finalizers?: readonly Finalizer[] | undefined;
   readonly deletionTimestamp?: string | undefined;
   readonly createdAt: string;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to `generation`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 /** Controller-owned observed state for a claim. */
@@ -227,6 +233,12 @@ export interface ClaimStatusRecord {
   readonly lastTransitionAt: string;
   readonly attemptCount: number;
   readonly revision: number;
+  /**
+   * Optimistic-concurrency resource version persisted by the store (C6, #304).
+   * Optional: legacy stores that have not yet been migrated emit `undefined`,
+   * in which case the entity projection falls back to `revision`.
+   */
+  readonly resourceVersion?: number | undefined;
 }
 
 /** Merged split claim view. */

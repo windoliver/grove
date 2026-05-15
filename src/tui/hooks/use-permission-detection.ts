@@ -9,6 +9,7 @@ import { useCallback, useState } from "react";
 import { parseSessionId } from "../../core/session-id.js";
 import { useInterval } from "../../local/use-interval.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
+import { useConfirmAndMutateOpen } from "../safety/index.js";
 
 /** A detected permission prompt from a tmux agent session. */
 export interface PendingPermission {
@@ -73,10 +74,16 @@ export function usePermissionDetection(
 
   useInterval(() => void poll(), 2000, Boolean(tmux));
 
+  // C6 (#304): defer y/n handling while a confirmAndMutate modal is open
+  // so a confirm/cancel keystroke doesn't also approve/deny an unrelated
+  // permission prompt that happens to be pending.
+  const modalOpen = useConfirmAndMutateOpen();
+
   // y/n keybinding for approval — sends keys to the first pending prompt
   useKeyboard(
     useCallback(
       (key) => {
+        if (modalOpen) return;
         if (pendingPermissions.length === 0) return;
         const prompt = pendingPermissions[0];
         if (!prompt) return;
@@ -97,7 +104,7 @@ export function usePermissionDetection(
           }
         }
       },
-      [pendingPermissions],
+      [pendingPermissions, modalOpen],
     ),
   );
 

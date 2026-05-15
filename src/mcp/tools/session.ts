@@ -12,6 +12,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { expectCasOk } from "../../core/cas.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
 
@@ -143,10 +144,11 @@ export function registerSessionTools(server: McpServer, deps: McpDeps): void {
         return toolError("NOT_FOUND", `Session not found: ${args.sessionId}`);
       }
 
-      const result = await store.deleteSession(args.sessionId, {
+      const deleteResult = await store.deleteSession(args.sessionId, {
         force: args.force ?? false,
         actor: args.actor ?? "mcp",
       });
+      const result = expectCasOk(deleteResult, `mcp grove_delete_session(${args.sessionId})`);
 
       return {
         content: [
