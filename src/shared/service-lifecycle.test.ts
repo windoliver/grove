@@ -237,6 +237,79 @@ describe("service startup configuration", () => {
   // spawn promise starts; here we assert that ordering property by checking
   // that resolveServicePort('server') reflects whatever PORT was set to,
   // simulating the post-fallback state.
+  // Round 4 regression: if a sibling grove on the same project is alive
+  // with its own MCP bound on the default port, this run's forceFreshSpawn
+  // must NOT kill it — even though the pidfile identity matches by pid.
+  // Verified by writing a pidfile whose parentPid is a live process other
+  // than the current one, then asserting the classifier returns "preserve".
+  test("forceFreshSpawn preserves MCP owned by a different live grove parent", async () => {
+    const classifier = (
+      lifecycle as unknown as {
+        classifyForceFreshOwner?: (
+          identity: { ok: true; pid: number } | { ok: false; reason: string },
+          name: string,
+          port: number,
+          pidFilePath: string,
+        ) => Promise<{ kind: string; reason: string }>;
+      }
+    ).classifyForceFreshOwner;
+    if (classifier === undefined) {
+      // Not exported in production — this test guards future regressions
+      // when the helper is exposed for cross-process review.
+      return;
+    }
+
+    const groveDir = mkdtempSync(join(tmpdir(), "force-fresh-preserve-"));
+    const pidFile = join(groveDir, "grove.pid");
+    // PPID is the parent of THIS bun test process — a real live PID that
+    // is not us. Mimics a sibling-grove ownership scenario.
+    const liveSiblingPid = process.ppid;
+    writeFileSync(
+      pidFile,
+      JSON.stringify({
+        parentPid: liveSiblingPid,
+        children: [{ name: "mcp", pid: 99_999, port: 4015, serverPort: 4515 }],
+      }),
+    );
+    const decision = await classifier({ ok: true, pid: 99_999 }, "mcp", 4015, pidFile);
+    expect(decision.kind).toBe("preserve");
+    expect(decision.reason).toContain("different live grove");
+  });
+
+  // Round 9 regression: mixed-owner pidfile. A process started, adopted
+  // a sibling's MCP, then died — leaving the top-level parentPid dead
+  // but the adopted MCP entry's own parentPid still pointing at the
+  // live sibling. Next force-fresh classification must trust the
+  // child's parentPid and preserve the live-sibling MCP.
+  test("classifier uses child.parentPid over dead top-level parent", async () => {
+    const classifier = (
+      lifecycle as unknown as {
+        classifyForceFreshOwner?: (
+          identity: { ok: true; pid: number } | { ok: false; reason: string },
+          name: string,
+          port: number,
+          pidFilePath: string,
+        ) => Promise<{ kind: string; reason: string }>;
+      }
+    ).classifyForceFreshOwner;
+    if (classifier === undefined) return;
+
+    const groveDir = mkdtempSync(join(tmpdir(), "mixed-owner-"));
+    const pidFile = join(groveDir, "grove.pid");
+    const liveSiblingPid = process.ppid;
+    const deadPid = 999_999; // overwhelmingly unlikely to be alive
+    writeFileSync(
+      pidFile,
+      JSON.stringify({
+        parentPid: deadPid,
+        children: [{ name: "mcp", pid: 88_888, parentPid: liveSiblingPid, serverPort: 4515 }],
+      }),
+    );
+    const decision = await classifier({ ok: true, pid: 88_888 }, "mcp", 4015, pidFile);
+    expect(decision.kind).toBe("preserve");
+    expect(decision.reason).toContain(`recorded owner ${liveSiblingPid}`);
+  });
+
   test("resolveServicePort reads back env mutation deterministically", () => {
     const resolveServicePort = helpers.resolveServicePort;
     if (resolveServicePort === undefined) throw new Error("resolveServicePort is not exported");

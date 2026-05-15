@@ -23,7 +23,7 @@ operators.
 
 ```
 Welcome ──┬──▶ Initializing ──▶ Session View ──[Ctrl+G]──▶ Inspect Overlay
-          ├──▶ Starting     ──▶ Session View ◀─[Ctrl+G or Esc]──┘
+          ├──▶ Starting     ──▶ Session View ◀──[Ctrl+G]────────┘
           └──▶ Connecting   ──▶ Session View
 ```
 
@@ -64,8 +64,11 @@ the inspect overlay as a top-of-stack page when opened.
   panel zoom, decisions/inbox/vfs/terminal/frontier panels.
 - **Entry:** `Ctrl+G` from the `running` screen, and only from there.
   Pushes `{ kind: "inspect" }` onto `PagesStore`.
-- **Exit:** `Ctrl+G` *or* `Esc`. Both pop the inspect page and remount
-  RunningView. **Caveat:** `PagesRouter` only renders the top-of-stack
+- **Exit:** `Ctrl+G`. Pops the inspect page and remounts RunningView.
+  `Esc` is intentionally **not** an inspect-exit shortcut — it belongs
+  to App's internal modal cascade (close palette/help, pop detail,
+  reset zoom). Operators leave inspect with `Ctrl+G` only; the legacy
+  `Ctrl+B` alias still works. **Caveat:** `PagesRouter` only renders the top-of-stack
   page, so RunningView is unmounted during the overlay and remounted on
   return. RunningView's local React state (cursor position, autoFollow,
   filter, expanded panel, prompt input) **is reset on return** —

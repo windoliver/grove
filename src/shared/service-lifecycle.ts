@@ -71,6 +71,15 @@ export interface RunningServices {
  */
 const SAME_PROCESS_REGISTRY = new Map<string, RunningServices>();
 
+/**
+ * In-flight startServices promises keyed by groveDir. Two concurrent
+ * callers in the same process for the same grove would otherwise both
+ * see "no pidfile" and double-spawn. By awaiting the same promise, the
+ * second caller gets the first caller's settled RunningServices.
+ * Cleared once startServices fully resolves. (#191 round 5.)
+ */
+const SAME_PROCESS_IN_FLIGHT = new Map<string, Promise<RunningServices>>();
+
 // ---------------------------------------------------------------------------
 // Config persistence helper (caller responsibility, not startServices)
 // ---------------------------------------------------------------------------
@@ -115,6 +124,24 @@ export function persistNexusUrlToConfig(groveDir: string, url: string): void {
  * an empty RunningServices (no-op shutdown).
  */
 export async function startServices(options: ServiceStartOptions): Promise<RunningServices> {
+  const { groveDir } = options;
+
+  // In-flight de-dup: two concurrent callers for the same groveDir must
+  // not both pre-resolve+spawn — they'd race on `pickFreePort` and one
+  // would lose the bind race. Pin the first call's promise here; the
+  // second caller awaits it and gets the same RunningServices.
+  const inFlight = SAME_PROCESS_IN_FLIGHT.get(groveDir);
+  if (inFlight) return inFlight;
+  const work = startServicesUnlocked(options);
+  SAME_PROCESS_IN_FLIGHT.set(groveDir, work);
+  try {
+    return await work;
+  } finally {
+    SAME_PROCESS_IN_FLIGHT.delete(groveDir);
+  }
+}
+
+async function startServicesUnlocked(options: ServiceStartOptions): Promise<RunningServices> {
   const { groveDir } = options;
   const report = options.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
   const configPath = join(groveDir, "grove.json");
@@ -484,12 +511,62 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     throw composite;
   }
 
-  // Write PID file
-  if (children.length > 0 || nexusManaged) {
+  // Write PID file ONLY if this call actually spawned something new (a
+  // child or Nexus). Pure-adoption callers (every service was already
+  // running and we just attached) must not rewrite parentPid — doing so
+  // steals ownership from the original live owner, and the force-fresh
+  // classifier later trusts parentPid liveness to decide whether to
+  // preserve a sibling's MCP. (#191 round 6.)
+  const spawnedSomething = children.some((c) => c.acquired === "spawned");
+  if (spawnedSomething || nexusStartedThisCall) {
+    const resolvedServerPort = resolveServicePort("server");
+    // Read existing pidfile to merge metadata for adopted entries —
+    // preserve their original port / serverPort so the schema doesn't
+    // downgrade when we add a freshly-spawned sibling alongside them.
+    let existing: Record<string, unknown> = {};
+    let existingChildren: ReadonlyArray<Record<string, unknown>> = [];
+    if (existsSync(pidFilePath)) {
+      try {
+        existing = JSON.parse(readFileSync(pidFilePath, "utf-8")) as Record<string, unknown>;
+        if (Array.isArray(existing.children)) {
+          existingChildren = existing.children as ReadonlyArray<Record<string, unknown>>;
+        }
+      } catch {
+        /* malformed pidfile — fall through and write fresh */
+      }
+    }
+    // Per-child parentPid: spawned children belong to this process;
+    // adopted children retain their original owner from the prior
+    // pidfile (or the prior top-level parentPid when no per-child owner
+    // is recorded yet — older pidfile schema). The classifier reads the
+    // CHILD's recorded parentPid, so a later run can't mistake an
+    // adopted-from-sibling MCP for one orphaned by this process's exit.
+    // (#191 round 9.)
+    const priorTopParent = typeof existing.parentPid === "number" ? existing.parentPid : undefined;
     const pidData = {
       parentPid: process.pid,
-      children: children.map((c) => ({ name: c.name, pid: c.pid })),
-      startedAt: new Date().toISOString(),
+      children: children.map((c) => {
+        if (c.acquired === "adopted") {
+          const prior = existingChildren.find((x) => x.name === c.name && x.pid === c.pid);
+          if (prior) {
+            const ownerPid = typeof prior.parentPid === "number" ? prior.parentPid : priorTopParent;
+            return {
+              ...prior,
+              name: c.name,
+              pid: c.pid,
+              ...(ownerPid ? { parentPid: ownerPid } : {}),
+            };
+          }
+        }
+        return {
+          name: c.name,
+          pid: c.pid,
+          parentPid: process.pid,
+          port: resolveServicePort(c.name) || undefined,
+          ...(c.name === "mcp" && resolvedServerPort ? { serverPort: resolvedServerPort } : {}),
+        };
+      }),
+      startedAt: existing.startedAt ?? new Date().toISOString(),
       nexusManaged,
     };
     writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
@@ -586,7 +663,10 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   });
   const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
-  if (adoptedLive.length > 0) {
+  // Pure borrowers (owned=false) must NOT touch grove.pid — it belongs
+  // to the live owner. Only rewrite when we own at least one resource
+  // AND we have adopted entries to record. (#191 round 7.)
+  if (owned && adoptedLive.length > 0) {
     try {
       const existing = (() => {
         try {
@@ -595,9 +675,20 @@ export async function stopServices(services: RunningServices): Promise<void> {
           return {} as Record<string, unknown>;
         }
       })();
+      // Preserve per-child metadata (port, serverPort) so the next
+      // force-fresh classification can still tell whether an adopted
+      // MCP is bridged to the right server. Without this, the schema
+      // downgrade would force the classifier into the older-pidfile
+      // killable path on subsequent runs. (#191 round 5.)
+      const existingChildren = Array.isArray(existing.children)
+        ? (existing.children as ReadonlyArray<Record<string, unknown>>)
+        : [];
       const rewritten = {
         ...existing,
-        children: adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+        children: adoptedLive.map((c) => {
+          const prior = existingChildren.find((x) => x.name === c.name && x.pid === c.pid);
+          return prior ? { ...prior, name: c.name, pid: c.pid } : { name: c.name, pid: c.pid };
+        }),
         startedAt: existing.startedAt ?? new Date().toISOString(),
       };
       writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
@@ -946,6 +1037,104 @@ async function preResolvePort(name: string, groveDir: string): Promise<number> {
   return freePort;
 }
 
+/**
+ * Decide whether a port-holder discovered during forceFreshSpawn is safe
+ * to terminate or must be preserved. (#191 round 4.)
+ *
+ * Safe to kill:
+ *   - Pidfile identity matches AND parentPid is dead/this-process AND
+ *     either (a) we recorded the bridge port and it's stale, or (b) no
+ *     port info recorded (older pidfile — conservative-but-not-frozen).
+ *
+ * Must preserve:
+ *   - Foreign listener (no identity match).
+ *   - Pidfile identity matches BUT parentPid is a different live process
+ *     (a sibling grove for the same project, e.g. a parallel TUI on
+ *     fallback ports — killing its MCP would break it).
+ *   - Recorded bridge port matches the current server port (the MCP is
+ *     fresh enough; no shift visible to it).
+ */
+export async function classifyForceFreshOwner(
+  identity: { ok: true; pid: number } | { ok: false; reason: string },
+  name: string,
+  _port: number,
+  pidFilePath: string,
+): Promise<
+  { kind: "killable-stale"; pid: number; reason: string } | { kind: "preserve"; reason: string }
+> {
+  if (!identity.ok) {
+    return { kind: "preserve", reason: "foreign listener" };
+  }
+
+  let pidData:
+    | {
+        parentPid?: number;
+        children?: ReadonlyArray<{
+          name?: string;
+          pid?: number;
+          parentPid?: number;
+          serverPort?: number;
+        }>;
+      }
+    | undefined;
+  try {
+    pidData = JSON.parse(readFileSync(pidFilePath, "utf-8"));
+  } catch {
+    // Pidfile gone or malformed at this read point. Identity already
+    // matched a moment earlier, which means the pidfile DID exist then.
+    // The most plausible cause of a transient read failure is a sibling
+    // grove rewriting the pidfile concurrently. Fail closed: preserve
+    // the listener rather than risk killing a live sibling's child.
+    // (#191 round 5.)
+    return { kind: "preserve", reason: "pidfile unreadable — failing closed" };
+  }
+  // Prefer the child's recorded parentPid (round 9 schema) over the
+  // top-level parentPid. A mixed-owner pidfile may have a dead
+  // top-level parent but an adopted entry whose original owner is
+  // still alive — that entry must be preserved.
+  const childEntry = (pidData?.children ?? []).find((c) => c.name === name);
+  const ownerPid =
+    typeof childEntry?.parentPid === "number" ? childEntry.parentPid : pidData?.parentPid;
+  let parentAlive = false;
+  if (ownerPid) {
+    try {
+      process.kill(ownerPid, 0);
+      parentAlive = true;
+    } catch {
+      parentAlive = false;
+    }
+  }
+  if (parentAlive && ownerPid !== process.pid) {
+    return {
+      kind: "preserve",
+      reason: `recorded owner ${ownerPid} is a different live grove`,
+    };
+  }
+
+  // Owner is dead or is us — this MCP is ours to manage. Cross-check the
+  // recorded bridge port (if present) against the current server.
+  if (name === "mcp" && childEntry?.serverPort !== undefined) {
+    const currentServerPort = resolveServicePort("server");
+    if (childEntry.serverPort === currentServerPort) {
+      return {
+        kind: "preserve",
+        reason: `MCP recorded server port ${childEntry.serverPort} matches current — not stale`,
+      };
+    }
+    return {
+      kind: "killable-stale",
+      pid: identity.pid,
+      reason: `MCP recorded server port ${childEntry.serverPort} != current ${currentServerPort}`,
+    };
+  }
+
+  return {
+    kind: "killable-stale",
+    pid: identity.pid,
+    reason: parentAlive ? "same-process ownership" : "parent process dead",
+  };
+}
+
 async function isPortBound(port: number): Promise<boolean> {
   const { Socket } = await import("node:net");
   return new Promise<boolean>((resolve) => {
@@ -1020,48 +1209,49 @@ async function spawnService(
   if (opts?.forceFreshSpawn) {
     const desiredPort = resolveServicePort(name);
     if (desiredPort && (await isPortBound(desiredPort))) {
-      // If the bound listener is our own pidfile-recorded stale child
-      // (e.g. an MCP from before the server-port shift), terminate it
-      // and reuse the port. Leaving it alive would orphan a process
-      // that grove-down can no longer reach (it gets overwritten in
-      // the pidfile by the fresh spawn) and the stale MCP would keep
-      // serving clients against the now-defunct server. (#191 round 3.)
       const pidFilePath = join(groveDir, "grove.pid");
       const identity = await verifyPortIdentity(desiredPort, pidFilePath, name);
-      if (identity.ok) {
+      const decision = await classifyForceFreshOwner(identity, name, desiredPort, pidFilePath);
+      if (decision.kind === "killable-stale") {
+        // Our own pidfile-recorded child whose recorded bridge port is
+        // demonstrably stale (or whose parent process is dead). Safe to
+        // terminate and reuse the port — keeping it alive would leave
+        // an orphan that grove-down can no longer reach.
         process.stderr.write(
           `[grove] ${name} forced fresh spawn (server port shifted); ` +
-            `killing stale ${name} pid=${identity.pid} on port ${desiredPort}.\n`,
+            `killing stale ${name} pid=${decision.pid} on port ${desiredPort} ` +
+            `(${decision.reason}).\n`,
         );
         try {
-          process.kill(identity.pid, "SIGTERM");
+          process.kill(decision.pid, "SIGTERM");
         } catch {
           /* already dead */
         }
-        // Wait briefly for the port to free up before reusing it.
         const deadline = Date.now() + 3_000;
         while (Date.now() < deadline && (await isPortBound(desiredPort))) {
           await new Promise((r) => setTimeout(r, 100));
         }
         if (await isPortBound(desiredPort)) {
-          // Stale child didn't release the port — escalate to SIGKILL.
           try {
-            process.kill(identity.pid, "SIGKILL");
+            process.kill(decision.pid, "SIGKILL");
           } catch {
             /* gone */
           }
           await new Promise((r) => setTimeout(r, 250));
         }
       } else {
-        // Foreign listener — don't kill it. Pick a free port instead so
-        // we don't disturb whatever else is running on the host.
+        // decision.kind === "preserve" — either a foreign listener or a
+        // pidfile-recorded child owned by a DIFFERENT live grove parent
+        // (e.g. a sibling TUI running on fallback ports for the same
+        // grove). Don't disturb it; bind this run on a free port and
+        // log so operators can see the divergence.
         const freePort = await pickFreePort();
         const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
         process.env[portEnvVar] = String(freePort);
         if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
         process.stderr.write(
           `[grove] ${name} forced fresh spawn (server port shifted); ` +
-            `port ${desiredPort} held by foreign process — using free port ${freePort}.\n`,
+            `port ${desiredPort} preserved (${decision.reason}) — using free port ${freePort}.\n`,
         );
       }
     }

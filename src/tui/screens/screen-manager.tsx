@@ -7,7 +7,7 @@
  *   Screen 3: LaunchPreview (auto-detect CLIs, Ctrl+Enter to launch)
  *   Screen 4: RunningView (contribution feed + agent status)
  *   Screen 5: CompleteView (session summary)
- *   Ctrl+G: open inspect overlay (full panel workspace) / Ctrl+G or Esc to return
+ *   Ctrl+G: open inspect overlay (full panel workspace); Ctrl+G to return
  */
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
@@ -966,7 +966,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.secondary}>Ctrl+G or Esc:back to running view</text>
+              <text color={theme.secondary}>Ctrl+G:back to running view</text>
             </box>
             <box flexGrow={1}>
               <InspectModeWrapper appProps={appProps} onBack={handleExitInspect} />
@@ -1053,7 +1053,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 );
 
 // ---------------------------------------------------------------------------
-// Inspect mode wrapper — intercepts Esc / Ctrl+G (and legacy Ctrl+B) to return to the session view
+// Inspect mode wrapper — intercepts Ctrl+G (and legacy Ctrl+B) to return to the session view
 // ---------------------------------------------------------------------------
 
 interface InspectModeWrapperProps {
@@ -1063,7 +1063,8 @@ interface InspectModeWrapperProps {
 
 /**
  * Wraps the full App as an inspect overlay above the session view.
- * Intercepts Ctrl+G and Esc to return to the session view.
+ * Intercepts Ctrl+G to return to the session view. Esc is intentionally
+ * left for App's modal-dismissal cascade (palette/help/detail/zoom).
  *
  * State note: PagesRouter renders only the top-of-stack page, so
  * RunningView is unmounted while inspect is open and remounted on
@@ -1073,15 +1074,18 @@ interface InspectModeWrapperProps {
  */
 export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
   function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {
-    // Intercept Esc / Ctrl+G to return to the session view. Tab is used by
+    // Intercept Ctrl+G to return to the session view. Tab is used by
     // App for panel cycling, so we use dedicated back keys.
     useKeyboard(
       useCallback(
         (key) => {
-          if (key.name === "escape") {
-            onBack();
-            return;
-          }
+          // Esc is intentionally NOT bound here. App's routeKey already
+          // treats Esc as a modal-dismissal cascade (close palette/help,
+          // pop detail, reset zoom). If the wrapper also exited inspect
+          // on Esc, a single Esc keypress could blow past App's modal
+          // state and remount RunningView — losing the local state the
+          // IA doc explicitly says is reset on remount. (#191 round 8.)
+          // Use Ctrl+G to exit the overlay unambiguously.
           if (key.ctrl && key.name === "g") {
             onBack();
             return;

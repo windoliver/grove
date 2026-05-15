@@ -144,7 +144,6 @@ mock.module("../app.js", () => ({
   App: (): null => null,
   INSPECT_HINTS: Object.freeze([
     { key: "Ctrl+G", label: "Back" },
-    { key: "Esc", label: "Back" },
     { key: "?", label: "Help" },
     { key: "q", label: "Quit" },
   ]),
@@ -1182,7 +1181,11 @@ describe("ScreenManager navigation and edge cases", () => {
 });
 
 describe("InspectModeWrapper exit shortcuts", () => {
-  test("Esc inside inspect overlay calls onBack", async () => {
+  test("Esc inside inspect overlay does NOT exit (#191 round 8)", async () => {
+    // Esc is reserved for App's internal modal-dismissal cascade
+    // (palette/help/detail/zoom). If the wrapper also exited on Esc,
+    // one keypress would blow past App's modal state and remount
+    // RunningView. The unambiguous exit is Ctrl+G.
     const { InspectModeWrapper } = await import("./screen-manager.js");
     const onBack = mock(() => undefined);
 
@@ -1199,7 +1202,7 @@ describe("InspectModeWrapper exit shortcuts", () => {
 
     try {
       await pressKey({ name: "escape" });
-      expect(onBack).toHaveBeenCalledTimes(1);
+      expect(onBack).not.toHaveBeenCalled();
     } finally {
       renderer.unmount();
     }

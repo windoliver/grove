@@ -1856,7 +1856,7 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>
-      <text color={theme.text}> Ctrl+G Inspect overlay (Ctrl+G or Esc to return)</text>
+      <text color={theme.text}> Ctrl+G Inspect overlay (Ctrl+G to return)</text>
       <text color={theme.text}> y/n Approve/deny permission</text>
       <text color={theme.text}> ? Toggle this help</text>
       <text color={theme.text}> Esc Collapse panel / close overlay</text>
