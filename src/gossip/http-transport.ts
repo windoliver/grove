@@ -346,12 +346,26 @@ export class HttpGossipTransport implements GossipTransport {
     return response;
   }
 
+  /**
+   * Fetch a contribution manifest by CID. Returns undefined on 404. Throws
+   * PeerUnreachableError / GossipTimeoutError on network failure.
+   *
+   * HMAC verification is intentionally skipped: contributions are
+   * content-addressed, and callers verify the manifest CID before storing.
+   */
   async fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined> {
     const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     return this.getJson<unknown>(validated, peer.peerId);
   }
 
+  /**
+   * Fetch an artifact's raw bytes by content hash. Returns undefined on 404.
+   * Throws PeerUnreachableError / GossipTimeoutError on network failure.
+   *
+   * HMAC verification is intentionally skipped: callers MUST re-hash the
+   * bytes and compare to the requested hash before storing.
+   */
   async fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined> {
     const url = `${peer.address}/api/cas/${encodeURIComponent(contentHash)}`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });

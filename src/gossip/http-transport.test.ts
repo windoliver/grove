@@ -407,6 +407,24 @@ describe("HttpGossipTransport", () => {
         server.stop();
       }
     });
+
+    it("returns undefined on 404", async () => {
+      const server = Bun.serve({ port: 0, fetch: () => new Response("x", { status: 404 }) });
+      try {
+        const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+        const peer: PeerInfo = {
+          peerId: "p",
+          address: `http://localhost:${server.port}`,
+          age: 0,
+          lastSeen: new Date().toISOString(),
+        };
+        expect(
+          await transport.fetchArtifact(peer, `blake3:${"0".repeat(64)}`),
+        ).toBeUndefined();
+      } finally {
+        server.stop();
+      }
+    });
   });
 });
 
