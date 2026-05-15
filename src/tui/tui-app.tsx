@@ -1,5 +1,5 @@
 /**
- * TUI application wrapper — handles the setup -> starting -> boardroom lifecycle.
+ * TUI application wrapper — handles the setup -> starting -> session lifecycle.
  *
  * Always shows the setup screen first so the user can choose what to do:
  * - Resume an existing grove (if .grove/ exists)
@@ -8,7 +8,8 @@
  *
  * After the user picks an action, services start inside the TUI with
  * progress feedback, then transitions to the simplified 5-screen flow
- * (ScreenManager) or the full boardroom App (advanced mode via Tab).
+ * (ScreenManager). The boardroom App is reachable only as a deep-inspect
+ * overlay via Ctrl+I from RunningView.
  */
 
 import { join } from "node:path";
@@ -31,8 +32,8 @@ import { WelcomeScreen } from "./views/welcome/index.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** The TUI mode state machine: setup -> initializing/starting -> boardroom. */
-type TuiMode = "setup" | "initializing" | "starting" | "boardroom";
+/** The TUI mode state machine: setup -> initializing/starting -> session. */
+type TuiMode = "setup" | "initializing" | "starting" | "session";
 
 /** A preset entry for the welcome screen. */
 export interface TuiPresetEntry {
@@ -82,7 +83,7 @@ const INIT_STEPS = [
 // Component
 // ---------------------------------------------------------------------------
 
-/** TUI application root that manages the setup -> boardroom lifecycle. */
+/** TUI application root that manages the setup -> session lifecycle. */
 export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(function TuiApp(
   props: TuiAppProps,
 ): React.ReactNode {
@@ -107,7 +108,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   const [initError, setInitError] = useState<string | undefined>();
   const [startingSteps, setStartingSteps] = useState<string[]>([]);
   const [startingDone, setStartingDone] = useState(false);
-  /** Tracks whether we reached boardroom via Resume (start on RunningView). */
+  /** Tracks whether we reached the session view via Resume (start on RunningView). */
   const isResumedRef = useRef(false);
   const autoConnectTriggered = useRef(false);
 
@@ -124,7 +125,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           setStartingDone(true);
           await new Promise<void>((resolve) => setTimeout(resolve, 300));
           setAppProps(result);
-          setMode("boardroom");
+          setMode("session");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setInitError(message);
@@ -174,7 +175,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           await new Promise<void>((resolve) => setTimeout(resolve, 500));
 
           setAppProps(result);
-          setMode("boardroom");
+          setMode("session");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           process.stderr.write(`[grove init failed] ${message}\n`);
@@ -207,7 +208,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           await new Promise<void>((resolve) => setTimeout(resolve, 300));
 
           setAppProps(result);
-          setMode("boardroom");
+          setMode("session");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setInitError(message);
@@ -234,7 +235,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           setStartingDone(true);
           await new Promise<void>((resolve) => setTimeout(resolve, 200));
           setAppProps(result);
-          setMode("boardroom");
+          setMode("session");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setInitError(message);
@@ -269,9 +270,9 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           await new Promise<void>((resolve) => setTimeout(resolve, 300));
 
           setAppProps(result);
-          setMode("boardroom");
+          setMode("session");
           // Drop the stored URL once we've successfully transitioned —
-          // no future boardroom→setup path should pre-fill Connect with
+          // no future session→setup path should pre-fill Connect with
           // the previously-successful URL.
           setLastNexusUrl(undefined);
         } catch (err) {
@@ -316,7 +317,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
   // ---------------------------------------------------------------------------
   // SpawnManager singleton — created once when AppProps first resolve.
-  // Shared via SpawnManagerContext to both ScreenManager and App (advanced mode).
+  // Shared via SpawnManagerContext to both ScreenManager and App (inspect overlay).
   // ---------------------------------------------------------------------------
 
   const spawnManager = useMemo(() => {
@@ -522,7 +523,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   // Render based on mode
   // ---------------------------------------------------------------------------
 
-  if (mode === "boardroom" && appProps && spawnManager) {
+  if (mode === "session" && appProps && spawnManager) {
     // Resumed groves start on RunningView (Screen 4); new groves start on
     // PresetSelect (Screen 1) — but for resumed groves that already went
     // through welcome, we skip directly to RunningView.
