@@ -10,6 +10,25 @@
 
 ---
 
+## Execution Notes
+
+This repo's `bunfig.toml` enables coverage thresholds globally. For targeted
+TDD commands in this plan, run the listed `bun test ...` file set with a
+temporary config that disables coverage:
+
+```bash
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test <test-files>
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
+```
+
+For `bun run typecheck`, `bun run check`, and full-suite commands, use the
+repository config as written.
+
 ## File Structure
 
 - Create `src/tui/panels/panel-ids.ts`: built-in panel string IDs and conversion helpers between `Panel` and string IDs.
@@ -96,7 +115,13 @@ describe("panel IDs", () => {
 Run:
 
 ```bash
-bun test src/tui/panels/panel-ids.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-ids.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: FAIL because `src/tui/panels/panel-ids.ts` does not exist.
@@ -179,7 +204,13 @@ export function idToPanel(id: string): Panel | undefined {
 Run:
 
 ```bash
-bun test src/tui/panels/panel-ids.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-ids.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
@@ -301,7 +332,13 @@ describe("mergeTuiRegistrations", () => {
 Run:
 
 ```bash
-bun test src/tui/plugins/registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/plugins/registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: FAIL because `src/tui/plugins/types.ts` and `src/tui/plugins/registry.ts` do not exist.
@@ -458,7 +495,13 @@ function sourceRank(source: "builtin" | "plugin"): number {
 Run:
 
 ```bash
-bun test src/tui/plugins/registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/plugins/registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
@@ -553,7 +596,13 @@ Update the import list in the same file to include:
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: FAIL because `PanelDef.id`, `getPanelDefById`, and `getBuiltInTuiRegistryEntries` do not exist.
@@ -635,7 +684,13 @@ export function getBuiltInTuiRegistryEntries(): readonly TuiRegistryEntry[] {
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
@@ -701,7 +756,13 @@ Update the import list in the same file to include:
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: FAIL because `getPresetPanelIds` does not exist.
@@ -753,7 +814,13 @@ Keep `PRESET_PANELS` and `getPresetPanels()` unchanged for existing callers.
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
@@ -807,7 +874,13 @@ describe("injectable registry helpers", () => {
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: FAIL because `getRowGroups`, `getVisiblePanelsForLayout`, and `getActivePanelsForLayout` do not accept injected registries yet.
@@ -884,7 +957,13 @@ export function getActivePanelsForLayout(
 Run:
 
 ```bash
-bun test src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
@@ -942,7 +1021,13 @@ git commit -m "refactor(tui): key panel rows by stable ids"
 Run:
 
 ```bash
-bun test src/tui/panels/panel-ids.test.ts src/tui/plugins/registry.test.ts src/tui/panels/panel-registry.test.ts
+tmpdir=$(mktemp -d /tmp/grove-bunfig.XXXXXX)
+tmp="$tmpdir/bunfig.toml"
+printf '[test]\ncoverage = false\n' > "$tmp"
+PATH="$HOME/.bun/bin:$PATH" bun --config="$tmp" test src/tui/panels/panel-ids.test.ts src/tui/plugins/registry.test.ts src/tui/panels/panel-registry.test.ts
+rc=$?
+rm -rf "$tmpdir"
+exit $rc
 ```
 
 Expected: PASS.
