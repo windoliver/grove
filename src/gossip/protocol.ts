@@ -161,7 +161,15 @@ export class DefaultGossipService implements GossipService {
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
-  /** Map of cid → set of advertising peer ids. Bounded by MAX_MERGED_FRONTIER_ENTRIES × view size. */
+  /**
+   * Map of cid → (peerId → PeerInfo) for peers that advertised this cid.
+   *
+   * The outer map is bounded by the number of distinct cids in
+   * `remoteFrontier` (≤ {@link MAX_MERGED_FRONTIER_ENTRIES}) — eviction is
+   * coupled to the frontier-prune step in {@link mergeRemoteFrontier}. The
+   * inner per-cid map is bounded by the partial view size (one entry per
+   * peer that has gossiped this cid).
+   */
   private readonly advertisements = new Map<string, Map<string, PeerInfo>>();
   private localDigest: FrontierDigestEntry[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -287,7 +295,12 @@ export class DefaultGossipService implements GossipService {
     this.mergeRemoteFrontier(message.frontier);
 
     if (message.address) {
-      this.recordAdvertisements(message.peerId, message.address, message.frontier);
+      this.recordAdvertisements(
+        message.peerId,
+        message.address,
+        message.frontier,
+        message.timestamp,
+      );
     }
 
     // Add sender to our view only if they provided a routable address
@@ -443,12 +456,16 @@ export class DefaultGossipService implements GossipService {
     peerId: string,
     address: string,
     frontier: readonly FrontierDigestEntry[],
+    lastSeen: string,
   ): void {
+    // Purely additive: never deletes. Eviction is bound to mergeRemoteFrontier
+    // (which is the only place that prunes the frontier — and therefore the
+    // only place that can cause an advertisement to become orphaned).
     const peer: PeerInfo = {
       peerId,
       address,
       age: 0,
-      lastSeen: new Date(this.now()).toISOString(),
+      lastSeen,
     };
     for (const entry of frontier) {
       let byPeer = this.advertisements.get(entry.cid);
@@ -457,15 +474,6 @@ export class DefaultGossipService implements GossipService {
         this.advertisements.set(entry.cid, byPeer);
       }
       byPeer.set(peerId, peer);
-    }
-    this.evictAdvertisementsForMissingCids();
-  }
-
-  private evictAdvertisementsForMissingCids(): void {
-    // Drop entries for CIDs no longer present in remoteFrontier (eviction parity).
-    const liveCids = new Set(this.remoteFrontier.map((e) => e.cid));
-    for (const cid of this.advertisements.keys()) {
-      if (!liveCids.has(cid)) this.advertisements.delete(cid);
     }
   }
 
@@ -600,7 +608,12 @@ export class DefaultGossipService implements GossipService {
         this.markAlive(peer.peerId);
         this.mergeRemoteFrontier(response.frontier);
         if (response.address) {
-          this.recordAdvertisements(response.peerId, response.address, response.frontier);
+          this.recordAdvertisements(
+            response.peerId,
+            response.address,
+            response.frontier,
+            response.timestamp,
+          );
         }
       } catch {
         this.markUnresponsive(peer.peerId);
@@ -691,6 +704,16 @@ export class DefaultGossipService implements GossipService {
     if (merged.length > MAX_MERGED_FRONTIER_ENTRIES) {
       merged.sort((a, b) => sortValueForEviction(b) - sortValueForEviction(a));
       merged = merged.slice(0, MAX_MERGED_FRONTIER_ENTRIES);
+      // Eviction-parity: drop advertisements for any cid no longer referenced
+      // by *any* surviving (metric, cid) key. Coupling this to the prune step
+      // (rather than to recordAdvertisements) eliminates the race where a
+      // freshly-recorded advertisement is wiped because its cid ranked below
+      // the eviction threshold.
+      const survivingCids = new Set<string>();
+      for (const entry of merged) survivingCids.add(entry.cid);
+      for (const cid of this.advertisements.keys()) {
+        if (!survivingCids.has(cid)) this.advertisements.delete(cid);
+      }
     }
 
     this.remoteFrontier = merged;

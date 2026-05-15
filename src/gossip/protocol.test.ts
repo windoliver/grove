@@ -995,14 +995,101 @@ describe("DefaultGossipService", () => {
     });
 
     it("aggregates advertisements from multiple peers", async () => {
-      const cid = "blake3:" + "c".repeat(64);
+      const cid = `blake3:${"c".repeat(64)}`;
       const entry = { metric: "m", value: 1, cid, direction: "maximize" as const };
       await service.handleExchange(makeGossipMessage("peer-A", [entry]));
       await service.handleExchange(makeGossipMessage("peer-B", [entry]));
-      expect(service.peersAdvertising(cid).map((p) => p.peerId).sort()).toEqual([
-        "peer-A",
-        "peer-B",
-      ]);
+      expect(
+        service
+          .peersAdvertising(cid)
+          .map((p) => p.peerId)
+          .sort(),
+      ).toEqual(["peer-A", "peer-B"]);
+    });
+
+    it("returns [] when sender omits address (cannot fetch from peer)", async () => {
+      const cid = `blake3:${"d".repeat(64)}`;
+      // GossipMessage.address is `string | undefined` — exercise the undefined path.
+      const message: GossipMessage = {
+        ...makeGossipMessage("peer-noaddr", [
+          { metric: "tests_passed", value: 5, cid, direction: "maximize" },
+        ]),
+        address: undefined,
+      };
+      await service.handleExchange(message);
+      expect(service.peersAdvertising(cid)).toEqual([]);
+    });
+
+    it("evicts advertisements in parity with frontier eviction at saturation", async () => {
+      // First, advertise a low-value cid that lives happily in the frontier
+      // (which is still empty at this point).
+      const lowCid = `blake3:${"1".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-low", [
+          { metric: "loss", value: 1e9, cid: lowCid, direction: "minimize" },
+        ]),
+      });
+      expect(service.peersAdvertising(lowCid).map((p) => p.peerId)).toEqual(["peer-low"]);
+
+      // Next, a "high-quality" advertisement that we expect to survive the
+      // upcoming saturation event.
+      const highCid = `blake3:${"2".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-high", [
+          { metric: "loss", value: -1, cid: highCid, direction: "minimize" },
+        ]),
+      });
+
+      // Now flood the frontier with MAX_MERGED_FRONTIER_ENTRIES entries whose
+      // minimize values rank between highCid (best, value=-1) and lowCid
+      // (worst, value=1e9). Merge size becomes MAX + 2, eviction trims the
+      // two worst entries — which are lowCid plus one saturating cid. The
+      // advertisement for lowCid must be evicted alongside; highCid must
+      // remain.
+      const saturating: FrontierDigestEntry[] = [];
+      for (let i = 0; i < MAX_MERGED_FRONTIER_ENTRIES; i++) {
+        saturating.push({
+          metric: "loss",
+          value: i, // 0 .. MAX-1, all better than 1e9 and worse than -1
+          cid: `blake3:sat-${i}`,
+          direction: "minimize",
+        });
+      }
+      await service.handleExchange({
+        ...makeGossipMessage("peer-saturate"),
+        frontier: saturating,
+      });
+
+      // lowCid was pruned by the merge → advertisement must be evicted in parity.
+      expect(service.peersAdvertising(lowCid)).toEqual([]);
+      // highCid survived the merge → advertisement is preserved.
+      expect(service.peersAdvertising(highCid).map((p) => p.peerId)).toEqual(["peer-high"]);
+    });
+
+    it("re-advertising the same (peer, cid) refreshes lastSeen to the latest message timestamp", async () => {
+      const cid = `blake3:${"e".repeat(64)}`;
+      const earlierTs = new Date(1_000_000_000_000).toISOString();
+      const laterTs = new Date(1_000_000_900_000).toISOString();
+
+      await service.handleExchange({
+        ...makeGossipMessage("peer-refresh", [
+          { metric: "m", value: 1, cid, direction: "maximize" },
+        ]),
+        timestamp: earlierTs,
+      });
+      const first = service.peersAdvertising(cid);
+      expect(first).toHaveLength(1);
+      expect(first[0]?.lastSeen).toBe(earlierTs);
+
+      await service.handleExchange({
+        ...makeGossipMessage("peer-refresh", [
+          { metric: "m", value: 2, cid, direction: "maximize" },
+        ]),
+        timestamp: laterTs,
+      });
+      const second = service.peersAdvertising(cid);
+      expect(second).toHaveLength(1);
+      expect(second[0]?.lastSeen).toBe(laterTs);
     });
   });
 });
