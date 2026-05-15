@@ -140,7 +140,7 @@ function mockActions(overrides?: {
     onFrontierTabNext: () => record("onFrontierTabNext"),
     onFrontierTabPrev: () => record("onFrontierTabPrev"),
     onFrontierAdopt: (cid, summary) => record("onFrontierAdopt", cid, summary),
-    frontierEntries: overrides?.frontierEntries ?? [],
+    frontierEntries: () => overrides?.frontierEntries ?? [],
     rowCount: overrides?.rowCount ?? 10,
     pageSize: 20,
     paletteItemCount: overrides?.paletteItemCount ?? 5,

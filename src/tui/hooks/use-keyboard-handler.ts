@@ -68,8 +68,10 @@ export interface KeyboardActions {
   readonly onFrontierTabNext: () => void;
   readonly onFrontierTabPrev: () => void;
   readonly onFrontierAdopt: (cid: string, summary: string) => void;
-  /** Entries (cid + summary) for the currently visible frontier slice. */
-  readonly frontierEntries: ReadonlyArray<{ cid: string; summary: string }>;
+  /** Entries (cid + summary) for the currently visible frontier slice.
+   *  Resolved on each call so the value reflects the latest slice nav,
+   *  even if it happened in the same JS tick before React committed. */
+  readonly frontierEntries: () => ReadonlyArray<{ cid: string; summary: string }>;
   readonly compareMode: boolean;
   readonly frontierCids: readonly string[];
   readonly selectedSession: string | undefined;
@@ -330,16 +332,14 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onFrontierTabPrev();
       return true;
     }
-    if (
-      input === "a" &&
-      !actions.compareMode &&
-      actions.frontierEntries.length > 0 &&
-      actions.nav.state.cursor < actions.frontierEntries.length
-    ) {
-      const entry = actions.frontierEntries[actions.nav.state.cursor];
-      if (entry) {
-        actions.onFrontierAdopt(entry.cid, entry.summary);
-        return true;
+    if (input === "a" && !actions.compareMode) {
+      const entries = actions.frontierEntries();
+      if (entries.length > 0 && actions.nav.state.cursor < entries.length) {
+        const entry = entries[actions.nav.state.cursor];
+        if (entry) {
+          actions.onFrontierAdopt(entry.cid, entry.summary);
+          return true;
+        }
       }
     }
   }

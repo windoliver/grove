@@ -186,6 +186,15 @@ export function App({
   const [frontierEntries, setFrontierEntries] = useState<
     ReadonlyArray<{ cid: string; summary: string }>
   >([]);
+  // Mutable mirrors of the above. setState is asynchronous: between dispatch
+  // of FRONTIER_SLICE_NEXT and the next React commit, the keyboardActions
+  // object captured by routeKey still holds the OLD frontierEntries/Cids.
+  // If terminal input delivers `]` then `a` (or `]` then Enter) in the same
+  // JS tick, that stale value would adopt/select a row from the previous
+  // slice. We update both state AND ref so reads from these refs in
+  // keyboard handlers always see the latest synchronous value.
+  const frontierCidsRef = useRef<readonly string[]>([]);
+  const frontierEntriesRef = useRef<ReadonlyArray<{ cid: string; summary: string }>>([]);
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -547,7 +556,16 @@ export function App({
 
   const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
     setFrontierCids(cids);
+    frontierCidsRef.current = cids;
   }, []);
+
+  const handleFrontierEntriesChanged = useCallback(
+    (entries: ReadonlyArray<{ cid: string; summary: string }>) => {
+      setFrontierEntries(entries);
+      frontierEntriesRef.current = entries;
+    },
+    [],
+  );
 
   const handleSelect = useCallback(
     (index: number) => {
@@ -940,30 +958,39 @@ export function App({
       keybindingOverrides,
       keyActionMap,
       // Slice nav also resets the global cursor to 0 AND synchronously
-      // clears frontierEntries. Without the cursor reset, switching from a
-      // long slice (cursor=9) to a short slice (2 rows) leaves the cursor
-      // off-row, hiding the selection AND blocking 'a'. Without the entries
-      // clear, a fast `]` then `a` between dispatch and FrontierView's
-      // passive-effect re-emit would adopt a row from the previous slice —
-      // setFrontierEntries([]) closes that race; the effect re-fills on the
-      // next render with the new active slice's entries.
+      // clears the entries/cids refs. Without the cursor reset, switching
+      // from a long slice (cursor=9) to a short slice (2 rows) leaves the
+      // cursor off-row, hiding the selection AND blocking 'a'. Without the
+      // synchronous ref clear, a fast `]` then `a` (or `]` then Enter)
+      // delivered in the same JS tick would still see the previous slice's
+      // entries because setState defers the visible value to the next
+      // render. The refs are mutated in place so the very next routeKey
+      // call sees an empty array; the effect re-fills both state and ref
+      // on the next render with the new active slice's data.
       onFrontierTabNext: () => {
         dispatch({ type: "FRONTIER_SLICE_NEXT" });
         nav.resetCursor();
         setFrontierEntries([]);
         setFrontierCids([]);
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
       },
       onFrontierTabPrev: () => {
         dispatch({ type: "FRONTIER_SLICE_PREV" });
         nav.resetCursor();
         setFrontierEntries([]);
         setFrontierCids([]);
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
       },
       onFrontierAdopt: (cid: string, summary: string) => {
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         panels.setMode(InputMode.CommandPalette);
       },
-      frontierEntries,
+      // Function form so the keyboard handler always reads the latest ref
+      // (refs are mutated synchronously by handleFrontierEntriesChanged and
+      // by slice-nav handlers; state-based values would lag by one render).
+      frontierEntries: () => frontierEntriesRef.current,
     }),
     [
       panels,
@@ -1093,7 +1120,7 @@ export function App({
           onFrontierCidsChanged={handleFrontierCidsChanged}
           activeSliceKey={ks.activeFrontierSlice}
           onFrontierTabsChanged={(keys) => dispatch({ type: "FRONTIER_SET_TABS", keys })}
-          onFrontierEntriesChanged={setFrontierEntries}
+          onFrontierEntriesChanged={handleFrontierEntriesChanged}
           zoomLevel={ks.zoomLevel}
           activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
           terminalScrollOffset={ks.terminalScrollOffset}
