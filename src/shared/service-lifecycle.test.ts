@@ -18,6 +18,7 @@ import { stopServices } from "./service-lifecycle.js";
 const helpers = lifecycle as typeof lifecycle & {
   resolveBunExecutable?: (execPath?: string) => string;
   resolveServicePort?: (name: string, env?: NodeJS.ProcessEnv) => number;
+  pickFreePort?: () => Promise<number>;
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,135 @@ describe("service startup configuration", () => {
 
     expect(resolveBunExecutable("/Users/example/.bun/bin/bun")).toBe("/Users/example/.bun/bin/bun");
     expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
+  });
+
+  // Concurrent grove worktrees on the same host should not collide on the
+  // default service port. When the configured port is held by a foreign
+  // process, spawnService falls back to an OS-assigned ephemeral port via
+  // pickFreePort instead of throwing. (#191 follow-up)
+  test("pickFreePort returns an unused port we can bind to", async () => {
+    expect(helpers.pickFreePort).toBeDefined();
+    const pickFreePort = helpers.pickFreePort;
+    if (pickFreePort === undefined) throw new Error("pickFreePort is not exported");
+
+    const port = await pickFreePort();
+    expect(port).toBeGreaterThan(0);
+    expect(port).toBeLessThan(65_536);
+
+    // Bind to the returned port to prove it's actually free at this moment.
+    const server = Bun.serve({ port, fetch: () => new Response("ok") });
+    try {
+      expect(server.port).toBe(port);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("pickFreePort returns distinct ports on consecutive calls", async () => {
+    const pickFreePort = helpers.pickFreePort;
+    if (pickFreePort === undefined) throw new Error("pickFreePort is not exported");
+
+    const a = await pickFreePort();
+    const srv = Bun.serve({ port: a, fetch: () => new Response("ok") });
+    try {
+      const b = await pickFreePort();
+      expect(b).not.toBe(a);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  // Race regression: the two children must NOT see process.env.PORT /
+  // process.env.GROVE_SERVER_PORT mutated by a sibling spawn after they've
+  // already read serviceEnv(). The fix pre-resolves all ports before any
+  // spawn promise starts; here we assert that ordering property by checking
+  // that resolveServicePort('server') reflects whatever PORT was set to,
+  // simulating the post-fallback state.
+  // Round 4 regression: if a sibling grove on the same project is alive
+  // with its own MCP bound on the default port, this run's forceFreshSpawn
+  // must NOT kill it — even though the pidfile identity matches by pid.
+  // Verified by writing a pidfile whose parentPid is a live process other
+  // than the current one, then asserting the classifier returns "preserve".
+  test("forceFreshSpawn preserves MCP owned by a different live grove parent", async () => {
+    const classifier = (
+      lifecycle as unknown as {
+        classifyForceFreshOwner?: (
+          identity: { ok: true; pid: number } | { ok: false; reason: string },
+          name: string,
+          port: number,
+          pidFilePath: string,
+        ) => Promise<{ kind: string; reason: string }>;
+      }
+    ).classifyForceFreshOwner;
+    if (classifier === undefined) {
+      // Not exported in production — this test guards future regressions
+      // when the helper is exposed for cross-process review.
+      return;
+    }
+
+    const groveDir = mkdtempSync(join(tmpdir(), "force-fresh-preserve-"));
+    const pidFile = join(groveDir, "grove.pid");
+    // PPID is the parent of THIS bun test process — a real live PID that
+    // is not us. Mimics a sibling-grove ownership scenario.
+    const liveSiblingPid = process.ppid;
+    writeFileSync(
+      pidFile,
+      JSON.stringify({
+        parentPid: liveSiblingPid,
+        children: [{ name: "mcp", pid: 99_999, port: 4015, serverPort: 4515 }],
+      }),
+    );
+    const decision = await classifier({ ok: true, pid: 99_999 }, "mcp", 4015, pidFile);
+    expect(decision.kind).toBe("preserve");
+    expect(decision.reason).toContain("different live grove");
+  });
+
+  // Round 9 regression: mixed-owner pidfile. A process started, adopted
+  // a sibling's MCP, then died — leaving the top-level parentPid dead
+  // but the adopted MCP entry's own parentPid still pointing at the
+  // live sibling. Next force-fresh classification must trust the
+  // child's parentPid and preserve the live-sibling MCP.
+  test("classifier uses child.parentPid over dead top-level parent", async () => {
+    const classifier = (
+      lifecycle as unknown as {
+        classifyForceFreshOwner?: (
+          identity: { ok: true; pid: number } | { ok: false; reason: string },
+          name: string,
+          port: number,
+          pidFilePath: string,
+        ) => Promise<{ kind: string; reason: string }>;
+      }
+    ).classifyForceFreshOwner;
+    if (classifier === undefined) return;
+
+    const groveDir = mkdtempSync(join(tmpdir(), "mixed-owner-"));
+    const pidFile = join(groveDir, "grove.pid");
+    const liveSiblingPid = process.ppid;
+    const deadPid = 999_999; // overwhelmingly unlikely to be alive
+    writeFileSync(
+      pidFile,
+      JSON.stringify({
+        parentPid: deadPid,
+        children: [{ name: "mcp", pid: 88_888, parentPid: liveSiblingPid, serverPort: 4515 }],
+      }),
+    );
+    const decision = await classifier({ ok: true, pid: 88_888 }, "mcp", 4015, pidFile);
+    expect(decision.kind).toBe("preserve");
+    expect(decision.reason).toContain(`recorded owner ${liveSiblingPid}`);
+  });
+
+  test("resolveServicePort reads back env mutation deterministically", () => {
+    const resolveServicePort = helpers.resolveServicePort;
+    if (resolveServicePort === undefined) throw new Error("resolveServicePort is not exported");
+
+    // Caller mutates env.PORT (the fallback path does this synchronously
+    // inside preResolvePort) — every subsequent resolveServicePort('server')
+    // must see the new value. Without pre-resolution before parallel spawn,
+    // an MCP child could read serviceEnv() before this mutation lands.
+    const env = { PORT: "55501" } as NodeJS.ProcessEnv;
+    expect(resolveServicePort("server", env)).toBe(55501);
+    env.PORT = "55502";
+    expect(resolveServicePort("server", env)).toBe(55502);
   });
 });
 

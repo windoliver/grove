@@ -126,7 +126,7 @@ export interface RunningKeyboardActions {
   readonly traceCycleAgent: () => void;
   // Navigation
   readonly openDetail: () => void;
-  readonly toggleAdvanced: () => void;
+  readonly enterInspect: () => void;
   readonly quit: () => void;
   // Permission
   readonly approvePermission: () => void;
@@ -294,9 +294,9 @@ export function routeRunningKey(
     return true;
   }
 
-  // Ctrl+A: toggle advanced mode
-  if (isCtrl && input === "a") {
-    actions.toggleAdvanced();
+  // Ctrl+G: enter inspect mode (Ctrl+I shares byte 0x09 with Tab — unusable in terminals)
+  if (isCtrl && input === "g") {
+    actions.enterInspect();
     return true;
   }
 
@@ -421,11 +421,11 @@ export function routeRunningKey(
     return false;
   }
 
-  // Enter: open detail view for selected feed item
-  if (input === "return" && actions.feedLength > 0) {
-    actions.openDetail();
-    return true;
-  }
+  // Enter: reserved for a future contribution-detail route. Previously
+  // routed to openDetail which was wired to onEnterInspect — that gave
+  // Enter an accidental inspect-entry path, violating the documented
+  // "Ctrl+G only" contract (#191 round 3). Until a real detail view
+  // exists, Enter on a feed item is a no-op.
 
   // r: respond to ask_user question (scroll to it)
   if (input === "r" && actions.hasAskUser) {

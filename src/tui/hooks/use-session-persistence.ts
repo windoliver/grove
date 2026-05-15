@@ -31,7 +31,7 @@ export interface TuiViewState {
   readonly zoomLevel?: ZoomLevel | undefined;
   /** Index of the selected agent in the trace view. */
   readonly traceSelectedAgent?: number | undefined;
-  /** Index of the focused panel in the panel-manager (advanced mode). */
+  /** Index of the focused panel in the panel-manager (inspect overlay). */
   readonly focusedPanel?: number | undefined;
   /** Visible operator panel IDs (for grid layout restore). */
   readonly visibleOperatorPanels?: readonly number[] | undefined;

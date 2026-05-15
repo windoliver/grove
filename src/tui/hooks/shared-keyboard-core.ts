@@ -1,5 +1,5 @@
 /**
- * Shared keyboard primitives used by both Boardroom (routeKey) and
+ * Shared keyboard primitives used by both inspect overlay (routeKey) and
  * Running view (routeRunningKey).
  *
  * Extracts the two patterns that are structurally identical across both

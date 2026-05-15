@@ -7,7 +7,7 @@
  *   Screen 3: LaunchPreview (auto-detect CLIs, Ctrl+Enter to launch)
  *   Screen 4: RunningView (contribution feed + agent status)
  *   Screen 5: CompleteView (session summary)
- *   Ctrl+A: toggle to App (advanced mode) / Ctrl+B back to RunningView
+ *   Ctrl+G: open inspect overlay (full panel workspace); Ctrl+G to return
  */
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
@@ -63,7 +63,7 @@ export type Screen =
   | "spawning"
   | "running"
   | "complete"
-  | "advanced";
+  | "inspect";
 
 /** State tracked across screen transitions. */
 export interface ScreenState {
@@ -90,7 +90,7 @@ export interface ScreenState {
 
 /** Props for the ScreenManager component. */
 export interface ScreenManagerProps {
-  /** AppProps for the advanced boardroom mode. */
+  /** AppProps passed through to the inspect overlay. */
   readonly appProps: AppProps;
   /** Presets for Screen 1. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
@@ -884,10 +884,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       }
     }, [presets, handleQuit, pages]);
 
-    // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
-    const handleToggleAdvanced = useCallback(() => {
-      setState((s) => ({ ...s, screen: "advanced" }));
-      pages.push({ kind: "advanced" });
+    // Screen 4 -> inspect overlay (Ctrl+G, deliberate entry)
+    const handleEnterInspect = useCallback(() => {
+      setState((s) => ({ ...s, screen: "inspect" }));
+      pages.push({ kind: "inspect" });
     }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
@@ -977,9 +977,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [permissionBar],
     );
 
-    // Advanced -> Running back handler. setState keeps state.screen in sync;
-    // pages.pop() walks back off the advanced page that was pushed on entry.
-    const handleAdvancedBack = useCallback(() => {
+    // Inspect -> Running back handler. setState keeps state.screen in sync;
+    // pages.pop() walks back off the inspect page that was pushed on entry.
+    const handleExitInspect = useCallback(() => {
       setState((s) => ({ ...s, screen: "running" }));
       pages.pop();
     }, [pages]);
@@ -1064,20 +1064,20 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               return spawnManager.sendToAgent(role, message);
             }}
             activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
-            onToggleAdvanced={handleToggleAdvanced}
+            onEnterInspect={handleEnterInspect}
             onComplete={handleComplete}
             onQuit={handleQuit}
             onNavigateBackToMain={handleNavigateBackToMain}
           />,
         );
-      const AdvancedPage = (): React.ReactNode =>
+      const InspectPage = (): React.ReactNode =>
         wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.secondary}>Ctrl+B:back to running view</text>
+              <text color={theme.secondary}>Ctrl+G:back to running view</text>
             </box>
             <box flexGrow={1}>
-              <AdvancedModeWrapper appProps={appProps} onBack={handleAdvancedBack} />
+              <InspectModeWrapper appProps={appProps} onBack={handleExitInspect} />
             </box>
           </box>,
         );
@@ -1106,7 +1106,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         "launch-preview": LaunchPreviewPage,
         spawning: SpawningPage,
         running: RunningPage,
-        advanced: AdvancedPage,
+        inspect: InspectPage,
         complete: CompletePage,
         panel: RunningPage,
         "entity-detail": RunningPage,
@@ -1129,10 +1129,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleLaunchConfirm,
       handleLaunchBack,
       handleSpawnComplete,
-      handleToggleAdvanced,
+      handleEnterInspect,
       handleComplete,
       handleNavigateBackToMain,
-      handleAdvancedBack,
+      handleExitInspect,
       handleNewSession,
       provider,
       appProps,
@@ -1293,32 +1293,53 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
   });
 
 // ---------------------------------------------------------------------------
-// Advanced mode wrapper — intercepts Tab to go back to simple view
+// Inspect mode wrapper — intercepts Ctrl+G (and legacy Ctrl+B) to return to the session view
 // ---------------------------------------------------------------------------
 
-interface AdvancedModeWrapperProps {
+interface InspectModeWrapperProps {
   readonly appProps: AppProps;
   readonly onBack: () => void;
 }
 
 /**
- * Wraps the full App (boardroom) and intercepts Tab key to switch back
- * to the simple RunningView.
+ * Wraps the full App as an inspect overlay above the session view.
+ * Intercepts Ctrl+G to return to the session view. Esc is intentionally
+ * left for App's modal-dismissal cascade (palette/help/detail/zoom).
+ *
+ * State note: PagesRouter renders only the top-of-stack page, so
+ * RunningView is unmounted while inspect is open and remounted on
+ * return. RunningView's local React state (cursor, autoFollow, filter,
+ * prompt) resets on return; PagesStore-owned data survives. See
+ * docs/tui/information-architecture.md → Inspect Overlay → Exit.
  */
-const AdvancedModeWrapper: React.NamedExoticComponent<AdvancedModeWrapperProps> = React.memo(
-  function AdvancedModeWrapper({ appProps, onBack }: AdvancedModeWrapperProps): React.ReactNode {
-    // Intercept Ctrl+B (back) to return to simple view.
-    // Tab is used by App for panel cycling, so we use a dedicated back key.
+export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
+  function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {
+    // Intercept Ctrl+G to return to the session view. Tab is used by
+    // App for panel cycling, so we use dedicated back keys.
     useKeyboard(
       useCallback(
         (key) => {
+          // Esc is intentionally NOT bound here. App's routeKey already
+          // treats Esc as a modal-dismissal cascade (close palette/help,
+          // pop detail, reset zoom). If the wrapper also exited inspect
+          // on Esc, a single Esc keypress could blow past App's modal
+          // state and remount RunningView — losing the local state the
+          // IA doc explicitly says is reset on remount. (#191 round 8.)
+          // Use Ctrl+G to exit the overlay unambiguously.
+          if (key.ctrl && key.name === "g") {
+            onBack();
+            return;
+          }
           if (key.ctrl && key.name === "b") {
+            // Backwards-compat alias (#191). Footer no longer documents it.
             onBack();
           }
         },
         [onBack],
       ),
     );
-    return React.createElement(App, appProps);
+    // Pass screenContext="inspect" so the StatusBar shows the [INSPECT] chip
+    // whenever the inspect overlay is on screen (#191).
+    return React.createElement(App, { ...appProps, screenContext: "inspect" });
   },
 );

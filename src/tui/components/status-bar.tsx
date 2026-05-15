@@ -10,13 +10,13 @@ import { type InputMode, Panel, type ViewMode } from "../hooks/use-panel-focus.j
 import { theme } from "../theme.js";
 
 /** Which top-level screen the user is on — shown in status bar for orientation. */
-export type ScreenContext = "running" | "boardroom";
+export type ScreenContext = "running" | "inspect";
 
 /** Props for the StatusBar component. */
 export interface StatusBarProps {
   /** Current input mode. */
   readonly mode: InputMode;
-  /** Which top-level screen is active (Running vs Boardroom). */
+  /** Which top-level screen is active (session vs. inspect overlay). */
   readonly screenContext?: ScreenContext | undefined;
   /** Whether we're in a detail view within a panel. */
   readonly isDetailView?: boolean | undefined;
@@ -73,7 +73,7 @@ function panelHints(panel: Panel | undefined, isDetailView: boolean | undefined)
 /** Screen context labels for the status bar. */
 const SCREEN_CONTEXT_LABELS: Record<ScreenContext, string> = {
   running: "RUNNING",
-  boardroom: "BOARDROOM",
+  inspect: "INSPECT",
 };
 
 /** Bottom status bar with context-sensitive keybinding hints. */

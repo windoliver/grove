@@ -189,8 +189,8 @@ mock.module("@opentui-ui/toast/react", () => ({
 
 mock.module("../app.js", () => ({
   App: (): null => null,
-  ADVANCED_HINTS: Object.freeze([
-    { key: "Ctrl+B", label: "Back" },
+  INSPECT_HINTS: Object.freeze([
+    { key: "Ctrl+G", label: "Back" },
     { key: "?", label: "Help" },
     { key: "q", label: "Quit" },
   ]),
@@ -1325,5 +1325,80 @@ describe("ScreenManager navigation and edge cases", () => {
 
     expect(providerBundle.calls.archiveSession).toEqual([]);
     expect(captured.screen).toBe("running");
+  });
+});
+
+describe("InspectModeWrapper exit shortcuts", () => {
+  test("Esc inside inspect overlay does NOT exit (#191 round 8)", async () => {
+    // Esc is reserved for App's internal modal-dismissal cascade
+    // (palette/help/detail/zoom). If the wrapper also exited on Esc,
+    // one keypress would blow past App's modal state and remount
+    // RunningView. The unambiguous exit is Ctrl+G.
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ name: "escape" });
+      expect(onBack).not.toHaveBeenCalled();
+    } finally {
+      renderer.unmount();
+    }
+  });
+
+  test("Ctrl+G inside inspect overlay calls onBack", async () => {
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ ctrl: true, name: "g" });
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      renderer.unmount();
+    }
+  });
+
+  test("Ctrl+B inside inspect overlay still calls onBack (back-compat alias)", async () => {
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ ctrl: true, name: "b" });
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      renderer.unmount();
+    }
   });
 });

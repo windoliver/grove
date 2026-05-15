@@ -198,9 +198,9 @@ async function loadPresetList(): Promise<
 }
 
 /**
- * Build boardroom AppProps from a resolved backend.
+ * Build session AppProps from a resolved backend.
  *
- * Shared between the direct boardroom path and the post-init transition.
+ * Shared between the direct session path and the post-init transition.
  */
 async function buildAppProps(
   effectiveGrove: string | undefined,
@@ -784,7 +784,7 @@ export async function handleTui(
   }
 
   try {
-    // --url flag: legacy direct boardroom mode (no interactive screens)
+    // --url flag: legacy direct session mode (no interactive screens)
     if (opts.url && !opts.nexus) {
       if (groveDir) {
         const { startServices, persistNexusUrlToConfig } = await import(

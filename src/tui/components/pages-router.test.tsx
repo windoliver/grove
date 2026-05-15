@@ -99,7 +99,7 @@ function makeStubComponents(): PagesRouterComponentMap {
     "spawning",
     "running",
     "complete",
-    "advanced",
+    "inspect",
     "panel",
     "entity-detail",
   ];

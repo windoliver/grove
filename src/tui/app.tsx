@@ -21,7 +21,7 @@ import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
 import { buildPaletteItems, CommandPalette, fuzzyMatch } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
-import { StatusBar } from "./components/status-bar.js";
+import { type ScreenContext, StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
@@ -83,6 +83,12 @@ export interface AppProps {
   readonly newSessionPreset?: string | undefined;
   /** Pre-fetched dashboard data — populates the first render before polling hooks fire. */
   readonly initialDashboard?: import("./provider.js").DashboardData | undefined;
+  /**
+   * Which top-level screen is active. Drives the StatusBar `[INSPECT]` chip
+   * so users always know whether the inspect overlay is on screen (#191).
+   * Undefined means the chip is hidden (default for plain session view).
+   */
+  readonly screenContext?: ScreenContext | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -107,6 +113,7 @@ export function App({
   groveDir,
   userConfig,
   eventBus,
+  screenContext,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -114,7 +121,7 @@ export function App({
   // DagStateStore — xray DAG UI state (#311). Constructed once at App
   // mount so collapse/highlight/focus survive every PanelManager
   // re-render. ScreenManager has its own equivalent; the two providers
-  // are mounted on disjoint code paths (advanced mode vs welcome flow).
+  // are mounted on disjoint code paths (inspect overlay vs welcome flow).
   const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
@@ -1056,6 +1063,7 @@ export function App({
         />
         <StatusBar
           mode={panels.state.mode}
+          screenContext={screenContext}
           isDetailView={nav.isDetailView}
           error={lastError}
           focusedPanel={panels.state.focused}
