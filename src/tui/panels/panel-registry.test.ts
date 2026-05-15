@@ -6,6 +6,8 @@ import { describe, expect, it } from "bun:test";
 import { initialPanelState, Panel, panelFocus, panelToggle } from "../hooks/use-panel-focus.js";
 import {
   getActivePanelsForLayout,
+  getBuiltInTuiRegistryEntries,
+  getPanelDefById,
   getPresetPanels,
   getRegistry,
   getRowFlex,
@@ -393,5 +395,64 @@ describe("getVisiblePanelsForLayout with allowedPanels", () => {
     expect(panelIds).toContain(Panel.Detail);
     expect(panelIds).toContain(Panel.Claims);
     expect(panelIds).not.toContain(Panel.Frontier);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stable panel IDs
+// ---------------------------------------------------------------------------
+
+describe("stable panel IDs", () => {
+  it("assigns a stable string id to every built-in panel definition", () => {
+    const registry = getRegistry();
+    const ids = registry.map((def) => def.id);
+
+    expect(ids).toEqual([
+      "dag",
+      "detail",
+      "frontier",
+      "claims",
+      "agents",
+      "terminal",
+      "artifact",
+      "vfs",
+      "activity",
+      "search",
+      "threads",
+      "outcomes",
+      "bounties",
+      "gossip",
+      "inbox",
+      "decisions",
+      "github",
+      "plan",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("looks up a built-in panel definition by string id", () => {
+    expect(getPanelDefById("dag")?.panel).toBe(Panel.Dag);
+    expect(getPanelDefById("agents")?.panel).toBe(Panel.AgentList);
+    expect(getPanelDefById("github")?.panel).toBe(Panel.GitHub);
+  });
+
+  it("converts built-in panel definitions into TUI registry entries", () => {
+    const entries = getBuiltInTuiRegistryEntries();
+    expect(entries[0]).toEqual({
+      id: "dag",
+      label: "DAG",
+      slot: "operator-panel",
+      order: 0,
+      source: "builtin",
+      builtInPanel: Panel.Dag,
+    });
+    expect(entries.at(-1)).toEqual({
+      id: "plan",
+      label: "Plan",
+      slot: "operator-panel",
+      order: 17,
+      source: "builtin",
+      builtInPanel: Panel.Plan,
+    });
   });
 });

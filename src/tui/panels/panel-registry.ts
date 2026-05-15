@@ -10,6 +10,8 @@
 
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
+import type { TuiRegistryEntry } from "../plugins/registry.js";
+import { type BuiltInPanelId, panelToId } from "./panel-ids.js";
 
 // ---------------------------------------------------------------------------
 // Per-preset panel visibility
@@ -58,7 +60,7 @@ export type LayoutMode = "grid" | "tab";
 // ---------------------------------------------------------------------------
 
 /** Layout metadata for a panel definition. */
-export interface PanelDef {
+interface PanelDefBase {
   /** The Panel enum value. */
   readonly panel: Panel;
   /** Display label (from PANEL_LABELS). */
@@ -75,6 +77,11 @@ export interface PanelDef {
    * Operator panels: key toggles the panel on/off.
    */
   readonly keybinding: string;
+}
+
+export interface PanelDef extends PanelDefBase {
+  readonly id: BuiltInPanelId;
+  readonly slot: "operator-panel";
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +102,7 @@ export interface PanelDef {
  *   7 — Bounties + Gossip  (operator)
  *   8 — Inbox + Decisions + GitHub (operator)
  */
-export const PANEL_REGISTRY: readonly PanelDef[] = [
+const PANEL_REGISTRY_BASE: readonly PanelDefBase[] = [
   // Row 0: DAG + Detail (core)
   {
     panel: Panel.Dag,
@@ -258,6 +265,16 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
   },
 ] as const;
 
+export const PANEL_REGISTRY: readonly PanelDef[] = Object.freeze(
+  PANEL_REGISTRY_BASE.map((def) =>
+    Object.freeze({
+      ...def,
+      id: panelToId(def.panel),
+      slot: "operator-panel" as const,
+    }),
+  ),
+);
+
 // ---------------------------------------------------------------------------
 // Public query functions
 // ---------------------------------------------------------------------------
@@ -265,6 +282,21 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
 /** Returns the full panel registry. */
 export function getRegistry(): readonly PanelDef[] {
   return PANEL_REGISTRY;
+}
+
+export function getPanelDefById(id: BuiltInPanelId): PanelDef | undefined {
+  return PANEL_REGISTRY.find((def) => def.id === id);
+}
+
+export function getBuiltInTuiRegistryEntries(): readonly TuiRegistryEntry[] {
+  return PANEL_REGISTRY.map((def, order) => ({
+    id: def.id,
+    label: def.label,
+    slot: def.slot,
+    order,
+    source: "builtin",
+    builtInPanel: def.panel,
+  }));
 }
 
 /** Groups panel definitions by their row group number. */
