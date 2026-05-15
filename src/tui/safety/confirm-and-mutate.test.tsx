@@ -296,6 +296,32 @@ describe("useConfirmAndMutate", () => {
     expect(mutation.mock.calls.length).toBe(4);
   });
 
+  test("non-409 mutation error rejects trigger() (caller try/catch surfaces it)", async () => {
+    // C6 spec §6, T11 critical item C: non-conflict errors must surface to
+    // the caller's try/catch (so a flash bar can render) rather than
+    // collapse into `{ ok: false, reason: "cancelled" }`.
+    const boom = new Error("network unreachable");
+    const mutation = mock(async () => {
+      throw boom;
+    });
+    const harness = await renderHarness(mutation);
+    let caught: unknown;
+
+    await act(async () => {
+      const p = harness.invoke();
+      await Promise.resolve();
+      dispatchKey("y");
+      try {
+        await p;
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(caught).toBe(boom);
+    expect(mutation).toHaveBeenCalledTimes(1);
+  });
+
   test("external RV change while modal open → banner appears", async () => {
     const mutation = mock(async (_token: { readonly ifMatch: string; readonly id: string }) => "x");
     const harness = await renderHarness(mutation);

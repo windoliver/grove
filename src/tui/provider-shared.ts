@@ -22,6 +22,65 @@ import { buildFrontierSummary } from "./provider-utils.js";
 import type { DangerousToken } from "./safety/index.js";
 
 // ---------------------------------------------------------------------------
+// HTTP conflict error
+// ---------------------------------------------------------------------------
+//
+// `HttpConflictError` is the structured form of a 409 response from a
+// `@Dangerous` route. The `ConfirmAndMutateProvider`'s retry loop reads
+// `status` + `current` from the thrown error to bump its snapshot RV and
+// re-open the modal (C6 #304, T11 critical item A).
+//
+// Why a class (not a plain object): `parseConflict` in
+// `safety/confirm-and-mutate.tsx` accepts any object with the right shape,
+// but a named class makes the contract greppable from the route handler
+// side and gives `instanceof` reachable for future error walls.
+// ---------------------------------------------------------------------------
+
+export class HttpConflictError extends Error {
+  readonly status = 409 as const;
+  readonly current: { readonly resourceVersion: string; readonly generation: number };
+
+  constructor(
+    message: string,
+    current: { readonly resourceVersion: string; readonly generation: number },
+  ) {
+    super(message);
+    this.name = "HttpConflictError";
+    this.current = current;
+  }
+}
+
+interface ConflictBody {
+  readonly error?: {
+    readonly code?: string;
+    readonly message?: string;
+    readonly current?: { readonly resourceVersion?: string; readonly generation?: number };
+  };
+}
+
+/**
+ * Parse a 409 response body into an `HttpConflictError`.
+ *
+ * Expected shape (per T6 routes): `{ error: { code, message, current: { resourceVersion, generation } } }`.
+ * Falls back to safe defaults if the body is unparseable so the provider's
+ * retry loop still fires (with retryCount-based termination).
+ */
+async function buildConflictError(res: Response): Promise<HttpConflictError> {
+  let body: ConflictBody | null = null;
+  try {
+    body = (await res.json()) as ConflictBody;
+  } catch {
+    body = null;
+  }
+  const current = body?.error?.current ?? {};
+  const resourceVersion =
+    typeof current.resourceVersion === "string" ? current.resourceVersion : "?";
+  const generation = typeof current.generation === "number" ? current.generation : 0;
+  const detail = body?.error?.message ?? "conflict";
+  return new HttpConflictError(`HTTP 409: ${detail}`, { resourceVersion, generation });
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
 
@@ -315,6 +374,7 @@ export async function setGoalHttp(
     body: JSON.stringify({ goal, acceptance }),
   });
   if (resp.ok) return (await resp.json()) as GoalData;
+  if (resp.status === 409) throw await buildConflictError(resp);
   throw new Error(`Failed to set goal: HTTP ${String(resp.status)}`);
 }
 
@@ -385,6 +445,7 @@ export async function archiveSessionHttp(
     headers: { "if-match": token.ifMatch, ...authHeaders },
   });
   if (resp.ok) return;
+  if (resp.status === 409) throw await buildConflictError(resp);
   throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
 }
 

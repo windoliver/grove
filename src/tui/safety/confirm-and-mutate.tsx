@@ -106,10 +106,15 @@ export interface ConfirmAndMutateEntityBus {
  * Wide-typed internal state. The provider trafficks in `WatchKind` after
  * the hook's generic type-check; the modal only needs `kind`/`id`/`RV`.
  * Casts to the caller's K happen at the `mintDangerousToken` call site.
+ *
+ * `reject` is invoked for non-conflict errors so the caller's try/catch
+ * surfaces the failure (per C6 spec §6, T11 critical item C). 409s and
+ * cancel/max-retries still resolve the discriminated union.
  */
 interface ActiveRequest {
   readonly request: ConfirmAndMutateRequest<WatchKind, unknown>;
   readonly resolve: (r: ConfirmAndMutateResult<unknown>) => void;
+  readonly reject: (err: unknown) => void;
 }
 
 interface ModalState {
@@ -176,10 +181,12 @@ export interface ConfirmAndMutateProviderProps {
    * subscribes to `(snapshot.kind, snapshot.id)` whenever the modal opens
    * and sets `banner=true` when the live RV diverges from the snapshot RV.
    *
-   * If omitted, the banner stays off — useful in tests and for callsites
-   * that don't care about external-mutation detection.
+   * Required in production (wired via `makeEntityBusFromStore` in
+   * `pages-router.tsx`). Tests pass a `FakeEntityBus`. Making it required
+   * keeps the safety net's banner always-on for production paths so a
+   * concurrent mutation while the modal is open is never silently dropped.
    */
-  readonly entityBus?: ConfirmAndMutateEntityBus | undefined;
+  readonly entityBus: ConfirmAndMutateEntityBus;
 }
 
 export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): ReactNode {
@@ -213,6 +220,18 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
     if (active) active.resolve(result);
   }, []);
 
+  // Mirror of `close` that rejects the pending promise instead of resolving
+  // with a discriminated-union failure. Used for non-409 errors so callers'
+  // try/catch surfaces the underlying failure (e.g., network error, 5xx) to
+  // a flash bar (C6 spec §6, T11 critical item C).
+  const fail = useCallback((err: unknown): void => {
+    const active = activeRef.current;
+    activeRef.current = null;
+    stateRef.current = INITIAL_STATE;
+    setState(INITIAL_STATE);
+    if (active) active.reject(err);
+  }, []);
+
   // ---------------------------------------------------------------------
   // trigger: stable identity (no state deps) so callers can put it in
   // useEffect/useCallback dependency arrays without thrash.
@@ -225,11 +244,12 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
   // ---------------------------------------------------------------------
   const trigger = useCallback<TriggerFn>(
     <K extends WatchKind, R>(req: ConfirmAndMutateRequest<K, R>) => {
-      return new Promise<ConfirmAndMutateResult<R>>((resolve) => {
+      return new Promise<ConfirmAndMutateResult<R>>((resolve, reject) => {
         const wideReq = req as unknown as ConfirmAndMutateRequest<WatchKind, unknown>;
         activeRef.current = {
           request: wideReq,
           resolve: resolve as (r: ConfirmAndMutateResult<unknown>) => void,
+          reject,
         };
         const openState: ModalState = {
           request: wideReq,
@@ -271,14 +291,12 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
     } catch (err) {
       const conflict = parseConflict(err);
       if (!conflict) {
-        // Non-409: log to stderr and resolve as "cancelled" so the
-        // awaiting caller unblocks. A future T11 enhancement will plumb
-        // a richer error surface (flash bar / toast) — for now, surfacing
-        // the error message via stderr is enough to debug failures.
-        process.stderr.write(
-          `[confirm-and-mutate] mutation failed (non-409): ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-        close({ ok: false, reason: "cancelled" });
+        // Non-409: reject the trigger promise so the caller's try/catch
+        // sees the underlying error (network failure, 5xx, ...) and can
+        // surface it via a flash bar. The provider does NOT collapse the
+        // failure into a "cancelled" result — that would silently swallow
+        // real errors. See C6 spec §6 and T11 critical item C.
+        fail(err);
         return;
       }
       // 409: bump retry count + update snapshot RV. The retry-limit math
@@ -308,13 +326,12 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
       stateRef.current = nextState;
       setState(nextState);
     }
-  }, [close]);
+  }, [close, fail]);
 
   // ---------------------------------------------------------------------
   // Live-entity subscription — drives the "external mutation" banner
   // ---------------------------------------------------------------------
   useEffect(() => {
-    if (!entityBus) return;
     if (!state.snapshot) return;
     const { kind, id } = state.snapshot;
     // Pull the current value immediately in case a write happened between
@@ -369,7 +386,7 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
       close({ ok: false, reason: "cancelled" });
       return;
     }
-    if (name === "r" && entityBus && cur.snapshot) {
+    if (name === "r" && cur.snapshot) {
       // Manual refresh: pull the latest from the bus into the snapshot,
       // clear the banner. Does not submit.
       const fresh = entityBus.get(cur.snapshot.kind, cur.snapshot.id);
