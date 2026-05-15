@@ -71,6 +71,11 @@ function toSessionResponse(session: Session) {
     // Nexus mode has to fall back to a minimal reconstruction from topology,
     // which loses rate limits / metrics configured in GROVE.md.
     ...(session.config !== undefined && { config: session.config }),
+    // C6 (#304): expose persisted resource_version so the TUI's
+    // confirmAndMutate flow can mint a DangerousToken with a fresh
+    // ifMatch on the first attempt. Omitting this forces every archive
+    // through one wasted 409 retry.
+    ...(session.resourceVersion !== undefined && { resourceVersion: session.resourceVersion }),
   };
 }
 

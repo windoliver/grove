@@ -317,6 +317,7 @@ interface ApiSessionResponse {
   readonly config?: import("../core/contract.js").GroveContract;
   readonly contributionCount?: number;
   readonly finalizers?: readonly import("../core/lifecycle-metadata.js").Finalizer[];
+  readonly resourceVersion?: number;
 }
 
 function mapApiSession(raw: ApiSessionResponse): SessionRecord {
@@ -335,6 +336,7 @@ function mapApiSession(raw: ApiSessionResponse): SessionRecord {
     topology: raw.topology,
     config: raw.config,
     contributionCount: raw.contributionCount ?? 0,
+    resourceVersion: raw.resourceVersion,
   };
 }
 
