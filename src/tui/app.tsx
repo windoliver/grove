@@ -183,6 +183,9 @@ export function App({
   const [rowCount, setRowCount] = useState(0);
   const [selectedSession, setSelectedSession] = useState<string | undefined>();
   const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
+  const [frontierEntries, setFrontierEntries] = useState<
+    ReadonlyArray<{ cid: string; summary: string }>
+  >([]);
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -709,13 +712,22 @@ export function App({
       if (role?.platform) context.platform = role.platform;
       if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;
+      if (ks.adoptContext) {
+        context.adoptTarget = ks.adoptContext.targetCid;
+        context.adoptSummary = ks.adoptContext.summary;
+      }
 
-      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
-        const msg = err instanceof Error ? err.message : "Spawn failed";
-        showError(msg);
-      });
+      const spawnPromise = spawnManager.spawn(agentId, command, parentAgentId, depth, context);
+      spawnPromise
+        .then(() => {
+          if (ks.adoptContext) dispatch({ type: "ADOPT_CLEAR" });
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Spawn failed";
+          showError(msg);
+        });
     },
-    [topology, activeClaims, showError, spawnManager],
+    [topology, activeClaims, showError, spawnManager, ks.adoptContext],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
@@ -730,7 +742,9 @@ export function App({
   );
 
   const handleCommandPaletteClose = useCallback(() => {
+    dispatch({ type: "ADOPT_CLEAR" });
     panels.setMode(InputMode.Normal);
+    dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
 
   // ---------------------------------------------------------------------------
@@ -760,8 +774,11 @@ export function App({
       onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
       onCompareAdopt: (side: "a" | "b") => {
         const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
-        showError(`Adopted: ${(cid ?? "").slice(0, 16)}...`);
+        if (!cid) return;
+        const summary = frontierEntries.find((e) => e.cid === cid)?.summary ?? "";
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         dispatch({ type: "COMPARE_ADOPT" });
+        panels.setMode(InputMode.CommandPalette);
       },
       onSearchStart: () => {
         dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
@@ -907,6 +924,17 @@ export function App({
       hasTmux: tmux !== undefined,
       keybindingOverrides,
       keyActionMap,
+      onFrontierTabNext: () => dispatch({ type: "FRONTIER_SLICE_NEXT" }),
+      onFrontierTabPrev: () => dispatch({ type: "FRONTIER_SLICE_PREV" }),
+      onFrontierTabJump: (index: number) => {
+        const key = ks.frontierTabKeys[index];
+        if (key) dispatch({ type: "FRONTIER_SLICE_SET", key });
+      },
+      onFrontierAdopt: (cid: string, summary: string) => {
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+        panels.setMode(InputMode.CommandPalette);
+      },
+      frontierEntries,
     }),
     [
       panels,
@@ -931,7 +959,9 @@ export function App({
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
+      ks.frontierTabKeys,
       frontierCids,
+      frontierEntries,
       agentProfiles,
       topology,
       paletteParentId,
@@ -1030,6 +1060,9 @@ export function App({
           compareCids={ks.compareCids}
           onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
           onFrontierCidsChanged={handleFrontierCidsChanged}
+          activeSliceKey={ks.activeFrontierSlice}
+          onFrontierTabsChanged={(keys) => dispatch({ type: "FRONTIER_SET_TABS", keys })}
+          onFrontierEntriesChanged={setFrontierEntries}
           zoomLevel={ks.zoomLevel}
           activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
           terminalScrollOffset={ks.terminalScrollOffset}
