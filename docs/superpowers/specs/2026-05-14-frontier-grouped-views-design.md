@@ -111,26 +111,44 @@ always first.
 
 - `adoption` → `×N adopters`
 - `recency` → reuse existing `formatValue` relative time (e.g. `2h ago`)
-- `review` → `4.7⋆ (n=3)` — value rounded to one decimal + reviewer count
-  (reviewer count derived from existing entry data; if not present from
-  server, badge degrades to `4.7⋆`)
+- `review` → `4.7⋆` — value rounded to one decimal. Reviewer count is **not**
+  in the current `FrontierEntry` shape (`{cid, summary, value,
+  contribution?}`); adding it requires a server change, which is out of
+  scope for this iteration. If a future change exposes reviewer count, the
+  badge upgrades to `4.7⋆ (n=3)` with no other code change required.
 - `reproduction` → `▲N confirmed`
 - `metric:*` → `0.81 <metric>` — value to 3 decimals + metric name
 
 ### Adopt wiring
 
-- New keyboard action `onFrontierAdopt(cid)` registered in
+The existing `CommandPalette` already lists per-role `kind: "spawn"` items
+(see `src/tui/components/command-palette.tsx`). Adopt reuses that surface
+rather than introducing a separate prompt.
+
+- New keyboard action `onFrontierAdopt(cid, summary)` registered in
   `use-keyboard-handler.ts`. Bound to `a` when focused panel is `Frontier`,
   not in compare mode, and cursor is on a row.
-- Action opens the existing goal-input palette in a new `PaletteMode.Adopt`
-  with prefilled buffer:
-  `Adopt {summary} (cid: {short})\n\n` (operator can edit before submit).
-- On submit: app-level handler calls `spawnManager.spawn(role, command,
-  parentAgentId, depth, {adoptTarget: cid, adoptSummary: summary})`. Role
-  selection reuses the existing palette role-picker step.
-- Existing `onCompareAdopt(side)` is rewired to use the same code path —
-  resolves the side to a cid and calls the same spawn handler. The toast-only
-  placeholder is removed.
+- Action records `{adoptTarget: cid, adoptSummary: summary}` into a new
+  app-level state slot (`adoptContext`) and opens the command palette via
+  `panels.setMode(InputMode.CommandPalette)`. Palette title gets a chip
+  `"Adopt: {short cid}"` while `adoptContext` is set so the operator sees
+  the implied target.
+- The palette's existing spawn handler reads `adoptContext` (when set) and
+  threads it into `spawnManager.spawn(roleId, command, parentAgentId, depth,
+  {adoptTarget, adoptSummary})`. The same context appears in the spawned
+  agent's `CLAUDE.md` (via `spawnManager.setSessionGoal`-equivalent helper)
+  so the agent knows what to adopt.
+- `adoptContext` is cleared on palette dismiss (Esc) or after a successful
+  spawn.
+- Existing `onCompareAdopt(side)` is rewired to set `adoptContext` from
+  `compareCids[side]` and open the palette — same code path as the
+  single-row adopt. The toast-only placeholder is removed.
+
+If the spawn-manager surface lacks a hook to receive `{adoptTarget,
+adoptSummary}` (current `spawn(...)` signature accepts an opaque `context`
+object — confirmed at `src/tui/spawn-manager.ts:660`), the planning step
+adds a typed pass-through. No spawn-manager logic change is required beyond
+forwarding the context to the agent runtime.
 
 ## Error handling, empty, loading
 
@@ -197,11 +215,13 @@ always first.
 ### Integration
 
 - `frontier-adopt.integration.test.ts`
-  - Pressing `a` on a row in a slice tab opens palette in Adopt mode.
-  - Submitting palette calls mocked `spawnManager.spawn` with
+  - Pressing `a` on a row sets `adoptContext` and opens the command palette.
+  - Palette title shows the `"Adopt: {short cid}"` chip when context is set.
+  - Selecting any spawn item calls mocked `spawnManager.spawn` with
     `context.adoptTarget = cid` and `context.adoptSummary = summary`.
-  - `onCompareAdopt('a' | 'b')` calls the same spawn handler with the
-    correct cid resolved from `compareCids`.
+  - Esc clears `adoptContext`.
+  - `onCompareAdopt('a' | 'b')` resolves the side from `compareCids` and
+    routes through the same code path.
 
 ### Regression
 
