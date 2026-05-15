@@ -26,6 +26,10 @@ export interface FrontierSliceTableProps {
 }
 
 function formatValueColumn(value: number): string {
+  // Epoch-ms timestamps (recency slice) are surfaced via the SIGNAL badge as
+  // a relative time. Showing a 13-digit raw epoch in VALUE adds noise; leave
+  // VALUE blank for those rows.
+  if (Number.isInteger(value) && value > 1_000_000_000_000) return "";
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(3);
 }
