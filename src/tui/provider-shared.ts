@@ -19,6 +19,7 @@ import type {
   OperatorStats,
 } from "./provider.js";
 import { buildFrontierSummary } from "./provider-utils.js";
+import type { DangerousToken } from "./safety/index.js";
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -289,8 +290,16 @@ export async function fetchGoalHttp(
   return undefined;
 }
 
-/** Set a goal via a grove-server HTTP API. */
+/**
+ * Set a goal via a grove-server HTTP API.
+ *
+ * C6 (#304): `token` carries the goal's current `ifMatch` resourceVersion;
+ * the helper threads it through to the `@Dangerous` PUT route's If-Match
+ * header. The route returns 409 on stale RV — callers should refetch and
+ * re-mint the token via `confirmAndMutate` (T10).
+ */
 export async function setGoalHttp(
+  token: DangerousToken<"Goal">,
   baseUrl: string,
   goal: string,
   acceptance: readonly string[],
@@ -298,7 +307,11 @@ export async function setGoalHttp(
 ): Promise<GoalData> {
   const resp = await fetch(`${baseUrl}/api/session/goal`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...authHeaders },
+    headers: {
+      "Content-Type": "application/json",
+      "if-match": token.ifMatch,
+      ...authHeaders,
+    },
     body: JSON.stringify({ goal, acceptance }),
   });
   if (resp.ok) return (await resp.json()) as GoalData;
@@ -354,15 +367,22 @@ export async function getSessionHttp(
   return undefined;
 }
 
-/** Archive a session via a grove-server HTTP API. */
+/**
+ * Archive a session via a grove-server HTTP API.
+ *
+ * C6 (#304): `token.id` supplies the session id for the URL path and
+ * `token.ifMatch` is sent as the If-Match header. The `@Dangerous` PUT
+ * route returns 409 on stale RV — callers should refetch the session
+ * and re-mint the token via `confirmAndMutate` (T10).
+ */
 export async function archiveSessionHttp(
+  token: DangerousToken<"AgentSession">,
   baseUrl: string,
-  sessionId: string,
   authHeaders?: Record<string, string>,
 ): Promise<void> {
-  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
+  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(token.id)}/archive`, {
     method: "PUT",
-    headers: authHeaders,
+    headers: { "if-match": token.ifMatch, ...authHeaders },
   });
   if (resp.ok) return;
   throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);

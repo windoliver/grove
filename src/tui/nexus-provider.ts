@@ -44,6 +44,7 @@ import {
   listSessionsHttp,
   setGoalHttp,
 } from "./provider-shared.js";
+import type { DangerousToken } from "./safety/index.js";
 import { StoreBackedProvider } from "./store-backed-provider.js";
 
 /** Configuration for the Nexus provider. */
@@ -315,11 +316,15 @@ export class NexusDataProvider
     return super.getGoal();
   }
 
-  override async setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData> {
+  override async setGoal(
+    token: DangerousToken<"Goal">,
+    goal: string,
+    acceptance: readonly string[],
+  ): Promise<GoalData> {
     if (this.serverUrl) {
-      return setGoalHttp(this.serverUrl, goal, acceptance, this.authHeaders);
+      return setGoalHttp(token, this.serverUrl, goal, acceptance, this.authHeaders);
     }
-    return super.setGoal(goal, acceptance);
+    return super.setGoal(token, goal, acceptance);
   }
 
   override async listSessions(query?: {
@@ -410,11 +415,11 @@ export class NexusDataProvider
     return super.getSession(sessionId);
   }
 
-  override async archiveSession(sessionId: string): Promise<void> {
+  override async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {
     if (this.serverUrl) {
-      return archiveSessionHttp(this.serverUrl, sessionId, this.authHeaders);
+      return archiveSessionHttp(token, this.serverUrl, this.authHeaders);
     }
-    return super.archiveSession(sessionId);
+    return super.archiveSession(token);
   }
 
   override async addContributionToSession(sessionId: string, cid: string): Promise<void> {

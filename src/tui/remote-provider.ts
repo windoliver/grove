@@ -65,6 +65,7 @@ import {
   setGoalHttp,
 } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
+import type { DangerousToken } from "./safety/index.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
 export class RemoteDataProvider
@@ -717,10 +718,11 @@ export class RemoteDataProvider
   }
 
   async setGoal(
+    token: DangerousToken<"Goal">,
     goal: string,
     acceptance: readonly string[],
   ): Promise<import("./provider.js").GoalData> {
-    return setGoalHttp(this.baseUrl, goal, acceptance, this.authHeaders);
+    return setGoalHttp(token, this.baseUrl, goal, acceptance, this.authHeaders);
   }
 
   // ---------------------------------------------------------------------------
@@ -754,8 +756,8 @@ export class RemoteDataProvider
     return undefined;
   }
 
-  async archiveSession(sessionId: string): Promise<void> {
-    return archiveSessionHttp(this.baseUrl, sessionId, this.authHeaders);
+  async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {
+    return archiveSessionHttp(token, this.baseUrl, this.authHeaders);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
