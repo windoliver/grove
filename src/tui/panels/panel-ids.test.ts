@@ -50,8 +50,41 @@ describe("panel IDs", () => {
 
   test("exports ordered built-in, core, and operator ID lists", () => {
     expect(CORE_PANEL_IDS).toEqual(["dag", "detail", "frontier", "claims"]);
-    expect(OPERATOR_PANEL_IDS[0]).toBe("agents");
-    expect(OPERATOR_PANEL_IDS[OPERATOR_PANEL_IDS.length - 1]).toBe("plan");
-    expect(BUILT_IN_PANEL_IDS).toEqual([...CORE_PANEL_IDS, ...OPERATOR_PANEL_IDS]);
+    expect(OPERATOR_PANEL_IDS).toEqual([
+      "agents",
+      "terminal",
+      "artifact",
+      "vfs",
+      "activity",
+      "search",
+      "threads",
+      "outcomes",
+      "bounties",
+      "gossip",
+      "inbox",
+      "decisions",
+      "github",
+      "plan",
+    ]);
+    expect(BUILT_IN_PANEL_IDS).toEqual([
+      "dag",
+      "detail",
+      "frontier",
+      "claims",
+      "agents",
+      "terminal",
+      "artifact",
+      "vfs",
+      "activity",
+      "search",
+      "threads",
+      "outcomes",
+      "bounties",
+      "gossip",
+      "inbox",
+      "decisions",
+      "github",
+      "plan",
+    ]);
   });
 });
