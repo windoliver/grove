@@ -28,3 +28,4 @@ export {
   useConfirmAndMutate,
 } from "./confirm-and-mutate.js";
 export type { DangerousToken } from "./internal/token.js";
+export { makeEntityBusFromStore } from "./store-adapter.js";
