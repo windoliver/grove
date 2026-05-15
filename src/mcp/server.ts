@@ -25,6 +25,7 @@ import { registerMessagingTools } from "./tools/messaging.js";
 import { registerOutcomeTools } from "./tools/outcomes.js";
 import { registerPlanTools } from "./tools/plans.js";
 import { registerQueryTools } from "./tools/queries.js";
+import { registerRuntimeSkillTools } from "./tools/runtime-skills.js";
 import { registerSessionTools } from "./tools/session.js";
 import { registerStopTools } from "./tools/stop.js";
 import { registerTrajectoryTools } from "./tools/trajectory.js";
@@ -102,6 +103,7 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
   if (deps.handoffStore !== undefined) {
     registerHandoffTools(server, deps, { includeAckTool: preset?.transport !== "http" });
   }
+  if (preset?.transport !== "http") registerRuntimeSkillTools(server, deps);
 
   if (preset?.claims !== false) registerClaimTools(server, deps);
   if (preset?.queries !== false) {

@@ -47,6 +47,8 @@ describe("buildDiagnosticsEntries", () => {
     expect(paths).toContain("db/work-blocks.json");
     expect(paths).toContain("db/timeline-events.json");
     expect(paths).toContain("db/timeline-cursors.json");
+    expect(paths).toContain("db/agent-task-spec.json");
+    expect(paths).toContain("db/agent-task-status.json");
     expect(paths).toContain("operator-primitives/availability.json");
     expect(paths).toContain("system/process-tree.txt");
     expect(paths).not.toContain("db/grove.db");
@@ -118,9 +120,10 @@ describe("buildDiagnosticsEntries", () => {
       sources: ["ACP trace lines", "typed permission request log messages when present"],
     });
     expect(getAvailability(availability, "agent_tasks")).toMatchObject({
-      status: "unavailable",
-      sources: [],
-      notes: "Pending #297 and #379.",
+      status: "partial",
+      sources: ["agent_task_spec", "agent_task_status"],
+      notes:
+        "AgentTask spec/status records are available when the local store is configured; trigger adapters are pending #379.",
     });
     expect(getAvailability(availability, "watch_compaction")).toMatchObject({
       status: "partial",

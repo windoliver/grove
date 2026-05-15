@@ -24,6 +24,7 @@ import type { SqliteBountyStore } from "./sqlite-bounty-store.js";
 import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import type { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 import type {
+  SqliteAgentTaskStore,
   SqliteClaimStore,
   SqliteContributionStore,
   SqliteIdempotencyStore,
@@ -48,10 +49,11 @@ export interface LocalRuntimeOptions {
   /** Whether to parse the GROVE.md contract. Default: `true`. */
   readonly parseContract?: boolean;
   /**
-   * Optional process-local `WatchHub` to which contribution + claim writes
+   * Optional process-local `WatchHub` to which contribution, claim, and task writes
    * are republished as `EntityWriteEvent`s. When provided, the runtime
    * wires `SqliteContributionStore.onContributionWrite` and
-   * `SqliteClaimStore.onClaimWrite` to the recorder shipped in #388 PR2.
+   * `SqliteClaimStore.onClaimWrite` / `SqliteAgentTaskStore.onAgentTaskWrite`
+   * to the recorder shipped in #388 PR2.
    * When omitted, no hub plumbing is created — existing CLI / server
    * callers that supply their own `OperationDeps.onEntityWrite` path are
    * unaffected.
@@ -76,6 +78,7 @@ export interface LocalRuntime {
   readonly db: import("bun:sqlite").Database;
   readonly contributionStore: SqliteContributionStore;
   readonly claimStore: SqliteClaimStore;
+  readonly agentTaskStore: SqliteAgentTaskStore;
   readonly bountyStore: SqliteBountyStore;
   readonly outcomeStore: SqliteOutcomeStore;
   readonly goalSessionStore: SqliteGoalSessionStore;
@@ -145,7 +148,8 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   stores.contributionStore.onWrite = onContributionWrite;
 
   // Wire local-mode WatchHub republish (#388 PR2). The recorder projects
-  // domain types via `contributionToEntity` / `claimToEntity` and calls
+  // domain types via `contributionToEntity` / `claimToEntity` /
+  // `agentTaskViewToEntity` and calls
   // `WatchHub.recordWrite`. AgentSession is wired by the TUI main entry
   // (it owns the AgentRuntime), not here.
   if (options.watchHub) {
@@ -158,6 +162,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     });
     stores.contributionStore.onContributionWrite = (op, c) => recorder.contribution(op, c);
     stores.claimStore.onClaimWrite = (op, c) => recorder.claim(op, c);
+    stores.agentTaskStore.onAgentTaskWrite = (op, view) => recorder.agentTask(op, view);
     stores.timelineStore.onWorkBlockWrite = (op, block) => recorder.workBlock(op, block);
     stores.timelineStore.onTimelineEventWrite = (op, event) => recorder.timelineEvent(op, event);
   }
@@ -219,6 +224,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     db: stores.db,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
+    agentTaskStore: stores.agentTaskStore,
     bountyStore: stores.bountyStore,
     outcomeStore: stores.outcomeStore,
     goalSessionStore: stores.goalSessionStore,

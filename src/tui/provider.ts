@@ -10,6 +10,7 @@
  * suites. Panels check `provider.capabilities` at runtime.
  */
 
+import type { AgentTaskView } from "../core/agent-task.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery } from "../core/handoff.js";
 import type {
@@ -277,6 +278,9 @@ export interface TuiDataProvider {
 
   /** Renew a claim's lease by heartbeating (optional). */
   heartbeatClaim?(claimId: string, leaseDurationMs?: number): Promise<Claim>;
+
+  /** List trigger-neutral agent task lifecycle records when configured. */
+  getAgentTasks?(): Promise<readonly AgentTaskView[]>;
 
   /** Release a claim by transitioning it to "released" status (optional). */
   releaseClaim?(claimId: string): Promise<void>;

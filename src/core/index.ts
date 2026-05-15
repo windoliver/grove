@@ -1,6 +1,20 @@
 export type { AcpRuntimeOptions } from "./acp-runtime.js";
 export { AcpRuntime } from "./acp-runtime.js";
 export type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+export type {
+  AgentTaskEntity,
+  AgentTaskSpec,
+  AgentTaskSpecRecord,
+  AgentTaskStatus,
+  AgentTaskStatusRecord,
+  AgentTaskView,
+} from "./agent-task.js";
+export {
+  AgentTaskConditionType,
+  AgentTaskPhase,
+  agentTaskViewToEntity,
+  isAgentTaskSpecStale,
+} from "./agent-task.js";
 export {
   extractChoices,
   extractQuestion,
@@ -307,6 +321,9 @@ export type {
 export { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
 export type {
   ActiveClaimFilter,
+  AgentTaskQuery,
+  AgentTaskStatusPatch,
+  AgentTaskStore,
   ClaimQuery,
   ClaimStatusPatch,
   ClaimStore,
@@ -318,6 +335,16 @@ export type {
 export { ExpiryReason } from "./store.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { SubprocessRuntime } from "./subprocess-runtime.js";
+export type {
+  AgentTaskStatusTransition,
+  TaskBinder,
+  TaskBindRequest,
+  TaskBindResult,
+  TaskControllerOptions,
+  TaskControllerRuntime,
+  TaskControllerStore,
+} from "./task-controller.js";
+export { DefaultTaskBinder, TaskController } from "./task-controller.js";
 export { toUtcIso } from "./time.js";
 export * from "./timeline.js";
 export * from "./timeline-projector.js";

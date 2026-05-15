@@ -14,10 +14,14 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { findGroveDir } from "../cli/context.js";
+import { parseGroveConfig } from "../core/config.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { resolveBundledSkillsRoot } from "../core/resolve-mcp-serve-path.js";
+import { DefaultRuntimeSkillAcquisitionService } from "../core/runtime-skill-acquisition.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
+import { resolveConfiguredNexusUrl } from "../shared/nexus-url.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
@@ -25,6 +29,7 @@ import { createMcpServer } from "./server.js";
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
@@ -171,6 +176,7 @@ try {
   if (groveDir === undefined) {
     throw new Error("Not inside a grove. Run 'grove init' to create one, or set GROVE_DIR.");
   }
+  const projectRoot = join(groveDir, "..");
 
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const nexusApiKey = process.env.NEXUS_API_KEY;
@@ -403,16 +409,43 @@ try {
   // Wire EventBus + TopologyRouter for IPC when topology exists.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
+  let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+  let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+
+  if (nexusClient && nexusUrl) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    const sessionId = process.env.GROVE_SESSION_ID;
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      sessionId,
+      zoneId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId,
+        zoneId,
+      }),
+    });
+  }
 
   if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
       const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient =
-        nexusUrl && apiKey
-          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
-          : undefined;
+      const ipcClient = nexusUrl
+        ? new NexusIpcClient({
+            nexusUrl,
+            ...(apiKey ? { apiKey } : {}),
+            sessionId: process.env.GROVE_SESSION_ID,
+            zoneId,
+          })
+        : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {
@@ -694,6 +727,55 @@ try {
     // TUI feed will only update via polling.
   }
 
+  const readRuntimeSkillsConfig = async () => {
+    const configPath = join(groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    const config = parseGroveConfig(await readFile(configPath, "utf-8"));
+    return config.runtimeSkills;
+  };
+
+  let runtimeSkillSessionStore: import("../core/session.js").RuntimeSkillSessionStore =
+    runtime.goalSessionStore;
+  if (nexusClient !== undefined) {
+    const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+    runtimeSkillSessionStore = new NexusSessionStore(nexusClient, zoneId);
+  }
+
+  const runtimeSkillService = new DefaultRuntimeSkillAcquisitionService({
+    readRuntimeSkillsConfig,
+    bundledSkillsRoot: resolveBundledSkillsRoot(projectRoot),
+    workspaceOverrideRoot: join(groveDir, "skills"),
+    sessionStore: runtimeSkillSessionStore,
+    resolveSkillRoot: async (skills) => {
+      const configPath = join(groveDir, "grove.json");
+      if (!existsSync(configPath)) return undefined;
+      const config = parseGroveConfig(await readFile(configPath, "utf-8"));
+      if (
+        config.mode !== "nexus" ||
+        config.skillCatalog === undefined ||
+        nexusClient === undefined
+      ) {
+        return undefined;
+      }
+      const nexusUrlForSkills = resolveConfiguredNexusUrl({
+        projectRoot,
+        config,
+        env: process.env,
+      });
+      if (!nexusUrlForSkills) return undefined;
+      const { resolveNexusSkillCatalogRoot } = await import("../nexus/nexus-skill-catalog.js");
+      return resolveNexusSkillCatalogRoot({
+        client: nexusClient,
+        zoneId,
+        cacheRoot: join(groveDir, "cache", "skills"),
+        skills,
+        policy: config.skillCatalog.policy,
+        trustedKeys: config.skillCatalog.trustedKeys,
+        localFallbackRoots: [join(groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
+      });
+    },
+  });
+
   deps = {
     contributionStore,
     claimStore,
@@ -712,6 +794,9 @@ try {
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
+    runtimeSkillService,
+    inboxReadSource,
+    messageDelivery,
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),

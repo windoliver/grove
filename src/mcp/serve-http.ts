@@ -433,6 +433,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
   let topologyRouter: TopologyRouter | undefined;
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+  let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
   let sessionRecord: import("../core/session.js").Session | undefined;
   const mutationGuard = createScopeMutationGuard(sessionId);
 
@@ -507,6 +509,26 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
         );
       }
     }
+  }
+
+  if (nexusClient && nexusUrl) {
+    const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+    const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+    inboxReadSource = new NexusInboxClient({
+      nexusUrl,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      sessionId,
+      zoneId,
+      client: nexusClient,
+    });
+    messageDelivery = new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId,
+        zoneId,
+      }),
+    });
   }
 
   const canUseLocalFrontierRewardService = bountyStore === runtime.bountyStore;
@@ -622,15 +644,14 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
       const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient =
-        nexusUrl && apiKey
-          ? new NexusIpcClient({
-              nexusUrl,
-              apiKey,
-              sessionId,
-              zoneId,
-            })
-          : undefined;
+      const ipcClient = nexusUrl
+        ? new NexusIpcClient({
+            nexusUrl,
+            ...(apiKey ? { apiKey } : {}),
+            sessionId,
+            zoneId,
+          })
+        : undefined;
       eventBus = new NexusEventBus(ipcClient);
     } else {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
@@ -819,6 +840,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,
+    inboxReadSource,
+    messageDelivery,
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
@@ -1274,6 +1297,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // of shell execution is a remote-code-execution risk.
     const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
     try {
+      // Runtime skill acquisition mutates the caller workspace and requires
+      // stdio's per-agent role/cwd binding. HTTP MCP intentionally omits it.
       server = await createMcpServer(scopedDeps, {
         eval: evalEnabled,
         transport: "http",

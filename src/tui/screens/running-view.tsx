@@ -30,9 +30,9 @@ import { EmptyState } from "../components/empty-state.js";
 import { FlashBar } from "../components/flash-bar.js";
 import { ProgressBar } from "../components/progress-bar.js";
 import { Prompt } from "../components/prompt.js";
+import { createTuiConfigWatcher } from "../config-watcher.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
-import { loadAliases } from "../data/aliases-loader.js";
 import { debugLog } from "../debug-log.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
@@ -45,11 +45,13 @@ import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
+import { AgentTasksView } from "../views/agent-tasks.js";
 import { DagView } from "../views/dag.js";
 import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
+import { emptyFeedHint } from "./empty-feed-hint.js";
 import {
   type CmdModeState,
   appendChar as cmdAppend,
@@ -123,6 +125,8 @@ export interface RunningViewProps {
   readonly activeRoles?: readonly string[] | undefined;
   /** Per-agent log buffers for the Trace panel. Keyed by role name. */
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
+  /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
+  readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   readonly onToggleAdvanced: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
@@ -192,6 +196,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     onSendToAgent,
     activeRoles,
     logBuffers,
+    agentFailures,
     onToggleAdvanced,
     onComplete: _onComplete,
     onQuit,
@@ -262,19 +267,31 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useEffect(() => {
       if (!groveDir) return;
       let cancelled = false;
-      // `groveDir` prop is the resolved `.grove/` directory (per resolveGroveDir);
-      // loadAliases expects the project root and joins `.grove/aliases.yaml` itself.
+      // `groveDir` prop is the resolved `.grove/` directory (per resolveGroveDir).
       const projectRoot = dirname(groveDir);
-      void loadAliases(projectRoot).then((r) => {
+      const watcher = createTuiConfigWatcher({ projectRoot });
+      const unsubscribe = watcher.subscribe((event) => {
         if (cancelled) return;
-        setAliases(r.aliases);
-        if (r.errors.length > 0) {
-          const first = r.errors[0];
-          if (first) flash(first);
+        if (event.type === "ConfigChanged" && event.changed === "aliases") {
+          setAliases(event.config.aliases);
+          return;
+        }
+        if (event.type === "ConfigError") {
+          flash(event.message);
         }
       });
+      void watcher
+        .start()
+        .then(() => {
+          if (!cancelled) setAliases(watcher.current().aliases);
+        })
+        .catch((err) => {
+          if (!cancelled) flash(err instanceof Error ? err.message : "config watcher failed");
+        });
       return () => {
         cancelled = true;
+        unsubscribe();
+        void watcher.stop();
       };
     }, [groveDir, flash]);
 
@@ -1159,6 +1176,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             traceScrollOffset,
             sessionStartedAt,
             handoffs,
+            activeRoles,
+            agentFailures,
             filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
             dagKeysEnabled:
               expandedPanel === RunningPanel.Dag &&
@@ -1204,6 +1223,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 frontier,
                 autoFollow,
                 newSinceFreeze,
+                activeRoles,
+                agentFailures,
               )}
             </box>
             {/* Right: expanded panel */}
@@ -1236,6 +1257,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 traceScrollOffset,
                 sessionStartedAt,
                 handoffs,
+                activeRoles,
+                agentFailures,
                 filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
                 dagKeysEnabled:
                   expandedPanel === RunningPanel.Dag &&
@@ -1286,7 +1309,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         />
 
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor, sessionStartedAt, feed.length)}
+        {renderAgentSection(
+          topology,
+          dashboard,
+          monitor,
+          agentFailures,
+          sessionStartedAt,
+          feed.length,
+        )}
 
         {/* Main feed area */}
         {renderFeedSection(
@@ -1297,6 +1327,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           frontier,
           autoFollow,
           newSinceFreeze,
+          activeRoles,
+          agentFailures,
         )}
 
         {/* Bottom chrome: permissions, IPC, quit confirm, progress, prompt */}
@@ -1342,6 +1374,7 @@ function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
+  agentFailures: ReadonlyMap<string, string> | undefined,
   sessionStartedAt?: string,
   sessionContribCount?: number,
 ): React.ReactNode {
@@ -1371,6 +1404,7 @@ function renderAgentSection(
         const activeClaim = dashboard?.activeClaims.find(
           (c) => c.agent.role === role.name || c.agent.agentId.startsWith(role.name),
         );
+        const failure = agentFailures?.get(role.name);
         const platformColor = PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text;
         const output = monitor.agentOutputs.get(role.name);
         // Skip raw ACP JSON-RPC envelopes bleeding through from acpx stdout.
@@ -1389,7 +1423,7 @@ function renderAgentSection(
           return "";
         })();
 
-        const status = activeClaim ? "running" : "idle";
+        const status = failure ? "error" : activeClaim ? "running" : "idle";
         const badge = agentStatusIcon(status, activeClaim ? monitor.spinnerFrame : undefined);
 
         return (
@@ -1399,7 +1433,11 @@ function renderAgentSection(
               {role.name}
             </text>
             <text color={theme.secondary}> [{idx + 1}] </text>
-            {lastLine ? <text color={theme.secondary}>{lastLine.slice(0, 80)}</text> : null}
+            {failure ? (
+              <text color={theme.error}>{failure.slice(0, 96)}</text>
+            ) : lastLine ? (
+              <text color={theme.secondary}>{lastLine.slice(0, 80)}</text>
+            ) : null}
           </box>
         );
       })}
@@ -1416,6 +1454,8 @@ function renderFeedSection(
   frontier: DashboardData["frontierSummary"] | undefined,
   autoFollow: boolean,
   newSinceFreeze: number,
+  activeRoles?: readonly string[] | undefined,
+  agentFailures?: ReadonlyMap<string, string> | undefined,
 ): React.ReactNode {
   return (
     <box flexDirection="column" flexGrow={1}>
@@ -1465,7 +1505,10 @@ function renderFeedSection(
           Contribution Feed
         </text>
         {feed.length === 0 ? (
-          <EmptyState title="Waiting for contributions..." hint="Agents are working on your goal" />
+          <EmptyState
+            title="Waiting for contributions..."
+            hint={emptyFeedHint(activeRoles, agentFailures)}
+          />
         ) : (
           (() => {
             // Explicit windowing: keep cursor visible within a viewport-sized window
@@ -1568,6 +1611,8 @@ interface PanelRenderContext {
   readonly traceScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
+  readonly activeRoles?: readonly string[] | undefined;
+  readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
   readonly filterText?: string | undefined;
   /** #311: true when DAG-local keyboard shortcuts may fire (DAG focused and
@@ -1587,6 +1632,8 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         undefined,
         ctx.autoFollow,
         ctx.newSinceFreeze,
+        ctx.activeRoles,
+        ctx.agentFailures,
       );
 
     case RunningPanel.Agents:
@@ -1665,9 +1712,12 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
 
     case RunningPanel.Tasks:
       return (
-        <box paddingX={2}>
-          <text color={theme.secondary}>Tasks view (coming in C3/C4)</text>
-        </box>
+        <AgentTasksView
+          provider={ctx.provider}
+          intervalMs={ctx.intervalMs}
+          active
+          cursor={ctx.cursor}
+        />
       );
 
     case RunningPanel.Reviews:

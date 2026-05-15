@@ -12,6 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { DefaultRuntimeSkillAcquisitionService } from "../core/runtime-skill-acquisition.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
@@ -61,6 +62,12 @@ describe("MCP deps parity with LocalRuntime", () => {
 
   test("stdio MCP deps construction includes goalSessionStore", () => {
     // Mirror the deps construction from src/mcp/serve.ts
+    const runtimeSkillService = new DefaultRuntimeSkillAcquisitionService({
+      readRuntimeSkillsConfig: async () => undefined,
+      bundledSkillsRoot: join(tempDir, "skills"),
+      workspaceOverrideRoot: join(tempDir, ".grove", "skills"),
+      sessionStore: runtime.goalSessionStore,
+    });
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
@@ -75,6 +82,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       onContributionWrite: runtime.onContributionWrite,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
+      runtimeSkillService,
       handoffStore: runtime.handoffStore,
       watchHub: new WatchHub(),
     };
@@ -85,6 +93,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.creditsService).toBe(runtime.creditsService);
     expect(deps.frontierRewardService).toBe(runtime.frontierRewardService);
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
+    expect(deps.runtimeSkillService).toBeDefined();
     expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
   });
 
@@ -114,6 +123,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(deps.creditsService).toBe(runtime.creditsService);
     expect(deps.frontierRewardService).toBeUndefined();
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
+    expect(deps.runtimeSkillService).toBeUndefined();
     expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
   });
 
@@ -154,5 +164,14 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(source).toContain("new SettlementSweep");
     expect(source).toContain("runtime.creditsService");
+  });
+
+  test("stdio runtime skills persist sessions through the active backend", () => {
+    const source = readFileSync(join(import.meta.dir, "serve.ts"), "utf-8");
+
+    expect(source).toContain("runtimeSkillSessionStore");
+    expect(source).toContain("new NexusSessionStore(nexusClient, zoneId)");
+    expect(source).toContain("sessionStore: runtimeSkillSessionStore");
+    expect(source).not.toContain("sessionStore: runtime.goalSessionStore");
   });
 });

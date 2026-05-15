@@ -10,6 +10,7 @@
  */
 
 import { join } from "node:path";
+import { agentTaskViewToEntity } from "../core/agent-task.js";
 import {
   claimToEntity,
   contributionToEntity,
@@ -29,9 +30,9 @@ import {
   writeClientKey,
   writeNamespace,
 } from "../core/project-key.js";
+import { TaskController } from "../core/task-controller.js";
 import { TimelineEventType } from "../core/timeline.js";
 import { timelineEventForClaim } from "../core/timeline-projector.js";
-import { TmuxRuntime } from "../core/tmux-runtime.js";
 import type { WatchEntity, WatchKind } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
@@ -40,11 +41,13 @@ import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
+import { wireAgentTaskStoreWrites } from "./agent-task-store-wiring.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
+import { createServerAgentRuntime, taskControllerEnabled } from "./task-controller-wiring.js";
 import { resolveWatchHubConfig } from "./watch-hub-config.js";
 import { createWsHandler } from "./ws-handler.js";
 
@@ -111,6 +114,13 @@ let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.b
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
 let serverTimelineStore: import("../core/timeline-store.js").TimelineStore = runtime.timelineStore;
+let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
+let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
+let messageDeliveryForSession:
+  | ((
+      sessionId: string | undefined,
+    ) => import("../core/operations/inbox-delegation.js").MessageDelivery | undefined)
+  | undefined;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -220,6 +230,7 @@ if (registry.size === 0) {
 // NexusEventBus (cross-process via Nexus IPC) on both sides.
 const watchHub = new WatchHub(resolveWatchHubConfig(process.env));
 const watchEventBus = new LocalEventBus();
+let taskController: TaskController | undefined;
 
 if (nexusUrl) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
@@ -273,6 +284,34 @@ if (nexusUrl) {
     );
     process.exit(1);
   }
+
+  const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
+  const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+  const sessionId = process.env.GROVE_SESSION_ID;
+  inboxReadSource = new NexusInboxClient({
+    nexusUrl,
+    ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+    sessionId,
+    zoneId,
+    client: nexusClient,
+  });
+  messageDelivery = new NexusMessageDelivery({
+    ipcClient: new NexusIpcClient({
+      nexusUrl,
+      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      sessionId,
+      zoneId,
+    }),
+  });
+  messageDeliveryForSession = (requestedSessionId) =>
+    new NexusMessageDelivery({
+      ipcClient: new NexusIpcClient({
+        nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        sessionId: requestedSessionId ?? process.env.GROVE_SESSION_ID,
+        zoneId,
+      }),
+    });
 
   serverContributionStore = new NexusContributionStore({
     client: nexusClient,
@@ -348,15 +387,31 @@ const watchSubscriber = new NexusWatchSubscriber({
     contributionStore: serverContributionStore,
     claimStore: serverClaimStore,
     timelineStore: serverTimelineStore,
+    agentTaskStore: runtime.agentTaskStore,
   }),
 });
 watchSubscriber.start();
+
+wireAgentTaskStoreWrites({
+  store: runtime.agentTaskStore,
+  namespace: zoneId,
+  watchHub,
+  watchSubscriber,
+  enqueueTaskId: (taskId) => {
+    taskController?.enqueue(taskId);
+  },
+  onError(error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[grove] Warning: AgentTask write fan-out failed: ${detail}\n`);
+  },
+});
 
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
   timelineStore: serverTimelineStore,
+  agentTaskStore: runtime.agentTaskStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   creditsService: runtime.creditsService,
@@ -371,11 +426,22 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  inboxReadSource,
+  messageDelivery,
+  messageDeliveryForSession,
   watchHub,
   watchSubscriber,
 };
 
 const app = createApp(deps, registry);
+
+let sharedAgentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
+const getSharedAgentRuntime = async (): Promise<
+  import("../core/agent-runtime.js").AgentRuntime
+> => {
+  sharedAgentRuntime ??= await createServerAgentRuntime();
+  return sharedAgentRuntime;
+};
 
 // ---------------------------------------------------------------------------
 // Background sweep reconciler
@@ -458,6 +524,36 @@ const claimExpiryTimer = setInterval(async () => {
 (claimExpiryTimer as unknown as { unref?: () => void }).unref?.();
 
 // ---------------------------------------------------------------------------
+// Server bind safety checks
+// ---------------------------------------------------------------------------
+
+// Refuse to bind a non-localhost address without an explicit operator
+// opt-in. The HTTP surface has no authentication (role-sensitive mutations
+// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
+// caller-asserted), so the deployment trust boundary is the localhost
+// binding. Operators who want remote access MUST set
+// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
+// typical production usage places the server behind an authenticated
+// reverse proxy.
+//
+// MUST run before SessionService/task-controller setup or Bun.serve() —
+// otherwise we could spawn sessions or bind the socket before deciding to exit.
+const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
+if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
+  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
+    console.error(
+      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
+        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
+        "  or front this process with an authenticated reverse proxy and bind to localhost.",
+    );
+    process.exit(1);
+  }
+  console.warn(
+    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Optional SessionService + WebSocket push
 // ---------------------------------------------------------------------------
 
@@ -465,19 +561,7 @@ let sessionService: SessionService | undefined;
 let wsHandler: ReturnType<typeof createWsHandler> | undefined;
 
 if (runtime.contract?.topology !== undefined) {
-  // Create an agent runtime via selectRuntime (honors GROVE_RUNTIME env),
-  // fall back to tmux when neither acp nor acpx is available
-  let agentRuntime: import("../core/agent-runtime.js").AgentRuntime;
-  {
-    const { selectRuntime } = await import("../core/select-runtime.js");
-    const picked = selectRuntime();
-    if (await picked.isAvailable()) {
-      agentRuntime = picked;
-    } else {
-      agentRuntime = new TmuxRuntime();
-    }
-  }
-
+  const agentRuntime = await getSharedAgentRuntime();
   const eventBus = new LocalEventBus();
 
   sessionService = new SessionService({
@@ -495,32 +579,6 @@ if (runtime.contract?.topology !== undefined) {
 // ---------------------------------------------------------------------------
 // Start server (with optional WebSocket upgrade)
 // ---------------------------------------------------------------------------
-
-// Refuse to bind a non-localhost address without an explicit operator
-// opt-in. The HTTP surface has no authentication (role-sensitive mutations
-// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
-// caller-asserted), so the deployment trust boundary is the localhost
-// binding. Operators who want remote access MUST set
-// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
-// typical production usage places the server behind an authenticated
-// reverse proxy.
-//
-// MUST run BEFORE Bun.serve() — otherwise the socket would already be
-// bound and listening before we decided to exit.
-const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
-if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
-  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
-    console.error(
-      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
-        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
-        "  or front this process with an authenticated reverse proxy and bind to localhost.",
-    );
-    process.exit(1);
-  }
-  console.warn(
-    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
-  );
-}
 
 function startServer() {
   const hostnameOpts = HOST ? { hostname: HOST } : {};
@@ -586,6 +644,20 @@ function startServer() {
 
 const server = startServer();
 
+if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
+  taskController = new TaskController({
+    taskStore: runtime.agentTaskStore,
+    runtime: await getSharedAgentRuntime(),
+    onError(error, taskId) {
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
+    },
+  });
+  await taskController.resync();
+  taskController.start();
+  console.log("task-controller enabled");
+}
+
 // Start gossip after server is listening
 if (gossipService) {
   gossipService.start();
@@ -600,6 +672,7 @@ async function shutdown(): Promise<void> {
   if (sweepReconciler) {
     sweepReconciler.stop();
   }
+  await taskController?.stop();
   if (sessionService) {
     sessionService.destroy();
   }
@@ -628,6 +701,7 @@ function makeWatchEntityFetcher(stores: {
   contributionStore: import("../core/store.js").ContributionStore;
   claimStore: import("../core/store.js").ClaimStore;
   timelineStore: import("../core/timeline-store.js").TimelineStore;
+  agentTaskStore?: import("../core/store.js").AgentTaskStore | undefined;
 }): (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity> {
   return async (kind, namespace, id) => {
     if (kind === "Contribution") {
@@ -649,6 +723,11 @@ function makeWatchEntityFetcher(stores: {
       const event = await stores.timelineStore.getTimelineEvent(id);
       if (!event) throw new Error(`TimelineEvent ${id} not found`);
       return timelineEventToEntity(event, namespace);
+    }
+    if (kind === "AgentTask") {
+      const view = await stores.agentTaskStore?.getAgentTask(id);
+      if (!view) throw new Error(`AgentTask ${id} not found`);
+      return agentTaskViewToEntity(view, namespace);
     }
     throw new Error(`Unsupported kind for watch fetcher: ${kind}`);
   };

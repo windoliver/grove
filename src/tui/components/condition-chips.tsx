@@ -48,7 +48,13 @@ export function colorForStatus(status: ConditionStatus): string {
 export function shouldShowReason(c: Condition): boolean {
   const isNegative = NEGATIVE_POLARITY_CONDITION_TYPES.has(c.type);
   const isHealthy = isNegative ? c.status === "False" : c.status === "True";
-  return !isHealthy && c.reason.length > 0;
+  return !isHealthy && (c.reason.length > 0 || c.message.length > 0);
+}
+
+export function conditionExplanation(c: Condition): string {
+  if (c.reason.length === 0) return c.message;
+  if (c.message.length === 0) return c.reason;
+  return `${c.reason} — ${c.message}`;
 }
 
 export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = React.memo(
@@ -77,7 +83,7 @@ export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = R
           <box flexDirection="column">
             {reasons.map((c) => (
               <text key={`reason-${c.type}`} opacity={0.5}>
-                {c.type}: {c.reason}
+                {c.type}: {conditionExplanation(c)}
               </text>
             ))}
           </box>

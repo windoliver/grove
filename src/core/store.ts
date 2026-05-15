@@ -5,6 +5,13 @@
  * The local SQLite adapter and the Nexus adapter both satisfy these protocols.
  */
 
+import type {
+  AgentTaskEntity,
+  AgentTaskPhase,
+  AgentTaskSpecRecord,
+  AgentTaskStatusRecord,
+  AgentTaskView,
+} from "./agent-task.js";
 import type { ClaimEntity, Condition, ContributionEntity } from "./entity.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
@@ -399,5 +406,44 @@ export interface ClaimStore {
   listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
 
   /** Release resources (e.g., close database connections). */
+  close(): void;
+}
+
+/** Filters for querying agent tasks. */
+export interface AgentTaskQuery {
+  readonly phase?: AgentTaskPhase | readonly AgentTaskPhase[] | undefined;
+  readonly role?: string | undefined;
+  readonly runtime?: string | undefined;
+}
+
+/** Status-only patch accepted by controller-owned agent task status writes. */
+export interface AgentTaskStatusPatch {
+  readonly phase?: AgentTaskPhase | undefined;
+  readonly sessionId?: string | undefined;
+  readonly contributions?: readonly string[] | undefined;
+  readonly conditions?: (readonly Condition[] & AgentTaskStatusRecord["conditions"]) | undefined;
+  readonly observedGeneration?: number | undefined;
+  readonly lastTransitionAt?: string | undefined;
+}
+
+/** Store for trigger-neutral agent task lifecycle objects. */
+export interface AgentTaskStore {
+  readonly storeIdentity?: string | undefined;
+
+  /** Create or update user-owned desired task spec. Store controls generation. */
+  putAgentTaskSpec(spec: AgentTaskSpecRecord): Promise<AgentTaskView>;
+
+  /** Get the merged split agent task view by ID. */
+  getAgentTask(taskId: string): Promise<AgentTaskView | undefined>;
+
+  /** List merged split agent task views. */
+  listAgentTasks(query?: AgentTaskQuery): Promise<readonly AgentTaskView[]>;
+
+  /** Patch controller-owned task status fields only. */
+  patchAgentTaskStatus(taskId: string, patch: AgentTaskStatusPatch): Promise<AgentTaskView>;
+
+  /** Return AgentTasks wrapped in the Entity envelope. */
+  listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]>;
+
   close(): void;
 }

@@ -41,7 +41,7 @@
     "grove-mcp-http": "./dist/mcp/serve-http.js"
   },
   "scripts": {
-    "build": "bun run --cwd packages/ask-user build && tsup",
+    "build": "bun run --bun --cwd packages/ask-user build && bun run --bun tsup",
     "typecheck": "bun run --cwd packages/ask-user typecheck && tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
@@ -67,8 +67,9 @@
     "@opentui/react": "^0.1.87",
     "@xterm/addon-serialize": "0.14.0",
     "@xterm/headless": "6.0.0",
-    "@zed-industries/codex-acp": "^0.11.1",
+    "@zed-industries/codex-acp": "^0.14.0",
     "blake3": "^1.0.2",
+    "chokidar": "5.0.0",
     "hono": "^4.12.6",
     "proper-lockfile": "^4.1.2",
     "react": "^19.0.0",

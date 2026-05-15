@@ -1,6 +1,6 @@
 /**
  * WatchHubRecorder — typed adapter that bridges domain writes (Contribution,
- * Claim, AgentSession) to `WatchHub.recordWrite` (#388 PR2).
+ * Claim, AgentSession, AgentTask) to `WatchHub.recordWrite` (#388 PR2).
  *
  * Local mode publishes to a process-local `WatchHub`; the existing remote
  * path goes through `OperationDeps.onEntityWrite` → server-side hub. This
@@ -12,6 +12,7 @@
  */
 
 import type { AgentSession } from "../core/agent-runtime.js";
+import { type AgentTaskView, agentTaskViewToEntity } from "../core/agent-task.js";
 import {
   agentSessionToEntity,
   claimToEntity,
@@ -30,6 +31,7 @@ export interface WatchHubRecorder {
   contribution(op: WatchOp, c: Contribution): void;
   claim(op: WatchOp, c: Claim): void;
   agentSession(op: WatchOp, s: AgentSession): void;
+  agentTask(op: WatchOp, view: AgentTaskView): void;
   workBlock(op: WatchOp, block: WorkBlock): void;
   timelineEvent(op: "ADDED", event: TimelineEvent): void;
 }
@@ -50,12 +52,13 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
   const now = opts.now ?? (() => Date.now());
 
   const safeRecord = (
-    kind: "Contribution" | "Claim" | "AgentSession" | "WorkBlock" | "TimelineEvent",
+    kind: "Contribution" | "Claim" | "AgentSession" | "AgentTask" | "WorkBlock" | "TimelineEvent",
     op: WatchOp,
     entity:
       | ReturnType<typeof contributionToEntity>
       | ReturnType<typeof claimToEntity>
       | ReturnType<typeof agentSessionToEntity>
+      | ReturnType<typeof agentTaskViewToEntity>
       | ReturnType<typeof workBlockToEntity>
       | ReturnType<typeof timelineEventToEntity>,
   ): void => {
@@ -85,6 +88,9 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
     },
     timelineEvent(op, event) {
       safeRecord("TimelineEvent", op, timelineEventToEntity(event, namespace));
+    },
+    agentTask(op, view) {
+      safeRecord("AgentTask", op, agentTaskViewToEntity(view, namespace));
     },
   };
 }

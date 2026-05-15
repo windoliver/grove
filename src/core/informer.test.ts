@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AgentTaskPhase, type AgentTaskView, agentTaskViewToEntity } from "./agent-task.js";
 import type { TimelineEventEntity, WorkBlockEntity } from "./entity.js";
 import { type EntityForKind, Informer, InformerFactory } from "./informer.js";
 import type { WatchClientEvent } from "./watch-client.js";
@@ -101,6 +102,38 @@ const E_B: WatchEntity = {
   id: "cid-b",
   resourceVersion: "1",
 } as unknown as WatchEntity;
+
+const AGENT_TASK_VIEW: AgentTaskView = {
+  spec: {
+    id: "task-a",
+    worktree: "/tmp/worktree",
+    runtime: "codex",
+    role: "worker",
+    prompt: "Implement task",
+    dependsOn: [],
+    generation: 1,
+    createdAt: "2026-05-14T12:00:00.000Z",
+  },
+  status: {
+    id: "task-a",
+    phase: AgentTaskPhase.Pending,
+    contributions: [],
+    conditions: [],
+    observedGeneration: 0,
+    lastTransitionAt: "2026-05-14T12:00:00.000Z",
+    revision: 1,
+  },
+};
+
+const AGENT_TASK_ENTITY = agentTaskViewToEntity(AGENT_TASK_VIEW);
+const AGENT_TASK_SPEC_UPDATED_ENTITY = agentTaskViewToEntity({
+  spec: {
+    ...AGENT_TASK_VIEW.spec,
+    prompt: "Implement updated task",
+    generation: 2,
+  },
+  status: AGENT_TASK_VIEW.status,
+});
 
 function sse(event: string, data: unknown, id?: string): string {
   const idLine = id ? `id: ${id}\n` : "";
@@ -467,6 +500,57 @@ describe("Informer Replace reconciliation on relist", () => {
     ).toBe("2");
   });
 
+  test("AgentTask spec-only update on relist → MODIFIED handler fired", async () => {
+    const events: Array<{ op: string; id: string; rv: string; generation: number }> = [];
+    const ac = new AbortController();
+    let step = 0;
+    const fetchImpl: typeof fetch = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        step += 1;
+        const items = step === 1 ? [AGENT_TASK_ENTITY] : [AGENT_TASK_SPEC_UPDATED_ENTITY];
+        return new Response(
+          JSON.stringify({ items, listResourceVersion: step === 1 ? "5" : "10" }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (step === 1) {
+        return new Response(sse("ERROR", { code: 410 }, "5"), {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      ac.abort();
+      return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "AgentTask",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+      "AgentTask",
+    );
+    informer.addEventHandler((op, entity) => {
+      events.push({
+        op,
+        id: entity.id,
+        rv: entity.resourceVersion,
+        generation: entity.metadata.generation,
+      });
+    });
+    await informer.run(ac.signal);
+
+    const modifiedTask = events.find(
+      (e) => e.op === "MODIFIED" && e.id === "task-a" && e.generation === 2,
+    );
+    expect(modifiedTask).toBeDefined();
+    expect(modifiedTask?.rv).toBe(AGENT_TASK_SPEC_UPDATED_ENTITY.resourceVersion);
+    expect(informer.getById("task-a")?.metadata.generation).toBe(2);
+  });
+
   test("unchanged item on relist → no handler called for it", async () => {
     // E_A present in both rounds at same resourceVersion → no MODIFIED
     const events: Array<{ op: string; id: string }> = [];
@@ -719,6 +803,25 @@ describe("InformerFactory memoization", () => {
     expect(factory.informerFor("TimelineEvent")).toBeDefined();
   });
 
+  test("InformerFactory supports AgentTask in local and remote modes", () => {
+    const localFactory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+    expect(localFactory.supportsKind("AgentTask")).toBe(true);
+    expect(localFactory.informerFor("AgentTask")).toBeDefined();
+
+    const remoteFactory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://localhost:4515",
+      authHeader: "Bearer test",
+    });
+    expect(remoteFactory.supportsKind("AgentTask")).toBe(true);
+    expect(remoteFactory.informerFor("AgentTask")).toBeDefined();
+  });
+
   test("separate factories for separate namespaces use distinct instances", () => {
     // Each namespace gets its own factory (and its own authHeader that encodes
     // the namespace server-side). Two factories for different namespaces must
@@ -767,7 +870,9 @@ describe("Informer run() safety", () => {
     await expect(informer.run(ac.signal)).rejects.toThrow(/already running/);
     // Clean up
     ac.abort();
-    await firstRun.catch(() => undefined);
+    await firstRun.catch(() => {
+      /* abort rejects the blocked fake fetch */
+    });
   });
 
   test("abort unblocks run() even if a handler promise is still pending", async () => {

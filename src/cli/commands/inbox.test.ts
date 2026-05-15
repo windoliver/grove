@@ -19,7 +19,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
+import {
+  createSqliteStores,
+  initSqliteDb,
+  SqliteContributionStore,
+} from "../../local/sqlite-store.js";
 import { handleInbox } from "./inbox.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
@@ -45,6 +49,17 @@ function makeInitOptions(cwd: string): InitOptions {
   };
 }
 
+type FetchMockHandler = (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1],
+) => ReturnType<typeof globalThis.fetch>;
+
+function createFetchMock(handler: FetchMockHandler): typeof globalThis.fetch {
+  return Object.assign(handler, {
+    preconnect: globalThis.fetch.preconnect,
+  }) as typeof globalThis.fetch;
+}
+
 /**
  * Capture console.error / console.log / process.exitCode for the
  * duration of a handleInbox call so we can observe the command's
@@ -59,7 +74,7 @@ async function runInbox(
   const origLog = console.log;
   const origError = console.error;
   const origExitCode = process.exitCode;
-  process.exitCode = undefined;
+  process.exitCode = 0;
   console.log = (...args) => {
     stdout.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
   };
@@ -68,13 +83,16 @@ async function runInbox(
   };
   try {
     await handleInbox(args, groveOverride);
+    const exitCode = process.exitCode === 0 ? undefined : process.exitCode;
+    return { stdout, stderr, exitCode };
   } finally {
     console.log = origLog;
     console.error = origError;
+    // Bun does not restore `process.exitCode` to undefined once it has been set.
+    // Preserve the exact original value when one existed; otherwise reset to the
+    // neutral value that prevents leakage into later command assertions.
+    process.exitCode = origExitCode === undefined ? 0 : origExitCode;
   }
-  const exitCode = process.exitCode;
-  process.exitCode = origExitCode;
-  return { stdout, stderr, exitCode };
 }
 
 describe("grove inbox send — contract enforcement (Codex finding #3)", () => {
@@ -239,5 +257,181 @@ agent_constraints:
     } finally {
       store.close();
     }
+  });
+});
+
+describe("grove inbox — Nexus IPC delegation", () => {
+  let dir: string;
+  let originalFetch: typeof globalThis.fetch;
+  let originalNexusUrl: string | undefined;
+  let originalNexusApiKey: string | undefined;
+  let originalAgentId: string | undefined;
+  let originalSessionId: string | undefined;
+
+  beforeEach(async () => {
+    dir = await createTempDir();
+    originalFetch = globalThis.fetch;
+    originalNexusUrl = process.env.GROVE_NEXUS_URL;
+    originalNexusApiKey = process.env.NEXUS_API_KEY;
+    originalAgentId = process.env.GROVE_AGENT_ID;
+    originalSessionId = process.env.GROVE_SESSION_ID;
+    process.env.GROVE_NEXUS_URL = "http://nexus.test";
+    process.env.NEXUS_API_KEY = "secret";
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    if (originalNexusUrl === undefined) delete process.env.GROVE_NEXUS_URL;
+    else process.env.GROVE_NEXUS_URL = originalNexusUrl;
+    if (originalNexusApiKey === undefined) delete process.env.NEXUS_API_KEY;
+    else process.env.NEXUS_API_KEY = originalNexusApiKey;
+    if (originalAgentId === undefined) delete process.env.GROVE_AGENT_ID;
+    else process.env.GROVE_AGENT_ID = originalAgentId;
+    if (originalSessionId === undefined) delete process.env.GROVE_SESSION_ID;
+    else process.env.GROVE_SESSION_ID = originalSessionId;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("send writes a Grove-marked payload to Nexus IPC after contribution write", async () => {
+    await executeInit(makeInitOptions(dir));
+    await rm(join(dir, "GROVE.md"), { force: true });
+    const fetched: string[] = [];
+    const writes: unknown[] = [];
+    globalThis.fetch = createFetchMock(async (input, init) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url === "http://nexus.test/api/v2/files/write") {
+        writes.push(JSON.parse(String(init?.body)));
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { exitCode } = await runInbox(
+      ["send", "nexus hello", "--to", "@reviewer", "--agent-id", "alice", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(fetched).toContain("http://nexus.test/api/v2/files/write");
+    expect(writes).toHaveLength(1);
+    const write = writes[0] as {
+      readonly path: string;
+      readonly content: string;
+      readonly encoding: string;
+    };
+    expect(write.path).toMatch(/^\/ipc\/reviewer\/inbox\/.+\.json$/);
+    expect(write.encoding).toBe("base64");
+    const envelope = JSON.parse(Buffer.from(write.content, "base64").toString("utf8")) as {
+      readonly sender: string;
+      readonly recipient: string;
+      readonly payload: {
+        readonly kind: string;
+        readonly body: string;
+        readonly recipients: readonly string[];
+        readonly from: { readonly agentId: string };
+      };
+    };
+    expect(envelope.sender).toBe("alice");
+    expect(envelope.recipient).toBe("reviewer");
+    expect(envelope.payload).toMatchObject({
+      kind: "grove.message",
+      body: "nexus hello",
+      recipients: ["@reviewer"],
+      from: { agentId: "alice" },
+    });
+  });
+
+  test("send writes to Nexus IPC when Nexus auth is disabled", async () => {
+    await executeInit(makeInitOptions(dir));
+    await rm(join(dir, "GROVE.md"), { force: true });
+    delete process.env.NEXUS_API_KEY;
+    const writes: unknown[] = [];
+    const authorizations: (string | undefined)[] = [];
+    globalThis.fetch = createFetchMock(async (input, init) => {
+      if (String(input) === "http://nexus.test/api/v2/files/write") {
+        const headers = init?.headers as Record<string, string> | undefined;
+        authorizations.push(headers?.Authorization);
+        writes.push(JSON.parse(String(init?.body)));
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { exitCode } = await runInbox(
+      ["send", "no auth hello", "--to", "@reviewer", "--agent-id", "alice", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(writes).toHaveLength(1);
+    expect(authorizations).toEqual([undefined]);
+  });
+
+  test("send uses session-scoped Nexus IPC path when GROVE_SESSION_ID is configured", async () => {
+    await executeInit(makeInitOptions(dir));
+    await rm(join(dir, "GROVE.md"), { force: true });
+    let sessionId = "";
+    const stores = createSqliteStores(join(dir, ".grove", "grove.db"));
+    try {
+      const session = await stores.goalSessionStore.createSession({ goal: "session cli inbox" });
+      sessionId = session.id;
+      process.env.GROVE_SESSION_ID = session.id;
+    } finally {
+      stores.close();
+    }
+    const writes: unknown[] = [];
+    globalThis.fetch = createFetchMock(async (input, init) => {
+      if (String(input) === "http://nexus.test/api/v2/files/write") {
+        writes.push(JSON.parse(String(init?.body)));
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { exitCode } = await runInbox(
+      ["send", "session hello", "--to", "@reviewer", "--agent-id", "alice", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(writes).toHaveLength(1);
+    const write = writes[0] as { readonly path: string };
+    expect(write.path).toMatch(new RegExp(`^/sessions/${sessionId}/ipc/reviewer/inbox/.+\\.json$`));
+  });
+
+  test("read uses Nexus IPC inbox when Nexus env is configured", async () => {
+    await executeInit(makeInitOptions(dir));
+    process.env.GROVE_AGENT_ID = "bob";
+    const fetched: string[] = [];
+    globalThis.fetch = createFetchMock(async (input) => {
+      fetched.push(String(input));
+      if (String(input).includes("/api/v2/ipc/inbox/bob")) {
+        return new Response(
+          JSON.stringify({
+            messages: [
+              {
+                cid: "blake3:9999999999999999999999999999999999999999999999999999999999999999",
+                from: { agentId: "alice" },
+                body: "from nexus",
+                recipients: ["@bob"],
+                createdAt: "2026-05-12T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const { stdout, exitCode } = await runInbox(
+      ["read", "--limit", "5", "--json"],
+      join(dir, ".grove"),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(fetched).toContain("http://nexus.test/api/v2/ipc/inbox/bob?limit=5");
+    expect(stdout.join("\n")).toContain("from nexus");
   });
 });

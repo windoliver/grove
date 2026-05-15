@@ -16,8 +16,9 @@
         "@opentui/react": "^0.1.87",
         "@xterm/addon-serialize": "0.14.0",
         "@xterm/headless": "6.0.0",
-        "@zed-industries/codex-acp": "^0.11.1",
+        "@zed-industries/codex-acp": "^0.14.0",
         "blake3": "^1.0.2",
+        "chokidar": "5.0.0",
         "hono": "^4.12.6",
         "proper-lockfile": "^4.1.2",
         "react": "^19.0.0",
@@ -326,19 +327,19 @@
 
     "@xterm/headless": ["@xterm/headless@6.0.0", "", {}, "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw=="],
 
-    "@zed-industries/codex-acp": ["@zed-industries/codex-acp@0.11.1", "", { "optionalDependencies": { "@zed-industries/codex-acp-darwin-arm64": "0.11.1", "@zed-industries/codex-acp-darwin-x64": "0.11.1", "@zed-industries/codex-acp-linux-arm64": "0.11.1", "@zed-industries/codex-acp-linux-x64": "0.11.1", "@zed-industries/codex-acp-win32-arm64": "0.11.1", "@zed-industries/codex-acp-win32-x64": "0.11.1" }, "bin": { "codex-acp": "bin/codex-acp.js" } }, "sha512-My2VSlBtvJipJhImHjFDej2ut/p00QqOISRnZgLgLrSIzjgvdcQvAhaZviWj7XPhk4UIdIb0OoA+Lrls824uiQ=="],
+    "@zed-industries/codex-acp": ["@zed-industries/codex-acp@0.14.0", "", { "optionalDependencies": { "@zed-industries/codex-acp-darwin-arm64": "0.14.0", "@zed-industries/codex-acp-darwin-x64": "0.14.0", "@zed-industries/codex-acp-linux-arm64": "0.14.0", "@zed-industries/codex-acp-linux-x64": "0.14.0", "@zed-industries/codex-acp-win32-arm64": "0.14.0", "@zed-industries/codex-acp-win32-x64": "0.14.0" }, "bin": { "codex-acp": "bin/codex-acp.js" } }, "sha512-IT9Zh9YDsRfXnc+RN9T00OCBFZrvQxzsWARWL9C1f0do4xB67eCZGildkJCHjoXmGAyYn1V7rIdRR6/+PzDdmw=="],
 
-    "@zed-industries/codex-acp-darwin-arm64": ["@zed-industries/codex-acp-darwin-arm64@0.11.1", "", { "os": "darwin", "cpu": "arm64", "bin": { "codex-acp-darwin-arm64": "bin/codex-acp" } }, "sha512-zJ/CsOSH1NniKGF/liBtWokdkFtymTWeELV4lDlgMgzVSqMHQTB+t6fFSrxhwOcXHK86TErxAT81Z61e+bq5gg=="],
+    "@zed-industries/codex-acp-darwin-arm64": ["@zed-industries/codex-acp-darwin-arm64@0.14.0", "", { "os": "darwin", "cpu": "arm64", "bin": { "codex-acp-darwin-arm64": "bin/codex-acp" } }, "sha512-FWjHKlNJTZmXWM/2/GAQAg0WJEjPlfxEQJgvfxuzK1xZh81CDg9U6uSgZ1ggBkkN2bOoCnOupvGAPOmBoL5m2Q=="],
 
-    "@zed-industries/codex-acp-darwin-x64": ["@zed-industries/codex-acp-darwin-x64@0.11.1", "", { "os": "darwin", "cpu": "x64", "bin": { "codex-acp-darwin-x64": "bin/codex-acp" } }, "sha512-UZjIsEZPLeYMk+fj2ot1oT+tWuJpw+iZS9awnbmJYxTEEXMpY8BE6xQXMy7iyyxJ346We5MEpAdxg730vcem5Q=="],
+    "@zed-industries/codex-acp-darwin-x64": ["@zed-industries/codex-acp-darwin-x64@0.14.0", "", { "os": "darwin", "cpu": "x64", "bin": { "codex-acp-darwin-x64": "bin/codex-acp" } }, "sha512-KgC92J5wxOJM2N0VMNX7UQSGHVKa7xQCFsniWcxClsLWleJGlUdGlde5Aefd/yoU0J86ii6HCK8RfalUC76Inw=="],
 
-    "@zed-industries/codex-acp-linux-arm64": ["@zed-industries/codex-acp-linux-arm64@0.11.1", "", { "os": "linux", "cpu": "arm64", "bin": { "codex-acp-linux-arm64": "bin/codex-acp" } }, "sha512-I1f6WoSLbLlsWq4zH+vtwdoc4Y41mqRXPpSkfgIifxBw34QmWJmi37etZ7lKTYp6R+J/Z4PUN0rsmnsmKpBZTw=="],
+    "@zed-industries/codex-acp-linux-arm64": ["@zed-industries/codex-acp-linux-arm64@0.14.0", "", { "os": "linux", "cpu": "arm64", "bin": { "codex-acp-linux-arm64": "bin/codex-acp" } }, "sha512-KGfQq0/tdY31XBsdLe5nsKiV97pcsCruW28UDw7sgHUjPq8NPh9IiDdVj+xr1L4opihnswGelcoVvya+Vng8jQ=="],
 
-    "@zed-industries/codex-acp-linux-x64": ["@zed-industries/codex-acp-linux-x64@0.11.1", "", { "os": "linux", "cpu": "x64", "bin": { "codex-acp-linux-x64": "bin/codex-acp" } }, "sha512-30vSoZuW1DP6Nuz24Gg3jgVC37IYe0bZ/Fgc5+372gc0h72NN4zHYAbu5bRd/gUJ9GdwABKrrEPCoFPlOTVTnQ=="],
+    "@zed-industries/codex-acp-linux-x64": ["@zed-industries/codex-acp-linux-x64@0.14.0", "", { "os": "linux", "cpu": "x64", "bin": { "codex-acp-linux-x64": "bin/codex-acp" } }, "sha512-y1wrDOTJ/OYjYNRVmrf9Jti2571DjSp1xe5lSiZ9pBohA4oUQk9YIhlnv7NzeI0PYWyrjLd6QpQ09wTfxZFC8w=="],
 
-    "@zed-industries/codex-acp-win32-arm64": ["@zed-industries/codex-acp-win32-arm64@0.11.1", "", { "os": "win32", "cpu": "arm64", "bin": { "codex-acp-win32-arm64": "bin/codex-acp.exe" } }, "sha512-yisGPG7JMJBtOTOB6qwzroOLfiQebDrBnybzvjOfWiSIHeha25Jf1nTlWrlZcEiV/eeX3/lERuU1MxftjK3Vgg=="],
+    "@zed-industries/codex-acp-win32-arm64": ["@zed-industries/codex-acp-win32-arm64@0.14.0", "", { "os": "win32", "cpu": "arm64", "bin": { "codex-acp-win32-arm64": "bin/codex-acp.exe" } }, "sha512-mUNZYfcpkM9YSs0tFzH7j2NHlxpjScFz2lpyJKiMl8wcTHLU8HYzeJZ7xodHzsIJrb5YMKxZ44zkBM3FBGAVaw=="],
 
-    "@zed-industries/codex-acp-win32-x64": ["@zed-industries/codex-acp-win32-x64@0.11.1", "", { "os": "win32", "cpu": "x64", "bin": { "codex-acp-win32-x64": "bin/codex-acp.exe" } }, "sha512-nOdlp/xHQGzqt+GnB2rrpk0sT7pPJVKkL9M+UhmoFPSFwjWrkzAOJukbT4P59wU1mVBTe84dEW6UnzydWIrGJw=="],
+    "@zed-industries/codex-acp-win32-x64": ["@zed-industries/codex-acp-win32-x64@0.14.0", "", { "os": "win32", "cpu": "x64", "bin": { "codex-acp-win32-x64": "bin/codex-acp.exe" } }, "sha512-KYckY87//om8Vsnb3fMUOkex76z2MF+e3H/n91tXnBep9ecnDT0rtEuoTvr4gP7evAf210YoSSGi0BB4ljse4w=="],
 
     "abort-controller": ["abort-controller@3.0.0", "", { "dependencies": { "event-target-shim": "^5.0.0" } }, "sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg=="],
 
@@ -390,7 +391,7 @@
 
     "call-bound": ["call-bound@1.0.4", "", { "dependencies": { "call-bind-apply-helpers": "^1.0.2", "get-intrinsic": "^1.3.0" } }, "sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg=="],
 
-    "chokidar": ["chokidar@4.0.3", "", { "dependencies": { "readdirp": "^4.0.1" } }, "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="],
+    "chokidar": ["chokidar@5.0.0", "", { "dependencies": { "readdirp": "^5.0.0" } }, "sha512-TQMmc3w+5AxjpL8iIiwebF73dRDF4fBIieAqGn9RGCWaEVwQ6Fb2cGe31Yns0RRIzii5goJ1Y7xbMwo1TxMplw=="],
 
     "commander": ["commander@4.1.1", "", {}, "sha512-NOKm8xhkzAjzFx8B2v5OAHT+u5pRQc2UCa2Vq9jYL/31o2wi9mxBA7LIFs3sV5VSC49z6pEhfbMULvShKj26WA=="],
 
@@ -642,7 +643,7 @@
 
     "readable-web-to-node-stream": ["readable-web-to-node-stream@3.0.4", "", { "dependencies": { "readable-stream": "^4.7.0" } }, "sha512-9nX56alTf5bwXQ3ZDipHJhusu9NTQJ/CVPtb/XHAJCXihZeitfJvIRS4GqQ/mfIoOE3IelHMrpayVrosdHBuLw=="],
 
-    "readdirp": ["readdirp@4.1.2", "", {}, "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg=="],
+    "readdirp": ["readdirp@5.0.0", "", {}, "sha512-9u/XQ1pvrQtYyMpZe7DXKv2p5CNvyVwzUB6uhLAnQwHMSgKMBR62lc7AHljaeteeHXn11XTAaLLUVZYVZyuRBQ=="],
 
     "require-from-string": ["require-from-string@2.0.2", "", {}, "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="],
 
@@ -806,6 +807,8 @@
 
     "react-reconciler/scheduler": ["scheduler@0.26.0", "", {}, "sha512-NlHwttCI/l5gCPR3D1nNXtWABUmBwvZpEQiD4IXSbIDq8BzLIK/7Ir5gTFSGZDUu37K5cMNp0hFtzO38sC7gWA=="],
 
+    "tsup/chokidar": ["chokidar@4.0.3", "", { "dependencies": { "readdirp": "^4.0.1" } }, "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="],
+
     "@grove/ask-user/@biomejs/biome/@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.4.7", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Oo0cF5mHzmvDmTXw8XSjhCia8K6YrZnk7aCS54+/HxyMdZMruMO3nfpDsrlar/EQWe41r1qrwKiCa2QDYHDzWA=="],
 
     "@grove/ask-user/@biomejs/biome/@biomejs/cli-darwin-x64": ["@biomejs/cli-darwin-x64@2.4.7", "", { "os": "darwin", "cpu": "x64" }, "sha512-I+cOG3sd/7HdFtvDSnF9QQPrWguUH7zrkIMMykM3PtfWU9soTcS2yRb9Myq6MHmzbeCT08D1UmY+BaiMl5CcoQ=="],
@@ -821,5 +824,7 @@
     "@grove/ask-user/@biomejs/biome/@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.4.7", "", { "os": "win32", "cpu": "arm64" }, "sha512-hOUHBMlFCvDhu3WCq6vaBoG0dp0LkWxSEnEEsxxXvOa9TfT6ZBnbh72A/xBM7CBYB7WgwqboetzFEVDnMxelyw=="],
 
     "@grove/ask-user/@biomejs/biome/@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.4.7", "", { "os": "win32", "cpu": "x64" }, "sha512-qEpGjSkPC3qX4ycbMUthXvi9CkRq7kZpkqMY1OyhmYlYLnANnooDQ7hDerM8+0NJ+DZKVnsIc07h30XOpt7LtQ=="],
+
+    "tsup/chokidar/readdirp": ["readdirp@4.1.2", "", {}, "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg=="],
   }
 }

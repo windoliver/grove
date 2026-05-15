@@ -13,6 +13,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { agentTaskViewToEntity } from "../../core/agent-task.js";
 import {
   claimToEntity,
   contributionToEntity,
@@ -31,6 +32,7 @@ const KIND_VALUES = [
   "Contribution",
   "Claim",
   "AgentSession",
+  "AgentTask",
   "WorkBlock",
   "TimelineEvent",
 ] as const;
@@ -41,6 +43,7 @@ const KIND_VALUES = [
 const SUPPORTED_KINDS: ReadonlySet<(typeof KIND_VALUES)[number]> = new Set([
   "Contribution",
   "Claim",
+  "AgentTask",
   "WorkBlock",
   "TimelineEvent",
 ]);
@@ -51,6 +54,7 @@ function isTimelineKind(kind: (typeof KIND_VALUES)[number]): kind is "WorkBlock"
 
 function isKindConfigured(kind: (typeof KIND_VALUES)[number], deps: ServerDeps): boolean {
   if (!SUPPORTED_KINDS.has(kind)) return false;
+  if (kind === "AgentTask") return deps.agentTaskStore !== undefined;
   if (isTimelineKind(kind)) return deps.timelineStore !== undefined;
   return true;
 }
@@ -60,6 +64,9 @@ function unavailableKindMessage(
   deps: ServerDeps,
   operation: string,
 ): string {
+  if (kind === "AgentTask" && deps.agentTaskStore === undefined) {
+    return `kind '${kind}' requires an agent task store; ${operation} is unavailable`;
+  }
   if (isTimelineKind(kind) && deps.timelineStore === undefined) {
     return `kind '${kind}' requires a timeline store; ${operation} is unavailable`;
   }
@@ -491,6 +498,13 @@ async function hydrateEntity(
     }
     return undefined;
   }
+  if (kind === "AgentTask") {
+    const view = await deps.agentTaskStore?.getAgentTask(entityId);
+    if (view !== undefined) {
+      return agentTaskViewToEntity(view, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
   // Unsupported kinds are rejected at the route entry; this path is
   // unreachable but kept for type exhaustiveness.
   return undefined;
@@ -614,7 +628,6 @@ async function listForKind(
   namespace: string,
   kind: WatchKind,
 ): Promise<readonly unknown[]> {
-  void namespace;
   switch (kind) {
     case "Contribution":
       return deps.contributionStore.listEntities();
@@ -628,6 +641,13 @@ async function listForKind(
       return deps.timelineStore?.listWorkBlockEntities() ?? [];
     case "TimelineEvent":
       return deps.timelineStore?.listAllTimelineEventEntities() ?? [];
+    case "AgentTask":
+      if (deps.agentTaskStore === undefined) {
+        throw new Error("AgentTask store is not configured");
+      }
+      return (await deps.agentTaskStore.listAgentTasks()).map((view) =>
+        agentTaskViewToEntity(view, namespace),
+      );
     default: {
       const _exhaustive: never = kind;
       void _exhaustive;

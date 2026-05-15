@@ -6,6 +6,7 @@
  * revision) — see docs/superpowers/specs/2026-04-27-a5-watch-protocol-design.md.
  */
 
+import type { AgentTaskEntity } from "./agent-task.js";
 import type {
   AgentSessionEntity,
   ClaimEntity,
@@ -14,7 +15,13 @@ import type {
   WorkBlockEntity,
 } from "./entity.js";
 
-export type WatchKind = "Contribution" | "Claim" | "AgentSession" | "WorkBlock" | "TimelineEvent";
+export type WatchKind =
+  | "Contribution"
+  | "Claim"
+  | "AgentSession"
+  | "AgentTask"
+  | "WorkBlock"
+  | "TimelineEvent";
 
 export type WatchOp = "ADDED" | "MODIFIED" | "DELETED";
 
@@ -22,6 +29,7 @@ export type WatchEntity =
   | ContributionEntity
   | ClaimEntity
   | AgentSessionEntity
+  | AgentTaskEntity
   | WorkBlockEntity
   | TimelineEventEntity;
 
