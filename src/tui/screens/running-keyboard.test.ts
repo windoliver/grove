@@ -123,7 +123,7 @@ function mockActions(overrides?: {
     traceScrollToTop: () => record("traceScrollToTop"),
     traceCycleAgent: () => record("traceCycleAgent"),
     openDetail: () => record("openDetail"),
-    toggleAdvanced: () => record("toggleAdvanced"),
+    enterInspect: () => record("enterInspect"),
     quit: () => record("quit"),
     showQuitDialog: () => record("showQuitDialog"),
     approvePermission: () => record("approvePermission"),
@@ -353,7 +353,7 @@ describe("routeRunningKey — normal mode misc", () => {
   test("Ctrl+A toggles advanced", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("a", { ctrl: true }), defaultState(), actions);
-    expect(log.calls).toContain("toggleAdvanced");
+    expect(log.calls).toContain("enterInspect");
   });
 
   test("Enter opens detail when feed has items", () => {
@@ -644,7 +644,7 @@ describe("routeRunningKey — prompt mode", () => {
     const { actions, log } = mockActions();
     const handled = routeRunningKey(keyEvent("a", { ctrl: true }), promptState, actions);
     expect(handled).toBe(true);
-    expect(log.calls).not.toContain("toggleAdvanced");
+    expect(log.calls).not.toContain("enterInspect");
   });
 });
 
@@ -821,7 +821,7 @@ describe("Trace panel mode", () => {
   test("Ctrl+A still toggles advanced when Trace is expanded", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("a", { ctrl: true }), traceState(), actions);
-    expect(log.calls).toContain("toggleAdvanced");
+    expect(log.calls).toContain("enterInspect");
   });
 });
 

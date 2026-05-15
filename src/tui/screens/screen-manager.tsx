@@ -956,7 +956,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               return spawnManager.sendToAgent(role, message);
             }}
             activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
-            onToggleAdvanced={handleEnterInspect}
+            onEnterInspect={handleEnterInspect}
             onComplete={handleComplete}
             onQuit={handleQuit}
             onBackToMain={handleBackToMain}

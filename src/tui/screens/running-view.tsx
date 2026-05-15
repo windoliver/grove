@@ -127,7 +127,7 @@ export interface RunningViewProps {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
-  readonly onToggleAdvanced: () => void;
+  readonly onEnterInspect: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
   /** Return to the preset-select / main screen. */
@@ -197,7 +197,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     activeRoles,
     logBuffers,
     agentFailures,
-    onToggleAdvanced,
+    onEnterInspect,
     onComplete: _onComplete,
     onQuit,
     onBackToMain,
@@ -844,8 +844,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
           setTraceScrollOffset(0);
         },
-        openDetail: () => onToggleAdvanced(),
-        toggleAdvanced: () => onToggleAdvanced(),
+        openDetail: () => onEnterInspect(),
+        enterInspect: () => onEnterInspect(),
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
@@ -968,7 +968,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         promptText,
         onSendToAgent,
         feed,
-        onToggleAdvanced,
+        onEnterInspect,
         onQuit,
         onBackToMain,
         monitor.pendingPermissions,

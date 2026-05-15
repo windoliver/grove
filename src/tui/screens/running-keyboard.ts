@@ -120,7 +120,7 @@ export interface RunningKeyboardActions {
   readonly traceCycleAgent: () => void;
   // Navigation
   readonly openDetail: () => void;
-  readonly toggleAdvanced: () => void;
+  readonly enterInspect: () => void;
   readonly quit: () => void;
   // Permission
   readonly approvePermission: () => void;
@@ -290,7 +290,7 @@ export function routeRunningKey(
 
   // Ctrl+A: toggle advanced mode
   if (isCtrl && input === "a") {
-    actions.toggleAdvanced();
+    actions.enterInspect();
     return true;
   }
 
