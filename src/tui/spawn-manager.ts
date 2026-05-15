@@ -794,7 +794,7 @@ export class SpawnManager {
         await mkdir(workspacePath, { recursive: true });
         await this.writeMcpConfig(workspacePath);
         await this.writeAgentInstructions(workspacePath, roleId, context);
-        if (context?.rolePrompt || context?.roleDescription) {
+        if (context?.rolePrompt || context?.roleDescription || context?.adoptTarget) {
           await this.writeAgentContext(workspacePath, roleId, context);
         }
         // Inject skills declared by the role. SpawnManager does not use the shared
@@ -1896,9 +1896,10 @@ export class SpawnManager {
     const sessionGoal = this.sessionGoal || "Follow your role instructions below.";
     const adoptTarget = context?.adoptTarget as string | undefined;
     const adoptSummary = context?.adoptSummary as string | undefined;
+    const safeSummary = adoptSummary ? adoptSummary.replace(/`/g, "'") : "";
 
     const adoptSection = adoptTarget
-      ? `\n## Adopt Context\n\nYou are spawned to build on an existing contribution.\n- **Target CID**: \`${adoptTarget}\`\n${adoptSummary ? `- **Summary**: ${adoptSummary}\n` : ""}Call \`grove_adopt({ targetCid: "${adoptTarget}", agent: { role: "${roleId}" } })\` as your **first action** to check out the artifact before making changes.\n`
+      ? `\n## Adopt Context\n\nYou are spawned to build on an existing contribution.\n- **Target CID**: \`${adoptTarget}\`\n${safeSummary ? `- **Summary**: ${safeSummary}\n` : ""}Call \`grove_adopt({ targetCid: "${adoptTarget}", agent: { role: "${roleId}" } })\` as your **first action** to check out the artifact before making changes.\n`
       : "";
 
     const instructions = `# Grove Agent: ${roleId}
@@ -2029,7 +2030,8 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     if (context.adoptTarget) {
       lines.push(`## Adopt Target`, "", `CID: \`${String(context.adoptTarget)}\``);
       if (context.adoptSummary) {
-        lines.push(`Summary: ${String(context.adoptSummary)}`);
+        const safeSummary = String(context.adoptSummary).replace(/`/g, "'");
+        lines.push(`Summary: ${safeSummary}`);
       }
       lines.push(
         "",
