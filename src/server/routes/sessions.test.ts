@@ -23,6 +23,10 @@ class TestGoalSessionStore implements GoalSessionStore {
     readonly id: string;
     readonly options: (SessionDeleteOptions & CasOpts) | undefined;
   }[] = [];
+  readonly archiveCalls: {
+    readonly id: string;
+    readonly options: CasOpts | undefined;
+  }[] = [];
 
   blockDelete(sessionId: string): void {
     this.blockedSessionIds.add(sessionId);
@@ -71,6 +75,7 @@ class TestGoalSessionStore implements GoalSessionStore {
     sessionId: string,
     opts?: CasOpts,
   ): Promise<CasMutationResult<Session | undefined>> {
+    this.archiveCalls.push({ id: sessionId, options: opts });
     return this.store.archiveSession(sessionId, opts);
   }
 
@@ -348,5 +353,67 @@ describe("session routes", () => {
       id: session.id,
       options: { ifMatch: "1", force: false, actor: "http" },
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // C6 #304: @Dangerous middleware + If-Match plumbing on PUT /:id/archive
+  // -----------------------------------------------------------------------
+
+  test("PUT /api/sessions/:id/archive without If-Match → 428 and store not called", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "no-if-match-archive" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(428);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("PRECONDITION_REQUIRED");
+    expect(goalSessionStore.archiveCalls).toHaveLength(0);
+    // Session must remain in original state.
+    expect((await goalSessionStore.getSession(session.id))?.status).not.toBe("archived");
+  });
+
+  test("PUT /api/sessions/:id/archive with stale If-Match → 409 with current snapshot", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "stale-archive" });
+    // External mutation bumps RV from 1 → 2 so the caller's If-Match=1 is stale.
+    await goalSessionStore.updateSession(session.id, { status: "active" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(409);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("CONFLICT");
+    expect(body.error.current.resourceVersion).toBe("2");
+    // Session must not have been archived.
+    expect((await goalSessionStore.getSession(session.id))?.status).not.toBe("archived");
+  });
+
+  test("PUT /api/sessions/:id/archive with fresh If-Match → 204 and store called with ifMatch", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "fresh-archive" });
+    const { app } = createTestApp({ goalSessionStore });
+
+    const res = await app.request(`/api/sessions/${session.id}/archive`, {
+      method: "PUT",
+      headers: { ...TEST_AUTH_HEADERS, "if-match": "1" },
+    });
+
+    expect(res.status).toBe(204);
+    expect(goalSessionStore.archiveCalls.at(-1)).toEqual({
+      id: session.id,
+      options: { ifMatch: "1" },
+    });
+    expect((await goalSessionStore.getSession(session.id))?.status).toBe("archived");
   });
 });

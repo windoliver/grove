@@ -13,7 +13,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { getPreset, presetToSessionConfig } from "../../cli/presets/index.js";
-import { expectCasOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import type { Session } from "../../core/session.js";
@@ -303,26 +302,48 @@ sessions.delete(
   }),
 );
 
-/** PUT /api/sessions/:id/archive — Archive a session. */
-sessions.put("/:id/archive", async (c) => {
-  const { goalSessionStore } = c.get("deps");
-  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+/**
+ * PUT /api/sessions/:id/archive — Archive a session.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` with the
+ * store's current RV so the caller can re-fetch and retry.
+ */
+sessions.put(
+  "/:id/archive",
+  dangerous<"/:id/archive">(async (c) => {
+    const { goalSessionStore } = c.get("deps");
+    if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  const sessionId = c.req.param("id");
+    const sessionId = c.req.param("id");
 
-  // Verify session exists before archiving
-  const session = await goalSessionStore.getSession(sessionId);
-  if (!session) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
-      404,
-    );
-  }
+    // Verify session exists before archiving
+    const session = await goalSessionStore.getSession(sessionId);
+    if (!session) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+        404,
+      );
+    }
 
-  const archiveResult = await goalSessionStore.archiveSession(sessionId);
-  expectCasOk(archiveResult, `PUT /api/sessions/${sessionId}/archive`);
-  return c.body(null, 204);
-});
+    const ifMatch = getIfMatch(c);
+    const archiveResult = await goalSessionStore.archiveSession(sessionId, { ifMatch });
+    if (archiveResult.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Session ${sessionId} resourceVersion changed`,
+            current: archiveResult.current,
+          },
+        },
+        409,
+      );
+    }
+    return c.body(null, 204);
+  }),
+);
 
 /** POST /api/sessions/:id/contributions — Record a contribution against a session. */
 sessions.post("/:id/contributions", async (c) => {
