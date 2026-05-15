@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { CasMutationResult } from "./cas.js";
+import { type CasMutationResult, casOk } from "./cas.js";
 import {
   type ClaimControllerStore,
   ClaimReconciliationController,
@@ -83,7 +83,7 @@ class FakeClaimControllerStore implements ClaimControllerStore {
     };
     const updated: ClaimView = { spec: view.spec, status: updatedStatus };
     this.views.set(claimId, updated);
-    return { kind: "ok", view: updated };
+    return casOk(updated);
   };
 
   listEntities = async (): Promise<readonly ClaimEntity[]> => {

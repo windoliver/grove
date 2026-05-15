@@ -146,17 +146,18 @@ describe("SqliteAgentTaskStore", () => {
     const staleRv = String(created.spec.resourceVersion ?? 1);
 
     // External mutation bumps RV without ifMatch.
-    const secondPut = await stores.agentTaskStore.putAgentTaskSpec({
-      id: "cas-stale",
-      worktree: "/tmp/worktree",
-      runtime: "codex",
-      role: "worker",
-      prompt: "second",
-      dependsOn: [],
-      generation: 0,
-      createdAt: "2026-05-13T11:00:00.000Z",
-    });
-    expect(secondPut.kind).toBe("ok");
+    const secondPut = expectOk(
+      await stores.agentTaskStore.putAgentTaskSpec({
+        id: "cas-stale",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "worker",
+        prompt: "second",
+        dependsOn: [],
+        generation: 0,
+        createdAt: "2026-05-13T11:00:00.000Z",
+      }),
+    );
 
     // Retry with captured stale RV — must be rejected.
     const result = await stores.agentTaskStore.putAgentTaskSpec(
@@ -175,8 +176,14 @@ describe("SqliteAgentTaskStore", () => {
     expect(result.kind).toBe("rv-mismatch");
     if (result.kind === "rv-mismatch") {
       expect(result.current.resourceVersion).not.toBe(staleRv);
-      expect(typeof result.current.generation).toBe("number");
+      expect(result.current.generation).toBe(secondPut.spec.generation);
     }
+    // No-write: stored spec RV must still equal the post-secondPut value,
+    // proving the third (CAS-guarded) put did not commit.
+    const after = await stores.agentTaskStore.getAgentTask("cas-stale");
+    expect(String(after?.spec.resourceVersion ?? "")).toBe(
+      String(secondPut.spec.resourceVersion ?? ""),
+    );
   });
 
   test("putAgentTaskSpec bumps resource_version when ifMatch matches", async () => {
@@ -296,8 +303,14 @@ describe("SqliteAgentTaskStore", () => {
     expect(result.kind).toBe("rv-mismatch");
     if (result.kind === "rv-mismatch") {
       expect(result.current.resourceVersion).not.toBe(staleRv);
-      expect(typeof result.current.generation).toBe("number");
+      expect(result.current.generation).toBe(created.spec.generation);
     }
+    // No-write: stored status RV must still equal the post-unguarded-patch
+    // value, proving the CAS-guarded retry did not commit.
+    const after = await stores.agentTaskStore.getAgentTask("status-cas-stale");
+    expect(String(after?.status.resourceVersion ?? after?.status.revision ?? "")).toBe(
+      String(bumped.status.resourceVersion ?? bumped.status.revision ?? ""),
+    );
   });
 
   test("patchAgentTaskStatus bumps status resource_version when ifMatch matches", async () => {

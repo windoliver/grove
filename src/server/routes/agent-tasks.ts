@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
 import { AgentTaskPhase } from "../../core/agent-task.js";
+import { expectCasOk } from "../../core/cas.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
@@ -176,16 +177,8 @@ agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
     deletionTimestamp: existing?.spec.deletionTimestamp,
   };
 
-  const putResult = await store.putAgentTaskSpec(spec);
-  if (putResult.kind === "rv-mismatch") {
-    // PUT handler does not (yet) accept If-Match; if the inner store surfaces
-    // an rv-mismatch here, that's a programming error — only CAS-bearing
-    // routes should observe this branch (T6).
-    throw new Error(
-      `Unexpected RV mismatch on PUT /api/agent-tasks/${taskId}; route does not yet accept If-Match (C6 T6 will wire this)`,
-    );
-  }
-  return c.json(putResult.view, existing === undefined ? 201 : 200);
+  const view = expectCasOk(await store.putAgentTaskSpec(spec), `PUT /api/agent-tasks/${taskId}`);
+  return c.json(view, existing === undefined ? 201 : 200);
 });
 
 agentTasks.get("/", zValidator("query", listQuerySchema), async (c) => {
@@ -230,17 +223,10 @@ agentTasks.patch(
       observedGeneration: body.observedGeneration,
       lastTransitionAt: body.lastTransitionAt,
     };
-    const patchResult = await store.patchAgentTaskStatus(c.req.param("id"), patch);
-    if (patchResult.kind === "rv-mismatch") {
-      // PATCH /status handler does not (yet) accept If-Match; if the inner
-      // store surfaces an rv-mismatch here, that's a programming error —
-      // only CAS-bearing routes should observe this branch (T6).
-      throw new Error(
-        `Unexpected RV mismatch on PATCH /api/agent-tasks/${c.req.param(
-          "id",
-        )}/status; route does not yet accept If-Match (C6 T6 will wire this)`,
-      );
-    }
-    return c.json(patchResult.view);
+    const view = expectCasOk(
+      await store.patchAgentTaskStatus(c.req.param("id"), patch),
+      `PATCH /api/agent-tasks/${c.req.param("id")}/status`,
+    );
+    return c.json(view);
   },
 );

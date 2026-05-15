@@ -185,15 +185,16 @@ export function runClaimStoreTests(
       const staleRv = String(created.view.spec.resourceVersion ?? 1);
 
       // External mutation bumps RV without ifMatch.
-      const secondPut = await store.putClaimSpec({
-        id: "cas-stale",
-        targetRef: "ref-cas-stale",
-        agent: makeAgent({ agentId: "agent-cas-stale" }),
-        intentSummary: "second",
-        createdAt: nowIso,
-        generation: 1,
-      });
-      expect(secondPut.kind).toBe("ok");
+      const secondPut = expectOk(
+        await store.putClaimSpec({
+          id: "cas-stale",
+          targetRef: "ref-cas-stale",
+          agent: makeAgent({ agentId: "agent-cas-stale" }),
+          intentSummary: "second",
+          createdAt: nowIso,
+          generation: 1,
+        }),
+      );
 
       // Retry with the captured stale RV — must be rejected.
       const result = await store.putClaimSpec(
@@ -210,8 +211,14 @@ export function runClaimStoreTests(
       expect(result.kind).toBe("rv-mismatch");
       if (result.kind === "rv-mismatch") {
         expect(result.current.resourceVersion).not.toBe(staleRv);
-        expect(typeof result.current.generation).toBe("number");
+        expect(result.current.generation).toBe(secondPut.spec.generation);
       }
+      // No-write: stored spec RV must match the post-secondPut value, proving
+      // the third (CAS-guarded) put did not commit.
+      const after = await store.getClaimView("cas-stale");
+      expect(String(after?.spec.resourceVersion ?? "")).toBe(
+        String(secondPut.spec.resourceVersion ?? ""),
+      );
     });
 
     test("putClaimSpec bumps resource_version when ifMatch matches", async () => {
@@ -316,8 +323,14 @@ export function runClaimStoreTests(
       expect(result.kind).toBe("rv-mismatch");
       if (result.kind === "rv-mismatch") {
         expect(result.current.resourceVersion).not.toBe(staleRv);
-        expect(typeof result.current.generation).toBe("number");
+        expect(result.current.generation).toBe(created.spec.generation);
       }
+      // No-write: stored status RV must still match the post-unguarded-patch
+      // value, proving the CAS-guarded retry did not commit.
+      const after = await store.getClaimView("status-cas-stale");
+      expect(String(after?.status.resourceVersion ?? after?.status.revision ?? "")).toBe(
+        String(bumped.status.resourceVersion ?? bumped.status.revision ?? ""),
+      );
     });
 
     test("patchClaimStatus bumps status resource_version when ifMatch matches", async () => {

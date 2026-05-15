@@ -7,6 +7,7 @@
  */
 
 import type { AgentSession } from "./agent-runtime.js";
+import { rvComposite } from "./cas.js";
 import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
@@ -322,9 +323,19 @@ export function claimViewToEntity(
     // status.resource_version - 1`. For now the formula keeps both the
     // "init RV='1'" and "heartbeat/transition advances RV" invariants
     // true while letting spec writes also bump the entity-level RV.
+    // Claim's status RV input remains `view.status.revision` (NOT the
+    // resourceVersion fallback used by agent-task): heartbeat/release/
+    // complete/expireStale still bump `revision` directly without going
+    // through `patchClaimStatus`, so `status.resourceVersion` would stay
+    // pinned at its initial value across those mutations. Switching to
+    // `resourceVersion ?? revision` would regress the conformance test
+    // "listEntities resourceVersion advances after heartbeat and transition".
+    // T3b (or its successor) will bring those direct paths under
+    // resource_version bumping; once that lands, this can flip to mirror
+    // the agent-task call shape.
     resourceVersion: leaseIsExpired
-      ? `${claimRvComposite(view)}-lease-expired`
-      : String(claimRvComposite(view)),
+      ? `${rvComposite(view.spec.resourceVersion, view.status.revision)}-lease-expired`
+      : String(rvComposite(view.spec.resourceVersion, view.status.revision)),
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
@@ -333,23 +344,6 @@ export function claimViewToEntity(
       deletionTimestamp: view.spec.deletionTimestamp,
     },
   };
-}
-
-/**
- * Compute the composite Entity resourceVersion for a ClaimView.
- *
- * Combines the persisted spec `resource_version` (bumped by every
- * spec-side write via `putClaimSpec`) with the status `revision`
- * (advanced by every status-side write). The `-1` term keeps
- * `(1,1) → 1` so a freshly-created claim has RV `"1"` rather than `"2"`.
- *
- * Once T3 lands status-side `resource_version` bumping, this can be
- * collapsed to `spec.resourceVersion + status.resourceVersion - 1`.
- */
-function claimRvComposite(view: ClaimView): number {
-  const specRv = view.spec.resourceVersion ?? 1;
-  const statusRv = view.status.revision;
-  return specRv + statusRv - 1;
 }
 
 function computeLeaseDeadlineSec(createdAt: string, leaseExpiresAt: string): number | undefined {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { expectOk } from "./cas.js";
+import { casOk, expectOk } from "./cas.js";
 import type { ClaimEntity } from "./entity.js";
 import { claimToEntity } from "./entity.js";
 import { NotFoundError } from "./errors.js";
@@ -87,7 +87,7 @@ function makeClaimStore(overrides?: {
               status: existing.status,
             };
       putView(view);
-      return { kind: "ok" as const, view };
+      return casOk(view);
     },
     getClaimView: async (claimId) => {
       return viewFor(claimId);
@@ -115,7 +115,7 @@ function makeClaimStore(overrides?: {
       };
       const updated = { spec: view.spec, status: updatedStatus };
       putView(updated);
-      return { kind: "ok" as const, view: updated };
+      return casOk(updated);
     },
     createClaim: async (claim) => {
       putClaim(claim);

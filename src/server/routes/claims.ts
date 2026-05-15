@@ -10,6 +10,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { expectCasOk } from "../../core/cas.js";
 import { DEFAULT_LEASE_MS } from "../../core/constants.js";
 import { claimToEntity, claimViewToEntity } from "../../core/entity.js";
 import type { AgentIdentity, Claim, ClaimSpecRecord, JsonValue } from "../../core/models.js";
@@ -247,16 +248,7 @@ claims.put("/:id", zValidator("json", specBodySchema), async (c) => {
     createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
   };
 
-  const putResult = await deps.claimStore.putClaimSpec(spec);
-  if (putResult.kind === "rv-mismatch") {
-    // PUT handler does not (yet) accept If-Match; if the inner store
-    // surfaces an rv-mismatch here, that's a programming error — only
-    // CAS-bearing routes should observe this branch (T6).
-    throw new Error(
-      `Unexpected RV mismatch on PUT /api/claims/${claimId}; route does not yet accept If-Match (C6 T6 will wire this)`,
-    );
-  }
-  const view = putResult.view;
+  const view = expectCasOk(await deps.claimStore.putClaimSpec(spec), `PUT /api/claims/${claimId}`);
   const namespace = c.get("namespace");
   const entity = claimViewToEntity(view, () => Date.now(), namespace);
   try {
@@ -320,18 +312,10 @@ claims.patch(
       lastTransitionAt: body.lastTransitionAt,
     };
 
-    const patchResult = await deps.claimStore.patchClaimStatus(c.req.param("id"), patch);
-    if (patchResult.kind === "rv-mismatch") {
-      // PATCH /status handler does not (yet) accept If-Match; if the inner
-      // store surfaces an rv-mismatch here, that's a programming error — only
-      // CAS-bearing routes should observe this branch (T6).
-      throw new Error(
-        `Unexpected RV mismatch on PATCH /api/claims/${c.req.param(
-          "id",
-        )}/status; route does not yet accept If-Match (C6 T6 will wire this)`,
-      );
-    }
-    const view = patchResult.view;
+    const view = expectCasOk(
+      await deps.claimStore.patchClaimStatus(c.req.param("id"), patch),
+      `PATCH /api/claims/${c.req.param("id")}/status`,
+    );
     const namespace = c.get("namespace");
     const entity = claimViewToEntity(view, () => Date.now(), namespace);
     try {

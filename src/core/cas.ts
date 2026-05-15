@@ -86,6 +86,55 @@ export function expectOk<V>(result: CasMutationResult<V>): V {
   return result.view;
 }
 
+/**
+ * Production helper: unwrap a CasMutationResult inside a caller that does
+ * not (yet) supply `ifMatch`. Throws with a caller-specific context string
+ * if the result is `rv-mismatch`.
+ *
+ * Until C6 T6 wires real If-Match handling into mutating routes and
+ * controllers, every call site that invokes a CAS-aware store method
+ * without an `ifMatch` MUST use this helper so the unreachable mismatch
+ * branch fails loudly with route/controller context.
+ *
+ * @param result the discriminated result from a store CAS method
+ * @param context a human description of the caller, e.g.
+ *                `"PUT /api/claims/abc-123"` or `"reconcileClaim(abc-123)"`
+ */
+export function expectCasOk<V>(result: CasMutationResult<V>, context: string): V {
+  if (result.kind === "rv-mismatch") {
+    throw new Error(
+      `Unexpected RV mismatch on ${context}; caller does not yet supply If-Match (C6 T6 will wire this)`,
+    );
+  }
+  return result.view;
+}
+
+/**
+ * Construct a `CasOk` result. Reduces boilerplate in store mocks that
+ * always return `{ kind: "ok", view }` because they don't model CAS
+ * conflicts. Not for use in production stores — those must compute and
+ * branch on `ifMatch`.
+ */
+export function casOk<V>(view: V): CasMutationResult<V> {
+  return { kind: "ok", view };
+}
+
+/**
+ * Composite Entity-level resource version: the sum of spec RV and status
+ * RV, minus 1, so that the initial (spec=1, status=1) state surfaces as
+ * RV=1 to entity consumers. Each subsequent spec or status mutation
+ * advances the composite by 1, monotonically.
+ *
+ * Used by entity adapters (claim, agent-task, etc.) to project a single
+ * `Entity.resourceVersion` from the two persisted columns.
+ *
+ * Both arguments accept `number | undefined`; undefined falls back to 1
+ * (the SCHEMA_DDL DEFAULT for `resource_version` columns).
+ */
+export function rvComposite(specRv: number | undefined, statusRv: number | undefined): number {
+  return (specRv ?? 1) + (statusRv ?? 1) - 1;
+}
+
 // ---------------------------------------------------------------------------
 // Content-Addressable Storage (CAS) protocol
 // ---------------------------------------------------------------------------

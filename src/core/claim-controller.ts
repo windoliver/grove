@@ -1,3 +1,4 @@
+import { expectCasOk } from "./cas.js";
 import type { ClaimEntity, Condition } from "./entity.js";
 import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStatusPatch, ClaimStore } from "./store.js";
@@ -87,14 +88,10 @@ export class ClaimReconciliationController {
     const result = this.computeReconciliation(view);
     if (result === undefined) return undefined;
 
-    const patchResult = await this.claimStore.patchClaimStatus(claimId, result.patch);
-    if (patchResult.kind === "rv-mismatch") {
-      // Reconciler does not (yet) supply ifMatch — observing a mismatch here
-      // would be a store-side programming error.
-      throw new Error(
-        `Unexpected RV mismatch on reconcileClaim(${claimId}); controller does not yet accept If-Match (C6 T6)`,
-      );
-    }
+    expectCasOk(
+      await this.claimStore.patchClaimStatus(claimId, result.patch),
+      `reconcileClaim(${claimId})`,
+    );
     if (result.transition !== undefined) {
       this.onTransition?.(result.transition);
     }

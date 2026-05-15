@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { CasMutationResult } from "../cas.js";
+import { type CasMutationResult, casOk } from "../cas.js";
 import type { InMemoryCreditsService } from "../in-memory-credits.js";
 import {
   type Claim,
@@ -80,7 +80,7 @@ class OwnerAwareClaimStore implements ClaimStore {
             status: existing.status,
           };
     this.putView(view);
-    return { kind: "ok", view };
+    return casOk(view);
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {
@@ -110,7 +110,7 @@ class OwnerAwareClaimStore implements ClaimStore {
       },
     };
     this.putView(updated);
-    return { kind: "ok", view: updated };
+    return casOk(updated);
   }
 
   async createClaim(claim: Claim): Promise<Claim> {

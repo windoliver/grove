@@ -6,7 +6,13 @@
  */
 
 import type { Hono } from "hono";
-import type { CasMutationResult, CasOpts, ContentStore, PutOptions } from "../core/cas.js";
+import {
+  type CasMutationResult,
+  type CasOpts,
+  type ContentStore,
+  casOk,
+  type PutOptions,
+} from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
@@ -167,7 +173,7 @@ export class InMemoryClaimStore implements ClaimStore {
         status: existing.status,
       };
       this.putView(updated);
-      return { kind: "ok", view: updated };
+      return casOk(updated);
     }
 
     const now = new Date().toISOString();
@@ -190,7 +196,7 @@ export class InMemoryClaimStore implements ClaimStore {
       },
     };
     this.putView(view);
-    return { kind: "ok", view };
+    return casOk(view);
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {
@@ -241,7 +247,7 @@ export class InMemoryClaimStore implements ClaimStore {
       },
     };
     this.putView(updated);
-    return { kind: "ok", view: updated };
+    return casOk(updated);
   }
 
   async createClaim(claim: Claim): Promise<Claim> {
