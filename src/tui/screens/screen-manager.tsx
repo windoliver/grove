@@ -966,7 +966,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.secondary}>Ctrl+B:back to running view</text>
+              <text color={theme.secondary}>Ctrl+I or Esc:back to running view</text>
             </box>
             <box flexGrow={1}>
               <InspectModeWrapper appProps={appProps} onBack={handleExitInspect} />
@@ -1053,7 +1053,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 );
 
 // ---------------------------------------------------------------------------
-// Inspect mode wrapper — intercepts Tab to go back to simple view
+// Inspect mode wrapper — intercepts Esc / Ctrl+I (and legacy Ctrl+B) to return to the session view
 // ---------------------------------------------------------------------------
 
 interface InspectModeWrapperProps {

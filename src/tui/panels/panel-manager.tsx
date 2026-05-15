@@ -256,7 +256,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               active
               cursor={isFocused(Panel.Dag) ? nav.state.cursor : -1}
               onContributionsLoaded={onContributionsLoaded}
-              // Wire the advanced-mode `/foo` search query into the
+              // Wire the inspect-overlay `/foo` search query into the
               // highlight prop so DAG rows recolor (no filtering) as the
               // user types — matches running-view's behavior.
               highlightText={searchQuery}

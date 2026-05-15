@@ -120,7 +120,7 @@ export function App({
   // DagStateStore — xray DAG UI state (#311). Constructed once at App
   // mount so collapse/highlight/focus survive every PanelManager
   // re-render. ScreenManager has its own equivalent; the two providers
-  // are mounted on disjoint code paths (advanced mode vs welcome flow).
+  // are mounted on disjoint code paths (inspect overlay vs welcome flow).
   const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
