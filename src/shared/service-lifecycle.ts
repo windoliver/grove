@@ -781,10 +781,25 @@ async function waitForOwnedReadiness(opts: {
     const lsofUnavailable = probe.kind === "unavailable";
 
     if (resp.ok) {
-      if (pidConfirmed) return { ok: true };
+      // Token match + pre-fetch PID confirmation is sufficient — a spoof
+      // that learned the token cannot also be the spawnedPid AND have
+      // re-bound the port during the fetch window.
+      if (pidConfirmed && tokenMatch) return { ok: true };
+      // Tokenless legacy path (old child build): require POST-fetch lsof to
+      // STILL show our PID. Without this re-check, a TOCTOU between the
+      // pre-fetch sample and the response can let a foreign listener that
+      // bound the port mid-fetch satisfy readiness with a generic 2xx.
+      if (pidConfirmed && !tokenMatch) {
+        const postProbe = await probeListenerPid(port);
+        if (postProbe.kind === "pid" && postProbe.pid === spawnedPid) {
+          return { ok: true };
+        }
+        // PID moved while we were fetching; treat as a foreign-listener
+        // swap and let the next iteration's primary probe classify it.
+      }
+      // lsof-blind host + token match: degraded acceptance, documented
+      // weakness on same-UID hosts.
       if (lsofUnavailable && tokenMatch) return { ok: true };
-      // resp.ok but neither lsof-confirmed nor token-on-lsof-blind: keep
-      // polling — likely the listener hasn't fully bound yet.
     } else if (pidConfirmed) {
       // Our listener BUT degraded (e.g. grove-server 503 from store error).
       lastStatus = resp.status;
@@ -1257,15 +1272,15 @@ async function spawnService(
         timeoutMs: SERVICE_HEALTH_TIMEOUT_MS,
       });
       if (!readiness.ok) {
-        // Teardown policy:
-        //   child-exited           — already dead; signal would risk PID reuse (round 4)
-        //   owned-but-unhealthy    — service is dependency-degraded; keep alive
-        //                            so operator can inspect (round 5)
-        //   owned-but-unresponsive — bound, /health hung; same rationale
-        //   owned-by-foreign / no-listener — our spawn lost; reap it
-        const shouldTerminate =
-          readiness.kind === "owned-by-foreign" || readiness.kind === "no-listener";
-        if (shouldTerminate) {
+        // Teardown policy (round 6): every non-ok verdict EXCEPT
+        // child-exited gets terminated. Round 5 tried to preserve
+        // owned-but-* children for operator inspection, but spawnService
+        // throws and startServices' rollback only sees fulfilled spawn
+        // promises — leaving a non-tracked child running would (a) keep
+        // the port bound and (b) trigger "foreign listener" on the next
+        // grove tui run. The startup log file (`${groveDir}/${name}.log`)
+        // is preserved on disk for post-mortem.
+        if (readiness.kind !== "child-exited") {
           await terminateChild(pid, exited);
         }
         const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
@@ -1292,7 +1307,8 @@ async function spawnService(
         })();
         throw new Error(
           `${name} did not reach readiness on port ${port}: ${detail}\n` +
-            `Diagnose with: lsof -iTCP:${port} -sTCP:LISTEN`,
+            `Startup log preserved at: ${join(groveDir, `${name}.log`)}\n` +
+            `Diagnose live state with: lsof -iTCP:${port} -sTCP:LISTEN`,
         );
       }
     } else {
