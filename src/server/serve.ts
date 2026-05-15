@@ -357,10 +357,21 @@ if (seedPeers.length > 0) {
       address: peerAddress,
       seedPeers: [...seedPeers],
       hmacSecret: gossipHmacSecret,
+      antiEntropy: {
+        enabled: process.env.GROVE_GOSSIP_ANTI_ENTROPY === "1",
+        intervalMs: process.env.GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS
+          ? Number(process.env.GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS)
+          : undefined,
+        batchSize: process.env.GROVE_GOSSIP_ANTI_ENTROPY_BATCH
+          ? Number(process.env.GROVE_GOSSIP_ANTI_ENTROPY_BATCH)
+          : undefined,
+      },
     },
     transport,
     frontier: serverFrontier,
     getLoad: () => ({ queueDepth: 0 }),
+    contributionStore: serverContributionStore,
+    cas: serverCas,
   });
 }
 
