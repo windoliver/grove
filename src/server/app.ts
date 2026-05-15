@@ -88,13 +88,41 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // All /api/* routes require a valid namespace bearer token.
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
+  //
+  // Federation read paths (#226): when gossip is configured, the
+  // content-addressed read endpoints used by peer fetchers are exempt as well.
+  // Namespace API keys must never be sent to peer servers (see serve.ts), so
+  // peer-to-peer auth relies on HMAC over the gossip exchange that advertised
+  // the cid — anyone who knows the cid learned it through that authenticated
+  // exchange. Without this exemption the federation fetch path is unusable in
+  // production because HttpGossipTransport.fetchContribution / fetchArtifact
+  // intentionally send no bearer token.
+  //
+  //   GET /api/cas/:hash{,/meta}       — content-addressed blob fetch.
+  //   GET /api/contributions/:cid      — content-addressed manifest fetch.
+  //
+  // Other contribution routes (POST /, GET /, GET /:cid/artifacts/:name)
+  // remain bearer-protected.
+  // Match either the raw or percent-encoded ":" form of the cid prefix, since
+  // peer transports may encode the colon (e.g., HttpGossipTransport calls
+  // encodeURIComponent(cid)).
+  const FEDERATION_CAS_PATH = /^\/api\/cas\/blake3(?::|%3A)[0-9a-f]{64}(?:\/meta)?$/i;
+  const FEDERATION_CONTRIB_PATH = /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}$/i;
   app.use(
     "/api/*",
     namespaceAuth(registry, {
-      exempt: (c) =>
-        deps.gossip !== undefined &&
-        c.req.method === "POST" &&
-        c.req.path.startsWith("/api/gossip"),
+      exempt: (c) => {
+        if (deps.gossip === undefined) return false;
+        if (c.req.method === "POST" && c.req.path.startsWith("/api/gossip")) {
+          return true;
+        }
+        if (c.req.method === "GET") {
+          return (
+            FEDERATION_CAS_PATH.test(c.req.path) || FEDERATION_CONTRIB_PATH.test(c.req.path)
+          );
+        }
+        return false;
+      },
     }),
   );
 
