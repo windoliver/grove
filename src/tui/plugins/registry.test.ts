@@ -106,6 +106,34 @@ describe("mergeTuiRegistrations", () => {
     expect(result.entries[1]?.order).toBe(1000);
   });
 
+  test("uses default plugin order and reports diagnostics for invalid orders", () => {
+    const result = mergeTuiRegistrations({
+      builtIns: [builtIn("dag", 10, Panel.Dag)],
+      plugins: [
+        plugin("nan-order", Number.NaN),
+        plugin("infinite-order", Number.POSITIVE_INFINITY),
+      ],
+    });
+
+    expect(result.entries.map((entry) => [entry.id, entry.order])).toEqual([
+      ["dag", 10],
+      ["infinite-order", 1000],
+      ["nan-order", 1000],
+    ]);
+    expect(result.diagnostics).toEqual([
+      {
+        id: "nan-order",
+        severity: "error",
+        message: "Invalid TUI panel order for nan-order; using default order 1000",
+      },
+      {
+        id: "infinite-order",
+        severity: "error",
+        message: "Invalid TUI panel order for infinite-order; using default order 1000",
+      },
+    ]);
+  });
+
   test("throws when built-in panel ID is unsafe", () => {
     expect(() =>
       mergeTuiRegistrations({

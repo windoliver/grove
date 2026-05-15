@@ -70,11 +70,12 @@ export function mergeTuiRegistrations(
       continue;
     }
     seen.add(registration.id);
+    const order = resolvePluginOrder(registration, diagnostics);
     entries.push({
       id: registration.id,
       label: registration.label,
       slot: registration.slot,
-      order: registration.order ?? DEFAULT_PLUGIN_ORDER,
+      order,
       source: "plugin",
       registration,
     });
@@ -96,4 +97,19 @@ export function mergeTuiRegistrations(
 
 function sourceRank(source: "builtin" | "plugin"): number {
   return source === "builtin" ? 0 : 1;
+}
+
+function resolvePluginOrder(
+  registration: TuiPanelRegistration,
+  diagnostics: TuiRegistryDiagnostic[],
+): number {
+  if (registration.order === undefined) return DEFAULT_PLUGIN_ORDER;
+  if (Number.isFinite(registration.order)) return registration.order;
+
+  diagnostics.push({
+    id: registration.id,
+    severity: "error",
+    message: `Invalid TUI panel order for ${registration.id}; using default order ${DEFAULT_PLUGIN_ORDER}`,
+  });
+  return DEFAULT_PLUGIN_ORDER;
 }

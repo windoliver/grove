@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { initialPanelState, Panel, panelFocus, panelToggle } from "../hooks/use-panel-focus.js";
+import { panelToId } from "./panel-ids.js";
 import {
   getActivePanelsForLayout,
   getBuiltInTuiRegistryEntries,
@@ -347,6 +348,25 @@ describe("getPresetPanelIds", () => {
       "outcomes",
       "bounties",
     ]);
+  });
+
+  it("returns stable string IDs for federated-swarm", () => {
+    expect([...(getPresetPanelIds("federated-swarm") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+      "frontier",
+      "gossip",
+    ]);
+  });
+
+  it("stays in sync with numeric preset membership", () => {
+    for (const [presetName, panels] of Object.entries(PRESET_PANELS)) {
+      expect([...(getPresetPanelIds(presetName) ?? [])]).toEqual(
+        [...panels].map((panel) => panelToId(panel)),
+      );
+    }
   });
 
   it("returns undefined for unknown preset", () => {
