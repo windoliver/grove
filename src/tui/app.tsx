@@ -951,11 +951,13 @@ export function App({
         dispatch({ type: "FRONTIER_SLICE_NEXT" });
         nav.resetCursor();
         setFrontierEntries([]);
+        setFrontierCids([]);
       },
       onFrontierTabPrev: () => {
         dispatch({ type: "FRONTIER_SLICE_PREV" });
         nav.resetCursor();
         setFrontierEntries([]);
+        setFrontierCids([]);
       },
       onFrontierAdopt: (cid: string, summary: string) => {
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });

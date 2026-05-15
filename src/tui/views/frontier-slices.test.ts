@@ -245,4 +245,31 @@ describe("toSlices — metric bounds + sanitization", () => {
     );
     expect(slices.filter((s) => s.key.startsWith("metric:")).length).toBe(0);
   });
+
+  test("control-only names do NOT consume the metric cap", () => {
+    // 16 control-only names (each a distinct single control char, all sort
+    // before printable ASCII) must be sanitized AND dropped BEFORE the cap,
+    // so a valid name that sorts later still renders.
+    const byMetric: Record<string, readonly { cid: string; value: number; summary: string }[]> = {};
+    for (let i = 1; i <= 16; i++) {
+      // \\x01..\\x10 — each sanitizes to "" so all should be skipped.
+      byMetric[String.fromCharCode(i).repeat(3)] = [{ cid: `bad-${i}`, value: i, summary: "" }];
+    }
+    byMetric["valid_metric"] = [{ cid: "ok", value: 1, summary: "" }];
+    const slices = toSlices(makeFrontier({ byMetric }));
+    const labels = slices.filter((s) => s.key.startsWith("metric:")).map((s) => s.label);
+    expect(labels).toContain("valid_metric");
+  });
+
+  test("two raw names that sanitize to the same string both render with ordinal suffix", () => {
+    // "rouge" and "rouge\\x07" both sanitize to "rouge". The second must get
+    // "rouge#2" so neither slice shadows the other.
+    const byMetric = {
+      rouge: [{ cid: "a", value: 1, summary: "" }],
+      "rouge\x07": [{ cid: "b", value: 2, summary: "" }],
+    };
+    const slices = toSlices(makeFrontier({ byMetric }));
+    const labels = slices.filter((s) => s.key.startsWith("metric:")).map((s) => s.label);
+    expect(labels).toEqual(["rouge", "rouge#2"]);
+  });
 });

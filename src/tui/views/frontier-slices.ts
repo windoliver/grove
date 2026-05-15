@@ -116,18 +116,33 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   }
   // Metric names come from agent-supplied score keys. The contribution schema
   // accepts arbitrary record keys, so a malicious or buggy agent can publish
-  // thousands of metric names or names with control characters / huge length.
-  // Without bounds the new tabbed UI explodes into an unbounded render
-  // surface; cap the slice count and sanitize each name before using it as
-  // label / badge / tab id.
-  const metricNames = Object.keys(frontier.byMetric ?? {})
-    .sort()
-    .slice(0, MAX_METRIC_SLICES);
-  for (const name of metricNames) {
-    const entries = frontier.byMetric[name];
+  // thousands of metric names, names with control characters, or two names
+  // that collide after sanitization. Process in this order:
+  //   1. Sort raw names for stable order across renders.
+  //   2. Sanitize + drop names that have no entries OR sanitize to empty —
+  //      otherwise leading control-only names eat the cap and hide valid
+  //      slices that come after.
+  //   3. De-duplicate sanitized labels with an ordinal suffix so two raw
+  //      names that sanitize to the same string both render rather than
+  //      one shadowing the other (`indexOf`/`find` collision).
+  //   4. Cap.
+  const seenLabels = new Set<string>();
+  const metricCandidates: { rawName: string; safeName: string }[] = [];
+  for (const rawName of Object.keys(frontier.byMetric ?? {}).sort()) {
+    const entries = frontier.byMetric[rawName];
     if (!entries || entries.length === 0) continue;
-    const safeName = sanitizeMetricName(name);
-    if (safeName.length === 0) continue;
+    const base = sanitizeMetricName(rawName);
+    if (base.length === 0) continue;
+    let safeName = base;
+    let suffix = 2;
+    while (seenLabels.has(safeName)) {
+      safeName = `${base}#${String(suffix++)}`;
+    }
+    seenLabels.add(safeName);
+    metricCandidates.push({ rawName, safeName });
+  }
+  for (const { rawName, safeName } of metricCandidates.slice(0, MAX_METRIC_SLICES)) {
+    const entries = frontier.byMetric[rawName] ?? [];
     slices.push({
       key: `metric:${safeName}`,
       label: safeName,
