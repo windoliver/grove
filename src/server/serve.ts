@@ -11,7 +11,12 @@
 
 import { join } from "node:path";
 import { agentTaskViewToEntity } from "../core/agent-task.js";
-import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import {
+  claimToEntity,
+  contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
+} from "../core/entity.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
@@ -26,6 +31,8 @@ import {
   writeNamespace,
 } from "../core/project-key.js";
 import { TaskController } from "../core/task-controller.js";
+import { TimelineEventType } from "../core/timeline.js";
+import { timelineEventForClaim } from "../core/timeline-projector.js";
 import type { WatchEntity, WatchKind } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
@@ -106,6 +113,7 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
+let serverTimelineStore: import("../core/timeline-store.js").TimelineStore = runtime.timelineStore;
 let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
 let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
 let messageDeliveryForSession:
@@ -232,6 +240,7 @@ if (nexusUrl) {
   const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
   const { NexusCas } = await import("../nexus/nexus-cas.js");
   const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+  const { NexusTimelineStore } = await import("../nexus/nexus-timeline-store.js");
   const { NexusWatchPublisher } = await import("../nexus/nexus-watch-publisher.js");
 
   const nexusClient = new NexusHttpClient({
@@ -313,6 +322,7 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
+  serverTimelineStore = new NexusTimelineStore({ client: nexusClient, zoneId, watchPublisher });
   const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
   const nexusContributionStoreForSession = memoizeContributionStoreForSession(
     (sessionId: string) =>
@@ -376,6 +386,7 @@ const watchSubscriber = new NexusWatchSubscriber({
   fetchEntity: makeWatchEntityFetcher({
     contributionStore: serverContributionStore,
     claimStore: serverClaimStore,
+    timelineStore: serverTimelineStore,
     agentTaskStore: runtime.agentTaskStore,
   }),
 });
@@ -399,6 +410,7 @@ const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
+  timelineStore: serverTimelineStore,
   agentTaskStore: runtime.agentTaskStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
@@ -484,6 +496,17 @@ const claimExpiryTimer = setInterval(async () => {
       } catch (err) {
         process.stderr.write(
           `[grove] Warning: claim-expiry watch fan-out threw: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+      try {
+        await serverTimelineStore.appendTimelineEvent(
+          timelineEventForClaim(claim, TimelineEventType.ClaimExpired),
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: claim-expiry timeline projection threw: ${
             err instanceof Error ? err.message : String(err)
           }\n`,
         );
@@ -677,6 +700,7 @@ process.on("SIGINT", () => void shutdown());
 function makeWatchEntityFetcher(stores: {
   contributionStore: import("../core/store.js").ContributionStore;
   claimStore: import("../core/store.js").ClaimStore;
+  timelineStore: import("../core/timeline-store.js").TimelineStore;
   agentTaskStore?: import("../core/store.js").AgentTaskStore | undefined;
 }): (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity> {
   return async (kind, namespace, id) => {
@@ -689,6 +713,16 @@ function makeWatchEntityFetcher(stores: {
       const c = await stores.claimStore.getClaim(id);
       if (!c) throw new Error(`Claim ${id} not found`);
       return claimToEntity(c, () => Date.now(), namespace);
+    }
+    if (kind === "WorkBlock") {
+      const block = await stores.timelineStore.getWorkBlock(id);
+      if (!block) throw new Error(`WorkBlock ${id} not found`);
+      return workBlockToEntity(block, namespace);
+    }
+    if (kind === "TimelineEvent") {
+      const event = await stores.timelineStore.getTimelineEvent(id);
+      if (!event) throw new Error(`TimelineEvent ${id} not found`);
+      return timelineEventToEntity(event, namespace);
     }
     if (kind === "AgentTask") {
       const view = await stores.agentTaskStore?.getAgentTask(id);

@@ -58,6 +58,7 @@ import { SQLITE_CREDITS_DDL, SqliteCreditsService } from "./sqlite-credits-servi
 import { GOAL_SESSION_DDL, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
+import { SQLITE_TIMELINE_DDL, SqliteTimelineStore } from "./sqlite-timeline-store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -363,6 +364,7 @@ export function initSqliteDb(dbPath: string): Database {
 
     db.exec(HANDOFF_DDL);
     db.exec(SQLITE_CREDITS_DDL);
+    db.exec(SQLITE_TIMELINE_DDL);
 
     // Check current schema version for migrations
     const currentVersion = (
@@ -957,6 +959,7 @@ export function createSqliteStores(
   outcomeStore: SqliteOutcomeStore;
   goalSessionStore: SqliteGoalSessionStore;
   handoffStore: SqliteHandoffStore;
+  timelineStore: SqliteTimelineStore;
   idempotencyStore: SqliteIdempotencyStore;
   close: () => void;
 } {
@@ -974,6 +977,7 @@ export function createSqliteStores(
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db, { claimStore }),
     handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
+    timelineStore: new SqliteTimelineStore(db),
     idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
       db.run("PRAGMA optimize");

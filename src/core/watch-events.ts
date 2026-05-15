@@ -7,13 +7,31 @@
  */
 
 import type { AgentTaskEntity } from "./agent-task.js";
-import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
+import type {
+  AgentSessionEntity,
+  ClaimEntity,
+  ContributionEntity,
+  TimelineEventEntity,
+  WorkBlockEntity,
+} from "./entity.js";
 
-export type WatchKind = "Contribution" | "Claim" | "AgentSession" | "AgentTask";
+export type WatchKind =
+  | "Contribution"
+  | "Claim"
+  | "AgentSession"
+  | "AgentTask"
+  | "WorkBlock"
+  | "TimelineEvent";
 
 export type WatchOp = "ADDED" | "MODIFIED" | "DELETED";
 
-export type WatchEntity = ContributionEntity | ClaimEntity | AgentSessionEntity | AgentTaskEntity;
+export type WatchEntity =
+  | ContributionEntity
+  | ClaimEntity
+  | AgentSessionEntity
+  | AgentTaskEntity
+  | WorkBlockEntity
+  | TimelineEventEntity;
 
 /** A watch-stream event emitted by the hub to subscribers. */
 export interface WatchEvent {

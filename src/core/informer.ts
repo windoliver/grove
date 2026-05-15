@@ -10,7 +10,13 @@
  */
 
 import type { AgentTaskEntity } from "./agent-task.js";
-import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
+import type {
+  AgentSessionEntity,
+  ClaimEntity,
+  ContributionEntity,
+  TimelineEventEntity,
+  WorkBlockEntity,
+} from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
 import { WatchClient, type WatchClientOp, type WatchClientOptions } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
@@ -25,7 +31,11 @@ export type EntityForKind<K extends WatchKind> = K extends "Contribution"
       ? AgentSessionEntity
       : K extends "AgentTask"
         ? AgentTaskEntity
-        : never;
+        : K extends "WorkBlock"
+          ? WorkBlockEntity
+          : K extends "TimelineEvent"
+            ? TimelineEventEntity
+            : never;
 
 export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 
@@ -479,8 +489,21 @@ interface RunningInformer {
  * Asking for an unsupported kind throws — louder than handing back an
  * informer that would silently never sync.
  */
-const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentTask"];
-const LOCAL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession", "AgentTask"];
+const REMOTE_KINDS: readonly WatchKind[] = [
+  "Contribution",
+  "Claim",
+  "AgentTask",
+  "WorkBlock",
+  "TimelineEvent",
+];
+const LOCAL_KINDS: readonly WatchKind[] = [
+  "Contribution",
+  "Claim",
+  "AgentSession",
+  "AgentTask",
+  "WorkBlock",
+  "TimelineEvent",
+];
 
 const REMOTE_SUPPORTED = new Set<WatchKind>(REMOTE_KINDS);
 const LOCAL_SUPPORTED = new Set<WatchKind>(LOCAL_KINDS);

@@ -107,4 +107,31 @@ describe("NexusHttpClient", () => {
     ]);
     expect(results).toEqual([{ bytesWritten: 4, etag: "etag-1", version: 2 }]);
   });
+
+  test("list forwards recursive option to the REST query", async () => {
+    const urls: string[] = [];
+    setMockFetch(async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ items: [], has_more: false }), { status: 200 });
+    });
+
+    const client = new NexusHttpClient({ url: "http://nexus.local" });
+    await client.list("/zones/zone/timeline/events", {
+      recursive: true,
+      limit: 25,
+      cursor: "cursor-1",
+    });
+
+    expect(urls).toHaveLength(1);
+    const firstUrl = urls[0];
+    if (firstUrl === undefined) throw new Error("Expected one list request URL");
+    const url = new URL(firstUrl);
+    expect(url.pathname).toBe("/api/v2/files/list");
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      path: "/zones/zone/timeline/events",
+      recursive: "true",
+      limit: "25",
+      cursor: "cursor-1",
+    });
+  });
 });

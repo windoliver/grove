@@ -258,6 +258,71 @@ export function targetLockPath(zoneId: string, targetRef: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Timeline paths
+// ---------------------------------------------------------------------------
+
+/** Path to a work block JSON file. */
+export function workBlockPath(zoneId: string, workBlockId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/work-blocks/${encodeSegment(workBlockId)}.json`;
+}
+
+/** Directory containing work block JSON files. */
+export function workBlocksDir(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/work-blocks`;
+}
+
+/** Path to a work block session index marker. */
+export function workBlockSessionIndexPath(
+  zoneId: string,
+  sessionId: string,
+  updatedAt: string,
+  workBlockId: string,
+): string {
+  return `/zones/${encodeSegment(zoneId)}/indexes/work-blocks/session/${encodeSegment(sessionId)}/${encodeSegment(updatedAt)}-${encodeSegment(workBlockId)}.json`;
+}
+
+/** Path to a work block status index marker. */
+export function workBlockStatusIndexPath(
+  zoneId: string,
+  status: string,
+  updatedAt: string,
+  workBlockId: string,
+): string {
+  return `/zones/${encodeSegment(zoneId)}/indexes/work-blocks/status/${encodeSegment(status)}/${encodeSegment(updatedAt)}-${encodeSegment(workBlockId)}.json`;
+}
+
+/** Path to the per-scope timeline cursor JSON file. */
+export function timelineCursorPath(zoneId: string, scope: string): string {
+  return `/zones/${encodeSegment(zoneId)}/timeline/cursors/${encodeSegment(scope)}.json`;
+}
+
+/** Directory containing per-scope timeline event directories. */
+export function timelineEventsRootDir(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/timeline/events`;
+}
+
+/** Directory containing timeline event JSON files for one scope. */
+export function timelineEventsDir(zoneId: string, scope: string): string {
+  return `${timelineEventsRootDir(zoneId)}/${encodeSegment(scope)}`;
+}
+
+/** Path to a timeline event JSON file in resource-version order. */
+export function timelineEventPath(
+  zoneId: string,
+  scope: string,
+  resourceVersion: string,
+  eventId: string,
+): string {
+  const paddedResourceVersion = resourceVersion.padStart(20, "0");
+  return `${timelineEventsDir(zoneId, scope)}/${paddedResourceVersion}-${encodeSegment(eventId)}.json`;
+}
+
+/** Path to the timeline event by-id idempotency JSON file. */
+export function timelineEventByIdPath(zoneId: string, eventId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/timeline/by-id/${encodeSegment(eventId)}.json`;
+}
+
+// ---------------------------------------------------------------------------
 // Bounty paths
 // ---------------------------------------------------------------------------
 

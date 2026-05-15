@@ -6,6 +6,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentSession } from "../core/agent-runtime.js";
 import type { Claim, Contribution } from "../core/models.js";
+import { InMemoryTimelineStore } from "../core/testing.js";
+import { TimelineEventType } from "../core/timeline.js";
 import type { EntityWriteEvent } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createWatchHubRecorder } from "./watch-hub-recorder.js";
@@ -93,6 +95,31 @@ describe("WatchHubRecorder", () => {
     expect(events[0]?.op).toBe("DELETED");
     expect(events[0]?.entity.id).toBe("grove-coord-1-abc");
     expect(events[0]?.entity.namespace).toBe(NS);
+  });
+
+  test("agentSession appends timeline event when timeline store is provided", async () => {
+    const { hub } = captureRecorder();
+    const timelineStore = new InMemoryTimelineStore(NS);
+    const recorder = createWatchHubRecorder({ hub, namespace: NS, timelineStore });
+    const session: AgentSession = {
+      id: "grove-coord-1-abc",
+      role: "coordinator",
+      status: "running",
+    };
+
+    recorder.agentSession("ADDED", session);
+    await Bun.sleep(0);
+
+    const timelineEvents = await timelineStore.listTimelineEvents({
+      sessionId: "grove-coord-1-abc",
+    });
+    expect(timelineEvents.map((event) => event.type)).toContain(
+      TimelineEventType.AgentSessionStarted,
+    );
+    expect(timelineEvents[0]?.targetRefs).toContainEqual({
+      kind: "AgentSession",
+      id: "grove-coord-1-abc",
+    });
   });
 
   test("recordWrite throw is swallowed and logged, write loop continues", () => {

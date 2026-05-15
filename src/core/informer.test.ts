@@ -1,11 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { AgentTaskPhase, type AgentTaskView, agentTaskViewToEntity } from "./agent-task.js";
-import { Informer, InformerFactory } from "./informer.js";
+import type { TimelineEventEntity, WorkBlockEntity } from "./entity.js";
+import { type EntityForKind, Informer, InformerFactory } from "./informer.js";
 import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
 import type { WatchStream } from "./watch-stream.js";
+
+type Assert<T extends true> = T;
+type IsSame<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+type _WorkBlockEntityForKind = Assert<IsSame<EntityForKind<"WorkBlock">, WorkBlockEntity>>;
+type _TimelineEventEntityForKind = Assert<
+  IsSame<EntityForKind<"TimelineEvent">, TimelineEventEntity>
+>;
 
 function makeFakeStream(): {
   stream: WatchStream;
@@ -754,6 +763,18 @@ describe("InformerFactory memoization", () => {
     expect(() => factory.informerFor("AgentSession")).toThrow(/mode=remote/);
   });
 
+  test("WorkBlock and TimelineEvent supported in remote mode", () => {
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+    });
+    expect(factory.supportsKind("WorkBlock")).toBe(true);
+    expect(factory.supportsKind("TimelineEvent")).toBe(true);
+    expect(factory.informerFor("WorkBlock")).toBeDefined();
+    expect(factory.informerFor("TimelineEvent")).toBeDefined();
+  });
+
   test("AgentSession supported in local mode — informerFor returns informer, supportsKind=true", () => {
     const factory = new InformerFactory({
       mode: "local",
@@ -767,6 +788,19 @@ describe("InformerFactory memoization", () => {
     expect(factory.supportsKind("AgentSession")).toBe(true);
     const informer = factory.informerFor("AgentSession");
     expect(informer).toBeDefined();
+  });
+
+  test("WorkBlock and TimelineEvent supported in local mode", () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+    expect(factory.supportsKind("WorkBlock")).toBe(true);
+    expect(factory.supportsKind("TimelineEvent")).toBe(true);
+    expect(factory.informerFor("WorkBlock")).toBeDefined();
+    expect(factory.informerFor("TimelineEvent")).toBeDefined();
   });
 
   test("InformerFactory supports AgentTask in local and remote modes", () => {
