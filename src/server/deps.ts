@@ -109,5 +109,12 @@ export interface ServerEnv {
   Variables: {
     deps: ServerDeps;
     namespace: string;
+    /**
+     * Non-empty `If-Match` header value, populated by the {@link dangerous}
+     * middleware before the wrapped handler runs. Absent on requests that
+     * did not go through `dangerous()` — handlers that read this MUST be
+     * wrapped, otherwise the value will be undefined.
+     */
+    ifMatch?: string;
   };
 }

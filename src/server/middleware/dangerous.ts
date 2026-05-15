@@ -1,12 +1,15 @@
 import type { Context, Handler } from "hono";
+import type { ServerEnv } from "../deps.js";
 
 /**
  * Inner handler accepted by {@link dangerous}. Mirrors a normal Hono route
  * handler but takes only the {@link Context} (no `next`) because the wrapped
  * route is always a terminal mutating handler — there is no next middleware
- * to call from inside it.
+ * to call from inside it. Typed against {@link ServerEnv} so the inner
+ * handler reads `c.get("ifMatch")` as `string | undefined` (non-undefined
+ * for any handler that ran past the `dangerous` guard).
  */
-export type DangerousHandler = (c: Context) => Promise<Response> | Response;
+type DangerousInnerHandler = (c: Context<ServerEnv>) => Promise<Response> | Response;
 
 /**
  * Server-side `@Dangerous` enforcement: wraps a Hono handler so the route
@@ -31,7 +34,7 @@ export type DangerousHandler = (c: Context) => Promise<Response> | Response;
  *
  * Reference: RFC 7232 §3.1, k8s `metav1.UpdateOptions`.
  */
-export function dangerous(handler: DangerousHandler): Handler {
+export function dangerous(handler: DangerousInnerHandler): Handler<ServerEnv> {
   return async (c) => {
     const ifMatch = c.req.header("If-Match");
     if (ifMatch === undefined || ifMatch === "") {
