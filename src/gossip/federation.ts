@@ -87,7 +87,8 @@ export interface AntiEntropySweepOpts {
   readonly batchSize: number;
   /**
    * Map of metric → minimum value. Entries below the threshold are skipped.
-   * Synthetic metrics (prefix "_") default to 0 if unspecified.
+   * Metrics without an entry here pass through unfiltered (including the
+   * synthetic dimensions named with a "_" prefix).
    */
   readonly thresholds: Readonly<Record<string, number>>;
 }
@@ -113,7 +114,9 @@ export async function runAntiEntropySweep(opts: AntiEntropySweepOpts): Promise<v
     try {
       await opts.fetcher.fetchRemoteContribution(cid);
     } catch {
-      // Sweep is best-effort; individual fetch failures are logged inside fetcher.
+      // Best-effort: unexpected exceptions are swallowed. Per-peer fetch
+      // errors are already surfaced via the FetchContributionResult.failed
+      // path inside FederationFetcher, not thrown.
     }
   }
 }
