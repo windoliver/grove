@@ -14,6 +14,7 @@
 
 import { parseArgs } from "node:util";
 
+import { expectCasOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { parseGroveContract } from "../../core/contract.js";
 import { LocalEventBus } from "../../core/local-event-bus.js";
@@ -201,12 +202,16 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   const markDone = async (reason: string, stopStatus: LoopStopStatus): Promise<void> => {
     if (sessionId === undefined) return;
     try {
-      await goalSessionStore.updateSession(sessionId, {
+      // C6 (#304): no ifMatch supplied — rv-mismatch is unreachable here;
+      // surface as a hard error so future ifMatch wiring (T7) doesn't silently
+      // skip the markDone path.
+      const result = await goalSessionStore.updateSession(sessionId, {
         status: terminalSessionStatus(stopStatus),
         completedAt: new Date().toISOString(),
         stopReason: reason,
         stopStatus,
       });
+      expectCasOk(result, `cli markDone(${sessionId})`);
     } catch {
       // Best-effort — DB may already be closed or session archived.
     }
@@ -262,7 +267,13 @@ async function sessionStart(args: readonly string[]): Promise<void> {
         }
       }
       if (lastErr) {
-        await goalSessionStore.archiveSession(session.id).catch(() => undefined);
+        // Best-effort archive — ignore both CAS mismatches and exceptions.
+        await goalSessionStore
+          .archiveSession(session.id)
+          .then((result) => {
+            if (result.kind === "rv-mismatch") return; // best-effort, ignore stale RV
+          })
+          .catch(() => undefined);
         throw new Error(
           `Failed to mirror session ${session.id} to Nexus at ${nexusUrl}: ` +
             `${lastErr instanceof Error ? lastErr.message : String(lastErr)}. ` +
@@ -294,7 +305,8 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     } catch (err) {
       // Mark session as cancelled on spawn failure. The outer finally still
       // closes db and removes signal listeners.
-      await goalSessionStore.archiveSession(session.id);
+      const archiveResult = await goalSessionStore.archiveSession(session.id);
+      expectCasOk(archiveResult, `cli session start cleanup (${session.id})`);
       throw err;
     }
 
@@ -478,12 +490,13 @@ async function sessionStop(args: readonly string[]): Promise<void> {
       return;
     }
     const reason = (values.reason as string | undefined) ?? "User stopped";
-    await store.updateSession(latest.id, {
+    const stopResult = await store.updateSession(latest.id, {
       status: terminalSessionStatus(LoopStopStatus.Interrupted),
       completedAt: new Date().toISOString(),
       stopReason: reason,
       stopStatus: LoopStopStatus.Interrupted,
     });
+    expectCasOk(stopResult, `cli grove session stop (${latest.id})`);
 
     // Best-effort: kill agent processes associated with this session.
     // The orchestrator spawns agents via acpx/subprocess — try to signal them.
@@ -560,7 +573,8 @@ async function sessionDelete(args: readonly string[]): Promise<void> {
     }
 
     const force = values.force === true;
-    const result = await store.deleteSession(sessionId, { force, actor: "cli" });
+    const deleteResult = await store.deleteSession(sessionId, { force, actor: "cli" });
+    const result = expectCasOk(deleteResult, `cli grove session delete (${sessionId})`);
     outputJson(result);
     if (!result.deleted && !result.forced) {
       process.exitCode = 1;

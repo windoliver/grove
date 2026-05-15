@@ -12,6 +12,7 @@ import type {
   AgentTaskStatusRecord,
   AgentTaskView,
 } from "./agent-task.js";
+import type { CasMutationResult, CasOpts } from "./cas.js";
 import type { ClaimEntity, Condition, ContributionEntity } from "./entity.js";
 import type { OwnerRef } from "./lifecycle-metadata.js";
 import type {
@@ -292,14 +293,34 @@ export interface ClaimStore {
   /** Optional persistent-state identity string. See ContributionStore.storeIdentity. */
   readonly storeIdentity?: string | undefined;
 
-  /** Create or update user-owned claim spec. Store controls generation. */
-  putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView>;
+  /**
+   * Create or update user-owned claim spec. Store controls generation.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted spec
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on insert/back-compat path)
+   * writes and returns `{ kind: "ok", view }` with the bumped RV.
+   */
+  putClaimSpec(spec: ClaimSpecRecord, opts?: CasOpts): Promise<CasMutationResult<ClaimView>>;
 
   /** Get the merged split claim view by ID. */
   getClaimView(claimId: string): Promise<ClaimView | undefined>;
 
-  /** Patch controller-owned claim status fields only. */
-  patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView>;
+  /**
+   * Patch controller-owned claim status fields only.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted status
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes and
+   * returns `{ kind: "ok", view }` with the bumped status RV.
+   */
+  patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<ClaimView>>;
 
   /** Create a new claim. Throws if claimId already exists. */
   createClaim(claim: Claim): Promise<Claim>;
@@ -430,8 +451,19 @@ export interface AgentTaskStatusPatch {
 export interface AgentTaskStore {
   readonly storeIdentity?: string | undefined;
 
-  /** Create or update user-owned desired task spec. Store controls generation. */
-  putAgentTaskSpec(spec: AgentTaskSpecRecord): Promise<AgentTaskView>;
+  /**
+   * Create or update user-owned desired task spec. Store controls generation.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted spec
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on insert/back-compat path)
+   * writes and returns `{ kind: "ok", view }` with the bumped RV.
+   */
+  putAgentTaskSpec(
+    spec: AgentTaskSpecRecord,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
 
   /** Get the merged split agent task view by ID. */
   getAgentTask(taskId: string): Promise<AgentTaskView | undefined>;
@@ -439,8 +471,20 @@ export interface AgentTaskStore {
   /** List merged split agent task views. */
   listAgentTasks(query?: AgentTaskQuery): Promise<readonly AgentTaskView[]>;
 
-  /** Patch controller-owned task status fields only. */
-  patchAgentTaskStatus(taskId: string, patch: AgentTaskStatusPatch): Promise<AgentTaskView>;
+  /**
+   * Patch controller-owned task status fields only.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted status
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes
+   * and returns `{ kind: "ok", view }` with the bumped status RV.
+   */
+  patchAgentTaskStatus(
+    taskId: string,
+    patch: AgentTaskStatusPatch,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
 
   /** Return AgentTasks wrapped in the Entity envelope. */
   listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]>;

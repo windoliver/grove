@@ -16,6 +16,7 @@ import {
   SqliteContributionStore,
   SqliteIdempotencyStore,
 } from "../../local/sqlite-store.js";
+import { SqliteTimelineStore } from "../../local/sqlite-timeline-store.js";
 import { LocalWorkspaceManager } from "../../local/workspace.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
@@ -123,6 +124,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
   const db = initSqliteDb(dbPath);
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
+  const timelineStore = new SqliteTimelineStore(db);
   const bountyStore = new SqliteBountyStore(db);
   const creditsService = new InMemoryCreditsService();
   const cas = new FsCas(casPath);
@@ -145,6 +147,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
   const deps: FullOperationDeps = {
     contributionStore,
     claimStore,
+    timelineStore,
     bountyStore,
     creditsService,
     cas,

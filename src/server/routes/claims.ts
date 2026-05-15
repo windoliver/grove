@@ -11,11 +11,20 @@ import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DEFAULT_LEASE_MS } from "../../core/constants.js";
-import { claimToEntity, claimViewToEntity } from "../../core/entity.js";
+import { claimToEntity, claimViewToEntity, workBlockToEntity } from "../../core/entity.js";
 import type { AgentIdentity, Claim, ClaimSpecRecord, JsonValue } from "../../core/models.js";
+import { claimViewToClaim } from "../../core/models.js";
 import { listClaimsOperation, releaseOperation } from "../../core/operations/index.js";
 import type { ClaimStatusPatch } from "../../core/store.js";
-import type { ServerEnv } from "../deps.js";
+import { TimelineEventType, WorkBlockStatus } from "../../core/timeline.js";
+import {
+  claimTimelineEventTypeForStatus,
+  claimWorkBlockId,
+  timelineEventForClaim,
+  timelineEventForWorkBlock,
+} from "../../core/timeline-projector.js";
+import type { ServerDeps, ServerEnv } from "../deps.js";
+import { dangerous, getIfMatch } from "../middleware/dangerous.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 
 const agentIdentitySchema = z.object({
@@ -164,6 +173,72 @@ const requireControllerToken: MiddlewareHandler<ServerEnv> = async (c, next) => 
   await next();
 };
 
+async function appendClaimTimelineEvent(
+  deps: ServerDeps,
+  claim: Claim,
+  eventType: TimelineEventType,
+  occurredAt?: string | undefined,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  if (timelineStore === undefined) return;
+  try {
+    await timelineStore.appendTimelineEvent(
+      timelineEventForClaim(claim, eventType, { occurredAt }),
+    );
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: claim route timeline projection failed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+async function completeLinkedWorkBlock(
+  deps: ServerDeps,
+  namespace: string,
+  claim: Claim,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  const workBlockId = claimWorkBlockId(claim);
+  if (timelineStore === undefined || workBlockId === undefined) return;
+  const block = await (async () => {
+    try {
+      const updated = await timelineStore.patchWorkBlock(workBlockId, {
+        status: WorkBlockStatus.Completed,
+        completedAt: new Date().toISOString(),
+      });
+      await timelineStore.appendTimelineEvent(
+        timelineEventForWorkBlock(updated, TimelineEventType.WorkBlockCompleted),
+      );
+      return updated;
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: claim route linked WorkBlock completion failed: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+      return undefined;
+    }
+  })();
+  if (block === undefined) return;
+  try {
+    const entity = workBlockToEntity(block, namespace);
+    deps.watchHub.recordWrite({ kind: "WorkBlock", namespace, op: "MODIFIED", entity });
+    deps.watchSubscriber?.markSeen({
+      kind: "WorkBlock",
+      entityId: block.workBlockId,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: claim route linked WorkBlock watch fan-out failed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
 const claims: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /**
@@ -220,57 +295,96 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
       }\n`,
     );
   }
+  await appendClaimTimelineEvent(
+    deps,
+    result,
+    op === "ADDED" ? TimelineEventType.ClaimCreated : TimelineEventType.ClaimLeaseRefreshed,
+  );
 
   return c.json(result, 201);
 });
 
-/** PUT /api/claims/:id — Create or update the user-owned claim spec. */
-claims.put("/:id", zValidator("json", specBodySchema), async (c) => {
-  const deps = c.get("deps");
-  const claimId = c.req.param("id");
-  const body = c.req.valid("json");
-  const existing = await deps.claimStore.getClaimView(claimId);
-  const spec: ClaimSpecRecord = {
-    id: claimId,
-    roleName: body.roleName,
-    platform: body.platform,
-    blueprint: body.blueprint,
-    assignee: body.assignee as AgentIdentity | undefined,
-    leaseDeadlineSec: body.leaseDeadlineSec,
-    priority: body.priority,
-    maxIterations: body.maxIterations,
-    generation: 0,
-    targetRef: body.targetRef,
-    agent: body.agent as AgentIdentity,
-    intentSummary: body.intentSummary,
-    context: body.context as Readonly<Record<string, JsonValue>> | undefined,
-    createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
-  };
+/**
+ * PUT /api/claims/:id — Create or update the user-owned claim spec.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` with the
+ * store's current spec RV so callers can re-fetch and retry.
+ *
+ * Note: this is `upsert` semantics — the very first PUT (no existing
+ * spec) will still see ifMatch flow through to the store, which on the
+ * insert path treats it as back-compat (no row to compare against).
+ */
+claims.put(
+  "/:id",
+  zValidator("json", specBodySchema),
+  dangerous<"/:id">(async (c) => {
+    const deps = c.get("deps");
+    const claimId = c.req.param("id");
+    // `dangerous()` wraps the handler in a generic `Handler<ServerEnv, P>` which
+    // discards the validator's type contribution, so we re-narrow here.
+    const body = c.req.valid("json" as never) as z.infer<typeof specBodySchema>;
+    const existing = await deps.claimStore.getClaimView(claimId);
+    const spec: ClaimSpecRecord = {
+      id: claimId,
+      roleName: body.roleName,
+      platform: body.platform,
+      blueprint: body.blueprint,
+      assignee: body.assignee as AgentIdentity | undefined,
+      leaseDeadlineSec: body.leaseDeadlineSec,
+      priority: body.priority,
+      maxIterations: body.maxIterations,
+      generation: 0,
+      targetRef: body.targetRef,
+      agent: body.agent as AgentIdentity,
+      intentSummary: body.intentSummary,
+      context: body.context as Readonly<Record<string, JsonValue>> | undefined,
+      createdAt: existing?.spec.createdAt ?? new Date().toISOString(),
+    };
 
-  const view = await deps.claimStore.putClaimSpec(spec);
-  const namespace = c.get("namespace");
-  const entity = claimViewToEntity(view, () => Date.now(), namespace);
-  try {
-    deps.watchHub.recordWrite({
-      kind: "Claim",
-      namespace,
-      op: existing === undefined ? "ADDED" : "MODIFIED",
-      entity,
-    });
-    deps.watchSubscriber?.markSeen({
-      kind: "Claim",
-      entityId: view.spec.id,
-      generation: entity.metadata.generation,
-    });
-  } catch (err) {
-    process.stderr.write(
-      `[grove] Warning: watch fan-out threw after PUT /api/claims/${claimId}: ${
-        err instanceof Error ? err.message : String(err)
-      }\n`,
-    );
-  }
-  return c.json(view, existing === undefined ? 201 : 200);
-});
+    const ifMatch = getIfMatch(c);
+    const result = await deps.claimStore.putClaimSpec(spec, { ifMatch });
+    if (result.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Claim ${claimId} resourceVersion changed`,
+            current: result.current,
+          },
+        },
+        409,
+      );
+    }
+    const view = result.view;
+    const namespace = c.get("namespace");
+    const entity = claimViewToEntity(view, () => Date.now(), namespace);
+    try {
+      deps.watchHub.recordWrite({
+        kind: "Claim",
+        namespace,
+        op: existing === undefined ? "ADDED" : "MODIFIED",
+        entity,
+      });
+      deps.watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: view.spec.id,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PUT /api/claims/${claimId}: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+    if (existing === undefined) {
+      await appendClaimTimelineEvent(deps, claimViewToClaim(view), TimelineEventType.ClaimCreated);
+    }
+    return c.json(view, existing === undefined ? 201 : 200);
+  }),
+);
 
 /** GET /api/claims/:id — Return the merged split claim view. */
 claims.get("/:id", async (c) => {
@@ -292,14 +406,22 @@ claims.get("/:id", async (c) => {
   return c.json(view);
 });
 
-/** PATCH /api/claims/:id/status — Patch controller-owned claim status. */
+/**
+ * PATCH /api/claims/:id/status — Patch controller-owned claim status.
+ *
+ * @Dangerous: wrapped with `dangerous()` middleware. Requests without an
+ * `If-Match` header are rejected with `428 Precondition Required` before
+ * the handler runs. A stale If-Match returns `409 Conflict` carrying the
+ * store's current status RV.
+ */
 claims.patch(
   "/:id/status",
   requireControllerToken,
   zValidator("json", statusBodySchema),
-  async (c) => {
+  dangerous<"/:id/status">(async (c) => {
     const deps = c.get("deps");
-    const body = c.req.valid("json");
+    // Re-narrow validator output — see PUT /:id for rationale.
+    const body = c.req.valid("json" as never) as z.infer<typeof statusBodySchema>;
     const patch: ClaimStatusPatch = {
       phase: body.phase,
       observedGeneration: body.observedGeneration,
@@ -311,7 +433,22 @@ claims.patch(
       lastTransitionAt: body.lastTransitionAt,
     };
 
-    const view = await deps.claimStore.patchClaimStatus(c.req.param("id"), patch);
+    const ifMatch = getIfMatch(c);
+    const claimId = c.req.param("id");
+    const result = await deps.claimStore.patchClaimStatus(claimId, patch, { ifMatch });
+    if (result.kind === "rv-mismatch") {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: `Claim ${claimId} status resourceVersion changed`,
+            current: result.current,
+          },
+        },
+        409,
+      );
+    }
+    const view = result.view;
     const namespace = c.get("namespace");
     const entity = claimViewToEntity(view, () => Date.now(), namespace);
     try {
@@ -328,8 +465,21 @@ claims.patch(
         }\n`,
       );
     }
+    const claim = claimViewToClaim(view);
+    const eventType =
+      body.phase !== undefined
+        ? claimTimelineEventTypeForStatus(view.status.phase)
+        : body.lastHeartbeatAt !== undefined || body.leaseExpiresAt !== undefined
+          ? TimelineEventType.ClaimLeaseRefreshed
+          : undefined;
+    if (eventType !== undefined) {
+      await appendClaimTimelineEvent(deps, claim, eventType, view.status.lastTransitionAt);
+      if (eventType === TimelineEventType.ClaimCompleted) {
+        await completeLinkedWorkBlock(deps, c.get("namespace"), claim);
+      }
+    }
     return c.json(view);
-  },
+  }),
 );
 
 /** PATCH /api/claims/:id — Heartbeat, release, or complete a claim. */
@@ -361,6 +511,7 @@ claims.patch("/:id", zValidator("json", patchBodySchema), async (c) => {
         }\n`,
       );
     }
+    await appendClaimTimelineEvent(deps, result, TimelineEventType.ClaimLeaseRefreshed);
     return c.json(result);
   }
 

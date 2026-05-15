@@ -2,11 +2,12 @@
  * Entity<Kind, Spec, Status> — Kubernetes-style envelope for domain objects.
  *
  * This file only defines the envelope shape and per-kind projections for
- * Contribution, Claim, AgentSession. Stores still return the flat types;
+ * Contribution, Claim, AgentSession, WorkBlock, and TimelineEvent. Stores still return the flat types;
  * callers project to Entity via the adapters in this module.
  */
 
 import type { AgentSession } from "./agent-runtime.js";
+import { rvComposite } from "./cas.js";
 import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
@@ -22,6 +23,15 @@ import type {
   Relation,
   Score,
 } from "./models.js";
+import type {
+  CostSummary,
+  ResourceRef,
+  TimelineEvent,
+  TimelineEventType,
+  WorkBlock,
+  WorkBlockOrigin,
+  WorkBlockStatus as WorkBlockPhase,
+} from "./timeline.js";
 import type { AgentPlatformType } from "./topology.js";
 
 export type ConditionStatus = "True" | "False" | "Unknown";
@@ -74,7 +84,21 @@ export type ContributionStatus = Record<string, never>;
 
 export type ContributionEntity = Entity<"Contribution", ContributionSpec, ContributionStatus>;
 
-export function contributionToEntity(c: Contribution, namespace: string): ContributionEntity {
+/**
+ * Project a Contribution into the Entity envelope.
+ *
+ * Contributions are immutable, so the resourceVersion ordinarily stays at
+ * its initial value. C6 (#304) introduced an optional, store-provided
+ * `resourceVersion` so the Entity reflects the real persisted column rather
+ * than the legacy hardcoded `"0"`. Callers that do not have a stored value
+ * (in-memory stores, fixture builders, projection-only tests) may omit it;
+ * the projection then falls back to `"0"` for backward compatibility.
+ */
+export function contributionToEntity(
+  c: Contribution,
+  namespace: string,
+  resourceVersion?: number,
+): ContributionEntity {
   const published: Condition = {
     type: "Published",
     status: "True",
@@ -103,7 +127,7 @@ export function contributionToEntity(c: Contribution, namespace: string): Contri
     status: {},
     conditions: [published],
     observedGeneration: 0,
-    resourceVersion: "0",
+    resourceVersion: String(resourceVersion ?? 0),
     metadata: {
       generation: 1,
       creationTimestamp: c.createdAt,
@@ -298,9 +322,29 @@ export function claimViewToEntity(
     // `revision` has not. Encode the lease-crossed boundary in the
     // resourceVersion so caches/informers see a version change at the
     // boundary and do not conflate the two snapshots.
+    //
+    // C6 (#304): The Entity's `resourceVersion` is a composite of the
+    // persisted spec `resource_version` (bumped by `putClaimSpec`, T2)
+    // and the status `revision` (advanced by every status-side write
+    // — heartbeat, release, complete, expireStale, patchClaimStatus).
+    // T3 will land status `resource_version` bumping; once that's in,
+    // this composite can collapse to `spec.resource_version +
+    // status.resource_version - 1`. For now the formula keeps both the
+    // "init RV='1'" and "heartbeat/transition advances RV" invariants
+    // true while letting spec writes also bump the entity-level RV.
+    // Claim's status RV input remains `view.status.revision` (NOT the
+    // resourceVersion fallback used by agent-task): heartbeat/release/
+    // complete/expireStale still bump `revision` directly without going
+    // through `patchClaimStatus`, so `status.resourceVersion` would stay
+    // pinned at its initial value across those mutations. Switching to
+    // `resourceVersion ?? revision` would regress the conformance test
+    // "listEntities resourceVersion advances after heartbeat and transition".
+    // T3b (or its successor) will bring those direct paths under
+    // resource_version bumping; once that lands, this can flip to mirror
+    // the agent-task call shape.
     resourceVersion: leaseIsExpired
-      ? `${view.status.revision}-lease-expired`
-      : String(view.status.revision),
+      ? `${rvComposite(view.spec.resourceVersion, view.status.revision)}-lease-expired`
+      : String(rvComposite(view.spec.resourceVersion, view.status.revision)),
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,
@@ -388,6 +432,147 @@ export function agentSessionToEntity(
     resourceVersion: "0",
     metadata: {
       generation: 1,
+    },
+  };
+}
+
+export interface WorkBlockSpec {
+  readonly sessionId?: string | undefined;
+  readonly goal: string;
+  readonly actor: AgentIdentity;
+  readonly origin: WorkBlockOrigin;
+  readonly inputRefs: readonly ResourceRef[];
+  readonly outputRefs: readonly ResourceRef[];
+  readonly evidenceRefs: readonly ResourceRef[];
+  readonly approvalRefs: readonly ResourceRef[];
+  readonly contributionCids: readonly string[];
+  readonly artifactHashes: readonly string[];
+  readonly claimIds: readonly string[];
+  readonly costSummary?: CostSummary | undefined;
+  readonly links?: readonly ResourceRef[] | undefined;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+}
+
+export interface WorkBlockStatusBody {
+  readonly phase: WorkBlockPhase;
+  readonly startedAt?: string | undefined;
+  readonly updatedAt: string;
+  readonly completedAt?: string | undefined;
+}
+
+export type WorkBlockEntity = Entity<"WorkBlock", WorkBlockSpec, WorkBlockStatusBody>;
+
+export function workBlockToEntity(block: WorkBlock, namespace = "default"): WorkBlockEntity {
+  const mkCond = (
+    type: string,
+    active: boolean,
+    lastTransitionTime: string,
+    reason: string = block.status,
+  ): Condition => ({
+    type,
+    status: active ? "True" : "False",
+    observedGeneration: block.revision,
+    lastTransitionTime,
+    reason,
+    message: "",
+  });
+
+  return {
+    kind: "WorkBlock",
+    namespace,
+    id: block.workBlockId,
+    spec: {
+      sessionId: block.sessionId,
+      goal: block.goal,
+      actor: block.actor,
+      origin: block.origin,
+      inputRefs: block.inputRefs,
+      outputRefs: block.outputRefs,
+      evidenceRefs: block.evidenceRefs,
+      approvalRefs: block.approvalRefs,
+      contributionCids: block.contributionCids,
+      artifactHashes: block.artifactHashes,
+      claimIds: block.claimIds,
+      costSummary: block.costSummary,
+      links: block.links,
+      context: block.context,
+    },
+    status: {
+      phase: block.status,
+      startedAt: block.startedAt,
+      updatedAt: block.updatedAt,
+      completedAt: block.completedAt,
+    },
+    conditions: [
+      mkCond("Running", block.status === "running", block.updatedAt),
+      mkCond(
+        "Blocked",
+        block.status === "blocked" || block.status === "waiting_approval",
+        block.updatedAt,
+      ),
+      mkCond("Completed", block.status === "completed", block.updatedAt),
+      mkCond("Failed", block.status === "failed", block.updatedAt),
+    ],
+    observedGeneration: block.revision,
+    resourceVersion: String(block.revision),
+    metadata: {
+      generation: block.revision,
+      creationTimestamp: block.createdAt,
+    },
+  };
+}
+
+export interface TimelineEventSpec {
+  readonly sessionId?: string | undefined;
+  readonly type: TimelineEventType;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly actor?: AgentIdentity | undefined;
+  readonly workBlockId?: string | undefined;
+  readonly targetRefs: readonly ResourceRef[];
+  readonly payload: Readonly<Record<string, JsonValue>>;
+}
+
+export type TimelineEventStatus = Record<string, never>;
+
+export type TimelineEventEntity = Entity<"TimelineEvent", TimelineEventSpec, TimelineEventStatus>;
+
+export function timelineEventToEntity(
+  event: TimelineEvent,
+  namespace = "default",
+): TimelineEventEntity {
+  const generation = Number(event.resourceVersion);
+
+  return {
+    kind: "TimelineEvent",
+    namespace,
+    id: event.eventId,
+    spec: {
+      sessionId: event.sessionId,
+      type: event.type,
+      occurredAt: event.occurredAt,
+      recordedAt: event.recordedAt,
+      actor: event.actor,
+      workBlockId: event.workBlockId,
+      targetRefs: event.targetRefs,
+      payload: event.payload,
+    },
+    status: {},
+    conditions: [
+      {
+        type: "Recorded",
+        status: "True",
+        observedGeneration: generation,
+        lastTransitionTime: event.recordedAt,
+        reason: "recorded",
+        message: "",
+      },
+    ],
+    observedGeneration: generation,
+    resourceVersion: event.resourceVersion,
+    metadata: {
+      generation,
+      creationTimestamp: event.recordedAt,
     },
   };
 }

@@ -1,6 +1,7 @@
 import type { ClaimEntity, Condition } from "./entity.js";
 import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStatusPatch, ClaimStore } from "./store.js";
+import { withIfMatch } from "./with-if-match.js";
 import { KeyedWorkQueue, QueueClosedError, type WorkItemResult } from "./workqueue.js";
 
 export type ClaimControllerStore = Pick<
@@ -81,17 +82,48 @@ export class ClaimReconciliationController {
   }
 
   async reconcileClaim(claimId: string): Promise<ClaimStatusTransition | undefined> {
-    const view = await this.claimStore.getClaimView(claimId);
-    if (view === undefined) return undefined;
+    // Probe-read: bail early if the claim is missing or the reconciliation
+    // computed against the current view yields no patch. This lets us skip
+    // the withIfMatch retry loop entirely in the common no-op case.
+    const probe = await this.claimStore.getClaimView(claimId);
+    if (probe === undefined) return undefined;
+    if (this.computeReconciliation(probe) === undefined) return undefined;
 
-    const result = this.computeReconciliation(view);
-    if (result === undefined) return undefined;
+    // CAS-aware patch: re-read inside the retry loop because (a) the
+    // store compares ifMatch against the status row resource_version and
+    // (b) `computeReconciliation` may produce a different patch if the
+    // view advanced between attempts. The reconciliation function is
+    // pure over the view, so re-computing per attempt is safe.
+    //
+    // `latestResult` is captured by closure so the post-write transition
+    // notification reflects the patch that actually committed.
+    let latestResult: ReconciliationResult | undefined;
+    await withIfMatch(
+      async () => {
+        const cur = await this.claimStore.getClaimView(claimId);
+        if (cur === undefined) {
+          throw new Error(`reconcileClaim(${claimId}): claim disappeared during retry`);
+        }
+        latestResult = this.computeReconciliation(cur);
+        if (latestResult === undefined) {
+          throw new Error(
+            `reconcileClaim(${claimId}): no patch required on retry — probable controller race`,
+          );
+        }
+        return { resourceVersion: String(cur.status.resourceVersion ?? cur.status.revision) };
+      },
+      (opts) => {
+        if (latestResult === undefined) {
+          throw new Error(`reconcileClaim(${claimId}): patch invoked without computed result`);
+        }
+        return this.claimStore.patchClaimStatus(claimId, latestResult.patch, opts);
+      },
+    );
 
-    await this.claimStore.patchClaimStatus(claimId, result.patch);
-    if (result.transition !== undefined) {
-      this.onTransition?.(result.transition);
+    if (latestResult?.transition !== undefined) {
+      this.onTransition?.(latestResult.transition);
     }
-    return result.transition;
+    return latestResult?.transition;
   }
 
   start(): void {

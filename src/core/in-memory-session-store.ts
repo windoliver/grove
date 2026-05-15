@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type CasMutationResult, type CasOpts, casOk, checkIfMatch } from "./cas.js";
 import {
   appendDeletionAudit,
   DEFAULT_SESSION_FINALIZERS,
@@ -38,6 +39,7 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
       createdAt: new Date().toISOString(),
       finalizers: DEFAULT_SESSION_FINALIZERS,
       contributionCount: 0,
+      resourceVersion: 1,
     };
     this.sessions.push(session);
     return session;
@@ -53,12 +55,23 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
   async updateSession(
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
-    if (idx === -1) return;
+    if (idx === -1) return casOk(undefined);
     const existing = this.sessions[idx];
-    if (!existing) return;
-    this.sessions[idx] = { ...existing, ...updates };
+    if (!existing) return casOk(undefined);
+
+    const mismatch = checkIfMatch(existing.resourceVersion, opts?.ifMatch);
+    if (mismatch) return mismatch;
+
+    const updated: Session = {
+      ...existing,
+      ...updates,
+      resourceVersion: (existing.resourceVersion ?? 1) + 1,
+    };
+    this.sessions[idx] = updated;
+    return casOk(updated);
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
@@ -86,20 +99,27 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
     return [];
   }
 
-  async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
+  async deleteSession(
+    id: string,
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
     if (idx === -1) {
-      return {
+      return casOk({
         sessionId: id,
         deleted: false,
         forced: false,
         blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
-      };
+      });
     }
     const existing = this.sessions[idx];
     if (!existing) {
-      return { sessionId: id, deleted: false, forced: false, blockers: [] };
+      return casOk({ sessionId: id, deleted: false, forced: false, blockers: [] });
     }
+
+    const mismatch = checkIfMatch(existing.resourceVersion, options?.ifMatch);
+    if (mismatch) return mismatch;
+
     const warning =
       options?.force === true
         ? `force delete skipped finalizer waits for session ${id}`
@@ -117,13 +137,13 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
     }
     this.sessions.splice(idx, 1);
     this.contributions.delete(id);
-    return {
+    return casOk({
       sessionId: id,
       deleted: true,
       forced: options?.force === true,
       blockers: [],
       ...(warning !== undefined ? { warning } : {}),
-    };
+    });
   }
 
   async appendSessionRoleSkill(
@@ -150,16 +170,26 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
     return "appended";
   }
 
-  async archiveSession(id: string): Promise<void> {
+  async archiveSession(
+    id: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
-    if (idx === -1) return;
+    if (idx === -1) return casOk(undefined);
     const existing = this.sessions[idx];
-    if (!existing) return;
-    this.sessions[idx] = {
+    if (!existing) return casOk(undefined);
+
+    const mismatch = checkIfMatch(existing.resourceVersion, opts?.ifMatch);
+    if (mismatch) return mismatch;
+
+    const updated: Session = {
       ...existing,
       status: "archived",
       completedAt: new Date().toISOString(),
+      resourceVersion: (existing.resourceVersion ?? 1) + 1,
     };
+    this.sessions[idx] = updated;
+    return casOk(updated);
   }
 
   async addContribution(sessionId: string, cid: string): Promise<void> {

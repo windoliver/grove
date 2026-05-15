@@ -20,6 +20,13 @@ import { connectBridgeWithRetry } from "./bridge-retry.js";
 import { createAcpMessageSink } from "./data/acp-message-sink.js";
 import { AcpSessionStore } from "./data/acp-session-store.js";
 import { debugLog } from "./debug-log.js";
+import { useEntityStoreFactoryOptional } from "./hooks/entity-store-context.js";
+import type { SessionRecord } from "./provider.js";
+import {
+  type ConfirmAndMutateEntityBus,
+  ConfirmAndMutateProvider,
+  makeEntityBusFromStore,
+} from "./safety/index.js";
 import { ScreenManager } from "./screens/screen-manager.js";
 import { FileSessionStore } from "./session-store.js";
 import { SpawnManager } from "./spawn-manager.js";
@@ -27,6 +34,18 @@ import { SpawnManagerContext } from "./spawn-manager-context.js";
 import { theme } from "./theme.js";
 import { InitProgressView } from "./views/init-progress.js";
 import { WelcomeScreen } from "./views/welcome/index.js";
+
+// C6 (#304) round-3: ConfirmAndMutateProvider must sit ABOVE ScreenManager
+// so the open-state context propagates to usePermissionDetection (which is
+// called inside ScreenManager's render). Originally the provider lived in
+// PagesRouter (a descendant) — but React context only flows downward, so
+// the permission hook above PagesRouter read the default `false` value and
+// its y/n shortcuts could fire alongside the modal's confirm/cancel keys.
+// (Round-3 review #1.)
+const NULL_BUS: ConfirmAndMutateEntityBus = {
+  get: () => undefined,
+  subscribe: () => () => undefined,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -532,14 +551,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       : undefined;
     return (
       <SpawnManagerContext value={spawnManager}>
-        {React.createElement(ScreenManager, {
-          appProps,
-          presets,
-          sessions: props.sessions,
-          startOnRunning: isResumedRef.current && !appProps.newSessionPreset,
-          initialState,
-          resumeSessionId: appProps.resumeSessionId,
-        })}
+        <BoardroomShell
+          appProps={appProps}
+          presets={presets}
+          sessions={props.sessions}
+          startOnRunning={isResumedRef.current && !appProps.newSessionPreset}
+          initialState={initialState}
+          resumeSessionId={appProps.resumeSessionId}
+        />
       </SpawnManagerContext>
     );
   }
@@ -593,3 +612,49 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     </box>
   );
 });
+
+// ---------------------------------------------------------------------------
+// BoardroomShell — mounts ConfirmAndMutateProvider above ScreenManager so
+// usePermissionDetection (called inside ScreenManager's render) sees the
+// open-state context. Pre-round-3 the provider lived in PagesRouter, which
+// is a descendant; the permission y/n shortcut therefore stayed active
+// while the modal was open and could double-fire on confirm/cancel keys.
+// ---------------------------------------------------------------------------
+
+interface BoardroomShellProps {
+  readonly appProps: AppProps;
+  readonly presets?: readonly TuiPresetEntry[] | undefined;
+  readonly sessions?: readonly SessionRecord[] | undefined;
+  readonly startOnRunning?: boolean | undefined;
+  readonly initialState?: { screen: "goal-input"; selectedPreset: string } | undefined;
+  readonly resumeSessionId?: string | undefined;
+}
+
+const BoardroomShell: React.NamedExoticComponent<BoardroomShellProps> = React.memo(
+  function BoardroomShell({
+    appProps,
+    presets,
+    sessions,
+    startOnRunning,
+    initialState,
+    resumeSessionId,
+  }: BoardroomShellProps) {
+    const entityStoreFactory = useEntityStoreFactoryOptional();
+    const entityBus = useMemo<ConfirmAndMutateEntityBus>(
+      () => (entityStoreFactory ? makeEntityBusFromStore(entityStoreFactory) : NULL_BUS),
+      [entityStoreFactory],
+    );
+    return (
+      <ConfirmAndMutateProvider entityBus={entityBus}>
+        {React.createElement(ScreenManager, {
+          appProps,
+          presets,
+          sessions,
+          startOnRunning,
+          initialState,
+          resumeSessionId,
+        })}
+      </ConfirmAndMutateProvider>
+    );
+  },
+);

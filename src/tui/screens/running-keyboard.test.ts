@@ -69,6 +69,7 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     cmdMode: "none",
     cmdText: "",
     filterQuery: "",
+    confirmModalOpen: false,
     ...overrides,
   };
 }
