@@ -128,11 +128,19 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   //   4. Cap.
   const seenLabels = new Set<string>();
   const metricCandidates: { rawName: string; safeName: string }[] = [];
-  // Short-circuit once we've gathered enough valid candidates to fill the
-  // cap. Without this, an agent publishing 100k score keys would force the
-  // TUI to sort + sanitize + dedupe the entire set on every projection,
-  // freezing the render thread.
-  for (const rawName of Object.keys(frontier.byMetric ?? {}).sort()) {
+  // Hard-cap the raw key set BEFORE sorting. An agent publishing 100k
+  // distinct score names would otherwise force a full N log N sort on the
+  // attacker-controlled keyspace before the per-loop early-break could
+  // trigger, freezing the render thread. MAX_RAW_METRIC_KEYS gives us a
+  // bounded sort cost (~MAX_RAW_METRIC_KEYS log MAX_RAW_METRIC_KEYS) on
+  // every frontier projection. The hard upstream fix is a producer/API
+  // cap; this is the in-renderer defense.
+  const rawKeys = Object.keys(frontier.byMetric ?? {});
+  const sortedKeys =
+    rawKeys.length > MAX_RAW_METRIC_KEYS
+      ? rawKeys.slice(0, MAX_RAW_METRIC_KEYS).sort()
+      : rawKeys.slice().sort();
+  for (const rawName of sortedKeys) {
     if (metricCandidates.length >= MAX_METRIC_SLICES) break;
     const entries = frontier.byMetric[rawName];
     if (!entries || entries.length === 0) continue;
@@ -163,6 +171,9 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
  *  by row count; the tabbed view is bounded by metric count. */
 const MAX_METRIC_SLICES = 16;
 const MAX_METRIC_LABEL_LEN = 32;
+/** Hard ceiling on raw metric keys we'll even consider per projection.
+ *  Bounds the sort cost when an agent publishes huge score keysets. */
+const MAX_RAW_METRIC_KEYS = 1024;
 
 /** Strip control characters and trim to MAX_METRIC_LABEL_LEN. */
 function sanitizeMetricName(name: string): string {

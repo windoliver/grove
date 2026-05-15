@@ -261,6 +261,23 @@ describe("toSlices — metric bounds + sanitization", () => {
     expect(labels).toContain("valid_metric");
   });
 
+  test("hard-caps the raw keyspace before sorting (large-cardinality DoS guard)", () => {
+    // Generate 5000 distinct metric names. Without MAX_RAW_METRIC_KEYS the
+    // sort would scan all 5000; with the cap the projection still completes
+    // quickly and produces some valid slices. We assert the projection
+    // returns the expected slice count and runs in < 200ms (sort + sanitize
+    // bounded by MAX_RAW_METRIC_KEYS=1024).
+    const byMetric: Record<string, readonly { cid: string; value: number; summary: string }[]> = {};
+    for (let i = 0; i < 5000; i++) {
+      byMetric[`metric_${String(i).padStart(5, "0")}`] = [{ cid: `c-${i}`, value: i, summary: "" }];
+    }
+    const start = Date.now();
+    const slices = toSlices(makeFrontier({ byMetric }));
+    const elapsed = Date.now() - start;
+    expect(slices.filter((s) => s.key.startsWith("metric:")).length).toBe(16);
+    expect(elapsed).toBeLessThan(200);
+  });
+
   test("two raw names that sanitize to the same string both render with ordinal suffix", () => {
     // "rouge" and "rouge\\x07" both sanitize to "rouge". The second must get
     // "rouge#2" so neither slice shadows the other.
