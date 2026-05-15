@@ -253,14 +253,26 @@ function restoreEnv(name: string, value: string | undefined): void {
   }
 }
 
-function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
+function makeMockRuntime(): AgentRuntime & {
+  readonly configs: AgentConfig[];
+  setSessionStatus(sessionId: string, status: AgentSession["status"], message?: string): void;
+} {
   const configs: AgentConfig[] = [];
+  const sessions = new Map<string, AgentSession>();
+  const idleCallbacks = new Map<string, Array<() => void>>();
   return {
     sendsInitialPromptOnSpawn: true,
     configs,
     async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
       configs.push(config);
-      return { id: `session-${role}`, role, status: "running", agent: "mock" };
+      const session: AgentSession = {
+        id: `session-${role}`,
+        role,
+        status: "running",
+        agent: "mock",
+      };
+      sessions.set(session.id, session);
+      return session;
     },
     async send(): Promise<AcpxTurn> {
       throw new Error("mock runtime send should not be called by SpawnManager.spawn");
@@ -268,11 +280,13 @@ function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
     async close(): Promise<void> {
       // No-op for test mock.
     },
-    onIdle(): void {
-      // No-op for test mock.
+    onIdle(session: AgentSession, callback: () => void): void {
+      const callbacks = idleCallbacks.get(session.id) ?? [];
+      callbacks.push(callback);
+      idleCallbacks.set(session.id, callbacks);
     },
     async listSessions(): Promise<readonly AgentSession[]> {
-      return [];
+      return [...sessions.values()];
     },
     async listSessionEntities(): Promise<
       readonly import("../core/entity.js").AgentSessionEntity[]
@@ -281,6 +295,16 @@ function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
     },
     async isAvailable(): Promise<boolean> {
       return true;
+    },
+    setSessionStatus(sessionId: string, status: AgentSession["status"], message?: string): void {
+      const current = sessions.get(sessionId);
+      if (!current) throw new Error(`unknown session ${sessionId}`);
+      const next =
+        message === undefined
+          ? { ...current, status }
+          : { ...current, status, statusMessage: message };
+      sessions.set(sessionId, next);
+      for (const callback of idleCallbacks.get(sessionId) ?? []) callback();
     },
   };
 }
@@ -354,6 +378,39 @@ describe("SpawnManager", () => {
 
     releaseClose?.();
     await stopPromise;
+  });
+
+  test("runtime crash marks role failed and removes it from active roles", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        // No-op for test mock.
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    await manager.spawn("coder", "codex");
+    expect(manager.getActiveRoles()).toEqual(["coder"]);
+
+    let failureNotifications = 0;
+    const unsubscribe = manager.subscribeAgentFailures(() => {
+      failureNotifications++;
+    });
+
+    runtime.setSessionStatus("session-coder", "crashed", "unexpected status 401 Unauthorized");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(manager.getActiveRoles()).toEqual([]);
+    expect(manager.getAgentFailures().get("coder")).toContain("401 Unauthorized");
+    expect(failureNotifications).toBe(1);
+
+    unsubscribe();
   });
 
   test("spawn creates workspace and tmux session (no auto-claims)", async () => {

@@ -27,7 +27,8 @@ describe("resolveAcpLaunch", () => {
   test("codex resolves to the pinned @zed-industries/codex-acp binary", () => {
     const launch = resolveAcpLaunch("codex");
     expect(launch.agent).toBe("codex");
-    expect(launch.args[0]).toMatch(/codex-acp/);
+    expect(launch.command).toMatch(/codex-acp/);
+    expect(launch.args).toEqual([]);
     expect(launch.packageName).toBe("@zed-industries/codex-acp");
   });
 

@@ -24,13 +24,16 @@ import {
 } from "../core/lifecycle-metadata.js";
 import type { Claim } from "../core/models.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
   SessionDeleteResult,
   SessionQuery,
 } from "../core/session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
@@ -591,7 +594,7 @@ class SessionDeleteFinalizerError extends Error {
 }
 
 /** SQLite-backed GoalSessionStore. */
-export class SqliteGoalSessionStore implements GoalSessionStore {
+export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSessionStore {
   readonly db: Database;
   private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
   private claimStore: ClaimCleanupStore | undefined;
@@ -919,6 +922,42 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     this.db
       .prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`)
       .run(...params);
+  };
+
+  appendSessionRoleSkill = async (
+    sessionId: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> => {
+    const tx = this.db.transaction((): AppendSessionRoleSkillResult => {
+      const row = this.db
+        .prepare("SELECT topology_json, config_json FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { topology_json: string | null; config_json: string | null } | null;
+      if (row === null) return "session_missing";
+      if (row.topology_json === null) return "role_missing";
+
+      const topology = JSON.parse(row.topology_json) as AgentTopology;
+      const config =
+        row.config_json !== null && row.config_json !== "{}"
+          ? (JSON.parse(row.config_json) as GroveContract)
+          : undefined;
+      const topologyResult = appendSkillToTopology(topology, roleName, skillName);
+      const configResult = appendSkillToSessionConfigTopology(config, roleName, skillName);
+
+      if (!topologyResult.foundRole) return "role_missing";
+      if (!topologyResult.changed && !configResult.changed) return "already_present";
+
+      this.db
+        .prepare("UPDATE sessions SET topology_json = ?, config_json = ? WHERE session_id = ?")
+        .run(
+          JSON.stringify(topologyResult.topology),
+          JSON.stringify(configResult.config ?? {}),
+          sessionId,
+        );
+      return "appended";
+    });
+
+    return tx.immediate();
   };
 
   /**

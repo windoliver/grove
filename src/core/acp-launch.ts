@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,18 +74,42 @@ function resolveBuiltIn(agent: "codex" | "claude"): AcpLaunch {
   if (!relBin) {
     throw new Error(`[acp-launch] ${spec.packageName} has no usable bin entry`);
   }
-  const binPath = pathResolve(root, relBin);
+  const nativeCodexBin = agent === "codex" ? resolveNativeCodexBin(root) : undefined;
+  const binPath = nativeCodexBin ?? pathResolve(root, relBin);
   if (!existsSync(binPath)) {
     throw new Error(`[acp-launch] bin not found at ${binPath}. Reinstall: ${spec.installHint}`);
   }
   const result: AcpLaunch = {
     agent,
-    command: process.execPath,
-    args: [binPath],
+    command: nativeCodexBin ?? process.execPath,
+    args: nativeCodexBin ? [] : [binPath],
     packageName: spec.packageName,
     ...(manifest.version !== undefined ? { packageVersion: manifest.version } : {}),
   };
   return result;
+}
+
+function nativeCodexPackageName(): string | undefined {
+  if (process.arch !== "arm64" && process.arch !== "x64") return undefined;
+  switch (process.platform) {
+    case "darwin":
+      return `codex-acp-darwin-${process.arch}`;
+    case "linux":
+      return `codex-acp-linux-${process.arch}`;
+    case "win32":
+      return `codex-acp-win32-${process.arch}`;
+    default:
+      return undefined;
+  }
+}
+
+function resolveNativeCodexBin(codexPackageRoot: string): string | undefined {
+  const nativePackage = nativeCodexPackageName();
+  if (!nativePackage) return undefined;
+  const binaryName = process.platform === "win32" ? "codex-acp.exe" : "codex-acp";
+  const realRoot = realpathSync(codexPackageRoot);
+  const candidate = join(dirname(realRoot), nativePackage, "bin", binaryName);
+  return existsSync(candidate) ? candidate : undefined;
 }
 
 export function resolveAcpLaunch(agent: string): AcpLaunch {

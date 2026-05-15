@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import { LoopStopStatus } from "../core/loop-runner.js";
-import type { SessionStore } from "../core/session.js";
+import type { RuntimeSkillSessionStore, SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import type { GoalSessionStore } from "./sqlite-goal-session-store.js";
@@ -528,6 +528,35 @@ describe("Session Config", () => {
     expect(fetched!.config?.topology?.roles[0]?.name).toBe("worker");
   });
 
+  it("appendSessionRoleSkill updates frozen config topology for restart paths", async () => {
+    const topology = {
+      structure: "flat" as const,
+      roles: [{ name: "coder", skills: ["grove"] }],
+    };
+    const session = await store.createSession({
+      goal: "Runtime skill config topology",
+      topology,
+      config: {
+        contractVersion: 3,
+        name: "runtime-skill-config",
+        mode: "evaluation",
+        topology,
+      } as unknown as import("../core/contract.js").GroveContract,
+    });
+
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+      "appended",
+    );
+
+    const fetched = await store.getSession(session.id);
+    expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(fetched?.config?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(store.getSessionConfigSync(session.id)?.topology?.roles[0]?.skills).toEqual([
+      "grove",
+      "review",
+    ]);
+  });
+
   it("getSessionConfig returns undefined for malformed config_json", async () => {
     stores.db.run(
       "INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at) VALUES (?, ?, ?, ?, 'active', ?)",
@@ -1023,7 +1052,9 @@ describe("session deletion finalizers", () => {
  * getSessionContributions) and has a typed updateSession. This thin adapter
  * bridges the gap so the conformance suite runs against the SQLite backend.
  */
-function adaptGoalSessionStore(gs: GoalSessionStore): SessionStore {
+function adaptGoalSessionStore(
+  gs: GoalSessionStore & RuntimeSkillSessionStore,
+): SessionStore & RuntimeSkillSessionStore {
   return {
     createSession: (input) => gs.createSession(input),
     getSession: (id) => gs.getSession(id),
@@ -1034,6 +1065,8 @@ function adaptGoalSessionStore(gs: GoalSessionStore): SessionStore {
     archiveSession: (id) => gs.archiveSession(id),
     addContribution: (sid, cid) => gs.addContributionToSession(sid, cid),
     getContributions: (sid) => gs.getSessionContributions(sid),
+    appendSessionRoleSkill: (sessionId, roleName, skillName) =>
+      gs.appendSessionRoleSkill(sessionId, roleName, skillName),
   };
 }
 

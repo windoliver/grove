@@ -167,6 +167,8 @@ export class SpawnManager {
   private readonly agentRuntime: AgentRuntime | undefined;
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly agentSessions = new Map<string, AgentSession>();
+  private readonly agentFailures = new Map<string, string>();
+  private readonly agentFailureListeners = new Set<() => void>();
   private readonly logBuffers = new Map<string, AgentLogBuffer>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
@@ -241,6 +243,48 @@ export class SpawnManager {
       this.acpSessionStore?.register(event.sessionId);
       this.acpSessionStore?.ingest(event);
     });
+  }
+
+  private notifyAgentFailures(): void {
+    for (const listener of this.agentFailureListeners) listener();
+  }
+
+  private recordAgentFailure(role: string, message: string): void {
+    this.agentFailures.set(role, message);
+    this.ensureLogBuffer(role).pushRawLines([`[error] ${message}`]);
+    this.onError(`${role}: ${message}`);
+    this.notifyAgentFailures();
+  }
+
+  private monitorRuntimeSession(spawnId: string, roleId: string, session: AgentSession): void {
+    if (!this.agentRuntime) return;
+    this.agentRuntime.onIdle(session, () => {
+      void this.refreshRuntimeSessionStatus(spawnId, roleId, session.id);
+    });
+  }
+
+  private async refreshRuntimeSessionStatus(
+    spawnId: string,
+    roleId: string,
+    sessionId: string,
+  ): Promise<void> {
+    if (!this.agentRuntime) return;
+    try {
+      const latest = (await this.agentRuntime.listSessions()).find((s) => s.id === sessionId);
+      if (!latest) return;
+      this.agentSessions.set(spawnId, latest);
+      if (latest.status !== "crashed") return;
+
+      this.routableSessions.delete(spawnId);
+      this.wsBridge?.unregisterSession(roleId, latest.id);
+      this.unregisterAcpSession(latest.id);
+      this.recordAgentFailure(roleId, latest.statusMessage ?? "agent session crashed");
+    } catch (err) {
+      debugLog(
+        "spawn",
+        `runtime status refresh failed for role=${roleId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -621,6 +665,7 @@ export class SpawnManager {
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
+    if (this.agentFailures.delete(roleId)) this.notifyAgentFailures();
     // Fail closed on delivery state:
     //   disabled → refuse ONLY when the current topology actually
     //              needs cross-role IPC (multi-role). A single-role
@@ -889,6 +934,7 @@ export class SpawnManager {
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
         this.agentSessions.set(spawnId, session);
         this.routableSessions.add(spawnId);
+        this.monitorRuntimeSession(spawnId, roleId, session);
       } else if (this.tmux) {
         // Fallback: tmux (for TUI testing)
         const options: SpawnOptions = {
@@ -1042,6 +1088,7 @@ export class SpawnManager {
       // id matches the killed session's id.
       const roleKey = tracked.role ?? agentSession?.role ?? killedAgentId;
       this.wsBridge?.unregisterSession(roleKey, agentSession?.id);
+      if (this.agentFailures.delete(roleKey)) this.notifyAgentFailures();
       // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
       // `grove-coder-0-abc123`), which may differ from `killedAgentId`
       // (the spawn-manager's agentId key). Prefer the captured
@@ -1065,6 +1112,10 @@ export class SpawnManager {
   async stopActiveSession(): Promise<void> {
     this.stopLogPolling();
     this.routableSessions.clear();
+    if (this.agentFailures.size > 0) {
+      this.agentFailures.clear();
+      this.notifyAgentFailures();
+    }
 
     const spawnIds = new Set<string>([...this.spawnRecords.keys(), ...this.agentSessions.keys()]);
     const sessions: AgentSession[] = [];
@@ -1328,7 +1379,8 @@ export class SpawnManager {
   /** Get list of active agent roles (for UI display). */
   getActiveRoles(): string[] {
     const roles: string[] = [];
-    for (const spawnId of this.agentSessions.keys()) {
+    for (const [spawnId, session] of this.agentSessions) {
+      if (session.status === "crashed" || session.status === "stopped") continue;
       const role = spawnId.replace(/-[a-z0-9]+$/i, "");
       if (!roles.includes(role)) roles.push(role);
     }
@@ -1351,6 +1403,17 @@ export class SpawnManager {
 
   getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
     return this.logBuffers;
+  }
+
+  getAgentFailures(): ReadonlyMap<string, string> {
+    return this.agentFailures;
+  }
+
+  subscribeAgentFailures(listener: () => void): () => void {
+    this.agentFailureListeners.add(listener);
+    return () => {
+      this.agentFailureListeners.delete(listener);
+    };
   }
 
   /** Set the session ID for log buffer naming and persistence. */
@@ -1595,6 +1658,8 @@ export class SpawnManager {
     }
     this.logBuffers.clear();
     this.spawnRecords.clear();
+    this.agentFailures.clear();
+    this.agentFailureListeners.clear();
     for (const unsubscribe of this.acpProjections.values()) {
       unsubscribe();
     }

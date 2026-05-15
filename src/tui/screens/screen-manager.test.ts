@@ -87,6 +87,7 @@ interface TestSpawnManager {
   readonly sessionIds: string[];
   readonly sessionGoals: string[];
   readonly topologies: AgentTopology[];
+  readonly agentFailures: Map<string, string>;
   readonly ensuredBuffers: string[];
   readonly reconcileCalls: string[];
   readonly saveTraceCalls: string[];
@@ -96,6 +97,8 @@ interface TestSpawnManager {
   reconcile(): Promise<void>;
   ensureLogBuffer(roleName: string): void;
   getLogBuffers(): Map<string, unknown>;
+  getAgentFailures(): ReadonlyMap<string, string>;
+  subscribeAgentFailures(listener: () => void): () => void;
   startLogPolling(intervalMs?: number, seekToEnd?: boolean): void;
   stopLogPolling(): void;
   stopActiveSession(): Promise<void>;
@@ -386,6 +389,7 @@ function makeSpawnManager(): TestSpawnManager {
     sessionIds: [],
     sessionGoals: [],
     topologies: [],
+    agentFailures: new Map(),
     ensuredBuffers: [],
     reconcileCalls: [],
     saveTraceCalls: [],
@@ -400,6 +404,8 @@ function makeSpawnManager(): TestSpawnManager {
       logBuffers.set(roleName, {});
     },
     getLogBuffers: () => logBuffers,
+    getAgentFailures: () => manager.agentFailures,
+    subscribeAgentFailures: () => () => undefined,
     startLogPolling: () => undefined,
     stopLogPolling: () => {
       manager.stopLogPollingCalls.push("stop");
@@ -731,6 +737,27 @@ describe("ScreenManager transition flow", () => {
     });
 
     expect(captured.screen).toBe("running");
+  });
+
+  test("running view receives agent bootstrap failures from the spawn manager", async () => {
+    const spawnManager = makeSpawnManager();
+    spawnManager.agentFailures.set("planner", "unexpected status 401 Unauthorized");
+
+    renderScreenManager({
+      topology: TEST_TOPOLOGY,
+      spawnManager,
+      initialState: {
+        screen: "running",
+        goal: "Observe failures",
+        sessionId: "session-failed",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+    await act(async () => {
+      await flushAsync();
+    });
+
+    expect(requireRunningView().agentFailures?.get("planner")).toContain("401 Unauthorized");
   });
 
   test("running -> complete when the running screen completes", async () => {

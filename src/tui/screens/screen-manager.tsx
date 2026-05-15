@@ -260,10 +260,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Always bump reconcileVersion after reconcile to force RunningView re-render
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
+    const [agentFailureVersion, setAgentFailureVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
     const hasSpawnedRef = useRef<boolean>(false);
+    useEffect(() => {
+      if (!spawnManager) return undefined;
+      return spawnManager.subscribeAgentFailures(() => {
+        setAgentFailureVersion((v) => v + 1);
+      });
+    }, [spawnManager]);
+
     useEffect(() => {
       if (
         state.screen === "running" &&
@@ -923,6 +931,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
             logBuffers={reconcileVersion >= 0 ? spawnManager.getLogBuffers() : undefined}
+            agentFailures={agentFailureVersion >= 0 ? spawnManager.getAgentFailures() : undefined}
             onNewContribution={(c) => {
               debugLog(
                 "contribution",
@@ -1021,6 +1030,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       appProps,
       spawnManager,
       reconcileVersion,
+      agentFailureVersion,
       observeDoneContribution,
       getDuration,
       wrapWithPermissions,

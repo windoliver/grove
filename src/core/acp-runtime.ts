@@ -1,5 +1,13 @@
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -8,6 +16,7 @@ import {
   type Client,
   ClientSideConnection,
   ndJsonStream,
+  RequestError,
   type RequestPermissionRequest,
   type Stream,
 } from "@agentclientprotocol/sdk";
@@ -73,6 +82,10 @@ interface AcpSessionEntry {
   closed: boolean;
 }
 
+const CLOSE_SEND_DRAIN_TIMEOUT_MS = 2_000;
+const CHILD_TERM_TIMEOUT_MS = 2_000;
+const CHILD_KILL_TIMEOUT_MS = 500;
+
 function resolveAgentFromConfig(config: AgentConfig): string {
   if (config.platform === "claude-code") return "claude";
   if (config.platform === "codex") return "codex";
@@ -83,6 +96,59 @@ function resolveAgentFromConfig(config: AgentConfig): string {
     if (base === "claude" || base === "codex" || base === "gemini") return base;
   }
   return "codex";
+}
+
+function recordValue(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null || !Object.hasOwn(value, key)) {
+    return undefined;
+  }
+  return (value as Record<string, unknown>)[key];
+}
+
+function stringRecordValue(value: unknown, key: string): string | undefined {
+  const found = recordValue(value, key);
+  return typeof found === "string" && found.trim().length > 0 ? found : undefined;
+}
+
+function acpErrorMessage(err: unknown): string {
+  if (err instanceof RequestError) {
+    const dataMessage =
+      stringRecordValue(err.data, "message") ?? stringRecordValue(err.data, "details");
+    if (dataMessage) return dataMessage;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+async function settleWithTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function waitForChildExit(
+  child: ChildProcessByStdio<Writable, Readable, Readable>,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 /**
@@ -161,8 +227,9 @@ function buildCodexMcpConfigBlock(server: McpServerConfig, env: NodeJS.ProcessEn
 }
 
 /**
- * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Copies the
- * user's auth.json (so login persists), then writes a minimal config.toml
+ * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Links the
+ * user's auth.json (so login persists without stale refresh-token copies),
+ * then writes a minimal config.toml
  * containing ONLY allow-listed top-level scalars. Drops everything else —
  * `mcp_servers` (DNS-blocked enterprise endpoints crash codex's rmcp transport
  * on bootstrap), `projects.*` trust (grove uses its own permission gating),
@@ -174,13 +241,21 @@ export async function prepareIsolatedCodexHome(
 ): Promise<string> {
   const userHome = env.CODEX_HOME ?? join(env.HOME ?? "/tmp", ".codex");
   const isolated = mkdtempSync(join(tmpdir(), "grove-codex-"));
-  // Copy auth.json if present so login persists.
+  // Link auth.json if present so login persists. Codex OAuth refresh tokens
+  // rotate; copying auth.json into a throwaway CODEX_HOME can leave the child
+  // with a refresh token that has already been superseded by the real global
+  // Codex home. A symlink keeps isolation for config/plugins while letting the
+  // adapter read the current auth material.
   const userAuth = join(userHome, "auth.json");
   if (existsSync(userAuth)) {
     try {
-      copyFileSync(userAuth, join(isolated, "auth.json"));
+      symlinkSync(userAuth, join(isolated, "auth.json"));
     } catch {
-      /* best-effort */
+      try {
+        copyFileSync(userAuth, join(isolated, "auth.json"));
+      } catch {
+        /* best-effort */
+      }
     }
   }
 
@@ -381,15 +456,16 @@ async function launchSubprocess(
     // Wait briefly for the child to exit so we don't `rm -rf` the isolated
     // home out from under codex while it's still flushing session state.
     // Bounded so a stuck child doesn't block teardown indefinitely.
+    let exited = await waitForChildExit(child, CHILD_TERM_TIMEOUT_MS);
+    if (!exited) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      exited = await waitForChildExit(child, CHILD_KILL_TIMEOUT_MS);
+    }
     if (isolatedHomeForCleanup) {
-      const exited = await new Promise<boolean>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
-        const timer = setTimeout(() => resolve(false), 2000);
-        child.once("exit", () => {
-          clearTimeout(timer);
-          resolve(true);
-        });
-      });
       try {
         rmSync(isolatedHomeForCleanup, { recursive: true, force: true });
       } catch (err) {
@@ -659,7 +735,7 @@ export class AcpRuntime implements AgentRuntime {
       } catch {
         /* ignore */
       }
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = acpErrorMessage(err);
       throw new Error(`[acp-runtime] ACP handshake failed for agent ${agent}: ${msg}`);
     }
 
@@ -708,6 +784,7 @@ export class AcpRuntime implements AgentRuntime {
           current.session = {
             ...current.session,
             status: "crashed",
+            statusMessage: msg,
           };
           this.fireSessionWrite("MODIFIED", current.session);
           for (const cb of current.idleCallbacks) {
@@ -784,12 +861,13 @@ export class AcpRuntime implements AgentRuntime {
         });
         finishTurn({ turnId, stopReason: ok.stopReason });
       } catch (err) {
+        const message = acpErrorMessage(err);
         finishTurn({
           turnId,
           stopReason: "error",
           error: {
             code: "prompt_rejected",
-            message: err instanceof Error ? err.message : String(err),
+            message,
           },
         });
       } finally {
@@ -829,7 +907,7 @@ export class AcpRuntime implements AgentRuntime {
     }
     // Drain any pending sends so we don't leak prompt() promises past dispose.
     try {
-      await entry.sendChainTail;
+      await settleWithTimeout(entry.sendChainTail, CLOSE_SEND_DRAIN_TIMEOUT_MS);
     } catch {
       /* ignore */
     }
