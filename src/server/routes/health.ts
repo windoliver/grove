@@ -38,6 +38,12 @@ health.get("/", async (c) => {
 
   const healthy = Object.values(checks).every((v) => v === "ok");
 
+  // Grove-Server-Pid: lets the spawner in service-lifecycle.waitForOwnedReadiness
+  // attribute /health responses to a specific process without an lsof race.
+  // Returned on every response (200 AND 503) so an owned-but-degraded server
+  // is distinguishable from a foreign listener.
+  c.header("Grove-Server-Pid", String(process.pid));
+
   return c.json(
     {
       status: healthy ? "ok" : "degraded",
