@@ -36,6 +36,7 @@ import type {
   TuiSessionProvider,
 } from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
+import { useConfirmAndMutate } from "../safety/index.js";
 import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
@@ -430,24 +431,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
     const pendingPermissions = usePermissionDetection(appProps.tmux);
 
-    // Back to main: archive session and return to preset select
-    const handleBackToMain = useCallback(() => {
+    // Back to main: navigation + teardown (post-archive). The modal
+    // confirmation + archive itself runs in `RunningPageWithBackConfirm`
+    // (a child of `<ConfirmAndMutateProvider>`). This callback only fires
+    // AFTER the operator has confirmed (or the modal short-circuited because
+    // there is no session to archive). It is intentionally idempotent:
+    // saveTraces is best-effort and the navigation reset is safe to repeat.
+    const handleNavigateBackToMain = useCallback(() => {
       spawnManager.stopLogPolling();
-      void (async () => {
-        await spawnManager.saveTraces().catch(() => {
-          /* best-effort */
-        });
-        if (state.sessionId && isSessionProvider(provider)) {
-          await archiveSessionForCompensation(provider, state.sessionId).catch(() => {
-            /* best-effort */
-          });
-        }
-      })();
+      void spawnManager.saveTraces().catch(() => {
+        /* best-effort */
+      });
       setState({
         screen: "preset-select",
       });
       pages.resetTo({ kind: "preset-select" });
-    }, [provider, state.sessionId, spawnManager, pages]);
+    }, [spawnManager, pages]);
 
     const handleQuit = useCallback(() => {
       spawnManager.stopLogPolling();
@@ -964,7 +963,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       );
       const RunningPage = (): React.ReactNode =>
         wrapWithPermissions(
-          <RunningView
+          <RunningPageWithBackConfirm
             provider={provider}
             intervalMs={appProps.intervalMs}
             topology={topology}
@@ -1002,7 +1001,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
             onQuit={handleQuit}
-            onBackToMain={handleBackToMain}
+            onNavigateBackToMain={handleNavigateBackToMain}
           />,
         );
       const AdvancedPage = (): React.ReactNode =>
@@ -1066,7 +1065,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleSpawnComplete,
       handleToggleAdvanced,
       handleComplete,
-      handleBackToMain,
+      handleNavigateBackToMain,
       handleAdvancedBack,
       handleNewSession,
       provider,
@@ -1093,6 +1092,121 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// RunningPageWithBackConfirm — wraps RunningView and routes the operator's
+// "back to main" intent through the C6 confirm-and-mutate modal (#304).
+//
+// `useConfirmAndMutate()` requires the caller to be a descendant of the
+// `<ConfirmAndMutateProvider>` mounted inside `<PagesRouter>`. ScreenManager
+// itself sits ABOVE the provider, so the modal trigger lives here in a
+// component rendered by PagesRouter's component map.
+//
+// Responsibilities:
+//   1. Build a synthetic AgentSession entity snapshot from the SessionRecord
+//      so the modal has a `kind`/`id`/`resourceVersion` to render and to
+//      mint a DangerousToken from. The entity store doesn't carry a
+//      grove-session record, so a synthetic snapshot is the simplest path
+//      — the CAS check is enforced server-side regardless.
+//   2. Open the modal via `confirmAndMutate({ entity, mutation })`.
+//      Operator presses 'y' → `provider.archiveSession(token)` runs with
+//      the snapshot's RV. 409 → modal updates snapshot RV from the response
+//      and re-prompts (up to 3 retries). Operator presses 'n' → returns
+//      cancelled → caller stays on the running screen.
+//   3. After the modal resolves with `ok` or `max-retries`, navigate back
+//      via the parent's `onNavigateBackToMain`.
+//
+// When there is no session id (e.g., topology-less local launch) or no
+// session provider, we skip the modal and navigate immediately — there is
+// nothing to confirm an archive of.
+// ---------------------------------------------------------------------------
+
+interface RunningPageWithBackConfirmProps
+  extends Omit<
+    import("./running-view.js").RunningViewProps,
+    "onBackToMain" | "sessionId" | "provider"
+  > {
+  readonly provider: TuiDataProvider;
+  readonly sessionId?: string | undefined;
+  /**
+   * Navigate back to the preset-select / main screen, AFTER the operator
+   * has confirmed the archive (or there was nothing to archive).
+   */
+  readonly onNavigateBackToMain: () => void;
+}
+
+const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBackConfirmProps> =
+  React.memo(function RunningPageWithBackConfirm(
+    props: RunningPageWithBackConfirmProps,
+  ): React.ReactNode {
+    const { provider, sessionId, onNavigateBackToMain, ...rest } = props;
+    const confirmAndMutate = useConfirmAndMutate();
+
+    const handleBackToMain = useCallback(() => {
+      void (async () => {
+        // No session to archive → just navigate. Covers topology-less
+        // launches and providers that don't expose session management.
+        if (!sessionId || !isSessionProvider(provider)) {
+          onNavigateBackToMain();
+          return;
+        }
+
+        // Pull the freshest RV inline. The modal opens with this snapshot;
+        // a stale RV will still produce a 409 the modal handles, but
+        // starting from the latest cached value minimizes false retries.
+        const fresh = await provider.getSession(sessionId).catch(() => undefined);
+        const rv = String(fresh?.resourceVersion ?? 0);
+
+        // Build a minimal AgentSessionEntity snapshot. The modal renders
+        // `kind`/`id`/`resourceVersion`; the rest of the entity is unused
+        // by the modal UI but the EntityForKind<"AgentSession"> shape
+        // requires the spec/status/conditions fields to be present.
+        const entity: import("../../core/entity.js").AgentSessionEntity = {
+          kind: "AgentSession",
+          namespace: "default",
+          id: sessionId,
+          spec: { role: "session" },
+          status: { phase: "running" },
+          conditions: [],
+          observedGeneration: 0,
+          resourceVersion: rv,
+          metadata: { generation: 1 },
+        };
+
+        try {
+          const result = await confirmAndMutate<"AgentSession", void>({
+            entity,
+            message: "Archive session before going back?",
+            dangerous: true,
+            mutation: (token) => provider.archiveSession(token),
+          });
+          if (!result.ok && result.reason === "cancelled") {
+            // Operator cancelled — stay on the running screen.
+            return;
+          }
+          // ok | max-retries → navigate back regardless. max-retries means
+          // the server kept rejecting our RV; the operator already saw the
+          // banner and chose to give up, so don't strand them on a screen
+          // they explicitly tried to leave.
+          onNavigateBackToMain();
+        } catch {
+          // Non-409 failure (network, 5xx). Best-effort: still navigate so
+          // the operator isn't trapped on the running screen. Server-side
+          // archive can be retried from preset-select if needed.
+          onNavigateBackToMain();
+        }
+      })();
+    }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
+
+    return (
+      <RunningView
+        {...rest}
+        provider={provider}
+        sessionId={sessionId}
+        onBackToMain={handleBackToMain}
+      />
+    );
+  });
 
 // ---------------------------------------------------------------------------
 // Advanced mode wrapper — intercepts Tab to go back to simple view

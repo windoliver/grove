@@ -1158,4 +1158,81 @@ describe("ScreenManager navigation and edge cases", () => {
     expect(captured.screen).toBe("running");
     expect(providerBundle.calls.setSessionScope).toEqual(["session-active"]);
   });
+
+  test("running -> back to main: confirmed modal archives and navigates", async () => {
+    // The RunningPageWithBackConfirm wrapper opens the C6 confirm modal
+    // before archiving. When the operator presses 'y', the mutation runs
+    // (archiveSession is called) and we navigate back to preset-select.
+    const providerBundle = makeProvider();
+    const { spawnManager } = renderScreenManager({
+      presets: PRESETS,
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Back to main confirmed",
+        sessionId: "session-back-confirmed",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    // The mock RunningView captures `onBackToMain`. Calling it triggers
+    // the wrapper's modal flow (open → submit on 'y' → archive → navigate).
+    await act(async () => {
+      const onBackToMain = requireRunningView().onBackToMain;
+      if (!onBackToMain) throw new Error("RunningView did not receive onBackToMain");
+      onBackToMain();
+      // Let the async getSession/confirm pipeline open the modal.
+      await flushAsync();
+      await flushAsync();
+    });
+
+    // Modal is open — press 'y' to submit. The provider's keyboard handler
+    // captured by ConfirmAndMutateProvider routes the keystroke to submit.
+    await pressKey({ name: "y" });
+    await act(async () => {
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(providerBundle.calls.archiveSession).toEqual(["session-back-confirmed"]);
+    expect(captured.screen).toBe("preset-select");
+    // Teardown still runs (matches the pre-modal handler).
+    expect(spawnManager.stopLogPollingCalls).toContain("stop");
+    expect(spawnManager.saveTraceCalls).toContain("save");
+  });
+
+  test("running -> back to main: cancelled modal stays on running", async () => {
+    // Pressing 'n' on the modal returns { ok: false, reason: "cancelled" } —
+    // wrapper short-circuits navigation, no archiveSession call.
+    const providerBundle = makeProvider();
+    renderScreenManager({
+      presets: PRESETS,
+      provider: providerBundle.provider,
+      topology: TEST_TOPOLOGY,
+      initialState: {
+        screen: "running",
+        goal: "Back to main cancelled",
+        sessionId: "session-back-cancelled",
+        sessionStartedAt: "2026-03-29T00:00:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      const onBackToMain = requireRunningView().onBackToMain;
+      if (!onBackToMain) throw new Error("RunningView did not receive onBackToMain");
+      onBackToMain();
+      await flushAsync();
+      await flushAsync();
+    });
+
+    await pressKey({ name: "n" });
+    await act(async () => {
+      await flushAsync();
+      await flushAsync();
+    });
+
+    expect(providerBundle.calls.archiveSession).toEqual([]);
+    expect(captured.screen).toBe("running");
+  });
 });
