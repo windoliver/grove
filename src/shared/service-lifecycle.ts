@@ -671,6 +671,135 @@ function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
   };
 }
 
+/** Verdict from waitForOwnedReadiness — see function doc. */
+type OwnedReadiness =
+  | { ok: true }
+  | { ok: false; kind: "no-listener" }
+  | { ok: false; kind: "child-exited" }
+  | { ok: false; kind: "owned-by-foreign"; foreignPid: number; owner: string };
+
+/**
+ * Race-free readiness check for a spawned service (issue #219 review round 2).
+ *
+ * Returns ok only when, in the SAME observation window, the listener PID on
+ * `port` equals `spawnedPid` AND a /health GET against that port returns 200
+ * AND the listener PID still equals `spawnedPid`. Three checks bracketing one
+ * /health call — the only configuration where the response provably came from
+ * our spawned child, not a transient foreign listener that satisfied the
+ * probe and disappeared.
+ *
+ * `undefined` lsof returns are indeterminate (still binding, lsof racing
+ * with the kernel), NOT a bind-race-loss — keep retrying. Only declare
+ * "owned-by-foreign" after the same foreign PID has held the port across
+ * `FOREIGN_STABILITY_REPEATS` consecutive samples, so a transient foreign
+ * process that exits before our child binds doesn't fail us spuriously.
+ */
+async function waitForOwnedReadiness(opts: {
+  port: number;
+  spawnedPid: number;
+  url: string;
+  timeoutMs: number;
+}): Promise<OwnedReadiness> {
+  const { port, spawnedPid, url, timeoutMs } = opts;
+  const deadline = Date.now() + timeoutMs;
+  const FOREIGN_STABILITY_REPEATS = 3;
+  let foreignSeen = 0;
+  let lastForeignPid = 0;
+  let delay = 250;
+  while (Date.now() < deadline) {
+    // 1) Liveness — a dead spawned PID can never be the listener.
+    try {
+      process.kill(spawnedPid, 0);
+    } catch {
+      return { ok: false, kind: "child-exited" };
+    }
+    // 2) Listener identity, pre-/health.
+    const pidBefore = await getListeningPid(port);
+    if (pidBefore === undefined) {
+      // No listener yet — keep waiting.
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      foreignSeen = 0;
+      continue;
+    }
+    if (pidBefore !== spawnedPid) {
+      if (pidBefore === lastForeignPid) {
+        foreignSeen += 1;
+      } else {
+        lastForeignPid = pidBefore;
+        foreignSeen = 1;
+      }
+      if (foreignSeen >= FOREIGN_STABILITY_REPEATS) {
+        const owner = await describePortOwner(port);
+        return { ok: false, kind: "owned-by-foreign", foreignPid: pidBefore, owner };
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      continue;
+    }
+    foreignSeen = 0;
+    lastForeignPid = 0;
+    // 3) /health on a confirmed-owned port.
+    let healthOk = false;
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+      healthOk = resp.ok;
+    } catch {
+      healthOk = false;
+    }
+    if (!healthOk) {
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      continue;
+    }
+    // 4) Listener identity, post-/health — must STILL be us. If the listener
+    //    changed during the fetch, the /health response cannot be attributed
+    //    to our spawned child; retry.
+    const pidAfter = await getListeningPid(port);
+    if (pidAfter === spawnedPid) {
+      return { ok: true };
+    }
+    await sleep(delay);
+    delay = Math.min(delay * 1.5, 2_000);
+  }
+  // Deadline exceeded without ever seeing a stable owned-by-us state.
+  const finalPid = await getListeningPid(port);
+  if (finalPid !== undefined && finalPid !== spawnedPid) {
+    const owner = await describePortOwner(port);
+    return { ok: false, kind: "owned-by-foreign", foreignPid: finalPid, owner };
+  }
+  return { ok: false, kind: "no-listener" };
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Bounded SIGTERM → wait → SIGKILL of a PID we spawned. Mirrors the
+ * stopServices/rollback teardown so a child rejected by waitForOwnedReadiness
+ * cannot outlive the failed start as a detached orphan.
+ */
+async function terminateChild(pid: number, deadlineMs: number = 3_000): Promise<void> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return; // already gone
+  }
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return; // exited
+    }
+    await sleep(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+}
+
 /**
  * Poll a /health endpoint until it returns 200 OK or the timeout expires.
  *
@@ -1016,49 +1145,45 @@ async function spawnService(
     const exited = waitForChildExit(child);
     child.unref();
 
-    // Wait for the service to pass its health check instead of sleeping blindly.
+    // Unified readiness predicate (issue #219 review round 2): a 200 from
+    // /health AND a single lsof sample of "who's listening" are two
+    // independent observations and either can be a transient foreign
+    // process. Require BOTH to be true for OUR spawned PID at the SAME
+    // observation window, retry-until-deadline with undefined treated as
+    // indeterminate (not a bind-race-loss). Liveness of the spawned PID
+    // is implicit: a dead PID can't be the listener.
     if (port) {
-      await waitForServiceHealth(`http://localhost:${port}/health`, SERVICE_HEALTH_TIMEOUT_MS);
-    }
-
-    // Verify the process is still alive after health check / timeout.
-    // If it died during startup, surface the failure instead of silently
-    // returning null — leaving startServices believing the service is
-    // running when it isn't would only resurface as confusing 401s/timeouts
-    // downstream (the same class of regression Codex flagged in round 2).
-    try {
-      process.kill(pid, 0); // Signal 0 = check existence
-    } catch {
-      const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
-      throw new Error(
-        `${name} exited during startup. Last log lines:\n${tail || "(empty)"}\n` +
-          `Common cause: another listener on the configured port. Run: lsof -iTCP:${port} -sTCP:LISTEN`,
-      );
-    }
-
-    // TOCTOU guard (issue #219 review round 1): the /health success we just
-    // observed may have been served by a DIFFERENT process — another grove
-    // start that won the bind race, or a stale MCP/server from another
-    // worktree. Now that MCP /health is unauthenticated, ANY MCP instance
-    // can answer the probe. Resolve the actual listening PID and require it
-    // to equal our spawned child before declaring this service ours; mis-
-    // recording in grove.pid would break adoption + shutdown bookkeeping for
-    // every subsequent run.
-    if (port) {
-      const listenerPid = await getListeningPid(port);
-      if (listenerPid !== pid) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          /* already gone */
-        }
-        const owner = await describePortOwner(port);
+      const readiness = await waitForOwnedReadiness({
+        port,
+        spawnedPid: pid,
+        url: `http://localhost:${port}/health`,
+        timeoutMs: SERVICE_HEALTH_TIMEOUT_MS,
+      });
+      if (!readiness.ok) {
+        // Bounded shutdown of OUR detached child so it doesn't outlive the
+        // failed start (round 2: detached/unref'd children otherwise escape
+        // both this function and startServices' rollback filter).
+        await terminateChild(pid);
+        const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+        const detail =
+          readiness.kind === "owned-by-foreign"
+            ? `port held by PID ${readiness.foreignPid}; owner=${readiness.owner}`
+            : readiness.kind === "child-exited"
+              ? `spawned PID ${pid} exited before binding. Last log lines:\n${tail || "(empty)"}`
+              : `no listener bound within ${SERVICE_HEALTH_TIMEOUT_MS}ms`;
         throw new Error(
-          `${name} spawn lost the bind race on port ${port}: spawned PID ${pid}, ` +
-            `but port is held by PID ${listenerPid ?? "<unknown>"}.\n` +
-            `Owner: ${owner}\n` +
-            `Another grove instance or a stale service answered /health before our child bound.`,
+          `${name} did not reach readiness on port ${port}: ${detail}\n` +
+            `Diagnose with: lsof -iTCP:${port} -sTCP:LISTEN`,
         );
+      }
+    } else {
+      // No port to verify (e.g. test/stub service). Fall back to the
+      // pre-round-2 liveness check.
+      try {
+        process.kill(pid, 0);
+      } catch {
+        const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+        throw new Error(`${name} exited during startup. Last log lines:\n${tail || "(empty)"}`);
       }
     }
 
