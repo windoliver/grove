@@ -318,8 +318,8 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onFrontierTabPrev();
       return true;
     }
-    if (/^[1-9]$/.test(input ?? "")) {
-      actions.onFrontierTabJump(Number.parseInt(input!, 10) - 1);
+    if (input && /^[1-9]$/.test(input)) {
+      actions.onFrontierTabJump(Number.parseInt(input, 10) - 1);
       return true;
     }
     if (
