@@ -11,7 +11,7 @@
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
 import type { TuiRegistryEntry } from "../plugins/registry.js";
-import { type BuiltInPanelId, panelToId } from "./panel-ids.js";
+import { type BuiltInPanelId, PanelId, panelToId } from "./panel-ids.js";
 
 // ---------------------------------------------------------------------------
 // Per-preset panel visibility
@@ -38,6 +38,32 @@ export const PRESET_PANELS: Readonly<Record<string, ReadonlySet<Panel>>> = {
     Panel.Gossip,
   ]),
 };
+
+export const PRESET_PANEL_IDS: Readonly<Record<string, ReadonlySet<BuiltInPanelId>>> = {
+  "review-loop": new Set([PanelId.Dag, PanelId.Detail, PanelId.Claims, PanelId.Terminal]),
+  "swarm-ops": new Set([
+    PanelId.Dag,
+    PanelId.Detail,
+    PanelId.Claims,
+    PanelId.Terminal,
+    PanelId.Frontier,
+    PanelId.Outcomes,
+    PanelId.Bounties,
+  ]),
+  "federated-swarm": new Set([
+    PanelId.Dag,
+    PanelId.Detail,
+    PanelId.Claims,
+    PanelId.Terminal,
+    PanelId.Frontier,
+    PanelId.Gossip,
+  ]),
+};
+
+export function getPresetPanelIds(presetName?: string): ReadonlySet<BuiltInPanelId> | undefined {
+  if (!presetName) return undefined;
+  return PRESET_PANEL_IDS[presetName];
+}
 
 /** Get the allowed panels for a preset. Returns undefined if all panels are allowed. */
 export function getPresetPanels(presetName?: string): ReadonlySet<Panel> | undefined {

@@ -8,6 +8,7 @@ import {
   getActivePanelsForLayout,
   getBuiltInTuiRegistryEntries,
   getPanelDefById,
+  getPresetPanelIds,
   getPresetPanels,
   getRegistry,
   getRowFlex,
@@ -319,6 +320,37 @@ describe("PRESET_PANELS", () => {
     expect(PRESET_PANELS["review-loop"]).toBeDefined();
     expect(PRESET_PANELS["swarm-ops"]).toBeDefined();
     expect(PRESET_PANELS["federated-swarm"]).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPresetPanelIds()
+// ---------------------------------------------------------------------------
+
+describe("getPresetPanelIds", () => {
+  it("returns stable string IDs for review-loop", () => {
+    expect([...(getPresetPanelIds("review-loop") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+    ]);
+  });
+
+  it("returns stable string IDs for swarm-ops", () => {
+    expect([...(getPresetPanelIds("swarm-ops") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+      "frontier",
+      "outcomes",
+      "bounties",
+    ]);
+  });
+
+  it("returns undefined for unknown preset", () => {
+    expect(getPresetPanelIds("unknown-preset")).toBeUndefined();
   });
 });
 
