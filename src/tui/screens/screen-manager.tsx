@@ -1144,66 +1144,76 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
   ): React.ReactNode {
     const { provider, sessionId, onNavigateBackToMain, ...rest } = props;
     const confirmAndMutate = useConfirmAndMutate();
+    // C6 (#304) round-3: in-flight guard so repeated B keypresses don't
+    // pre-empt the modal and emit "Archive failed" toasts for the
+    // pre-emption rejection (which the provider raises via reject()).
+    const inflightRef = useRef(false);
 
     const handleBackToMain = useCallback(() => {
+      if (inflightRef.current) return;
+      inflightRef.current = true;
       void (async () => {
-        // No session to archive → just navigate. Covers topology-less
-        // launches and providers that don't expose session management.
-        if (!sessionId || !isSessionProvider(provider)) {
-          onNavigateBackToMain();
-          return;
-        }
-
-        // Pull the freshest RV inline. The modal opens with this snapshot;
-        // a stale RV will still produce a 409 the modal handles, but
-        // starting from the latest cached value minimizes false retries.
-        const fresh = await provider.getSession(sessionId).catch(() => undefined);
-        const rv = String(fresh?.resourceVersion ?? 0);
-
-        // Build a minimal AgentSessionEntity snapshot. The modal renders
-        // `kind`/`id`/`resourceVersion`; the rest of the entity is unused
-        // by the modal UI but the EntityForKind<"AgentSession"> shape
-        // requires the spec/status/conditions fields to be present.
-        const entity: import("../../core/entity.js").AgentSessionEntity = {
-          kind: "AgentSession",
-          namespace: "default",
-          id: sessionId,
-          spec: { role: "session" },
-          status: { phase: "running" },
-          conditions: [],
-          observedGeneration: 0,
-          resourceVersion: rv,
-          metadata: { generation: 1 },
-        };
-
         try {
-          const result = await confirmAndMutate<"AgentSession", void>({
-            entity,
-            message: "Archive session before going back?",
-            dangerous: true,
-            mutation: (token) => provider.archiveSession(token),
-          });
-          if (result.ok) {
+          // No session to archive → just navigate. Covers topology-less
+          // launches and providers that don't expose session management.
+          if (!sessionId || !isSessionProvider(provider)) {
             onNavigateBackToMain();
             return;
           }
-          // C6 (#304) round-2: navigate ONLY on ok. max-retries means
-          // server kept rejecting our RV — the archive did NOT happen.
-          // Surface the failure so the operator knows to retry rather
-          // than walking away from an active session.
-          if (result.reason === "max-retries") {
-            toast.error(
-              "Archive failed: session resourceVersion kept changing. Retry or quit explicitly.",
-              { duration: 5000 },
-            );
+
+          const fresh = await provider.getSession(sessionId).catch(() => undefined);
+          const rv = String(fresh?.resourceVersion ?? 0);
+
+          // C6 (#304) round-3: AgentSession is the runtime agent-process
+          // watch kind, not the persisted Grove session row this archive
+          // touches — but DangerousToken<K extends string> doesn't
+          // require K to be a WatchKind, and the brand still enforces
+          // "you must produce a token to call archiveSession". The live-
+          // change banner is best-effort here (the Grove session isn't
+          // a WatchKind so EntityStore won't push updates), but server-
+          // side CAS still protects against concurrent writes.
+          const entity: import("../../core/entity.js").AgentSessionEntity = {
+            kind: "AgentSession",
+            namespace: "default",
+            id: sessionId,
+            spec: { role: "session" },
+            status: { phase: "running" },
+            conditions: [],
+            observedGeneration: 0,
+            resourceVersion: rv,
+            metadata: { generation: 1 },
+          };
+
+          try {
+            const result = await confirmAndMutate<"AgentSession", void>({
+              entity,
+              message: "Archive session before going back?",
+              dangerous: true,
+              mutation: (token) => provider.archiveSession(token),
+            });
+            if (result.ok) {
+              onNavigateBackToMain();
+              return;
+            }
+            if (result.reason === "max-retries") {
+              toast.error(
+                "Archive failed: session resourceVersion kept changing. Retry or quit explicitly.",
+                { duration: 5000 },
+              );
+            }
+            // result.reason === "cancelled" → operator chose to stay; no toast.
+          } catch (err) {
+            // C6 (#304) round-3: silently drop pre-emption rejections
+            // (a newer trigger() replaced this one). The provider's
+            // re-entry guard rejects with a specific message; matching
+            // on it keeps real errors loud while the synthetic one stays
+            // quiet. Other rejections (network, 5xx) still toast.
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes("pre-empted by a new trigger")) return;
+            toast.error(`Archive failed: ${msg}`, { duration: 5000 });
           }
-          // result.reason === "cancelled" → operator chose to stay; no toast.
-        } catch (err) {
-          // Non-409 failure (network, 5xx). Surface so the operator sees
-          // it; stay on the running screen so retry is possible.
-          toast.error(`Archive failed: ${err instanceof Error ? err.message : String(err)}`, {
-            duration: 5000,
-          });
+        } finally {
+          inflightRef.current = false;
         }
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
