@@ -249,9 +249,6 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     onFrontierTabPrev: () => {
       /* noop */
     },
-    onFrontierTabJump: () => {
-      /* noop */
-    },
     onFrontierAdopt: () => {
       /* noop */
     },

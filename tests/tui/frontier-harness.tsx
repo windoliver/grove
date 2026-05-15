@@ -201,7 +201,7 @@ async function main() {
 
   const initialState: ScreenState = {
     screen: "running",
-    goal: "Frontier #187 smoke — press 3 (Frontier), Tab to cycle slices, a to adopt",
+    goal: "Frontier #187 smoke — Ctrl+A then 3 (Frontier), ] / [ to cycle slices, a to adopt",
     sessionId: "frontier-smoke",
     sessionStartedAt: new Date(NOW - 5 * 60_000).toISOString(),
   };

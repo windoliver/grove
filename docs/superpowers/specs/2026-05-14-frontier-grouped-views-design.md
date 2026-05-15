@@ -66,8 +66,8 @@ view emits `(cid, summary)` and intent; spawn flow is unchanged plumbing.
   active tab, computes overflow window so the active tab is always visible,
   shows `+N` indicator for hidden tabs.
 - **`frontier-overview.tsx`** (new) — renders top-3 per non-empty slice as
-  mini-leaderboards. Read-only (no cursor); selecting a header / pressing
-  digit `1-9` navigates to that slice tab.
+  mini-leaderboards. Read-only (no cursor); operator switches to a specific
+  slice via `[` / `]` (see "Slice navigation keys" below).
 - **`frontier-slice-table.tsx`** (new) — renders a single slice: header line
   with `signalDescription`, ranked table with columns
   `RANK | CID | VALUE | SIGNAL | SUMMARY`. SIGNAL column is the per-signal
@@ -200,11 +200,16 @@ forwarding the context to the agent runtime.
 - Tab bar renders one tab per non-empty slice + Overview.
 - Active tab uses theme highlight; others use default.
 - Overflow indicator appears past width threshold; active tab forced visible.
-- `Tab` / `Shift-Tab` cycle slices; `1-9` jumps to nth.
-- Cursor restores to last-saved position when switching back to a slice.
+- `]` / `[` cycle slices forward/backward (vim-style next-tab). Tab and
+  digits 1-9 are deliberately NOT used — they remain bound to global panel
+  cycling and panel focus respectively, so a keyboard-only operator can
+  always leave the Frontier panel.
+- Slice switch resets the global cursor to row 0 (per-slice cursor memory
+  is YAGNI for the first ship). Without this, a long→short slice switch
+  would leave the cursor off-row and silently disable adopt/compare.
 - `onFrontierCidsChanged` fires with the active slice's cids only.
-- Overview tab: shows top-3 per non-empty slice; digit / header navigates
-  into that slice tab.
+- Overview tab: shows top-3 per non-empty slice; operator switches to a
+  specific slice via `]` / `[` then acts on rows there.
 - Per-slice empty: shows signal-specific hint, not generic empty.
 - Full empty Frontier: shows teaching empty state with all signal names.
 - Loading: tab bar disabled, no crash on tab keys.
@@ -256,6 +261,6 @@ forwarding the context to the agent runtime.
 | Empty / loading states teach the frontier concept              | Full-empty teaching state; per-slice signal hints  |
 | Rendering highlights what is winning and why                   | Signal description header + per-signal badge       |
 | Group frontier entries by ranking dimension                    | One slice per dimension                            |
-| Support switching/filtering between frontier slices            | Tab/Shift-Tab cycle, `1-9` jump                    |
+| Support switching/filtering between frontier slices            | `]` / `[` slice cycle (Tab/digits reserved for global panel nav)  |
 | Improve comparison workflows from the frontier                 | Compare selection persists across slices           |
 | Add stronger summaries so operators understand why             | `formatBadge` per slice + signal description       |

@@ -67,7 +67,6 @@ export interface KeyboardActions {
   readonly paletteItemCount: number;
   readonly onFrontierTabNext: () => void;
   readonly onFrontierTabPrev: () => void;
-  readonly onFrontierTabJump: (index: number) => void;
   readonly onFrontierAdopt: (cid: string, summary: string) => void;
   /** Entries (cid + summary) for the currently visible frontier slice. */
   readonly frontierEntries: ReadonlyArray<{ cid: string; summary: string }>;
@@ -318,22 +317,17 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Frontier panel: tab nav, digit jump, adopt.
-  // Must run BEFORE the PANEL_REGISTRY loop so that digit keys (1-9) and
-  // Tab/Shift+Tab are captured when the Frontier panel is focused — otherwise
-  // the registry would intercept "3" (→ focus Frontier) and the global tab
-  // cycle would swallow Tab before this branch runs.
+  // Frontier panel: slice nav + adopt. Uses '[' / ']' for prev/next slice
+  // (vim-style next-tab) so global Tab + 1-9 (panel cycle / panel focus)
+  // remain available — keyboard-only operators must always be able to leave
+  // the Frontier panel without resorting to the mouse.
   if (focused === Panel.Frontier) {
-    if (input === "tab" && !key.shift) {
+    if (input === "]") {
       actions.onFrontierTabNext();
       return true;
     }
-    if (input === "tab" && key.shift) {
+    if (input === "[") {
       actions.onFrontierTabPrev();
-      return true;
-    }
-    if (input && /^[1-9]$/.test(input)) {
-      actions.onFrontierTabJump(Number.parseInt(input, 10) - 1);
       return true;
     }
     if (

@@ -139,7 +139,6 @@ function mockActions(overrides?: {
     onSelect: (index) => record("onSelect", index),
     onFrontierTabNext: () => record("onFrontierTabNext"),
     onFrontierTabPrev: () => record("onFrontierTabPrev"),
-    onFrontierTabJump: (index) => record("onFrontierTabJump", index),
     onFrontierAdopt: (cid, summary) => record("onFrontierAdopt", cid, summary),
     frontierEntries: overrides?.frontierEntries ?? [],
     rowCount: overrides?.rowCount ?? 10,
@@ -777,24 +776,30 @@ describe("routeKey — registry-driven panel dispatch", () => {
   });
 });
 
-describe("routeKey — Frontier panel tab nav + adopt", () => {
-  test("Tab dispatches onFrontierTabNext when Frontier focused", () => {
+describe("routeKey — Frontier panel slice nav + adopt", () => {
+  test("']' dispatches onFrontierTabNext when Frontier focused", () => {
     const { actions, log } = mockActions({ focused: Panel.Frontier });
-    routeKey(keyEvent("tab"), actions);
+    routeKey(keyEvent("]"), actions);
     expect(log.calls).toContain("onFrontierTabNext");
   });
 
-  test("Shift+Tab dispatches onFrontierTabPrev when Frontier focused", () => {
+  test("'[' dispatches onFrontierTabPrev when Frontier focused", () => {
     const { actions, log } = mockActions({ focused: Panel.Frontier });
-    routeKey(keyEvent("tab", { shift: true }), actions);
+    routeKey(keyEvent("["), actions);
     expect(log.calls).toContain("onFrontierTabPrev");
   });
 
-  test("digit '3' dispatches onFrontierTabJump(2) when Frontier focused", () => {
+  test("Tab on Frontier panel does NOT dispatch slice-next (global panel cycle wins)", () => {
     const { actions, log } = mockActions({ focused: Panel.Frontier });
-    routeKey(keyEvent("3"), actions);
-    expect(log.calls).toContain("onFrontierTabJump");
-    expect(log.args.onFrontierTabJump).toEqual([2]);
+    routeKey(keyEvent("tab"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("digit '4' on Frontier panel does NOT dispatch slice-jump (panel focus wins)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("4"), actions);
+    // Should fall through to PANEL_REGISTRY which focuses Panel.Claims (key '4').
+    expect(log.calls).toContain("panels.focus");
   });
 
   test("'a' on a frontier row dispatches onFrontierAdopt with cid + summary", () => {
@@ -817,9 +822,9 @@ describe("routeKey — Frontier panel tab nav + adopt", () => {
     expect(log.calls).not.toContain("onFrontierAdopt");
   });
 
-  test("Tab does NOT dispatch onFrontierTabNext when a different panel is focused", () => {
+  test("']' does NOT dispatch onFrontierTabNext when a different panel is focused", () => {
     const { actions, log } = mockActions({ focused: Panel.Dag });
-    routeKey(keyEvent("tab"), actions);
+    routeKey(keyEvent("]"), actions);
     expect(log.calls).not.toContain("onFrontierTabNext");
   });
 

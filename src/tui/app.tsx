@@ -939,11 +939,18 @@ export function App({
       hasTmux: tmux !== undefined,
       keybindingOverrides,
       keyActionMap,
-      onFrontierTabNext: () => dispatch({ type: "FRONTIER_SLICE_NEXT" }),
-      onFrontierTabPrev: () => dispatch({ type: "FRONTIER_SLICE_PREV" }),
-      onFrontierTabJump: (index: number) => {
-        const key = ks.frontierTabKeys[index];
-        if (key) dispatch({ type: "FRONTIER_SLICE_SET", key });
+      // Slice nav also resets the global cursor to 0. Without this, switching
+      // from a long slice (cursor=9) to a short slice (2 rows) leaves the
+      // cursor off-row, hiding the selection AND blocking 'a' (which checks
+      // cursor < frontierEntries.length). Per-slice cursor memory is YAGNI
+      // for now; reset-to-0 is the simple fix.
+      onFrontierTabNext: () => {
+        dispatch({ type: "FRONTIER_SLICE_NEXT" });
+        nav.resetCursor();
+      },
+      onFrontierTabPrev: () => {
+        dispatch({ type: "FRONTIER_SLICE_PREV" });
+        nav.resetCursor();
       },
       onFrontierAdopt: (cid: string, summary: string) => {
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
@@ -975,7 +982,6 @@ export function App({
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
-      ks.frontierTabKeys,
       contributionList,
       frontierCids,
       frontierEntries,
