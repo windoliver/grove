@@ -2,6 +2,29 @@ import type { Context, Handler } from "hono";
 import type { ServerEnv } from "../deps.js";
 
 /**
+ * Read the `If-Match` value that {@link dangerous} middleware stashed into
+ * the request context. The slot is typed `string | undefined` on
+ * `ServerEnv.Variables` because TypeScript can't express the runtime
+ * invariant that the middleware always sets it before the inner handler
+ * runs.
+ *
+ * This helper encodes that invariant: callers in a route wrapped by
+ * `dangerous()` get a non-nullable `string` back; any other use throws at
+ * runtime with a clear diagnostic. Use this in every inner handler so the
+ * `if (ifMatch === undefined) throw ...` invariant check lives in one
+ * place rather than copy-pasted into every route.
+ */
+export function getIfMatch(c: Context<ServerEnv>): string {
+  const ifMatch = c.get("ifMatch");
+  if (ifMatch === undefined) {
+    throw new Error(
+      "invariant: getIfMatch called outside dangerous() — wrap the route with dangerous(handler)",
+    );
+  }
+  return ifMatch;
+}
+
+/**
  * Inner handler accepted by {@link dangerous}. Mirrors a normal Hono route
  * handler but takes only the {@link Context} (no `next`) because the wrapped
  * route is always a terminal mutating handler — there is no next middleware

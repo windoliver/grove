@@ -21,7 +21,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
-import { dangerous } from "../middleware/dangerous.js";
+import { dangerous, getIfMatch } from "../middleware/dangerous.js";
 import { CID_REGEX } from "../schemas.js";
 import { contributionStoreForSession, notConfigured, readJsonBody } from "./shared.js";
 
@@ -275,12 +275,9 @@ sessions.delete(
       );
     }
 
-    // `dangerous()` middleware guarantees a non-empty `ifMatch` is set —
-    // narrow defensively so the type stays `string`.
-    const ifMatch = c.get("ifMatch");
-    if (ifMatch === undefined) {
-      throw new Error("invariant: dangerous() must set ifMatch before invoking handler");
-    }
+    // `dangerous()` middleware guarantees a non-empty `ifMatch` is set;
+    // `getIfMatch` encodes that invariant in one place.
+    const ifMatch = getIfMatch(c);
     const deleteResult = await goalSessionStore.deleteSession(sessionId, {
       ifMatch,
       force: c.req.query("force") === "true",
