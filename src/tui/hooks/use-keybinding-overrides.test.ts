@@ -241,7 +241,7 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     pageSize: 20,
     paletteItemCount: 5,
     compareMode: false,
-    frontierCids: [],
+    frontierCids: () => [],
     frontierEntries: () => [],
     onFrontierTabNext: () => {
       /* noop */

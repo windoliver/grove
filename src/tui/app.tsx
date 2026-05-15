@@ -182,17 +182,14 @@ export function App({
   const [contributionList, setContributionList] = useState<readonly Contribution[]>([]);
   const [rowCount, setRowCount] = useState(0);
   const [selectedSession, setSelectedSession] = useState<string | undefined>();
-  const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
-  const [frontierEntries, setFrontierEntries] = useState<
-    ReadonlyArray<{ cid: string; summary: string }>
-  >([]);
-  // Mutable mirrors of the above. setState is asynchronous: between dispatch
-  // of FRONTIER_SLICE_NEXT and the next React commit, the keyboardActions
-  // object captured by routeKey still holds the OLD frontierEntries/Cids.
-  // If terminal input delivers `]` then `a` (or `]` then Enter) in the same
-  // JS tick, that stale value would adopt/select a row from the previous
-  // slice. We update both state AND ref so reads from these refs in
-  // keyboard handlers always see the latest synchronous value.
+  // Frontier active-slice state lives in refs (not React state) because the
+  // keyboard handler must read the current value synchronously. If terminal
+  // input delivers `]` then `a` (or `]` then Enter in compare mode) within
+  // the same JS tick, a setState-based snapshot would still hold the
+  // previous slice's data because React hasn't committed yet — that would
+  // adopt/select a row from the wrong slice. Refs are mutated synchronously
+  // by the FrontierView callback AND by slice-nav handlers; no rendering
+  // depends on these values, so state is unnecessary.
   const frontierCidsRef = useRef<readonly string[]>([]);
   const frontierEntriesRef = useRef<ReadonlyArray<{ cid: string; summary: string }>>([]);
 
@@ -555,13 +552,11 @@ export function App({
   }, []);
 
   const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
-    setFrontierCids(cids);
     frontierCidsRef.current = cids;
   }, []);
 
   const handleFrontierEntriesChanged = useCallback(
     (entries: ReadonlyArray<{ cid: string; summary: string }>) => {
-      setFrontierEntries(entries);
       frontierEntriesRef.current = entries;
     },
     [],
@@ -805,8 +800,10 @@ export function App({
       onCompareAdopt: (side: "a" | "b") => {
         const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
         if (!cid) return;
+        // Read from refs (synchronous current value) — same race-safety
+        // discipline as the 'a' adopt path.
         const summary =
-          frontierEntries.find((e) => e.cid === cid)?.summary ??
+          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
           contributionList.find((c) => c.cid === cid)?.summary ??
           "";
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
@@ -952,7 +949,7 @@ export function App({
       pageSize: PAGE_SIZE,
       paletteItemCount: filteredPaletteItems.length,
       compareMode: ks.compareMode,
-      frontierCids,
+      frontierCids: () => frontierCidsRef.current,
       selectedSession,
       hasTmux: tmux !== undefined,
       keybindingOverrides,
@@ -970,16 +967,12 @@ export function App({
       onFrontierTabNext: () => {
         dispatch({ type: "FRONTIER_SLICE_NEXT" });
         nav.resetCursor();
-        setFrontierEntries([]);
-        setFrontierCids([]);
         frontierEntriesRef.current = [];
         frontierCidsRef.current = [];
       },
       onFrontierTabPrev: () => {
         dispatch({ type: "FRONTIER_SLICE_PREV" });
         nav.resetCursor();
-        setFrontierEntries([]);
-        setFrontierCids([]);
         frontierEntriesRef.current = [];
         frontierCidsRef.current = [];
       },
@@ -1017,8 +1010,6 @@ export function App({
       ks.goalBuffer,
       ks.paletteIndex,
       contributionList,
-      frontierCids,
-      frontierEntries,
       agentProfiles,
       topology,
       paletteParentId,

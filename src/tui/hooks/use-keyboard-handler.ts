@@ -73,7 +73,10 @@ export interface KeyboardActions {
    *  even if it happened in the same JS tick before React committed. */
   readonly frontierEntries: () => ReadonlyArray<{ cid: string; summary: string }>;
   readonly compareMode: boolean;
-  readonly frontierCids: readonly string[];
+  /** Cids for the currently visible frontier slice. Function form so the
+   *  keyboard handler reads the latest ref-backed value (slice nav clears
+   *  the ref synchronously; state-based array would lag by a render). */
+  readonly frontierCids: () => readonly string[];
   readonly selectedSession: string | undefined;
   readonly hasTmux: boolean;
   /** Keybinding overrides from .grove/keybindings.json (item 19). */
@@ -488,10 +491,13 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onVfsNavigate();
       return true;
     }
-    if (actions.compareMode && focused === Panel.Frontier && actions.frontierCids.length > 0) {
-      const cid = actions.frontierCids[actions.nav.state.cursor];
-      if (cid) actions.onCompareSelect(cid);
-      return true;
+    if (actions.compareMode && focused === Panel.Frontier) {
+      const cids = actions.frontierCids();
+      if (cids.length > 0) {
+        const cid = cids[actions.nav.state.cursor];
+        if (cid) actions.onCompareSelect(cid);
+        return true;
+      }
     }
     const isClaimsPanel = focused === Panel.Claims;
     if (!actions.nav.isDetailView && !isClaimsPanel && actions.rowCount > 0) {

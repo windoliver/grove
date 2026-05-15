@@ -145,7 +145,7 @@ function mockActions(overrides?: {
     pageSize: 20,
     paletteItemCount: overrides?.paletteItemCount ?? 5,
     compareMode: overrides?.compareMode ?? false,
-    frontierCids: overrides?.frontierCids ?? [],
+    frontierCids: () => overrides?.frontierCids ?? [],
     selectedSession: overrides?.selectedSession,
     hasTmux: overrides?.hasTmux ?? false,
     keybindingOverrides: overrides?.keybindingOverrides,

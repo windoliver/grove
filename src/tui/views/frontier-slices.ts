@@ -128,23 +128,24 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   //   4. Cap.
   const seenLabels = new Set<string>();
   const metricCandidates: { rawName: string; safeName: string }[] = [];
-  // Two-stage bounded selection:
-  //   1. Walk Object.keys (V8 insertion order, no sort cost) up to a scan
-  //      budget (MAX_RAW_METRIC_KEYS). Collect VALID sanitized candidates
-  //      until we've gathered MAX_METRIC_SLICES of them. This means a
-  //      malicious upstream can't hide valid metrics by stuffing the early
-  //      keyspace with invalid/control-only names — those don't consume
-  //      the display cap.
+  // Truly bounded enumeration. Object.keys() materializes the full key
+  // array up-front — for a 100k-key byMetric that's 100k allocated strings
+  // BEFORE any break can trigger. Use for...in + Object.hasOwn so we walk
+  // own properties one at a time and bail at the scan budget without
+  // touching the rest of the keyspace.
+  // Two-stage selection:
+  //   1. Iterate own keys up to MAX_RAW_METRIC_KEYS, collecting valid
+  //      sanitized candidates until MAX_METRIC_SLICES are gathered. Junk
+  //      early keys don't consume the display cap.
   //   2. Sort the collected candidates alphabetically for stable display.
-  // An agent publishing 100k score keys is bounded at MAX_RAW_METRIC_KEYS
-  // sanitize calls, with the early break stopping at MAX_METRIC_SLICES
-  // valid candidates.
+  const byMetric = frontier.byMetric ?? {};
   let scanned = 0;
-  for (const rawName of Object.keys(frontier.byMetric ?? {})) {
+  for (const rawName in byMetric) {
+    if (!Object.hasOwn(byMetric, rawName)) continue;
     if (scanned >= MAX_RAW_METRIC_KEYS) break;
     if (metricCandidates.length >= MAX_METRIC_SLICES) break;
     scanned++;
-    const entries = frontier.byMetric[rawName];
+    const entries = byMetric[rawName];
     if (!entries || entries.length === 0) continue;
     const base = sanitizeMetricName(rawName);
     if (base.length === 0) continue;
@@ -158,7 +159,7 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   }
   metricCandidates.sort((a, b) => (a.safeName < b.safeName ? -1 : a.safeName > b.safeName ? 1 : 0));
   for (const { rawName, safeName } of metricCandidates) {
-    const entries = frontier.byMetric[rawName] ?? [];
+    const entries = byMetric[rawName] ?? [];
     slices.push({
       key: `metric:${safeName}`,
       label: safeName,
