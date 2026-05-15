@@ -45,6 +45,7 @@ import {
   setGoalHttp,
 } from "./provider-shared.js";
 import type { DangerousToken } from "./safety/index.js";
+import { mintTokenForCompensation } from "./safety/internal/compensation.js";
 import { StoreBackedProvider } from "./store-backed-provider.js";
 
 /** Configuration for the Nexus provider. */
@@ -388,8 +389,15 @@ export class NexusDataProvider
       // Compensate: archive the just-created local/server session so retries
       // don't leave orphan active records. Best-effort — we still rethrow
       // either way so the caller sees the original mirror error.
+      //
+      // C6 (#304): mint a compensation token from the freshly-created
+      // session's resourceVersion. The session was created moments ago in
+      // this very method, so no operator confirmation is needed; CAS is
+      // still enforced server-side. See `safety/internal/compensation.ts`.
       try {
-        await this.archiveSession(result.id);
+        const rv = String(result.resourceVersion ?? 1);
+        const token = mintTokenForCompensation("AgentSession", result.id, rv);
+        await this.archiveSession(token);
       } catch (archiveErr) {
         process.stderr.write(
           `[nexus-provider] WARN: failed to archive orphan session ${result.id}: ` +

@@ -29,8 +29,14 @@ import { DagStateProvider } from "../hooks/dag-state-context.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
-import type { SessionRecord } from "../provider.js";
+import type {
+  SessionRecord,
+  TuiDataProvider,
+  TuiGoalProvider,
+  TuiSessionProvider,
+} from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
+import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
@@ -94,6 +100,47 @@ export interface ScreenManagerProps {
   readonly initialState?: ScreenState | undefined;
   /** Scope the resumed session's feed/history to this session id. */
   readonly resumeSessionId?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Compensation helpers (C6 #304, T11)
+//
+// These wrap the dangerous archive/setGoal client methods for screen
+// teardown and spawn-time goal seeding. They're internal cleanup paths
+// with no operator confirmation, so they use `mintTokenForCompensation`
+// (deep import from `safety/internal/compensation.js`) — the conspicuous
+// import path is the social signal that this bypasses the normal
+// `useConfirmAndMutate` UI.
+//
+// Both helpers fetch a fresh RV inline so the CAS check at the server
+// gate passes; a 409 here means the entity changed between the read and
+// the write (e.g., another operator archived the same session). Best-
+// effort behaviour is acceptable for teardown — losing a race just
+// means the work was already done.
+// ---------------------------------------------------------------------------
+
+async function archiveSessionForCompensation(
+  provider: TuiDataProvider & TuiSessionProvider,
+  sessionId: string,
+): Promise<void> {
+  const fresh = await provider.getSession(sessionId).catch(() => undefined);
+  const rv = String(fresh?.resourceVersion ?? 0);
+  const token = mintTokenForCompensation("AgentSession", sessionId, rv);
+  await provider.archiveSession(token);
+}
+
+async function setGoalForCompensation(
+  provider: TuiDataProvider & TuiGoalProvider,
+  goal: string,
+  acceptance: readonly string[],
+): Promise<void> {
+  const existing = await provider.getGoal().catch(() => undefined);
+  // No row → INSERT path bypasses CAS, so "" is fine. Existing row → use
+  // its RV so the UPDATE succeeds. The compensation helper does NOT retry;
+  // if the goal changed under us we surface the error to the caller.
+  const rv = existing?.resourceVersion !== undefined ? String(existing.resourceVersion) : "";
+  const token = mintTokenForCompensation("Goal", "goal", rv);
+  await provider.setGoal(token, goal, acceptance);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,10 +395,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         } catch {
           // Best-effort
         }
-        // Archive session on completion
+        // Archive session on completion (compensation — internal teardown,
+        // no operator confirmation; CAS still enforced server-side).
         setState((s) => {
           if (s.sessionId && isSessionProvider(provider)) {
-            void provider.archiveSession(s.sessionId).catch(() => {
+            void archiveSessionForCompensation(provider, s.sessionId).catch(() => {
               /* best-effort */
             });
           }
@@ -390,7 +438,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           /* best-effort */
         });
         if (state.sessionId && isSessionProvider(provider)) {
-          await provider.archiveSession(state.sessionId).catch(() => {
+          await archiveSessionForCompensation(provider, state.sessionId).catch(() => {
             /* best-effort */
           });
         }
@@ -413,9 +461,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           /* best-effort */
         });
         debugLog("quit", "traces saved");
-        // Archive active session (persists to DB, agents stay alive in acpx)
+        // Archive active session (persists to DB, agents stay alive in acpx).
+        // Compensation path — quit-time teardown, no operator confirmation.
         if (state.sessionId && isSessionProvider(provider)) {
-          await provider.archiveSession(state.sessionId).catch(() => {
+          await archiveSessionForCompensation(provider, state.sessionId).catch(() => {
             /* best-effort */
           });
         }
@@ -486,9 +535,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         sessionStartRef.current = Date.now();
         const sessionStartedAt = new Date().toISOString();
 
-        // Set goal on provider if supported
+        // Set goal on provider if supported. Compensation path: this is
+        // an internal controller-driven write at spawn time (no operator
+        // dialog), so we read the current RV inline and mint a token
+        // directly. CAS still enforced server-side.
         if (isGoalProvider(provider)) {
-          void provider.setGoal(goal, []).catch(() => {
+          void setGoalForCompensation(provider, goal, []).catch(() => {
             // Goal setting is best-effort
           });
         }

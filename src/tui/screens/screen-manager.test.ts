@@ -349,7 +349,10 @@ function makeProvider(options?: {
     getHotThreads: async () => [],
     close: () => undefined,
     getGoal: async () => undefined,
-    setGoal: async (goal: string): Promise<GoalData> => {
+    // C6 (#304): TuiGoalProvider.setGoal now takes a DangerousToken<"Goal">
+    // as its first argument. The test mock ignores the token (no CAS
+    // enforcement in the in-memory fake) but its signature must match.
+    setGoal: async (_token, goal: string): Promise<GoalData> => {
       calls.setGoal.push(goal);
       return {
         goal,
@@ -366,8 +369,12 @@ function makeProvider(options?: {
     },
     getSession: async (sessionId: string) =>
       sessionId === ACTIVE_SESSION.id ? ACTIVE_SESSION : undefined,
-    archiveSession: async (sessionId: string) => {
-      calls.archiveSession.push(sessionId);
+    // C6 (#304): TuiSessionProvider.archiveSession takes a
+    // DangerousToken<"AgentSession"> and pulls the id off of it. The fake
+    // records `token.id` so the assertions in the surrounding tests still
+    // observe the archived sessionId.
+    archiveSession: async (token) => {
+      calls.archiveSession.push(token.id);
     },
     addContributionToSession: async (sessionId: string, cid: string) => {
       calls.addContributionToSession.push({ sessionId, cid });

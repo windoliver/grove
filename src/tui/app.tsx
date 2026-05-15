@@ -50,6 +50,7 @@ import {
   isGoalProvider,
   type TuiDataProvider,
 } from "./provider.js";
+import { mintTokenForCompensation } from "./safety/internal/compensation.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
 import { theme } from "./theme.js";
 
@@ -755,7 +756,17 @@ export function App({
         if (buf && isGoalProvider(provider)) {
           void (async () => {
             try {
-              await provider.setGoal(buf, []);
+              // C6 (#304): Goal is not yet a WatchKind, so we cannot route
+              // through `useConfirmAndMutate` (which requires an entity
+              // snapshot). The goal-input screen already serves as the
+              // operator confirmation UI — the user hit Enter to submit —
+              // so we mint a compensation token from the current goal's
+              // RV inline. CAS is still enforced server-side.
+              const current = await provider.getGoal().catch(() => undefined);
+              const rv =
+                current?.resourceVersion !== undefined ? String(current.resourceVersion) : "";
+              const token = mintTokenForCompensation("Goal", "goal", rv);
+              await provider.setGoal(token, buf, []);
               showError(`Goal set: ${buf}`);
             } catch (err) {
               showError(err instanceof Error ? err.message : "Failed to set goal");
