@@ -197,9 +197,16 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       onFrontierEntriesChanged(activeEntries);
     }, [activeEntries, onFrontierEntriesChanged]);
 
+    // Frontier is a core panel that stays mounted in grid layout even when
+    // another panel is focused. The app-level rowCount is shared across
+    // panels, so emitting our count when we're NOT focused would clobber
+    // the focused panel's nav bounds. cursor === -1 is the panel-manager's
+    // signal that we're unfocused (see panel-manager.tsx FrontierView wiring).
     useEffect(() => {
-      if (onRowCountChanged) onRowCountChanged(activeCids.length);
-    }, [activeCids.length, onRowCountChanged]);
+      if (!onRowCountChanged) return;
+      if (cursor < 0) return;
+      onRowCountChanged(activeCids.length);
+    }, [activeCids.length, onRowCountChanged, cursor]);
 
     if (loading && !data) {
       return (

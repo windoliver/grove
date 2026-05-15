@@ -128,7 +128,12 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
   //   4. Cap.
   const seenLabels = new Set<string>();
   const metricCandidates: { rawName: string; safeName: string }[] = [];
+  // Short-circuit once we've gathered enough valid candidates to fill the
+  // cap. Without this, an agent publishing 100k score keys would force the
+  // TUI to sort + sanitize + dedupe the entire set on every projection,
+  // freezing the render thread.
   for (const rawName of Object.keys(frontier.byMetric ?? {}).sort()) {
+    if (metricCandidates.length >= MAX_METRIC_SLICES) break;
     const entries = frontier.byMetric[rawName];
     if (!entries || entries.length === 0) continue;
     const base = sanitizeMetricName(rawName);
@@ -141,7 +146,7 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
     seenLabels.add(safeName);
     metricCandidates.push({ rawName, safeName });
   }
-  for (const { rawName, safeName } of metricCandidates.slice(0, MAX_METRIC_SLICES)) {
+  for (const { rawName, safeName } of metricCandidates) {
     const entries = frontier.byMetric[rawName] ?? [];
     slices.push({
       key: `metric:${safeName}`,
