@@ -112,6 +112,14 @@ export interface ConfirmAndMutateEntityBus {
  * cancel/max-retries still resolve the discriminated union.
  */
 interface ActiveRequest {
+  /**
+   * Monotonic id identifying THIS request. close()/fail() tagged with the
+   * id captured at submit time; if the id no longer matches activeRef,
+   * the result is for a request that was pre-empted by a newer trigger()
+   * and must not resolve / reject the new active request.
+   * (Round-2 review finding #1.)
+   */
+  readonly id: number;
   readonly request: ConfirmAndMutateRequest<WatchKind, unknown>;
   readonly resolve: (r: ConfirmAndMutateResult<unknown>) => void;
   readonly reject: (err: unknown) => void;
@@ -225,14 +233,24 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
   // without re-creating itself on every state change.
   const activeRef = useRef<ActiveRequest | null>(null);
 
+  // Monotonically-incrementing request id. Used to tag close()/fail()
+  // calls so a stale in-flight mutation cannot resolve the new active
+  // request after a pre-emption. (Round-2 review finding #1.)
+  const requestIdRef = useRef<number>(0);
+
   // ---------------------------------------------------------------------
   // close: shared exit path. Resolves the pending promise and resets state.
   // The ref is updated synchronously alongside setState so a key dispatch
   // arriving in the same tick after close (e.g. the test's max-retries
   // burst) sees the modal as closed and short-circuits.
   // ---------------------------------------------------------------------
-  const close = useCallback((result: ConfirmAndMutateResult<unknown>): void => {
+  const close = useCallback((result: ConfirmAndMutateResult<unknown>, ownerId?: number): void => {
     const active = activeRef.current;
+    // C6 (#304) round-2: if a newer trigger() pre-empted this request,
+    // the prior in-flight mutation's resolve must NOT touch the new
+    // active request. Skip silently — the prior caller's promise was
+    // already rejected by trigger()'s pre-emption path.
+    if (ownerId !== undefined && (!active || active.id !== ownerId)) return;
     activeRef.current = null;
     stateRef.current = INITIAL_STATE;
     setState(INITIAL_STATE);
@@ -243,8 +261,9 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
   // with a discriminated-union failure. Used for non-409 errors so callers'
   // try/catch surfaces the underlying failure (e.g., network error, 5xx) to
   // a flash bar (C6 spec §6, T11 critical item C).
-  const fail = useCallback((err: unknown): void => {
+  const fail = useCallback((err: unknown, ownerId?: number): void => {
     const active = activeRef.current;
+    if (ownerId !== undefined && (!active || active.id !== ownerId)) return;
     activeRef.current = null;
     stateRef.current = INITIAL_STATE;
     setState(INITIAL_STATE);
@@ -278,7 +297,9 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
             new Error("ConfirmAndMutateProvider: pre-empted by a new trigger() before completion"),
           );
         }
+        requestIdRef.current += 1;
         activeRef.current = {
+          id: requestIdRef.current,
           request: wideReq,
           resolve: resolve as (r: ConfirmAndMutateResult<unknown>) => void,
           reject,
@@ -308,6 +329,11 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
   const submit = useCallback(async (): Promise<void> => {
     const active = activeRef.current;
     if (!active) return;
+    // Capture owner id at submit time. close()/fail() check this against
+    // activeRef.current.id and silently no-op if a newer trigger() has
+    // pre-empted us — the prior caller was already rejected at trigger time.
+    // (Round-2 review finding #1.)
+    const ownerId = active.id;
     // Read the latest snapshot/retryCount from the ref. The closure of
     // useCallback captures the initial state, so we must indirect through
     // a ref to see post-409 RV bumps.
@@ -326,24 +352,22 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
     const token = mintDangerousToken(snap.kind, snap.id, snap.resourceVersion);
     try {
       const value = await active.request.mutation(token);
-      close({ ok: true, value });
+      close({ ok: true, value }, ownerId);
     } catch (err) {
       const conflict = parseConflict(err);
       if (!conflict) {
-        // Non-409: reject the trigger promise so the caller's try/catch
-        // sees the underlying error (network failure, 5xx, ...) and can
-        // surface it via a flash bar. The provider does NOT collapse the
-        // failure into a "cancelled" result — that would silently swallow
-        // real errors. See C6 spec §6 and T11 critical item C.
-        fail(err);
+        fail(err, ownerId);
         return;
       }
+      // If a newer trigger pre-empted us mid-await, the bookkeeping below
+      // would update the wrong active request. Bail before mutating state.
+      if (!activeRef.current || activeRef.current.id !== ownerId) return;
       // 409: bump retry count + update snapshot RV. The retry-limit math
       // mirrors withIfMatch: MAX_RETRIES retries AFTER the first attempt
       // means total attempts = MAX_RETRIES + 1 = 4. After the 4th failure
       // (retryCount === 3 entering submit) we give up.
       if (retryCount >= MAX_RETRIES) {
-        close({ ok: false, reason: "max-retries" });
+        close({ ok: false, reason: "max-retries" }, ownerId);
         return;
       }
       const prior = stateRef.current;
@@ -359,9 +383,6 @@ export function ConfirmAndMutateProvider(props: ConfirmAndMutateProviderProps): 
         retryCount: prior.retryCount + 1,
         submitting: false,
       };
-      // Mirror ref before setState so a subsequent dispatch in the same
-      // tick (the test's retry burst) reads the bumped retryCount and
-      // fresh RV when it calls submit.
       stateRef.current = nextState;
       setState(nextState);
     }

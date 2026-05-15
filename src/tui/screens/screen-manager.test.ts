@@ -135,6 +135,10 @@ mock.module("@opentui/react", () => ({
     add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
     play: () => undefined,
   }),
+  // C6 (#304) round-2: toast import in screen-manager pulls in
+  // @opentui-ui/toast, which calls extend({ toaster: ... }) at module
+  // init. Stub the call so the module-level side effect succeeds.
+  extend: (_components: Record<string, unknown>): void => undefined,
 }));
 
 mock.module("../app.js", () => ({

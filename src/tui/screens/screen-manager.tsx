@@ -11,6 +11,7 @@
  */
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
 import {
@@ -136,10 +137,12 @@ async function setGoalForCompensation(
   acceptance: readonly string[],
 ): Promise<void> {
   const existing = await provider.getGoal().catch(() => undefined);
-  // No row → INSERT path bypasses CAS, so "" is fine. Existing row → use
-  // its RV so the UPDATE succeeds. The compensation helper does NOT retry;
-  // if the goal changed under us we surface the error to the caller.
-  const rv = existing?.resourceVersion !== undefined ? String(existing.resourceVersion) : "";
+  // C6 (#304) round-2: use "0" as the create sentinel, not "". Server's
+  // dangerous() middleware rejects empty If-Match with 428 BEFORE the
+  // store's CAS-bypass-on-insert path runs. "0" is a valid header value
+  // that doesn't match any persisted RV (≥ 1) so the server returns 409
+  // if a row already exists; on insert the store ignores the value.
+  const rv = existing?.resourceVersion !== undefined ? String(existing.resourceVersion) : "0";
   const token = mintTokenForCompensation("Goal", "goal", rv);
   await provider.setGoal(token, goal, acceptance);
 }
@@ -1184,21 +1187,23 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
             onNavigateBackToMain();
             return;
           }
-          // C6 (#304) review-loop: navigate ONLY on ok. cancelled keeps
-          // operator on the running screen by their choice; max-retries
-          // means server kept rejecting our RV — the archive did NOT
-          // happen, so silently navigating away abandons an active
-          // session in an unexpected state. Surface the failure (the
-          // running screen continues to render with its existing flash
-          // bar) and let the operator retry or quit explicitly.
+          // C6 (#304) round-2: navigate ONLY on ok. max-retries means
+          // server kept rejecting our RV — the archive did NOT happen.
+          // Surface the failure so the operator knows to retry rather
+          // than walking away from an active session.
           if (result.reason === "max-retries") {
-            // TODO: surface a flash message; for now the modal closure
-            // itself is the operator's signal that retry was exhausted.
+            toast.error(
+              "Archive failed: session resourceVersion kept changing. Retry or quit explicitly.",
+              { duration: 5000 },
+            );
           }
-        } catch {
-          // Non-409 failure (network, 5xx). Stay on the running screen
-          // so the operator can retry; navigating away would conceal
-          // the failure and leave the session unarchived.
+          // result.reason === "cancelled" → operator chose to stay; no toast.
+        } catch (err) {
+          // Non-409 failure (network, 5xx). Surface so the operator sees
+          // it; stay on the running screen so retry is possible.
+          toast.error(`Archive failed: ${err instanceof Error ? err.message : String(err)}`, {
+            duration: 5000,
+          });
         }
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);

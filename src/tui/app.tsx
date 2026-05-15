@@ -763,8 +763,14 @@ export function App({
               // so we mint a compensation token from the current goal's
               // RV inline. CAS is still enforced server-side.
               const current = await provider.getGoal().catch(() => undefined);
+              // C6 (#304) round-2: server's dangerous() middleware rejects
+              // empty If-Match with 428 BEFORE the store's CAS-bypass-on-
+              // insert path runs. Use "0" as the create sentinel — it
+              // doesn't match any persisted RV (which start at 1) so the
+              // server returns 409 if a row already exists, and the
+              // store's insert path bypasses CAS unconditionally.
               const rv =
-                current?.resourceVersion !== undefined ? String(current.resourceVersion) : "";
+                current?.resourceVersion !== undefined ? String(current.resourceVersion) : "0";
               const token = mintTokenForCompensation("Goal", "goal", rv);
               await provider.setGoal(token, buf, []);
               showError(`Goal set: ${buf}`);

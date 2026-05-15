@@ -43,6 +43,7 @@ import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-st
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
+import { useConfirmAndMutateOpen } from "../safety/index.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { AgentTasksView } from "../views/agent-tasks.js";
@@ -682,6 +683,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Keyboard routing ───
     const pendingAskUser = feed.find((c) => c.kind === "ask_user");
+    const confirmModalOpen = useConfirmAndMutateOpen();
     const keyboardState: RunningKeyboardState = useMemo(
       () => ({
         expandedPanel,
@@ -694,6 +696,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdMode: cmdState.mode,
         cmdText: cmdState.text,
         filterQuery,
+        confirmModalOpen,
       }),
       [
         expandedPanel,
@@ -706,6 +709,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.mode,
         cmdState.text,
         filterQuery,
+        confirmModalOpen,
       ],
     );
 
@@ -1029,10 +1033,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             cmdMode: cmdStateRef.current.mode,
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
+            confirmModalOpen,
           };
           routeRunningKey(key, liveState, keyboardActions);
         },
-        [showVfs, keyboardState, keyboardActions, pagesStore, confirmQuit, promptMode, showHelp],
+        [
+          showVfs,
+          keyboardState,
+          keyboardActions,
+          pagesStore,
+          confirmQuit,
+          promptMode,
+          showHelp,
+          confirmModalOpen,
+        ],
       ),
     );
 

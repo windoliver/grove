@@ -68,6 +68,12 @@ export interface RunningKeyboardState {
   readonly cmdText: string;
   /** C2 (#302): retained filter query after Enter exits filter mode. Esc-from-normal clears it. */
   readonly filterQuery: string;
+  /**
+   * C6 (#304) round-2: when a confirmAndMutate modal is open, defer y/n
+   * permission shortcuts so a confirm/cancel keystroke does NOT also
+   * approve/deny a pending tmux permission prompt.
+   */
+  readonly confirmModalOpen: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,12 +335,15 @@ export function routeRunningKey(
     return true;
   }
 
-  // y/n: approve/deny permission prompts
-  if (input === "y" && actions.hasPermissions) {
+  // y/n: approve/deny permission prompts.
+  // C6 (#304) round-2: skip when the confirmAndMutate modal is open;
+  // the modal owns these keys and a permission approve/deny here would
+  // double-fire from a single keystroke.
+  if (input === "y" && actions.hasPermissions && !state.confirmModalOpen) {
     actions.approvePermission();
     return true;
   }
-  if (input === "n" && actions.hasPermissions) {
+  if (input === "n" && actions.hasPermissions && !state.confirmModalOpen) {
     actions.denyPermission();
     return true;
   }
