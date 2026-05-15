@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type CasMutationResult, type CasOpts, casOk } from "./cas.js";
 import {
   appendDeletionAudit,
   DEFAULT_SESSION_FINALIZERS,
@@ -34,6 +35,7 @@ export class InMemorySessionStore implements SessionStore {
       createdAt: new Date().toISOString(),
       finalizers: DEFAULT_SESSION_FINALIZERS,
       contributionCount: 0,
+      resourceVersion: 1,
     };
     this.sessions.push(session);
     return session;
@@ -49,12 +51,33 @@ export class InMemorySessionStore implements SessionStore {
   async updateSession(
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
-    if (idx === -1) return;
+    if (idx === -1) return casOk(undefined);
     const existing = this.sessions[idx];
-    if (!existing) return;
-    this.sessions[idx] = { ...existing, ...updates };
+    if (!existing) return casOk(undefined);
+
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(existing.resourceVersion ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: existing.resourceVersion ?? 1,
+          },
+        };
+      }
+    }
+
+    const updated: Session = {
+      ...existing,
+      ...updates,
+      resourceVersion: (existing.resourceVersion ?? 1) + 1,
+    };
+    this.sessions[idx] = updated;
+    return casOk(updated);
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
@@ -82,20 +105,37 @@ export class InMemorySessionStore implements SessionStore {
     return [];
   }
 
-  async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
+  async deleteSession(
+    id: string,
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
     if (idx === -1) {
-      return {
+      return casOk({
         sessionId: id,
         deleted: false,
         forced: false,
         blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
-      };
+      });
     }
     const existing = this.sessions[idx];
     if (!existing) {
-      return { sessionId: id, deleted: false, forced: false, blockers: [] };
+      return casOk({ sessionId: id, deleted: false, forced: false, blockers: [] });
     }
+
+    if (options?.ifMatch !== undefined) {
+      const currentRv = String(existing.resourceVersion ?? 1);
+      if (currentRv !== options.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: existing.resourceVersion ?? 1,
+          },
+        };
+      }
+    }
+
     const warning =
       options?.force === true
         ? `force delete skipped finalizer waits for session ${id}`
@@ -113,25 +153,45 @@ export class InMemorySessionStore implements SessionStore {
     }
     this.sessions.splice(idx, 1);
     this.contributions.delete(id);
-    return {
+    return casOk({
       sessionId: id,
       deleted: true,
       forced: options?.force === true,
       blockers: [],
       ...(warning !== undefined ? { warning } : {}),
-    };
+    });
   }
 
-  async archiveSession(id: string): Promise<void> {
+  async archiveSession(
+    id: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
     const idx = this.sessions.findIndex((s) => s.id === id);
-    if (idx === -1) return;
+    if (idx === -1) return casOk(undefined);
     const existing = this.sessions[idx];
-    if (!existing) return;
-    this.sessions[idx] = {
+    if (!existing) return casOk(undefined);
+
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(existing.resourceVersion ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: existing.resourceVersion ?? 1,
+          },
+        };
+      }
+    }
+
+    const updated: Session = {
       ...existing,
       status: "archived",
       completedAt: new Date().toISOString(),
+      resourceVersion: (existing.resourceVersion ?? 1) + 1,
     };
+    this.sessions[idx] = updated;
+    return casOk(updated);
   }
 
   async addContribution(sessionId: string, cid: string): Promise<void> {

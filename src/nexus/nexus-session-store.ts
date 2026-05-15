@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { type CasMutationResult, type CasOpts, casOk } from "../core/cas.js";
 import { StateConflictError } from "../core/errors.js";
 import {
   appendDeletionAudit,
@@ -172,12 +173,17 @@ export class NexusSessionStore implements SessionStore {
     const finalizers = normalizeSessionFinalizers(session.finalizers);
     const deletionAudit = session.deletionAudit ?? [];
     const contributionCount = session.contributionCount ?? 0;
+    // C6 (#304): legacy records persisted before resource_version was
+    // introduced will lack the field; surface 1 as the floor so CAS callers
+    // can still construct an ifMatch token.
+    const resourceVersion = session.resourceVersion ?? 1;
     const normalized: Session = {
       ...session,
       uid,
       finalizers,
       deletionAudit,
       contributionCount,
+      resourceVersion,
     };
     return { session: normalized, needsUidBackfill: session.uid !== uid };
   }
@@ -405,6 +411,7 @@ export class NexusSessionStore implements SessionStore {
       deletionAudit: [],
       contributionCount: 0,
       config: input.config,
+      resourceVersion: 1,
     };
     await this.writeSessionRecord(session);
     return session;
@@ -455,18 +462,42 @@ export class NexusSessionStore implements SessionStore {
   async updateSession(
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
     const loaded = await this.readPersistedSessionRecordWithEtag(id);
-    if (loaded === undefined) return;
+    if (loaded === undefined) return casOk(undefined);
     const existing = this.normalizeSessionRecord(loaded.persisted).session;
+
+    // C6 (#304): public CAS compares the caller-supplied ifMatch (a string)
+    // against the persisted Session.resourceVersion. The Nexus etag is a
+    // separate storage-level concurrency token used to make the write
+    // atomic — we keep using it via writeSessionRecord(..., ifMatch: etag),
+    // but a mismatch on resourceVersion is a hard fail surfaced to the
+    // caller, distinct from a transient etag race.
+    if (opts?.ifMatch !== undefined) {
+      const currentRv = String(existing.resourceVersion ?? 1);
+      if (currentRv !== opts.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: existing.resourceVersion ?? 1,
+          },
+        };
+      }
+    }
+
+    const nextRv = (existing.resourceVersion ?? 1) + 1;
+    const updated: Session = { ...existing, ...updates, resourceVersion: nextRv };
     try {
-      await this.writeSessionRecord({ ...existing, ...updates }, { ifMatch: loaded.etag });
+      await this.writeSessionRecord(updated, { ifMatch: loaded.etag });
     } catch (error) {
       if (!isCasConflict(error)) throw error;
       const latest = await this.readPersistedSessionRecordWithEtag(id);
-      if (latest === undefined) return;
+      if (latest === undefined) return casOk(undefined);
       throw error;
     }
+    return casOk(updated);
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
@@ -493,19 +524,38 @@ export class NexusSessionStore implements SessionStore {
     }
   }
 
-  async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
+  async deleteSession(
+    id: string,
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> {
     const loaded = await this.readPersistedSessionRecordWithEtag(id);
     if (loaded === undefined) {
-      return {
+      return casOk({
         sessionId: id,
         deleted: false,
         forced: false,
         blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
-      };
+      });
     }
     const persisted = loaded.persisted;
     let currentEtag = loaded.etag;
     const session = this.normalizeSessionRecord(persisted).session;
+
+    // C6 (#304): public CAS compares ifMatch against persisted resourceVersion
+    // BEFORE running any finalizers or deletes. The etag continues to gate
+    // intermediate writes for atomicity (delete-state recovery).
+    if (options?.ifMatch !== undefined) {
+      const currentRv = String(session.resourceVersion ?? 1);
+      if (currentRv !== options.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: session.resourceVersion ?? 1,
+          },
+        };
+      }
+    }
 
     const ownerRef = ownerRefForSession(session);
     const startingFinalizers = resolveDeleteFinalizers(persisted.finalizers);
@@ -525,13 +575,13 @@ export class NexusSessionStore implements SessionStore {
       };
       const terminatingEtag = await this.writeDeleteStateSessionRecord(terminating, currentEtag);
       if (terminatingEtag === undefined) {
-        return {
+        return casOk({
           sessionId: id,
           deleted: true,
           forced: true,
           blockers: [],
           warning,
-        };
+        });
       }
 
       const claimStore = await this.getClaimStore();
@@ -553,14 +603,14 @@ export class NexusSessionStore implements SessionStore {
       }
 
       await this.client.delete(this.sessionPath(id));
-      return {
+      return casOk({
         sessionId: id,
         deleted: true,
         forced: true,
         blockers: [],
         warning,
         ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
-      };
+      });
     }
 
     let current: Session = {
@@ -571,12 +621,12 @@ export class NexusSessionStore implements SessionStore {
     };
     const initialDeleteWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
     if (initialDeleteWrite === undefined) {
-      return {
+      return casOk({
         sessionId: id,
         deleted: true,
         forced: false,
         blockers: [],
-      };
+      });
     }
     current = initialDeleteWrite.session;
     currentEtag = initialDeleteWrite.etag;
@@ -595,7 +645,7 @@ export class NexusSessionStore implements SessionStore {
           await this.closeRuntime(current);
         }
       } catch (error) {
-        return {
+        return casOk({
           sessionId: id,
           deleted: false,
           forced: false,
@@ -605,7 +655,7 @@ export class NexusSessionStore implements SessionStore {
               message: error instanceof Error ? error.message : String(error),
             },
           ],
-        };
+        });
       }
 
       current = {
@@ -614,33 +664,33 @@ export class NexusSessionStore implements SessionStore {
       };
       const nextWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
       if (nextWrite === undefined) {
-        return {
+        return casOk({
           sessionId: id,
           deleted: true,
           forced: false,
           blockers: [],
-        };
+        });
       }
       current = nextWrite.session;
       currentEtag = nextWrite.etag;
     }
 
     if (current.finalizers.length > 0) {
-      return {
+      return casOk({
         sessionId: id,
         deleted: false,
         forced: false,
         blockers: this.buildRemainingFinalizerBlockers(current.finalizers),
-      };
+      });
     }
 
     await this.client.delete(this.sessionPath(id));
-    return {
+    return casOk({
       sessionId: id,
       deleted: true,
       forced: false,
       blockers: [],
-    };
+    });
   }
 
   async listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]> {
@@ -694,11 +744,18 @@ export class NexusSessionStore implements SessionStore {
     return blockers;
   }
 
-  async archiveSession(id: string): Promise<void> {
-    await this.updateSession(id, {
-      status: "archived",
-      completedAt: new Date().toISOString(),
-    });
+  async archiveSession(
+    id: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
+    return this.updateSession(
+      id,
+      {
+        status: "archived",
+        completedAt: new Date().toISOString(),
+      },
+      opts,
+    );
   }
 
   async addContribution(sessionId: string, cid: string): Promise<void> {

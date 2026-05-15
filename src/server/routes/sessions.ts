@@ -13,6 +13,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { getPreset, presetToSessionConfig } from "../../cli/presets/index.js";
+import { expectCasOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import type { Session } from "../../core/session.js";
@@ -262,10 +263,11 @@ sessions.delete("/:id", async (c) => {
     );
   }
 
-  const result = await goalSessionStore.deleteSession(sessionId, {
+  const deleteResult = await goalSessionStore.deleteSession(sessionId, {
     force: c.req.query("force") === "true",
     actor: "http",
   });
+  const result = expectCasOk(deleteResult, `DELETE /api/sessions/${sessionId}`);
   const status = !result.deleted && !result.forced && result.blockers.length > 0 ? 409 : 200;
   return c.json(result, status);
 });
@@ -286,7 +288,8 @@ sessions.put("/:id/archive", async (c) => {
     );
   }
 
-  await goalSessionStore.archiveSession(sessionId);
+  const archiveResult = await goalSessionStore.archiveSession(sessionId);
+  expectCasOk(archiveResult, `PUT /api/sessions/${sessionId}/archive`);
   return c.body(null, 204);
 });
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
+import { type CasMutationResult, type CasOpts, casOk } from "../../core/cas.js";
+// casOk is still used below (delete blocker stub).
 import type { GroveContract } from "../../core/contract.js";
 import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { Finalizer } from "../../core/lifecycle-metadata.js";
@@ -56,12 +58,16 @@ class TestGoalSessionStore implements GoalSessionStore {
   async updateSession(
     sessionId: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> {
-    await this.store.updateSession(sessionId, updates);
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
+    return this.store.updateSession(sessionId, updates, opts);
   }
 
-  async archiveSession(sessionId: string): Promise<void> {
-    await this.store.archiveSession(sessionId);
+  async archiveSession(
+    sessionId: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> {
+    return this.store.archiveSession(sessionId, opts);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
@@ -74,18 +80,18 @@ class TestGoalSessionStore implements GoalSessionStore {
 
   async deleteSession(
     sessionId: string,
-    options?: SessionDeleteOptions,
-  ): Promise<SessionDeleteResult> {
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> {
     this.deleteCalls.push({ id: sessionId, options });
     if (this.blockedSessionIds.has(sessionId) && options?.force !== true) {
       const session = await this.store.getSession(sessionId);
       if (!session) return this.store.deleteSession(sessionId, options);
-      return {
+      return casOk({
         sessionId,
         deleted: false,
         forced: false,
         blockers: await this.listSessionDeleteBlockers(sessionId),
-      };
+      });
     }
     return this.store.deleteSession(sessionId, options);
   }

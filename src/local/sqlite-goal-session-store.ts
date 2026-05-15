@@ -15,6 +15,7 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
+import type { CasMutationResult, CasOpts } from "../core/cas.js";
 import type { GroveContract } from "../core/contract.js";
 import type { DeletionAuditEvent, OwnerRef, SessionFinalizer } from "../core/lifecycle-metadata.js";
 import {
@@ -366,6 +367,8 @@ interface SessionRow {
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   archived_at: number | null;
   contribution_count: number;
+  /** C6 (#304): optimistic-concurrency resource version, added by v16 migration. */
+  resource_version: number;
 }
 
 /**
@@ -386,6 +389,8 @@ interface SessionListRow {
   stop_reason: string | null;
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   contribution_count: number;
+  /** C6 (#304): optimistic-concurrency resource version, added by v16 migration. */
+  resource_version: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,14 +414,34 @@ export interface GoalSessionStore {
   /** Get a session by ID. */
   getSession(sessionId: string): Promise<Session | undefined>;
 
-  /** Update mutable session fields (status, completedAt, stopReason, stopStatus). */
+  /**
+   * Update mutable session fields (status, completedAt, stopReason, stopStatus).
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. When supplied,
+   * the store performs a compare-and-set against the persisted session
+   * `resource_version`. Mismatch returns `{ kind: "rv-mismatch", current }`
+   * without writing; match (or absent ifMatch on back-compat path) writes and
+   * returns `{ kind: "ok", view }` with the bumped session RV.
+   *
+   * Missing-session is a no-op (returns `{ kind: "ok", view: undefined }`)
+   * to preserve the legacy idempotency contract used by reconcilers.
+   */
   updateSession(
     sessionId: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void>;
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>>;
 
-  /** Archive a session, setting its ended_at timestamp and archived_at epoch. */
-  archiveSession(sessionId: string): Promise<void>;
+  /**
+   * Archive a session, setting its ended_at timestamp and archived_at epoch.
+   *
+   * C6 (#304): Accepts an optional `ifMatch` resource version. Semantics
+   * mirror `updateSession`.
+   */
+  archiveSession(
+    sessionId: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>>;
 
   /** Record a contribution CID against a session. */
   addContributionToSession(sessionId: string, cid: string): Promise<void>;
@@ -424,7 +449,18 @@ export interface GoalSessionStore {
   /** Get all contribution CIDs for a session. */
   getSessionContributions(sessionId: string): Promise<readonly string[]>;
 
-  deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult>;
+  /**
+   * Delete a session.
+   *
+   * C6 (#304): When `options.ifMatch` is supplied the store performs a
+   * compare-and-set against the persisted session `resource_version` BEFORE
+   * running finalizers / removing the row. Mismatch returns
+   * `{ kind: "rv-mismatch", current }` without writing.
+   */
+  deleteSession(
+    id: string,
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>>;
 
   listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]>;
 
@@ -492,6 +528,7 @@ function rowToSession(row: SessionRow): Session {
     worktreeStrategies: row.worktree_strategy_json
       ? (JSON.parse(row.worktree_strategy_json) as Record<string, string>)
       : undefined,
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -513,6 +550,7 @@ function listRowToSession(row: SessionListRow): Session {
     topology: undefined,
     contributionCount: row.contribution_count,
     // config intentionally omitted from list results for performance
+    resourceVersion: row.resource_version,
   };
 }
 
@@ -601,13 +639,16 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private stmtUpsertGoal: Statement | undefined;
   private stmtGetSession: Statement | undefined;
   private stmtInsertSession: Statement | undefined;
-  private stmtArchiveSession: Statement | undefined;
+  // NOTE: stmtArchiveSession was removed in C6 (#304) — archiveSession is now
+  // gated by CAS and runs an inline UPDATE inside a transaction.
   private stmtInsertContribution: Statement | undefined;
   private stmtGetContributions: Statement | undefined;
-  // Typed update statements for common patterns
-  private stmtCompleteSession: Statement | undefined; // status + ended_at + stop_reason
-  private stmtStatusOnly: Statement | undefined; // status only
-  private stmtEndedAndReason: Statement | undefined; // ended_at + stop_reason only
+  // NOTE: stmtCompleteSession / stmtStatusOnly / stmtEndedAndReason were
+  // removed in C6 (#304). updateSession is now a single dynamic UPDATE
+  // inside a transaction so the resource_version bump and status update
+  // commit atomically. The cached three-statement fast paths predated CAS
+  // and would have to be reissued with a `resource_version = ?` clause
+  // anyway, eliminating their benefit.
 
   constructor(db: Database, options?: SqliteGoalSessionStoreOptions) {
     this.db = db;
@@ -679,7 +720,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const baseSelect = `
       SELECT s.session_id, s.uid, s.goal, s.preset_name, s.status, s.started_at,
              s.finalizers_json, s.deletion_timestamp, s.deletion_audit_json,
-             s.ended_at, s.stop_reason, s.stop_status, s.contribution_count
+             s.ended_at, s.stop_reason, s.stop_status, s.contribution_count,
+             s.resource_version
       FROM sessions s
     `;
 
@@ -758,6 +800,11 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       contributionCount: 0,
       config: input.config,
       worktreeStrategies: worktreeStrategies ?? undefined,
+      // C6 (#304): the v16 migration adds `resource_version INTEGER NOT NULL
+      // DEFAULT 1` to the sessions row. The INSERT above doesn't set the
+      // column, so SQLite applies the DDL default. Mirror that here so the
+      // caller's view matches a subsequent getSession().
+      resourceVersion: 1,
     };
   };
 
@@ -822,118 +869,125 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   };
 
   /**
-   * Update mutable session fields using cached prepared statements for the
-   * three common call patterns. Falls back to dynamic SQL for unusual combos.
+   * Update mutable session fields atomically inside a transaction.
    *
-   * When status is set to 'archived', also sets archived_at and ended_at so
-   * that callers using updateSession({ status: 'archived' }) behave identically
-   * to calling archiveSession() directly.
+   * C6 (#304): When `opts.ifMatch` is supplied the store performs a
+   * compare-and-set against the persisted `resource_version`. On match the
+   * UPDATE bumps `resource_version + 1` alongside the requested fields; on
+   * mismatch nothing is written. Missing-session is treated as a no-op
+   * (returns `{ kind: "ok", view: undefined }`) to preserve the legacy
+   * idempotency contract used by reconcilers + completion paths.
+   *
+   * Special case: when `updates.status === "archived"`, this method also sets
+   * `archived_at = strftime('%s','now')` and defaults `ended_at` to "now" if
+   * not already set, so that callers using `updateSession({ status:
+   * 'archived' })` behave identically to `archiveSession()`. Prior to C6 this
+   * routed through `archiveSession` recursively; the recursion was removed
+   * because each branch must bump RV exactly once inside a single
+   * transaction.
    */
   updateSession = async (
     sessionId: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
-  ): Promise<void> => {
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> => {
     const hasStatus = updates.status !== undefined;
     const hasCompletedAt = updates.completedAt !== undefined;
     const hasStopReason = updates.stopReason !== undefined;
     const hasStopStatus = updates.stopStatus !== undefined;
+    const isArchive = hasStatus && updates.status === "archived";
 
-    // Route archiving through archiveSession() for consistency
-    if (hasStatus && updates.status === "archived") {
-      await this.archiveSession(sessionId);
-      // Also apply completedAt/stopReason overrides if provided
-      if (hasCompletedAt || hasStopReason || hasStopStatus) {
-        await this.updateSession(sessionId, {
-          ...(hasCompletedAt ? { completedAt: updates.completedAt } : {}),
-          ...(hasStopReason ? { stopReason: updates.stopReason } : {}),
-          ...(hasStopStatus ? { stopStatus: updates.stopStatus } : {}),
-        });
+    if (!hasStatus && !hasCompletedAt && !hasStopReason && !hasStopStatus) {
+      // No-op update — still must read back the current session for the OK view.
+      const existing = await this.getSession(sessionId);
+      return { kind: "ok", view: existing };
+    }
+
+    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let updatedView: Session | undefined;
+
+    const tx = this.db.transaction(() => {
+      const existingRow = this.db
+        .prepare("SELECT * FROM sessions WHERE session_id = ?")
+        .get(sessionId) as SessionRow | null;
+      if (existingRow === null) {
+        return;
       }
-      return;
-    }
 
-    const status = updates.status;
-    const completedAt = updates.completedAt;
-    const stopReason = updates.stopReason;
-    const stopStatus = updates.stopStatus;
+      if (opts?.ifMatch !== undefined) {
+        const currentRv = String(existingRow.resource_version ?? 1);
+        if (currentRv !== opts.ifMatch) {
+          mismatch = {
+            resourceVersion: currentRv,
+            generation: existingRow.resource_version ?? 1,
+          };
+          return;
+        }
+      }
 
-    // Pattern: all three fields — most common from session completion
-    if (
-      hasStatus &&
-      hasCompletedAt &&
-      hasStopReason &&
-      !hasStopStatus &&
-      status &&
-      completedAt &&
-      stopReason
-    ) {
-      this.stmtCompleteSession ??= this.db.prepare(
-        "UPDATE sessions SET status = ?, ended_at = ?, stop_reason = ? WHERE session_id = ?",
-      );
-      this.stmtCompleteSession.run(status, completedAt, stopReason, sessionId);
-      return;
-    }
+      const nextRv = (existingRow.resource_version ?? 1) + 1;
+      const setClauses: string[] = ["resource_version = ?"];
+      const params: (string | number | null)[] = [nextRv];
 
-    // Pattern: status only
-    if (hasStatus && !hasCompletedAt && !hasStopReason && status) {
-      this.stmtStatusOnly ??= this.db.prepare(
-        "UPDATE sessions SET status = ? WHERE session_id = ?",
-      );
-      this.stmtStatusOnly.run(status, sessionId);
-      return;
-    }
+      if (hasStatus) {
+        setClauses.push("status = ?");
+        params.push(updates.status ?? null);
+      }
+      if (hasCompletedAt) {
+        setClauses.push("ended_at = ?");
+        params.push(updates.completedAt ?? null);
+      }
+      if (hasStopReason) {
+        setClauses.push("stop_reason = ?");
+        params.push(updates.stopReason ?? null);
+      }
+      if (hasStopStatus) {
+        setClauses.push("stop_status = ?");
+        params.push(updates.stopStatus ?? null);
+      }
 
-    // Pattern: ended_at + stop_reason (no status)
-    if (!hasStatus && hasCompletedAt && hasStopReason && completedAt && stopReason) {
-      this.stmtEndedAndReason ??= this.db.prepare(
-        "UPDATE sessions SET ended_at = ?, stop_reason = ? WHERE session_id = ?",
-      );
-      this.stmtEndedAndReason.run(completedAt, stopReason, sessionId);
-      return;
-    }
+      if (isArchive) {
+        // Match legacy archiveSession() semantics: default ended_at to "now"
+        // if not explicitly supplied AND not already set, and stamp
+        // archived_at. The COALESCE() handles the latter; we only append the
+        // ended_at default when the caller did NOT pass completedAt.
+        if (!hasCompletedAt) {
+          setClauses.push("ended_at = COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+        }
+        setClauses.push("archived_at = strftime('%s', 'now')");
+      }
 
-    // Fallback: dynamic SQL for remaining combinations
-    const setClauses: string[] = [];
-    const params: (string | number | null)[] = [];
+      params.push(sessionId);
+      this.db
+        .prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`)
+        .run(...params);
 
-    if (status) {
-      setClauses.push("status = ?");
-      params.push(status);
-    }
-    if (completedAt) {
-      setClauses.push("ended_at = ?");
-      params.push(completedAt);
-    }
-    if (stopReason) {
-      setClauses.push("stop_reason = ?");
-      params.push(stopReason);
-    }
-    if (stopStatus) {
-      setClauses.push("stop_status = ?");
-      params.push(stopStatus);
-    }
+      const refreshed = this.db
+        .prepare("SELECT * FROM sessions WHERE session_id = ?")
+        .get(sessionId) as SessionRow | null;
+      if (refreshed !== null) {
+        updatedView = rowToSession(refreshed);
+      }
+    });
+    tx();
 
-    if (setClauses.length === 0) return;
-
-    params.push(sessionId);
-    this.db
-      .prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`)
-      .run(...params);
+    if (mismatch !== null) {
+      return { kind: "rv-mismatch", current: mismatch };
+    }
+    return { kind: "ok", view: updatedView };
   };
 
   /**
    * Archive a session: sets status='archived', ended_at (if not already set),
    * and archived_at to the current Unix epoch.
+   *
+   * C6 (#304): CAS-gated; semantics mirror `updateSession`.
    */
-  archiveSession = async (sessionId: string): Promise<void> => {
-    this.stmtArchiveSession ??= this.db.prepare(`
-      UPDATE sessions
-      SET status = 'archived',
-          ended_at = COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-          archived_at = strftime('%s', 'now')
-      WHERE session_id = ?
-    `);
-    this.stmtArchiveSession.run(sessionId);
+  archiveSession = async (
+    sessionId: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<Session | undefined>> => {
+    return this.updateSession(sessionId, { status: "archived" }, opts);
   };
 
   /** Record a contribution CID against a session. Ignores duplicates. */
@@ -967,16 +1021,37 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
   deleteSession = async (
     id: string,
-    options?: SessionDeleteOptions,
-  ): Promise<SessionDeleteResult> => {
+    options?: SessionDeleteOptions & CasOpts,
+  ): Promise<CasMutationResult<SessionDeleteResult>> => {
     const session = await this.getSession(id);
     if (session === undefined) {
       return {
-        sessionId: id,
-        deleted: false,
-        forced: false,
-        blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
+        kind: "ok",
+        view: {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
+        },
       };
+    }
+
+    // C6 (#304): If the caller supplied an `ifMatch`, compare against the
+    // persisted resource_version BEFORE running any finalizers or deleting
+    // rows. Delete is a "tombstone" — there's nothing to bump-on-write on
+    // success, but a stale token still means the caller saw a session view
+    // that's no longer current.
+    if (options?.ifMatch !== undefined) {
+      const currentRv = String(session.resourceVersion ?? 1);
+      if (currentRv !== options.ifMatch) {
+        return {
+          kind: "rv-mismatch",
+          current: {
+            resourceVersion: currentRv,
+            generation: session.resourceVersion ?? 1,
+          },
+        };
+      }
     }
 
     const ownerRef = ownerRefForSession(session);
@@ -1035,12 +1110,15 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       forceDeleteTx.immediate();
       this.flushPendingClaimWrites(pendingClaimWrites);
       return {
-        sessionId: id,
-        deleted: true,
-        forced: true,
-        blockers: [],
-        warning,
-        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+        kind: "ok",
+        view: {
+          sessionId: id,
+          deleted: true,
+          forced: true,
+          blockers: [],
+          warning,
+          ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+        },
       };
     }
 
@@ -1094,19 +1172,25 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         )
         .run(JSON.stringify(startingFinalizers), deletionTimestamp, id);
       return {
-        sessionId: id,
-        deleted: false,
-        forced: false,
-        blockers: [{ finalizer: err.finalizer, message: err.message }],
+        kind: "ok",
+        view: {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: [{ finalizer: err.finalizer, message: err.message }],
+        },
       };
     }
     this.flushPendingClaimWrites(pendingClaimWrites);
     if (!pendingDeleteState.deleted) {
       return {
-        sessionId: id,
-        deleted: false,
-        forced: false,
-        blockers: pendingDeleteState.blockers,
+        kind: "ok",
+        view: {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: pendingDeleteState.blockers,
+        },
       };
     }
 
@@ -1129,10 +1213,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
           )
           .run(JSON.stringify(runtimeFinalizers), deletionTimestamp, id);
         return {
-          sessionId: id,
-          deleted: false,
-          forced: false,
-          blockers: [{ finalizer: Finalizer.CloseRuntime, message }],
+          kind: "ok",
+          view: {
+            sessionId: id,
+            deleted: false,
+            forced: false,
+            blockers: [{ finalizer: Finalizer.CloseRuntime, message }],
+          },
         };
       }
 
@@ -1150,19 +1237,25 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
       if (remainingFinalizers.length > 0) {
         return {
-          sessionId: id,
-          deleted: false,
-          forced: false,
-          blockers: this.buildFinalizerBlockers(remainingFinalizers),
+          kind: "ok",
+          view: {
+            sessionId: id,
+            deleted: false,
+            forced: false,
+            blockers: this.buildFinalizerBlockers(remainingFinalizers),
+          },
         };
       }
     }
 
     return {
-      sessionId: id,
-      deleted: true,
-      forced: false,
-      blockers: [],
+      kind: "ok",
+      view: {
+        sessionId: id,
+        deleted: true,
+        forced: false,
+        blockers: [],
+      },
     };
   };
 

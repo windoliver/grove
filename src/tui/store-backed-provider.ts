@@ -9,6 +9,7 @@
  */
 
 import type { AgentTaskView } from "../core/agent-task.js";
+import { expectCasOk } from "../core/cas.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
@@ -613,7 +614,8 @@ export abstract class StoreBackedProvider
     if (!this.goalSession) {
       throw new Error("Session management is not supported by this provider");
     }
-    return this.goalSession.archiveSession(sessionId);
+    const result = await this.goalSession.archiveSession(sessionId);
+    expectCasOk(result, `TuiSessionProvider.archiveSession(${sessionId})`);
   }
 
   /** Associate a contribution with a session. Throws when no store is configured. */
