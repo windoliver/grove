@@ -1065,14 +1065,23 @@ interface InspectModeWrapperProps {
  * Wraps the full App as an inspect overlay above the session view.
  * Intercepts Ctrl+I and Esc to return to the session view.
  */
-const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
+export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
   function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {
-    // Intercept Ctrl+B (back) to return to simple view.
-    // Tab is used by App for panel cycling, so we use a dedicated back key.
+    // Intercept Esc / Ctrl+I to return to the session view. Tab is used by
+    // App for panel cycling, so we use dedicated back keys.
     useKeyboard(
       useCallback(
         (key) => {
+          if (key.name === "escape") {
+            onBack();
+            return;
+          }
+          if (key.ctrl && key.name === "i") {
+            onBack();
+            return;
+          }
           if (key.ctrl && key.name === "b") {
+            // Backwards-compat alias (#191). Footer no longer documents it.
             onBack();
           }
         },

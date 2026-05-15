@@ -1180,3 +1180,74 @@ describe("ScreenManager navigation and edge cases", () => {
     expect(providerBundle.calls.setSessionScope).toEqual(["session-active"]);
   });
 });
+
+describe("InspectModeWrapper exit shortcuts", () => {
+  test("Esc inside inspect overlay calls onBack", async () => {
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ name: "escape" });
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      renderer.unmount();
+    }
+  });
+
+  test("Ctrl+I inside inspect overlay calls onBack", async () => {
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ ctrl: true, name: "i" });
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      renderer.unmount();
+    }
+  });
+
+  test("Ctrl+B inside inspect overlay still calls onBack (back-compat alias)", async () => {
+    const { InspectModeWrapper } = await import("./screen-manager.js");
+    const onBack = mock(() => undefined);
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(InspectModeWrapper, {
+          appProps: {} as AppProps,
+          onBack,
+        }),
+      );
+      await flushAsync();
+    });
+
+    try {
+      await pressKey({ ctrl: true, name: "b" });
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      renderer.unmount();
+    }
+  });
+});
