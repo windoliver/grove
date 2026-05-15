@@ -50,7 +50,7 @@ interface DoneContribution {
  * longer owns a periodic timer for this path.)
  *
  * @param topology - Agent topology with role definitions
- * @param screen - Current screen state (only active on "running" or "advanced")
+ * @param screen - Current screen state (only active on "running" or "inspect")
  * @param eventBus - Event bus for real-time done detection; without it the hook is inert
  * @param onDone - Callback when the session has been explicitly signaled done
  */
@@ -94,7 +94,7 @@ export function useDoneDetection(
   );
 
   useEffect(() => {
-    if (screen !== "running" && screen !== "advanced") {
+    if (screen !== "running" && screen !== "inspect") {
       doneRolesRef.current.clear();
       doneSignaledRef.current = false;
     }
@@ -102,7 +102,7 @@ export function useDoneDetection(
 
   // Event-driven mode: subscribe to EventBus for real-time done detection
   useEffect(() => {
-    if (screen !== "running" && screen !== "advanced") return;
+    if (screen !== "running" && screen !== "inspect") return;
     if (!topology || !eventBus) return;
 
     doneSignaledRef.current = false;

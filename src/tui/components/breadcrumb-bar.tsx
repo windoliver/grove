@@ -165,7 +165,7 @@ const SCREEN_LABELS: Record<Screen, string> = {
   "goal-input": "Goal",
   spawning: "Spawning",
   running: "Running",
-  advanced: "Advanced",
+  inspect: "Inspect",
   complete: "Complete",
 };
 
@@ -305,7 +305,7 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
     return (
       <box paddingX={1} flexDirection="row">
         {parts}
-        {screen === "running" || screen === "advanced" ? (
+        {screen === "running" || screen === "inspect" ? (
           <text color={theme.secondary}> [Tab]</text>
         ) : screen !== "preset-select" && screen !== undefined ? (
           <text color={theme.secondary}> [Esc]</text>
