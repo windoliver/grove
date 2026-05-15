@@ -317,7 +317,7 @@ export class TaskController {
     const sessions = await this.runtime.listSessions();
     const session = sessions.find((candidate) => candidate.id === task.status.sessionId);
     if (session !== undefined && (session.status === "running" || session.status === "idle")) {
-      return undefined;
+      return runningLiveCatchUp(task, this.nowIso());
     }
 
     return failLostSession(task, this.nowIso());
@@ -361,6 +361,27 @@ function terminalObservedGenerationCatchUp(task: AgentTaskView): ReconciliationR
     patch: { observedGeneration: task.spec.generation },
     transition: transition(task, task.status.phase, "terminal-observed-generation"),
   };
+}
+
+function runningLiveCatchUp(task: AgentTaskView, nowIso: string): ReconciliationResult | undefined {
+  const patch: AgentTaskStatusPatch = {
+    observedGeneration: task.spec.generation,
+    conditions: upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Running,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "session-running",
+      message: "",
+    }),
+  };
+
+  return statusPatchIsNoOp(task, patch)
+    ? undefined
+    : {
+        patch,
+        transition: transition(task, AgentTaskPhase.Running, "session-running"),
+      };
 }
 
 function failLostSession(task: AgentTaskView, nowIso: string): ReconciliationResult {

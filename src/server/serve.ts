@@ -34,6 +34,7 @@ import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
+import { wireAgentTaskStoreWrites } from "./agent-task-store-wiring.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
@@ -221,6 +222,7 @@ if (registry.size === 0) {
 // NexusEventBus (cross-process via Nexus IPC) on both sides.
 const watchHub = new WatchHub(resolveWatchHubConfig(process.env));
 const watchEventBus = new LocalEventBus();
+let taskController: TaskController | undefined;
 
 if (nexusUrl) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
@@ -379,6 +381,20 @@ const watchSubscriber = new NexusWatchSubscriber({
 });
 watchSubscriber.start();
 
+wireAgentTaskStoreWrites({
+  store: runtime.agentTaskStore,
+  namespace: zoneId,
+  watchHub,
+  watchSubscriber,
+  enqueueTaskId: (taskId) => {
+    taskController?.enqueue(taskId);
+  },
+  onError(error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[grove] Warning: AgentTask write fan-out failed: ${detail}\n`);
+  },
+});
+
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   contributionStoreForSession: contributionStoreForSessionFactory,
@@ -414,8 +430,6 @@ const getSharedAgentRuntime = async (): Promise<
   sharedAgentRuntime ??= await createServerAgentRuntime();
   return sharedAgentRuntime;
 };
-
-let taskController: TaskController | undefined;
 
 // ---------------------------------------------------------------------------
 // Background sweep reconciler

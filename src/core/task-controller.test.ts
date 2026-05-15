@@ -372,6 +372,16 @@ describe("TaskController transitions", () => {
         phase: AgentTaskPhase.Running,
         observedGeneration: 1,
         sessionId: "session-live",
+        conditions: [
+          {
+            type: "Running",
+            status: "True",
+            observedGeneration: 1,
+            lastTransitionTime: "2026-05-14T10:00:00.000Z",
+            reason: "session-running",
+            message: "",
+          },
+        ],
       }),
     );
     const runtime = new FakeRuntime();
@@ -385,6 +395,57 @@ describe("TaskController transitions", () => {
     await controller.reconcileTask("task-1");
 
     expect(store.patches).toEqual([]);
+  });
+
+  test("running tasks with live sessions catch up stale observed generation", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({
+        phase: AgentTaskPhase.Running,
+        generation: 3,
+        observedGeneration: 1,
+        sessionId: "session-live",
+        conditions: [
+          {
+            type: "Running",
+            status: "True",
+            observedGeneration: 1,
+            lastTransitionTime: "2026-05-14T10:00:00.000Z",
+            reason: "session-running",
+            message: "",
+          },
+        ],
+      }),
+    );
+    const runtime = new FakeRuntime();
+    runtime.sessions.set("session-live", {
+      id: "session-live",
+      role: "worker",
+      status: "idle",
+      platform: "codex",
+    });
+    const controller = controllerFor(store, { runtime });
+
+    const transition = await controller.reconcileTask("task-1");
+
+    expect(transition).toEqual({
+      taskId: "task-1",
+      fromPhase: AgentTaskPhase.Running,
+      toPhase: AgentTaskPhase.Running,
+      reason: "session-running",
+      observedGeneration: 3,
+    });
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBeUndefined();
+    expect(patch.observedGeneration).toBe(3);
+    expect(condition(patch.conditions, "Running")).toEqual({
+      type: "Running",
+      status: "True",
+      observedGeneration: 3,
+      lastTransitionTime: "2026-05-14T10:00:00.000Z",
+      reason: "session-running",
+      message: "",
+    });
   });
 
   test("running tasks fail when the session is missing", async () => {

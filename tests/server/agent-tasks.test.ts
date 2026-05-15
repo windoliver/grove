@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { AgentTaskPhase } from "../../src/core/agent-task.js";
+import {
+  AgentTaskPhase,
+  type AgentTaskView,
+  agentTaskViewToEntity,
+} from "../../src/core/agent-task.js";
 import { Finalizer } from "../../src/core/lifecycle-metadata.js";
+import type { AgentTaskStore } from "../../src/core/store.js";
 import type { EntityWriteEvent } from "../../src/core/watch-events.js";
 import type { TestContext } from "./helpers.js";
 import {
@@ -28,6 +33,15 @@ function captureWatchWrites(ctx: TestContext): EntityWriteEvent[] {
     return original(event);
   };
   return events;
+}
+
+type AgentTaskWriteCallback = (op: "ADDED" | "MODIFIED", view: AgentTaskView) => void;
+type ObservableAgentTaskStore = AgentTaskStore & {
+  onAgentTaskWrite?: AgentTaskWriteCallback | undefined;
+};
+
+function asObservableAgentTaskStore(store: AgentTaskStore): ObservableAgentTaskStore {
+  return store as ObservableAgentTaskStore;
 }
 
 describe("Agent task routes", () => {
@@ -86,6 +100,28 @@ describe("Agent task routes", () => {
     expect(events[1]?.entity.id).toBe("task-watch-put");
     expect(events[1]?.entity.metadata.generation).toBe(2);
     expect(events[1]?.entity.spec.prompt).toBe("Updated prompt");
+  });
+
+  test("PUT /api/agent-tasks/:id does not double-publish when store write fan-out is wired", async () => {
+    const events = captureWatchWrites(ctx);
+    asObservableAgentTaskStore(ctx.agentTaskStore).onAgentTaskWrite = (op, view) => {
+      ctx.deps.watchHub.recordWrite({
+        kind: "AgentTask",
+        namespace: TEST_NAMESPACE,
+        op,
+        entity: agentTaskViewToEntity(view, TEST_NAMESPACE),
+      });
+    };
+
+    const createRes = await ctx.app.request("/api/agent-tasks/task-watch-store", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(SPEC_BODY),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(ctx.deps.watchHub.currentRv(TEST_NAMESPACE, "AgentTask")).toBe(1n);
+    expect(events.map((event) => event.op)).toEqual(["ADDED"]);
   });
 
   test("PUT /api/agent-tasks/:id rejects status-owned fields from the TUI path", async () => {

@@ -15,6 +15,7 @@ import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
 import { AgentTaskPhase, agentTaskViewToEntity } from "../../core/agent-task.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
+import { hasAgentTaskWriteCallback } from "../agent-task-store-wiring.js";
 import type { ServerEnv } from "../deps.js";
 
 const phaseSchema = z.enum([
@@ -180,24 +181,26 @@ agentTasks.put("/:id", zValidator("json", specBodySchema), async (c) => {
   const view = await store.putAgentTaskSpec(spec);
   const namespace = c.get("namespace");
   const entity = agentTaskViewToEntity(view, namespace);
-  try {
-    deps.watchHub.recordWrite({
-      kind: "AgentTask",
-      namespace,
-      op: existing === undefined ? "ADDED" : "MODIFIED",
-      entity,
-    });
-    deps.watchSubscriber?.markSeen({
-      kind: "AgentTask",
-      entityId: view.spec.id,
-      generation: entity.metadata.generation,
-    });
-  } catch (err) {
-    process.stderr.write(
-      `[grove] Warning: watch fan-out threw after PUT /api/agent-tasks/${taskId}: ${
-        err instanceof Error ? err.message : String(err)
-      }\n`,
-    );
+  if (!hasAgentTaskWriteCallback(store)) {
+    try {
+      deps.watchHub.recordWrite({
+        kind: "AgentTask",
+        namespace,
+        op: existing === undefined ? "ADDED" : "MODIFIED",
+        entity,
+      });
+      deps.watchSubscriber?.markSeen({
+        kind: "AgentTask",
+        entityId: view.spec.id,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PUT /api/agent-tasks/${taskId}: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
   }
   return c.json(view, existing === undefined ? 201 : 200);
 });
@@ -249,19 +252,21 @@ agentTasks.patch(
     const view = await store.patchAgentTaskStatus(taskId, patch);
     const namespace = c.get("namespace");
     const entity = agentTaskViewToEntity(view, namespace);
-    try {
-      deps.watchHub.recordWrite({ kind: "AgentTask", namespace, op: "MODIFIED", entity });
-      deps.watchSubscriber?.markSeen({
-        kind: "AgentTask",
-        entityId: view.spec.id,
-        generation: entity.metadata.generation,
-      });
-    } catch (err) {
-      process.stderr.write(
-        `[grove] Warning: watch fan-out threw after PATCH /api/agent-tasks/${taskId}/status: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
+    if (!hasAgentTaskWriteCallback(store)) {
+      try {
+        deps.watchHub.recordWrite({ kind: "AgentTask", namespace, op: "MODIFIED", entity });
+        deps.watchSubscriber?.markSeen({
+          kind: "AgentTask",
+          entityId: view.spec.id,
+          generation: entity.metadata.generation,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: watch fan-out threw after PATCH /api/agent-tasks/${taskId}/status: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
     }
     return c.json(view);
   },
