@@ -362,10 +362,16 @@ describe("routeRunningKey — normal mode misc", () => {
     expect(log.calls).not.toContain("enterInspect");
   });
 
-  test("Enter opens detail when feed has items", () => {
+  test("Enter does NOT open inspect when feed has items (#191 round 3)", () => {
+    // Enter used to call openDetail which was wired to onEnterInspect,
+    // giving it an accidental inspect-entry path. Until a real
+    // contribution-detail route exists, Enter on a feed item is a no-op
+    // and must not enter inspect.
     const { actions, log } = mockActions({ feedLength: 5 });
-    routeRunningKey(keyEvent("return"), defaultState(), actions);
-    expect(log.calls).toContain("openDetail");
+    const handled = routeRunningKey(keyEvent("return"), defaultState(), actions);
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("enterInspect");
+    expect(log.calls).not.toContain("openDetail");
   });
 
   test("Enter does nothing when feed is empty", () => {

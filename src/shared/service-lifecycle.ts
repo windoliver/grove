@@ -1020,13 +1020,50 @@ async function spawnService(
   if (opts?.forceFreshSpawn) {
     const desiredPort = resolveServicePort(name);
     if (desiredPort && (await isPortBound(desiredPort))) {
-      const freePort = await pickFreePort();
-      const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
-      process.env[portEnvVar] = String(freePort);
-      if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
-      process.stderr.write(
-        `[grove] ${name} forced fresh spawn (server port shifted); using free port ${freePort}.\n`,
-      );
+      // If the bound listener is our own pidfile-recorded stale child
+      // (e.g. an MCP from before the server-port shift), terminate it
+      // and reuse the port. Leaving it alive would orphan a process
+      // that grove-down can no longer reach (it gets overwritten in
+      // the pidfile by the fresh spawn) and the stale MCP would keep
+      // serving clients against the now-defunct server. (#191 round 3.)
+      const pidFilePath = join(groveDir, "grove.pid");
+      const identity = await verifyPortIdentity(desiredPort, pidFilePath, name);
+      if (identity.ok) {
+        process.stderr.write(
+          `[grove] ${name} forced fresh spawn (server port shifted); ` +
+            `killing stale ${name} pid=${identity.pid} on port ${desiredPort}.\n`,
+        );
+        try {
+          process.kill(identity.pid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        // Wait briefly for the port to free up before reusing it.
+        const deadline = Date.now() + 3_000;
+        while (Date.now() < deadline && (await isPortBound(desiredPort))) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (await isPortBound(desiredPort)) {
+          // Stale child didn't release the port — escalate to SIGKILL.
+          try {
+            process.kill(identity.pid, "SIGKILL");
+          } catch {
+            /* gone */
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      } else {
+        // Foreign listener — don't kill it. Pick a free port instead so
+        // we don't disturb whatever else is running on the host.
+        const freePort = await pickFreePort();
+        const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
+        process.env[portEnvVar] = String(freePort);
+        if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
+        process.stderr.write(
+          `[grove] ${name} forced fresh spawn (server port shifted); ` +
+            `port ${desiredPort} held by foreign process — using free port ${freePort}.\n`,
+        );
+      }
     }
   }
   const port = resolveServicePort(name);

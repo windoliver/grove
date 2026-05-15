@@ -412,11 +412,11 @@ export function routeRunningKey(
     return false;
   }
 
-  // Enter: open detail view for selected feed item
-  if (input === "return" && actions.feedLength > 0) {
-    actions.openDetail();
-    return true;
-  }
+  // Enter: reserved for a future contribution-detail route. Previously
+  // routed to openDetail which was wired to onEnterInspect — that gave
+  // Enter an accidental inspect-entry path, violating the documented
+  // "Ctrl+G only" contract (#191 round 3). Until a real detail view
+  // exists, Enter on a feed item is a no-op.
 
   // r: respond to ask_user question (scroll to it)
   if (input === "r" && actions.hasAskUser) {

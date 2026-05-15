@@ -844,7 +844,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
           setTraceScrollOffset(0);
         },
-        openDetail: () => onEnterInspect(),
+        // openDetail kept as an interface field for future detail-route work,
+        // but wired to a no-op so Enter cannot accidentally enter inspect.
+        openDetail: () => {},
         enterInspect: () => onEnterInspect(),
         quit: () => onQuit(),
         showQuitDialog: () => {
