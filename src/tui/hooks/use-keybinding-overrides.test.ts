@@ -129,6 +129,9 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     onSpawnPalette: () => {
       /* noop */
     },
+    onPaletteClose: () => {
+      /* noop */
+    },
     onVfsNavigate: () => {
       /* noop */
     },

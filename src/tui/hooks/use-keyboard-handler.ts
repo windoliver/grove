@@ -23,6 +23,10 @@ export interface KeyboardActions {
   readonly nav: NavigationActions;
   readonly onQuit: () => void;
   readonly onSpawnPalette: () => void;
+  /** Called whenever the command palette is dismissed (any path). Clears
+   *  adoptContext + palette state so leftover targets don't leak into the
+   *  next unrelated spawn. */
+  readonly onPaletteClose: () => void;
   readonly onVfsNavigate: () => void;
   readonly onArtifactPrev: () => void;
   readonly onArtifactNext: () => void;
@@ -183,6 +187,12 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Priority: (1) exit mode → (2) pop detail → (3) reset zoom
   if (input === "escape") {
     if (mode !== InputMode.Normal) {
+      // Leaving CommandPalette via Esc must clear adoptContext (set by the
+      // 'a' Frontier-row keypress) and reset palette state — otherwise the
+      // next unrelated palette open inherits a stale adopt target.
+      if (mode === InputMode.CommandPalette) {
+        actions.onPaletteClose();
+      }
       actions.panels.setMode(InputMode.Normal);
       return true;
     }

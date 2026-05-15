@@ -101,6 +101,7 @@ function mockActions(overrides?: {
     },
     onQuit: () => record("onQuit"),
     onSpawnPalette: () => record("onSpawnPalette"),
+    onPaletteClose: () => record("onPaletteClose"),
     onVfsNavigate: () => record("onVfsNavigate"),
     onArtifactPrev: () => record("onArtifactPrev"),
     onArtifactNext: () => record("onArtifactNext"),
@@ -820,5 +821,17 @@ describe("routeKey — Frontier panel tab nav + adopt", () => {
     const { actions, log } = mockActions({ focused: Panel.Dag });
     routeKey(keyEvent("tab"), actions);
     expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("Esc on CommandPalette mode dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Esc on Normal mode does NOT dispatch onPaletteClose", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).not.toContain("onPaletteClose");
   });
 });
