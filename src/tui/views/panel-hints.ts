@@ -13,7 +13,7 @@
  *
  * Today on `panel:dag`:
  * - Enter → routes through running-view's normal-mode keyboard to the
- *   feed-detail / advanced-mode toggle (NOT panel-aware Focus yet).
+ *   feed-detail / inspect-overlay toggle (NOT panel-aware Focus yet).
  * - Space / R / M / L → no panel:dag-specific handler; fall through to
  *   their global RunningView routes (mostly no-ops on this panel).
  *

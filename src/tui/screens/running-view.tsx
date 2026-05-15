@@ -483,7 +483,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // per-poll interval was the only refresh path.
     //
     // ScreenManager renders RunningView OUTSIDE App's RefreshContext
-    // provider (advanced/boardroom mode is a different screen state),
+    // provider (the inspect overlay is a different screen state),
     // so useRefreshSignal does nothing here. Subscribe directly to the
     // EventBus so SSE pushes refresh the feed/dashboard immediately.
     useEffect(() => {
