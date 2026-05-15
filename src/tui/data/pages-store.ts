@@ -20,7 +20,7 @@ export type PageKind =
   | "spawning"
   | "running"
   | "complete"
-  | "advanced"
+  | "inspect"
   | "panel"
   | "entity-detail";
 
