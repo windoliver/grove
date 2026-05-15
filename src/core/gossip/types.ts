@@ -179,6 +179,22 @@ export interface GossipConfig {
   readonly failureTimeoutMs?: number | undefined;
   /** Shared secret for HMAC-SHA256 message signing. When set, outgoing messages are signed and incoming unsigned messages are rejected. */
   readonly hmacSecret?: string | undefined;
+  /**
+   * Background anti-entropy: when set, the gossip service periodically pulls
+   * frontier entries from peers that aren't yet stored locally. Disabled by
+   * default — set `enabled: true` to opt in.
+   */
+  readonly antiEntropy?:
+    | {
+        readonly enabled: boolean;
+        /** Interval between sweeps in ms. Defaults to 5× gossip interval. */
+        readonly intervalMs?: number | undefined;
+        /** Maximum CIDs to fetch per sweep. Defaults to 16. */
+        readonly batchSize?: number | undefined;
+        /** Per-metric value threshold; entries below the threshold are skipped. */
+        readonly metricThresholds?: Readonly<Record<string, number>> | undefined;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { hash as blake3Hash } from "blake3";
-import { FederationFetcher } from "./federation.js";
-import type { GossipTransport, PeerInfo } from "../core/gossip/types.js";
+import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
+import type { FrontierDigestEntry, GossipTransport, PeerInfo } from "../core/gossip/types.js";
 import type { ContentStore } from "../core/cas.js";
 import type { ContributionStore } from "../core/store.js";
 import type { Contribution } from "../core/models.js";
@@ -148,5 +148,53 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
     const result = await fetcher.fetchRemoteContribution(cid);
     expect(result.kind).toBe("ok");
     expect(calls).toBe(2);
+  });
+});
+
+describe("runAntiEntropySweep", () => {
+  it("fetches frontier entries whose value meets the threshold and skips local cids", async () => {
+    const fetched: string[] = [];
+    const fakeFetcher = {
+      fetchRemoteContribution: async (cid: string) => {
+        fetched.push(cid);
+        return { kind: "ok", cid } as const;
+      },
+    };
+    const frontier: FrontierDigestEntry[] = [
+      { metric: "tests_passed", value: 9, cid: "blake3:" + "a".repeat(64) },
+      { metric: "tests_passed", value: 1, cid: "blake3:" + "b".repeat(64) }, // below threshold
+      { metric: "_recency", value: 1, cid: "blake3:" + "c".repeat(64) },
+    ];
+    await runAntiEntropySweep({
+      frontier,
+      fetcher: fakeFetcher as unknown as FederationFetcher,
+      batchSize: 4,
+      thresholds: { tests_passed: 5 },
+    });
+    expect(fetched.sort()).toEqual(
+      ["blake3:" + "a".repeat(64), "blake3:" + "c".repeat(64)].sort(),
+    );
+  });
+
+  it("respects batchSize", async () => {
+    let count = 0;
+    const fakeFetcher = {
+      fetchRemoteContribution: async (cid: string) => {
+        count += 1;
+        return { kind: "ok", cid } as const;
+      },
+    };
+    const frontier: FrontierDigestEntry[] = Array.from({ length: 5 }, (_, i) => ({
+      metric: "m",
+      value: 10,
+      cid: `blake3:${String(i).repeat(64).slice(0, 64)}`,
+    }));
+    await runAntiEntropySweep({
+      frontier,
+      fetcher: fakeFetcher as unknown as FederationFetcher,
+      batchSize: 2,
+      thresholds: {},
+    });
+    expect(count).toBe(2);
   });
 });

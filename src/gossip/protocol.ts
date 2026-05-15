@@ -48,7 +48,7 @@ import {
 } from "../core/gossip/types.js";
 import type { ContributionStore } from "../core/store.js";
 import { CyclonPeerSampler } from "./cyclon.js";
-import { FederationFetcher } from "./federation.js";
+import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
 
 /** Maximum age of a signed gossip message before it is rejected as a potential replay. */
 const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
@@ -154,6 +154,10 @@ export class DefaultGossipService implements GossipService {
     readonly suspicionTimeoutMs: number;
     readonly failureTimeoutMs: number;
     readonly hmacSecret: string | undefined;
+    readonly antiEntropyEnabled: boolean;
+    readonly antiEntropyIntervalMs: number;
+    readonly antiEntropyBatchSize: number;
+    readonly antiEntropyThresholds: Readonly<Record<string, number>>;
   };
   private readonly sampler: CyclonPeerSampler;
   private readonly transport: GossipTransport;
@@ -165,6 +169,7 @@ export class DefaultGossipService implements GossipService {
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
+  private antiEntropyTimer: ReturnType<typeof setTimeout> | undefined;
   /**
    * Map of cid → (peerId → PeerInfo) for peers that advertised this cid.
    *
@@ -208,6 +213,7 @@ export class DefaultGossipService implements GossipService {
     /** Local CAS; required to enable federation features. */
     cas?: ContentStore;
   }) {
+    const ae = opts.config.antiEntropy;
     this.config = {
       peerId: opts.config.peerId,
       address: opts.config.address,
@@ -218,6 +224,11 @@ export class DefaultGossipService implements GossipService {
       suspicionTimeoutMs: opts.config.suspicionTimeoutMs ?? DEFAULT_SUSPICION_TIMEOUT_MS,
       failureTimeoutMs: opts.config.failureTimeoutMs ?? DEFAULT_FAILURE_TIMEOUT_MS,
       hmacSecret: opts.config.hmacSecret,
+      antiEntropyEnabled: ae?.enabled ?? false,
+      antiEntropyIntervalMs:
+        ae?.intervalMs ?? (opts.config.intervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS) * 5,
+      antiEntropyBatchSize: ae?.batchSize ?? 16,
+      antiEntropyThresholds: ae?.metricThresholds ?? {},
     };
 
     const selfPeer: PeerInfo = {
@@ -278,6 +289,9 @@ export class DefaultGossipService implements GossipService {
     if (this.running) return;
     this.running = true;
     this.scheduleNextRound();
+    if (this.config.antiEntropyEnabled && this.federation) {
+      this.scheduleNextAntiEntropy();
+    }
   }
 
   async stop(): Promise<void> {
@@ -285,6 +299,10 @@ export class DefaultGossipService implements GossipService {
     if (this.timer !== undefined) {
       clearTimeout(this.timer);
       this.timer = undefined;
+    }
+    if (this.antiEntropyTimer !== undefined) {
+      clearTimeout(this.antiEntropyTimer);
+      this.antiEntropyTimer = undefined;
     }
   }
 
@@ -576,6 +594,27 @@ export class DefaultGossipService implements GossipService {
         }
       }
       this.scheduleNextRound();
+    }, delay);
+  }
+
+  private scheduleNextAntiEntropy(): void {
+    if (!this.running || !this.federation) return;
+    const jitter = 1 - this.config.jitter + Math.random() * 2 * this.config.jitter;
+    const delay = Math.floor(this.config.antiEntropyIntervalMs * jitter);
+    this.antiEntropyTimer = setTimeout(async () => {
+      const fetcher = this.federation;
+      if (!fetcher) return;
+      try {
+        await runAntiEntropySweep({
+          frontier: this.mergedFrontier(),
+          fetcher,
+          batchSize: this.config.antiEntropyBatchSize,
+          thresholds: this.config.antiEntropyThresholds,
+        });
+      } catch {
+        // best-effort
+      }
+      this.scheduleNextAntiEntropy();
     }, delay);
   }
 

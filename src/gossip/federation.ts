@@ -12,6 +12,7 @@ import { hash as blake3Hash } from "blake3";
 import type { ContentStore } from "../core/cas.js";
 import type {
   FetchContributionResult,
+  FrontierDigestEntry,
   GossipTransport,
   PeerInfo,
 } from "../core/gossip/types.js";
@@ -77,5 +78,42 @@ export class FederationFetcher {
       }
     }
     return { kind: "failed", cid, reason: errors.join("; ") };
+  }
+}
+
+export interface AntiEntropySweepOpts {
+  readonly frontier: readonly FrontierDigestEntry[];
+  readonly fetcher: FederationFetcher;
+  readonly batchSize: number;
+  /**
+   * Map of metric → minimum value. Entries below the threshold are skipped.
+   * Synthetic metrics (prefix "_") default to 0 if unspecified.
+   */
+  readonly thresholds: Readonly<Record<string, number>>;
+}
+
+/**
+ * Run a single anti-entropy sweep: walk the merged frontier, pick CIDs that
+ * meet per-metric thresholds (and aren't already requested in this sweep),
+ * and ask the federation fetcher to pull them. Best-effort — individual fetch
+ * failures are swallowed (the fetcher already reports per-peer errors).
+ */
+export async function runAntiEntropySweep(opts: AntiEntropySweepOpts): Promise<void> {
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const entry of opts.frontier) {
+    if (targets.length >= opts.batchSize) break;
+    if (seen.has(entry.cid)) continue;
+    const threshold = opts.thresholds[entry.metric];
+    if (threshold !== undefined && entry.value < threshold) continue;
+    seen.add(entry.cid);
+    targets.push(entry.cid);
+  }
+  for (const cid of targets) {
+    try {
+      await opts.fetcher.fetchRemoteContribution(cid);
+    } catch {
+      // Sweep is best-effort; individual fetch failures are logged inside fetcher.
+    }
   }
 }
