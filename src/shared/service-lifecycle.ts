@@ -506,31 +506,30 @@ export async function stopServices(services: RunningServices): Promise<void> {
   // gated on nexusStartedThisCall, not nexusManaged.
   const ownedChildren = children.filter((c) => c.acquired === "spawned");
 
-  // SIGTERM owned children
-  for (const child of ownedChildren) {
-    try {
-      child.proc.kill("SIGTERM");
-    } catch {
-      // Process may already be dead
-    }
-  }
-
-  // Wait for graceful shutdown (max 5s), then SIGKILL
-  const deadline = Date.now() + 5_000;
-  for (const child of ownedChildren) {
-    const remaining = Math.max(0, deadline - Date.now());
-    const exited = await Promise.race([
-      child.proc.exited,
-      new Promise((resolve) => setTimeout(() => resolve(false), remaining)),
-    ]);
-    if (exited === false) {
-      try {
-        child.proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
+  // Verified termination (round 8): route routine shutdown through the
+  // same terminateChild helper as readiness-failure cleanup so SIGKILL
+  // post-conditions are checked and survivors are surfaced. Without this,
+  // a sandboxed/D-state child that ignores SIGKILL would have its pidfile
+  // entry deleted while still bound to its port, orphaning the listener.
+  const stopSurvivors: ManagedChildProcess[] = [];
+  await Promise.all(
+    ownedChildren.map(async (child) => {
+      const result = await terminateChild(
+        {
+          pid: child.pid,
+          kill: (sig: NodeJS.Signals) => child.proc.kill(sig),
+          exited: child.proc.exited,
+        },
+        5_000,
+      );
+      if (!result.ok) {
+        process.stderr.write(
+          `stopServices: ${child.name} (PID ${child.pid}) survived teardown: ${result.reason}\n`,
+        );
+        stopSurvivors.push(child);
       }
-    }
-  }
+    }),
+  );
 
   // Stop managed Nexus only if we actually started it this call.
   if (nexusManaged && nexusStartedThisCall) {
@@ -543,12 +542,12 @@ export async function stopServices(services: RunningServices): Promise<void> {
   }
 
   // Pidfile policy under mixed ownership:
-  //   - If adopted children remain live: rewrite the pidfile with ONLY
-  //     the adopted entries so subsequent identity checks + `grove down`
-  //     can still find them. Unlinking would orphan the adopted services
-  //     with no record.
-  //   - If we acquired anything (spawned or started Nexus) AND no
-  //     adopted children remain: unlink (we cleaned up everything we
+  //   - Adopted-live children OR spawned-children-that-survived-teardown:
+  //     rewrite the pidfile with those entries. Unlinking would orphan
+  //     listeners with no record (round 8: stopServices survivors had
+  //     no recovery path).
+  //   - If we acquired anything (spawned or started Nexus) AND no live
+  //     adopted/survivor entries: unlink (we cleaned up everything we
   //     owned).
   //   - Pure-borrower call (no spawned, no nexusStartedThisCall): leave
   //     the original owner's pidfile alone.
@@ -562,7 +561,11 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   });
   const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
-  if (adoptedLive.length > 0) {
+  const preserveEntries = [
+    ...adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+    ...stopSurvivors.map((c) => ({ name: c.name, pid: c.pid })),
+  ];
+  if (preserveEntries.length > 0) {
     try {
       const existing = (() => {
         try {
@@ -573,7 +576,7 @@ export async function stopServices(services: RunningServices): Promise<void> {
       })();
       const rewritten = {
         ...existing,
-        children: adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+        children: preserveEntries,
         startedAt: existing.startedAt ?? new Date().toISOString(),
       };
       writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
@@ -900,11 +903,19 @@ type TerminateResult =
   | { ok: true; how: "already-exited" | "sigterm" | "sigkill" }
   | { ok: false; reason: string; stillAlive: boolean };
 
+/** Process surface terminateChild operates on — pluggable for tests. */
+interface TerminationTarget {
+  readonly pid: number;
+  /** Signal delivery — mirrors child_process kill / process.kill. */
+  readonly kill: (signal: NodeJS.Signals) => void;
+  readonly exited: Promise<number>;
+}
+
 async function terminateChild(
-  pid: number,
-  exited: Promise<number>,
+  target: TerminationTarget,
   deadlineMs: number = 3_000,
 ): Promise<TerminateResult> {
+  const { pid, kill, exited } = target;
   let isExited = false;
   exited.then(() => {
     isExited = true;
@@ -913,9 +924,8 @@ async function terminateChild(
   if (isExited) return { ok: true, how: "already-exited" };
 
   try {
-    process.kill(pid, "SIGTERM");
+    kill("SIGTERM");
   } catch (err) {
-    // ESRCH = already gone (success); EPERM/EACCES = sandboxed, hopeless.
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ESRCH") return { ok: true, how: "already-exited" };
     return { ok: false, reason: `SIGTERM failed: ${code ?? String(err)}`, stillAlive: true };
@@ -931,25 +941,26 @@ async function terminateChild(
   if (isExited) return { ok: true, how: "sigterm" };
 
   try {
-    process.kill(pid, "SIGKILL");
+    kill("SIGKILL");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ESRCH") return { ok: true, how: "already-exited" };
     return { ok: false, reason: `SIGKILL failed: ${code ?? String(err)}`, stillAlive: true };
   }
 
-  // Round 7 postcondition: SIGKILL was DELIVERED, but on macOS/Linux it is
-  // asynchronous — confirm the child actually went away before declaring
-  // success. Otherwise a sandboxed/D-state process can survive the call
-  // and orphan the listener.
+  // Round 7 postcondition: confirm the child actually exited. SIGKILL
+  // delivery is asynchronous on macOS/Linux; a sandboxed/D-state process
+  // can survive the signal call and orphan the listener.
   const sigkillDeadline = Date.now() + 1_500;
   while (Date.now() < sigkillDeadline) {
     await Promise.resolve();
     if (isExited) return { ok: true, how: "sigkill" };
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return { ok: true, how: "sigkill" };
+    if (pid > 0) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return { ok: true, how: "sigkill" };
+      }
     }
     await sleep(50);
   }
@@ -1309,7 +1320,11 @@ async function spawnService(
         // (`${groveDir}/${name}.log`) is preserved on disk for post-mortem.
         let cleanupError = "";
         if (readiness.kind !== "child-exited") {
-          const term = await terminateChild(pid, exited);
+          const term = await terminateChild({
+            pid,
+            kill: (sig: NodeJS.Signals) => process.kill(pid, sig),
+            exited,
+          });
           if (!term.ok) {
             // Round 7: SIGKILL failed or child survived it. The port stays
             // bound by an unmanaged PID. Make this LOUD in the error so
