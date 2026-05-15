@@ -9,6 +9,14 @@
  * All /api/* routes require a valid bearer token from `.grove/server-keys.yaml`.
  * The token resolves to a namespace that is injected into each request context.
  * Requests without a valid token receive 400 (missing) or 401 (unrecognized).
+ *
+ * Authentication: `/api/*` routes require a valid bearer token, with two
+ * exemptions that apply only when gossip is configured:
+ *   - POST /api/gossip/exchange and POST /api/gossip/shuffle use HMAC.
+ *   - GET /api/cas/:hash{,/meta} and GET /api/contributions/:cid are
+ *     content-addressed and used by peer federation fetchers (#226).
+ *
+ * Local-trigger routes like POST /api/gossip/fetch/:cid remain bearer-protected.
  */
 
 import { Hono } from "hono";
@@ -106,14 +114,18 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // Match either the raw or percent-encoded ":" form of the cid prefix, since
   // peer transports may encode the colon (e.g., HttpGossipTransport calls
   // encodeURIComponent(cid)).
-  const FEDERATION_CAS_PATH = /^\/api\/cas\/blake3(?::|%3A)[0-9a-f]{64}(?:\/meta)?$/i;
-  const FEDERATION_CONTRIB_PATH = /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}$/i;
+  const FEDERATION_CAS_PATH = /^\/api\/cas\/blake3(?::|%3A)[0-9a-f]{64}(?:\/meta)?$/;
+  const FEDERATION_CONTRIB_PATH = /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}$/;
   app.use(
     "/api/*",
     namespaceAuth(registry, {
       exempt: (c) => {
         if (deps.gossip === undefined) return false;
-        if (c.req.method === "POST" && c.req.path.startsWith("/api/gossip")) {
+        if (c.req.method === "POST" && c.req.path.startsWith("/api/gossip/")) {
+          // /api/gossip/fetch/:cid is a LOCAL trigger that doesn't run HMAC
+          // verification — it must remain bearer-protected. Only peer-to-peer
+          // POST endpoints (/exchange, /shuffle) belong on the exempt list.
+          if (c.req.path.startsWith("/api/gossip/fetch/")) return false;
           return true;
         }
         if (c.req.method === "GET") {
