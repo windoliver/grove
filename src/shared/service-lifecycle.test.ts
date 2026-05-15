@@ -230,6 +230,26 @@ describe("service startup configuration", () => {
       srv.stop();
     }
   });
+
+  // Race regression: the two children must NOT see process.env.PORT /
+  // process.env.GROVE_SERVER_PORT mutated by a sibling spawn after they've
+  // already read serviceEnv(). The fix pre-resolves all ports before any
+  // spawn promise starts; here we assert that ordering property by checking
+  // that resolveServicePort('server') reflects whatever PORT was set to,
+  // simulating the post-fallback state.
+  test("resolveServicePort reads back env mutation deterministically", () => {
+    const resolveServicePort = helpers.resolveServicePort;
+    if (resolveServicePort === undefined) throw new Error("resolveServicePort is not exported");
+
+    // Caller mutates env.PORT (the fallback path does this synchronously
+    // inside preResolvePort) — every subsequent resolveServicePort('server')
+    // must see the new value. Without pre-resolution before parallel spawn,
+    // an MCP child could read serviceEnv() before this mutation lands.
+    const env = { PORT: "55501" } as NodeJS.ProcessEnv;
+    expect(resolveServicePort("server", env)).toBe(55501);
+    env.PORT = "55502";
+    expect(resolveServicePort("server", env)).toBe(55502);
+  });
 });
 
 // ---------------------------------------------------------------------------

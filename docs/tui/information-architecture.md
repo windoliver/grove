@@ -64,9 +64,15 @@ the inspect overlay as a top-of-stack page when opened.
   panel zoom, decisions/inbox/vfs/terminal/frontier panels.
 - **Entry:** `Ctrl+G` from the `running` screen, and only from there.
   Pushes `{ kind: "inspect" }` onto `PagesStore`.
-- **Exit:** `Ctrl+G` *or* `Esc`. Both pop the inspect page; the session
-  state underneath is preserved bit-for-bit (no re-mount, no lost cursor
-  or autoFollow state).
+- **Exit:** `Ctrl+G` *or* `Esc`. Both pop the inspect page and remount
+  RunningView. **Caveat:** `PagesRouter` only renders the top-of-stack
+  page, so RunningView is unmounted during the overlay and remounted on
+  return. RunningView's local React state (cursor position, autoFollow,
+  filter, expanded panel, prompt input) **is reset on return** —
+  contributions/feed and other store-backed data survive (they live in
+  PagesStore-owned stores, not React state). If a future iteration needs
+  bit-for-bit preservation, lift the surviving local state into
+  `ScreenManager` or hoist it through `PagesStore`.
 - **State mechanism:** stack push, **not** a separate mode flag. The
   inspect overlay is rendered by `InspectModeWrapper` (in
   `screen-manager.tsx`), which mounts `App` from `src/tui/app.tsx`.

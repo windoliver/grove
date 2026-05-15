@@ -1064,6 +1064,12 @@ interface InspectModeWrapperProps {
 /**
  * Wraps the full App as an inspect overlay above the session view.
  * Intercepts Ctrl+G and Esc to return to the session view.
+ *
+ * State note: PagesRouter renders only the top-of-stack page, so
+ * RunningView is unmounted while inspect is open and remounted on
+ * return. RunningView's local React state (cursor, autoFollow, filter,
+ * prompt) resets on return; PagesStore-owned data survives. See
+ * docs/tui/information-architecture.md → Inspect Overlay → Exit.
  */
 export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
   function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {

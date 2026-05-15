@@ -368,6 +368,19 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       }
   }
 
+  // Pre-resolve each service's port BEFORE the parallel spawn. Without this,
+  // server+MCP race: MCP can read GROVE_SERVER_PORT before server's own
+  // foreign-port fallback writes the new value, leaving MCP pointing at the
+  // old default port (held by a foreign process). Resolving sequentially
+  // here mutates process.env so every subsequent serviceEnv() call sees
+  // the settled values. (#191 follow-up.)
+  if (config.services?.server) {
+    await preResolvePort("server", groveDir);
+  }
+  if (config.services?.mcp) {
+    await preResolvePort("mcp", groveDir);
+  }
+
   // Spawn services in parallel
   const spawnPromises: Promise<ManagedChildProcess | null>[] = [];
 
@@ -885,6 +898,41 @@ export async function pickFreePort(): Promise<number> {
       });
     });
   });
+}
+
+/**
+ * Resolve the port a service should spawn on, with foreign-owner fallback.
+ *
+ * Called BEFORE the parallel-spawn phase so all ports are settled (and
+ * `process.env` is mutated) before any child reads serviceEnv(). Without
+ * this, server and MCP race: MCP can read `GROVE_SERVER_PORT=4515` (the
+ * default) and target a foreign-owned server because the server's own
+ * fallback didn't write the new value to env in time. (#191 follow-up)
+ *
+ * Sequence:
+ *   1. Read configured port (PORT for server, MCP_PORT for mcp).
+ *   2. If port is free → return as-is.
+ *   3. If port is bound and pidfile identity matches → return as-is (adopt).
+ *   4. Otherwise → pick a free port, mutate env, return new port.
+ */
+async function preResolvePort(name: string, groveDir: string): Promise<number> {
+  const port = resolveServicePort(name);
+  if (!port) return port;
+  const bound = await isPortBound(port);
+  if (!bound) return port;
+  const pidFilePath = join(groveDir, "grove.pid");
+  const identity = await verifyPortIdentity(port, pidFilePath, name);
+  if (identity.ok) return port;
+  const owner = await describePortOwner(port);
+  const freePort = await pickFreePort();
+  process.stderr.write(
+    `[grove] ${name} port ${port} held by foreign process (${owner.split("\n")[0]}); ` +
+      `using free port ${freePort} instead.\n`,
+  );
+  const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
+  process.env[portEnvVar] = String(freePort);
+  if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
+  return freePort;
 }
 
 async function isPortBound(port: number): Promise<boolean> {
