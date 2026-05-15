@@ -61,6 +61,12 @@ export interface KeyboardActions {
   readonly rowCount: number;
   readonly pageSize: number;
   readonly paletteItemCount: number;
+  readonly onFrontierTabNext: () => void;
+  readonly onFrontierTabPrev: () => void;
+  readonly onFrontierTabJump: (index: number) => void;
+  readonly onFrontierAdopt: (cid: string, summary: string) => void;
+  /** Entries (cid + summary) for the currently visible frontier slice. */
+  readonly frontierEntries: ReadonlyArray<{ cid: string; summary: string }>;
   readonly compareMode: boolean;
   readonly frontierCids: readonly string[];
   readonly selectedSession: string | undefined;
@@ -298,6 +304,38 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Frontier panel: tab nav, digit jump, adopt.
+  // Must run BEFORE the PANEL_REGISTRY loop so that digit keys (1-9) and
+  // Tab/Shift+Tab are captured when the Frontier panel is focused — otherwise
+  // the registry would intercept "3" (→ focus Frontier) and the global tab
+  // cycle would swallow Tab before this branch runs.
+  if (focused === Panel.Frontier) {
+    if (input === "tab" && !key.shift) {
+      actions.onFrontierTabNext();
+      return true;
+    }
+    if (input === "tab" && key.shift) {
+      actions.onFrontierTabPrev();
+      return true;
+    }
+    if (/^[1-9]$/.test(input ?? "")) {
+      actions.onFrontierTabJump(Number.parseInt(input!, 10) - 1);
+      return true;
+    }
+    if (
+      input === "a" &&
+      !actions.compareMode &&
+      actions.frontierEntries.length > 0 &&
+      actions.nav.state.cursor < actions.frontierEntries.length
+    ) {
+      const entry = actions.frontierEntries[actions.nav.state.cursor];
+      if (entry) {
+        actions.onFrontierAdopt(entry.cid, entry.summary);
+        return true;
+      }
+    }
+  }
+
   // Panel dispatch: driven by PANEL_REGISTRY (Issue 4A — eliminates DRY violation
   // and enables config-driven keybindings in the future).
   for (const def of PANEL_REGISTRY) {
@@ -311,7 +349,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
   }
 
-  // Tab/Shift+Tab: cycle focus
+  // Tab/Shift+Tab: cycle focus (global — only reached when Frontier is not focused)
   if (input === "tab") {
     if (key.shift) {
       actions.panels.cyclePrev();

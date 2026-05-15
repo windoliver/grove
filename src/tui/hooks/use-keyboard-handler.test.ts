@@ -52,6 +52,7 @@ function mockActions(overrides?: {
   focused?: Panel;
   compareMode?: boolean;
   frontierCids?: readonly string[];
+  frontierEntries?: ReadonlyArray<{ cid: string; summary: string }>;
   paletteItemCount?: number;
   rowCount?: number;
   selectedSession?: string;
@@ -135,6 +136,11 @@ function mockActions(overrides?: {
     onLayoutToggle: () => record("onLayoutToggle"),
     onRefresh: () => record("onRefresh"),
     onSelect: (index) => record("onSelect", index),
+    onFrontierTabNext: () => record("onFrontierTabNext"),
+    onFrontierTabPrev: () => record("onFrontierTabPrev"),
+    onFrontierTabJump: (index) => record("onFrontierTabJump", index),
+    onFrontierAdopt: (cid, summary) => record("onFrontierAdopt", cid, summary),
+    frontierEntries: overrides?.frontierEntries ?? [],
     rowCount: overrides?.rowCount ?? 10,
     pageSize: 20,
     paletteItemCount: overrides?.paletteItemCount ?? 5,
