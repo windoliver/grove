@@ -939,18 +939,23 @@ export function App({
       hasTmux: tmux !== undefined,
       keybindingOverrides,
       keyActionMap,
-      // Slice nav also resets the global cursor to 0. Without this, switching
-      // from a long slice (cursor=9) to a short slice (2 rows) leaves the
-      // cursor off-row, hiding the selection AND blocking 'a' (which checks
-      // cursor < frontierEntries.length). Per-slice cursor memory is YAGNI
-      // for now; reset-to-0 is the simple fix.
+      // Slice nav also resets the global cursor to 0 AND synchronously
+      // clears frontierEntries. Without the cursor reset, switching from a
+      // long slice (cursor=9) to a short slice (2 rows) leaves the cursor
+      // off-row, hiding the selection AND blocking 'a'. Without the entries
+      // clear, a fast `]` then `a` between dispatch and FrontierView's
+      // passive-effect re-emit would adopt a row from the previous slice —
+      // setFrontierEntries([]) closes that race; the effect re-fills on the
+      // next render with the new active slice's entries.
       onFrontierTabNext: () => {
         dispatch({ type: "FRONTIER_SLICE_NEXT" });
         nav.resetCursor();
+        setFrontierEntries([]);
       },
       onFrontierTabPrev: () => {
         dispatch({ type: "FRONTIER_SLICE_PREV" });
         nav.resetCursor();
+        setFrontierEntries([]);
       },
       onFrontierAdopt: (cid: string, summary: string) => {
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });

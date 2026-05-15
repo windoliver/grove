@@ -206,3 +206,43 @@ describe("slicesEqual", () => {
     expect(slicesEqual(a, b)).toBe(false);
   });
 });
+
+describe("toSlices — metric bounds + sanitization", () => {
+  test("caps metric:* slices at MAX_METRIC_SLICES", () => {
+    const byMetric: Record<string, readonly { cid: string; value: number; summary: string }[]> = {};
+    for (let i = 0; i < 50; i++) {
+      byMetric[`m${String(i).padStart(3, "0")}`] = [{ cid: `cid-${i}`, value: i, summary: "" }];
+    }
+    const slices = toSlices(makeFrontier({ byMetric }));
+    const metricSlices = slices.filter((s) => s.key.startsWith("metric:"));
+    // Cap is 16 per src/tui/views/frontier-slices.ts MAX_METRIC_SLICES.
+    expect(metricSlices.length).toBe(16);
+  });
+
+  test("strips control characters from metric names", () => {
+    const slices = toSlices(
+      makeFrontier({
+        byMetric: { "\x07bell\x1bescape": [{ cid: "c", value: 1, summary: "" }] },
+      }),
+    );
+    expect(slices[0]?.label).toBe("bellescape");
+    expect(slices[0]?.key).toBe("metric:bellescape");
+  });
+
+  test("truncates very long metric names", () => {
+    const longName = "x".repeat(200);
+    const slices = toSlices(
+      makeFrontier({ byMetric: { [longName]: [{ cid: "c", value: 1, summary: "" }] } }),
+    );
+    // MAX_METRIC_LABEL_LEN = 32 → truncated to 31 chars + "…"
+    expect(slices[0]?.label.length).toBeLessThanOrEqual(32);
+    expect(slices[0]?.label.endsWith("…")).toBe(true);
+  });
+
+  test("metric name that becomes empty after sanitization is dropped", () => {
+    const slices = toSlices(
+      makeFrontier({ byMetric: { "\x00\x01\x02": [{ cid: "c", value: 1, summary: "" }] } }),
+    );
+    expect(slices.filter((s) => s.key.startsWith("metric:")).length).toBe(0);
+  });
+});

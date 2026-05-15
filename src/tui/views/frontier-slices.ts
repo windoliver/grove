@@ -114,17 +114,41 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
       formatBadge: SCALAR_BADGES[key] ?? ((): string => ""),
     });
   }
-  const metricNames = Object.keys(frontier.byMetric ?? {}).sort();
+  // Metric names come from agent-supplied score keys. The contribution schema
+  // accepts arbitrary record keys, so a malicious or buggy agent can publish
+  // thousands of metric names or names with control characters / huge length.
+  // Without bounds the new tabbed UI explodes into an unbounded render
+  // surface; cap the slice count and sanitize each name before using it as
+  // label / badge / tab id.
+  const metricNames = Object.keys(frontier.byMetric ?? {})
+    .sort()
+    .slice(0, MAX_METRIC_SLICES);
   for (const name of metricNames) {
     const entries = frontier.byMetric[name];
     if (!entries || entries.length === 0) continue;
+    const safeName = sanitizeMetricName(name);
+    if (safeName.length === 0) continue;
     slices.push({
-      key: `metric:${name}`,
-      label: name,
-      signalDescription: `${name} — per-contribution score`,
+      key: `metric:${safeName}`,
+      label: safeName,
+      signalDescription: `${safeName} — per-contribution score`,
       entries,
-      formatBadge: metricBadge(name),
+      formatBadge: metricBadge(safeName),
     });
   }
   return slices;
+}
+
+/** Cap on metric:* slices rendered. The flat-table predecessor was bounded
+ *  by row count; the tabbed view is bounded by metric count. */
+const MAX_METRIC_SLICES = 16;
+const MAX_METRIC_LABEL_LEN = 32;
+
+/** Strip control characters and trim to MAX_METRIC_LABEL_LEN. */
+function sanitizeMetricName(name: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
+  const stripped = name.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  return stripped.length > MAX_METRIC_LABEL_LEN
+    ? stripped.slice(0, MAX_METRIC_LABEL_LEN - 1) + "…"
+    : stripped;
 }
