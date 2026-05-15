@@ -58,6 +58,23 @@ describe("mergeTuiRegistrations", () => {
     ]);
   });
 
+  test("keeps first plugin entry and skips duplicate plugin IDs", () => {
+    const result = mergeTuiRegistrations({
+      builtIns: [builtIn("dag", 10, Panel.Dag)],
+      plugins: [plugin("audit-feed", 20), plugin("audit-feed", 30)],
+    });
+
+    expect(result.entries.map((entry) => entry.id)).toEqual(["dag", "audit-feed"]);
+    expect(result.entries[1]?.order).toBe(20);
+    expect(result.diagnostics).toEqual([
+      {
+        id: "audit-feed",
+        severity: "error",
+        message: "Duplicate TUI panel id: audit-feed",
+      },
+    ]);
+  });
+
   test("skips plugin entries with unsafe IDs", () => {
     const result = mergeTuiRegistrations({
       builtIns: [builtIn("dag", 10, Panel.Dag)],
@@ -79,7 +96,7 @@ describe("mergeTuiRegistrations", () => {
     ]);
   });
 
-  test("uses default plugin order after built-ins when order is omitted", () => {
+  test("uses default plugin order 1000 when order is omitted", () => {
     const result = mergeTuiRegistrations({
       builtIns: [builtIn("dag", 10, Panel.Dag)],
       plugins: [plugin("eval-results")],
@@ -87,5 +104,21 @@ describe("mergeTuiRegistrations", () => {
 
     expect(result.entries.map((entry) => entry.id)).toEqual(["dag", "eval-results"]);
     expect(result.entries[1]?.order).toBe(1000);
+  });
+
+  test("throws when built-in panel ID is unsafe", () => {
+    expect(() =>
+      mergeTuiRegistrations({
+        builtIns: [builtIn("bad/id", 10, Panel.Dag)],
+      }),
+    ).toThrow("Built-in TUI panel has invalid id: bad/id");
+  });
+
+  test("throws when built-in panel ID is duplicated", () => {
+    expect(() =>
+      mergeTuiRegistrations({
+        builtIns: [builtIn("dag", 10, Panel.Dag), builtIn("dag", 20, Panel.Claims)],
+      }),
+    ).toThrow("Built-in TUI panel id is duplicated: dag");
   });
 });
