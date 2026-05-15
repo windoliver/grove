@@ -581,6 +581,8 @@ export interface CreateTestAppOptions {
   readonly eventBus?: EventBus;
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly goalSessionStore?: GoalSessionStore;
+  readonly agentTaskStore?: import("../core/store.js").AgentTaskStore | undefined;
+  readonly controllerToken?: string | undefined;
 }
 
 /** Create a test app with fresh in-memory stores. */
@@ -628,6 +630,8 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     watchHub,
     watchSubscriber,
     ...(opts.outcomeStore !== undefined ? { outcomeStore: opts.outcomeStore } : {}),
+    ...(opts.agentTaskStore !== undefined ? { agentTaskStore: opts.agentTaskStore } : {}),
+    ...(opts.controllerToken !== undefined ? { controllerToken: opts.controllerToken } : {}),
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
