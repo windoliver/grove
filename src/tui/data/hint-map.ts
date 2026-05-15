@@ -10,9 +10,9 @@
  * assembles them into the STATIC lookup map.
  */
 
-import { ADVANCED_HINTS } from "../views/advanced-hints.js";
 import { COMPLETE_HINTS } from "../views/complete-hints.js";
 import { GOAL_INPUT_HINTS } from "../views/goal-input-hints.js";
+import { INSPECT_HINTS } from "../views/inspect-hints.js";
 import { LAUNCH_PREVIEW_HINTS } from "../views/launch-preview-hints.js";
 import { PANEL_HINTS } from "../views/panel-hints.js";
 import { PRESET_SELECT_HINTS } from "../views/preset-select-hints.js";
@@ -73,7 +73,7 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   spawning: Object.freeze([]),
   running: RUNNING_VIEW_HINTS,
   complete: COMPLETE_HINTS,
-  advanced: ADVANCED_HINTS,
+  inspect: INSPECT_HINTS,
 
   // panel sub-kinds
   "panel:agents": PANEL_HINTS.agents,
