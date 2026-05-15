@@ -52,5 +52,17 @@ export function toSlices(frontier: Frontier): readonly FrontierSlice[] {
       formatBadge: placeholderBadge,
     });
   }
+  const metricNames = Object.keys(frontier.byMetric ?? {}).sort();
+  for (const name of metricNames) {
+    const entries = frontier.byMetric[name];
+    if (!entries || entries.length === 0) continue;
+    slices.push({
+      key: `metric:${name}`,
+      label: name,
+      signalDescription: `${name} — per-contribution score`,
+      entries,
+      formatBadge: placeholderBadge,
+    });
+  }
   return slices;
 }

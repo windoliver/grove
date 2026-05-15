@@ -58,3 +58,47 @@ describe("toSlices — scalar dimensions", () => {
     }
   });
 });
+
+describe("toSlices — metric:* dimensions", () => {
+  test("a metric produces a 'metric:<name>' slice", () => {
+    const slices = toSlices(
+      makeFrontier({
+        byMetric: { accuracy: [{ cid: "m1", value: 0.9, summary: "" }] },
+      }),
+    );
+    expect(slices.length).toBe(1);
+    expect(slices[0]?.key).toBe("metric:accuracy");
+    expect(slices[0]?.label).toBe("accuracy");
+  });
+
+  test("metric slices follow built-ins and are alphabetical", () => {
+    const slices = toSlices(
+      makeFrontier({
+        byAdoption: [{ cid: "a", value: 1, summary: "" }],
+        byMetric: {
+          zeta: [{ cid: "z", value: 1, summary: "" }],
+          alpha: [{ cid: "al", value: 1, summary: "" }],
+          mu: [{ cid: "m", value: 1, summary: "" }],
+        },
+      }),
+    );
+    expect(slices.map((s) => s.key)).toEqual([
+      "adoption",
+      "metric:alpha",
+      "metric:mu",
+      "metric:zeta",
+    ]);
+  });
+
+  test("empty metric arrays are omitted", () => {
+    const slices = toSlices(makeFrontier({ byMetric: { empty: [] } }));
+    expect(slices).toEqual([]);
+  });
+
+  test("metric slice signalDescription mentions the metric name", () => {
+    const slices = toSlices(
+      makeFrontier({ byMetric: { rouge_l: [{ cid: "r", value: 0.8, summary: "" }] } }),
+    );
+    expect(slices[0]?.signalDescription).toContain("rouge_l");
+  });
+});
