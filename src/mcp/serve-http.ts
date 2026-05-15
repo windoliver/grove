@@ -1131,6 +1131,17 @@ function httpError(code: string, message: string): string {
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? "/";
 
+  // Unauthenticated liveness probe. Returned BEFORE the AUTH_TOKEN gate so
+  // service-lifecycle.waitForServiceHealth (which has no MCP auth token)
+  // can confirm the listener is up and exit its poll loop. Without this,
+  // every fresh spawn waited the full 10s SERVICE_HEALTH_TIMEOUT_MS — the
+  // perceived "restart lag" from issue #219.
+  if (url === "/health" || url.startsWith("/health?")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
   // Only handle /mcp endpoint
   if (url !== "/mcp") {
     res.writeHead(404, { "Content-Type": "application/json" });

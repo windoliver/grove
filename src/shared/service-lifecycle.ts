@@ -314,7 +314,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       try {
         const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
         const res = await fetch(`${config.nexusUrl}/health`, {
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(PROBE_TIMEOUTS.nexusHealthFetchMs),
         });
         const body = (await res.json().catch(() => ({}))) as { status?: string };
         if (body.status === "healthy" || body.status === "starting") {
@@ -609,6 +609,23 @@ const DEFAULT_SERVICE_PORTS = { server: 4515, mcp: 4015 } as const;
 /** Service health-check timeout (ms). */
 const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
 
+/**
+ * Per-probe ceilings for adoption-path checks against localhost. These are
+ * upper bounds, not expected durations — happy-path latency is single-digit
+ * milliseconds. Sizing for remote calls (1500-5000ms) was inflating reconnect
+ * time when probes had to fail before falling through (issue #219).
+ */
+const PROBE_TIMEOUTS = {
+  /** TCP connect probe against localhost in isPortBound. */
+  portBindSocketMs: 300,
+  /** lsof spawnSync timeout in getListeningPid + describePortOwner. */
+  lsofMs: 800,
+  /** HTTP fetch against localhost in verifyServerOwnership. */
+  ownershipFetchMs: 800,
+  /** HTTP fetch against Nexus /health on the reuse fast path. */
+  nexusHealthFetchMs: 1500,
+} as const;
+
 /** Resolve the port a managed service should bind to. */
 export function resolveServicePort(name: string, env: NodeJS.ProcessEnv = process.env): number {
   if (name === "server") return parsePort(env.PORT, DEFAULT_SERVICE_PORTS.server);
@@ -707,7 +724,7 @@ export async function verifyServerOwnership(
   try {
     const bogus = await fetch(url, {
       headers: { Authorization: "Bearer grv_NOT_A_REAL_KEY_ownership_probe" },
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(PROBE_TIMEOUTS.ownershipFetchMs),
     });
     if (bogus.ok) {
       return {
@@ -727,7 +744,7 @@ export async function verifyServerOwnership(
   try {
     resp = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(PROBE_TIMEOUTS.ownershipFetchMs),
     });
   } catch (err) {
     return { ok: false, reason: `Auth probe failed: ${(err as Error).message ?? err}` };
@@ -770,7 +787,7 @@ async function describePortOwner(port: number): Promise<string> {
     const { spawnSync } = await import("node:child_process");
     const r = spawnSync("lsof", [`-iTCP:${port}`, "-sTCP:LISTEN", "-Pn"], {
       encoding: "utf8",
-      timeout: 1500,
+      timeout: PROBE_TIMEOUTS.lsofMs,
     });
     const out = (r.stdout ?? "").trim();
     if (!out) return "(lsof returned no listeners)";
@@ -790,7 +807,7 @@ async function getListeningPid(port: number): Promise<number | undefined> {
     const { spawnSync } = await import("node:child_process");
     const r = spawnSync("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
       encoding: "utf8",
-      timeout: 1500,
+      timeout: PROBE_TIMEOUTS.lsofMs,
     });
     const first = (r.stdout ?? "").trim().split(/\s+/)[0];
     const pid = first ? Number.parseInt(first, 10) : Number.NaN;
@@ -867,7 +884,7 @@ async function isPortBound(port: number): Promise<boolean> {
       }
       resolve(v);
     };
-    sock.setTimeout(1500);
+    sock.setTimeout(PROBE_TIMEOUTS.portBindSocketMs);
     sock.once("connect", () => done(true));
     sock.once("error", () => done(false));
     sock.once("timeout", () => done(false));

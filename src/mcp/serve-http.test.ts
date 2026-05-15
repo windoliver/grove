@@ -104,6 +104,14 @@ function buildTestServer(deps: McpDeps, opts: BuildTestServerOptions): TestServe
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
+    // Mirrors production: unauthenticated liveness probe for
+    // service-lifecycle.waitForServiceHealth (issue #219).
+    if (url === "/health" || url.startsWith("/health?")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
     if (url !== "/mcp") {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not found. Use /mcp endpoint." }));
@@ -328,6 +336,20 @@ describe("MCP HTTP session management", () => {
     expect(res.status).toBe(200);
     // No new session created — count should be unchanged
     expect(ctx.sessions.size).toBe(sessionCountBefore);
+  });
+
+  // ---- /health liveness probe (issue #219) --------------------------------
+
+  test("GET /health returns 200 without auth", async () => {
+    const res = await fetch(`${ctx.baseUrl}/health`, { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status?: string };
+    expect(body.status).toBe("ok");
+  });
+
+  test("GET /health?ts=... (with querystring) returns 200", async () => {
+    const res = await fetch(`${ctx.baseUrl}/health?ts=12345`, { method: "GET" });
+    expect(res.status).toBe(200);
   });
 
   // ---- 404 on wrong endpoint ----------------------------------------------
@@ -615,6 +637,16 @@ describe("MCP HTTP shared-secret authentication", () => {
 
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toContain("Unauthorized");
+  });
+
+  test("GET /health bypasses auth (probe must not need a token)", async () => {
+    // service-lifecycle.waitForServiceHealth has no MCP auth token; if
+    // /health required Bearer auth, every spawn would time out at 10s
+    // even with the endpoint defined.
+    const res = await fetch(`${ctx.baseUrl}/health`, { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status?: string };
+    expect(body.status).toBe("ok");
   });
 
   test("POST /mcp with wrong token returns 401", async () => {
