@@ -20,6 +20,7 @@ import { agentTasks } from "./routes/agent-tasks.js";
 import { agents } from "./routes/agents.js";
 import { boardroom } from "./routes/boardroom.js";
 import { bounties } from "./routes/bounties.js";
+import { cas } from "./routes/cas.js";
 import { claims } from "./routes/claims.js";
 import { contributions } from "./routes/contributions.js";
 import { dag } from "./routes/dag.js";
@@ -111,6 +112,7 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   app.route("/api/agent-tasks", agentTasks);
   app.route("/api/boardroom", boardroom);
   app.route("/api/contributions", contributions);
+  app.route("/api/cas", cas);
   app.route("/api/frontier", frontier);
   app.route("/api/search", search);
   app.route("/api/dag", dag);
