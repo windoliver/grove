@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { type CasMutationResult, type CasOpts, casOk } from "../core/cas.js";
+import { type CasMutationResult, type CasOpts, casOk, checkIfMatch } from "../core/cas.js";
 import { StateConflictError } from "../core/errors.js";
 import {
   appendDeletionAudit,
@@ -68,6 +68,18 @@ interface PersistedSessionRecordWithEtag {
 interface DeleteStateSessionWrite {
   readonly session: Session;
   readonly etag: string;
+}
+
+/**
+ * Sentinel returned by writeDeleteStateSessionRecord when the caller's
+ * ifMatch no longer matches the latest persisted resourceVersion after an
+ * etag-conflict retry. Distinct from `undefined` (record disappeared) and
+ * from the success result. The outer deleteSession() converts this into
+ * a `{ kind: "rv-mismatch", current }` CAS result for the caller.
+ */
+interface DeleteStateCasMismatch {
+  readonly kind: "rv-mismatch";
+  readonly current: { readonly resourceVersion: string; readonly generation: number };
 }
 
 export interface NexusSessionStoreOptions {
@@ -230,7 +242,8 @@ export class NexusSessionStore implements SessionStore {
   private async writeDeleteStateSessionRecord(
     session: Session,
     expectedEtag: string,
-  ): Promise<DeleteStateSessionWrite | undefined> {
+    callerIfMatch?: string,
+  ): Promise<DeleteStateSessionWrite | DeleteStateCasMismatch | undefined> {
     let desired = session;
     let etag = expectedEtag;
 
@@ -243,6 +256,21 @@ export class NexusSessionStore implements SessionStore {
         const latest = await this.readPersistedSessionRecordWithEtag(session.id);
         if (latest === undefined) return undefined;
         const latestSession = this.normalizeSessionRecord(latest.persisted).session;
+        // C6 (#304): when the caller supplied an ifMatch, re-check it
+        // against the latest persisted resourceVersion before merging and
+        // retrying. A concurrent updateSession that landed between our
+        // pre-tx snapshot and this retry would have bumped the RV — silently
+        // merging-and-retrying would let a stale CAS token succeed. Surface
+        // the mismatch back to deleteSession so it can return rv-mismatch.
+        if (callerIfMatch !== undefined) {
+          const mismatch = checkIfMatch(latestSession.resourceVersion, callerIfMatch);
+          if (mismatch !== null) {
+            return {
+              kind: "rv-mismatch",
+              current: mismatch.current,
+            };
+          }
+        }
         const latestFinalizers = resolveDeleteFinalizers(latest.persisted.finalizers);
         const desiredFinalizers = new Set(desired.finalizers);
         const deletionAudit = [...(latestSession.deletionAudit ?? [])];
@@ -276,6 +304,17 @@ export class NexusSessionStore implements SessionStore {
       reason: "delete state write conflict",
       message: `Could not persist delete state for session '${session.id}' after concurrent updates; retry the delete request`,
     });
+  }
+
+  /**
+   * Type guard: did writeDeleteStateSessionRecord return a CAS-mismatch
+   * sentinel (caller's ifMatch is stale)? The other two return paths are
+   * the success record and `undefined` (record disappeared).
+   */
+  private isDeleteStateCasMismatch(
+    value: DeleteStateSessionWrite | DeleteStateCasMismatch | undefined,
+  ): value is DeleteStateCasMismatch {
+    return value !== undefined && "kind" in value && value.kind === "rv-mismatch";
   }
 
   private async readContributionLinks(
@@ -474,18 +513,8 @@ export class NexusSessionStore implements SessionStore {
     // atomic — we keep using it via writeSessionRecord(..., ifMatch: etag),
     // but a mismatch on resourceVersion is a hard fail surfaced to the
     // caller, distinct from a transient etag race.
-    if (opts?.ifMatch !== undefined) {
-      const currentRv = String(existing.resourceVersion ?? 1);
-      if (currentRv !== opts.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: existing.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    const updateMismatch = checkIfMatch(existing.resourceVersion, opts?.ifMatch);
+    if (updateMismatch) return updateMismatch;
 
     const nextRv = (existing.resourceVersion ?? 1) + 1;
     const updated: Session = { ...existing, ...updates, resourceVersion: nextRv };
@@ -543,19 +572,12 @@ export class NexusSessionStore implements SessionStore {
 
     // C6 (#304): public CAS compares ifMatch against persisted resourceVersion
     // BEFORE running any finalizers or deletes. The etag continues to gate
-    // intermediate writes for atomicity (delete-state recovery).
-    if (options?.ifMatch !== undefined) {
-      const currentRv = String(session.resourceVersion ?? 1);
-      if (currentRv !== options.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: session.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    // intermediate writes for atomicity (delete-state recovery), and the
+    // retry loop inside writeDeleteStateSessionRecord re-checks this same
+    // ifMatch on each etag-conflict refetch so a concurrent updateSession
+    // landing mid-delete still surfaces as rv-mismatch.
+    const deleteMismatch = checkIfMatch(session.resourceVersion, options?.ifMatch);
+    if (deleteMismatch) return deleteMismatch;
 
     const ownerRef = ownerRefForSession(session);
     const startingFinalizers = resolveDeleteFinalizers(persisted.finalizers);
@@ -573,7 +595,14 @@ export class NexusSessionStore implements SessionStore {
           warning,
         }),
       };
-      const terminatingEtag = await this.writeDeleteStateSessionRecord(terminating, currentEtag);
+      const terminatingEtag = await this.writeDeleteStateSessionRecord(
+        terminating,
+        currentEtag,
+        options?.ifMatch,
+      );
+      if (this.isDeleteStateCasMismatch(terminatingEtag)) {
+        return { kind: "rv-mismatch", current: terminatingEtag.current };
+      }
       if (terminatingEtag === undefined) {
         return casOk({
           sessionId: id,
@@ -619,7 +648,14 @@ export class NexusSessionStore implements SessionStore {
       deletionTimestamp,
       deletionAudit: session.deletionAudit ?? [],
     };
-    const initialDeleteWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
+    const initialDeleteWrite = await this.writeDeleteStateSessionRecord(
+      current,
+      currentEtag,
+      options?.ifMatch,
+    );
+    if (this.isDeleteStateCasMismatch(initialDeleteWrite)) {
+      return { kind: "rv-mismatch", current: initialDeleteWrite.current };
+    }
     if (initialDeleteWrite === undefined) {
       return casOk({
         sessionId: id,
@@ -662,7 +698,14 @@ export class NexusSessionStore implements SessionStore {
         ...current,
         finalizers: current.finalizers.filter((value) => value !== finalizer),
       };
-      const nextWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
+      const nextWrite = await this.writeDeleteStateSessionRecord(
+        current,
+        currentEtag,
+        options?.ifMatch,
+      );
+      if (this.isDeleteStateCasMismatch(nextWrite)) {
+        return { kind: "rv-mismatch", current: nextWrite.current };
+      }
       if (nextWrite === undefined) {
         return casOk({
           sessionId: id,

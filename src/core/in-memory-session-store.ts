@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type CasMutationResult, type CasOpts, casOk } from "./cas.js";
+import { type CasMutationResult, type CasOpts, casOk, checkIfMatch } from "./cas.js";
 import {
   appendDeletionAudit,
   DEFAULT_SESSION_FINALIZERS,
@@ -58,18 +58,8 @@ export class InMemorySessionStore implements SessionStore {
     const existing = this.sessions[idx];
     if (!existing) return casOk(undefined);
 
-    if (opts?.ifMatch !== undefined) {
-      const currentRv = String(existing.resourceVersion ?? 1);
-      if (currentRv !== opts.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: existing.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    const mismatch = checkIfMatch(existing.resourceVersion, opts?.ifMatch);
+    if (mismatch) return mismatch;
 
     const updated: Session = {
       ...existing,
@@ -123,18 +113,8 @@ export class InMemorySessionStore implements SessionStore {
       return casOk({ sessionId: id, deleted: false, forced: false, blockers: [] });
     }
 
-    if (options?.ifMatch !== undefined) {
-      const currentRv = String(existing.resourceVersion ?? 1);
-      if (currentRv !== options.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: existing.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    const mismatch = checkIfMatch(existing.resourceVersion, options?.ifMatch);
+    if (mismatch) return mismatch;
 
     const warning =
       options?.force === true
@@ -171,18 +151,8 @@ export class InMemorySessionStore implements SessionStore {
     const existing = this.sessions[idx];
     if (!existing) return casOk(undefined);
 
-    if (opts?.ifMatch !== undefined) {
-      const currentRv = String(existing.resourceVersion ?? 1);
-      if (currentRv !== opts.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: existing.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    const mismatch = checkIfMatch(existing.resourceVersion, opts?.ifMatch);
+    if (mismatch) return mismatch;
 
     const updated: Session = {
       ...existing,

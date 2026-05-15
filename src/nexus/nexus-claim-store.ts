@@ -9,7 +9,7 @@
  * - Active index:  /zones/{zoneId}/indexes/claims/active/{targetRef}/{claimId}
  */
 
-import type { CasMutationResult, CasOpts } from "../core/cas.js";
+import { type CasMutationResult, type CasOpts, checkIfMatch } from "../core/cas.js";
 import {
   computeLeaseDuration,
   DEFAULT_LEASE_DURATION_MS,
@@ -287,18 +287,12 @@ export class NexusClaimStore implements ClaimStore {
 
     // C6 (#304): Compare-and-set on the persisted spec resource_version.
     // Only applies on UPDATE. Mismatch returns rv-mismatch without writing.
-    if (opts?.ifMatch !== undefined) {
-      const currentRv = String(existingDocument.spec.resourceVersion ?? 1);
-      if (currentRv !== opts.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: existingDocument.spec.generation,
-          },
-        };
-      }
-    }
+    const specMismatch = checkIfMatch(
+      existingDocument.spec.resourceVersion,
+      opts?.ifMatch,
+      existingDocument.spec.generation,
+    );
+    if (specMismatch) return specMismatch;
 
     const updatedDocument: ClaimDocument = {
       spec: {
@@ -378,21 +372,14 @@ export class NexusClaimStore implements ClaimStore {
     }
 
     // C6 (#304): Compare-and-set on the persisted status resource_version.
-    if (opts?.ifMatch !== undefined) {
-      const currentRv = String(
-        existing.document.status.resourceVersion ?? existing.document.status.revision ?? 1,
-      );
-      if (currentRv !== opts.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            // Status has no generation of its own; surface the spec's.
-            generation: existing.document.spec.generation,
-          },
-        };
-      }
-    }
+    // Pre-v16 documents may still surface via legacy `revision`; preserve the
+    // fallback. Status has no generation of its own; surface the spec's.
+    const statusMismatch = checkIfMatch(
+      existing.document.status.resourceVersion ?? existing.document.status.revision,
+      opts?.ifMatch,
+      existing.document.spec.generation,
+    );
+    if (statusMismatch) return statusMismatch;
 
     const updatedDocument: ClaimDocument = {
       spec: existing.document.spec,

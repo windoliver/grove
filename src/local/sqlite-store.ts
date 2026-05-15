@@ -63,7 +63,7 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-import type { CasMutationResult, CasOpts } from "../core/cas.js";
+import { type CasMutationResult, type CasOpts, checkIfMatch } from "../core/cas.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
@@ -2034,20 +2034,21 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     spec: AgentTaskSpecRecord,
     opts?: CasOpts,
   ): Promise<CasMutationResult<AgentTaskView>> => {
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(spec.id);
 
       // C6 (#304): Compare-and-set on the persisted spec resource_version.
       // Only applies on UPDATE (existing !== null). Inserts have no version
       // to compare against and proceed unconditionally.
-      if (opts?.ifMatch !== undefined && existing !== null) {
-        const currentRv = String(existing.spec.resourceVersion ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            generation: existing.spec.generation,
-          };
+      if (existing !== null) {
+        const cas = checkIfMatch(
+          existing.spec.resourceVersion,
+          opts?.ifMatch,
+          existing.spec.generation,
+        );
+        if (cas !== null) {
+          mismatch = cas;
           return;
         }
       }
@@ -2101,7 +2102,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     tx.immediate();
 
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
 
     const view = this.readAgentTask(spec.id);
@@ -2173,7 +2174,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     assignments.push("resource_version = resource_version + 1");
     params.push(taskId);
 
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(taskId);
       if (existing === null) {
@@ -2185,16 +2186,16 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
       }
 
       // C6 (#304): Compare-and-set on the persisted status resource_version.
-      if (opts?.ifMatch !== undefined) {
-        const currentRv = String(existing.status.resourceVersion ?? existing.status.revision ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            // Status has no generation of its own; surface the spec's.
-            generation: existing.spec.generation,
-          };
-          return null;
-        }
+      // Pre-v16 rows can have resourceVersion === undefined while revision is
+      // set; fall through to revision so legacy data stays comparable.
+      const cas = checkIfMatch(
+        existing.status.resourceVersion ?? existing.status.revision,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return null;
       }
 
       this.db
@@ -2208,7 +2209,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
 
     const view = tx.immediate();
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
     if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
     return { kind: "ok", view };
@@ -2363,20 +2364,21 @@ export class SqliteClaimStore implements ClaimStore {
     this.validateSpecContext(spec);
 
     let op: "ADDED" | "MODIFIED" = "MODIFIED";
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<ClaimView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(spec.id);
 
       // C6 (#304): Compare-and-set on the persisted spec resource_version.
       // Only applies on UPDATE (existing !== null). Inserts have no version
       // to compare against and proceed unconditionally.
-      if (opts?.ifMatch !== undefined && existing !== null) {
-        const currentRv = String(existing.spec.resourceVersion ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            generation: existing.spec.generation,
-          };
+      if (existing !== null) {
+        const cas = checkIfMatch(
+          existing.spec.resourceVersion,
+          opts?.ifMatch,
+          existing.spec.generation,
+        );
+        if (cas !== null) {
+          mismatch = cas;
           return;
         }
       }
@@ -2475,7 +2477,7 @@ export class SqliteClaimStore implements ClaimStore {
     tx.immediate();
 
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
 
     const view = this.readClaimView(spec.id);
@@ -2530,7 +2532,7 @@ export class SqliteClaimStore implements ClaimStore {
     assignments.push("resource_version = resource_version + 1");
     params.push(claimId);
 
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<ClaimView> | null = null;
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(claimId);
       if (existing === null) {
@@ -2542,17 +2544,17 @@ export class SqliteClaimStore implements ClaimStore {
       }
 
       // C6 (#304): Compare-and-set on the persisted status resource_version.
-      if (opts?.ifMatch !== undefined) {
-        const currentRv = String(existing.status.resourceVersion ?? existing.status.revision ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            // Surface the spec's generation — status has no generation of its
-            // own; modals show spec.generation alongside status RV.
-            generation: existing.spec.generation,
-          };
-          return null;
-        }
+      // Pre-v16 rows may still surface via legacy `revision`; preserve the
+      // fallback. The spec's generation is surfaced alongside status RV so
+      // modals can show both columns.
+      const cas = checkIfMatch(
+        existing.status.resourceVersion ?? existing.status.revision,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return null;
       }
 
       const nowIso = new Date().toISOString();
@@ -2594,7 +2596,7 @@ export class SqliteClaimStore implements ClaimStore {
 
     const view = tx.immediate();
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
     if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
     this.onClaimWrite?.("MODIFIED", claimViewToClaim(view));

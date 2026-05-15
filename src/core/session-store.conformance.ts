@@ -463,6 +463,28 @@ export function sessionStoreConformance(
           expect(result.view.blockers.length).toBeGreaterThan(0);
         }
       });
+
+      test("deleteSession with merged-options carrying both ifMatch and force returns rv-mismatch without force-deleting", async () => {
+        // Regression guard for the merged-options pattern (SessionDeleteOptions
+        // & CasOpts). A caller spread-pulling { ...userOpts, force: true } that
+        // accidentally carries an ifMatch must surface a rv-mismatch, not
+        // silently force-delete and lose the user's CAS protection.
+        const session = await store.createSession({ goal: "cas force spread footgun" });
+        // Bump RV with an unrelated update so the original RV is now stale.
+        const bumped = await store.updateSession(session.id, { status: "completed" });
+        expect(bumped.kind).toBe("ok");
+        const staleRv = String(session.resourceVersion ?? 1);
+
+        const result = await store.deleteSession(session.id, {
+          force: true,
+          actor: "test",
+          ifMatch: staleRv,
+        });
+        expect(result.kind).toBe("rv-mismatch");
+        // Verify no force-delete side effects: session still exists.
+        const stillThere = await store.getSession(session.id);
+        expect(stillThere).toBeDefined();
+      });
     });
   });
 }

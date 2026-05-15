@@ -135,6 +135,39 @@ export function rvComposite(specRv: number | undefined, statusRv: number | undef
   return (specRv ?? 1) + (statusRv ?? 1) - 1;
 }
 
+/**
+ * Compute a `rv-mismatch` result if `ifMatch` is supplied and doesn't match
+ * the persisted `existingRv`. Returns `null` if there's no mismatch (either
+ * `ifMatch` is undefined, or it matches), letting callers continue to the
+ * write path. Centralizes the CAS-check construction so every CAS-aware
+ * store method uses identical mismatch payload shape.
+ *
+ * For entities with a single RV column (sessions, goals), pass the same
+ * value for both args. For spec/status-split entities (claims, agent-tasks),
+ * pass the relevant row's RV plus an explicit `generation`.
+ *
+ * @param existingRv the persisted resource_version value (number)
+ * @param ifMatch the caller-supplied ifMatch token (string | undefined)
+ * @param generation optional generation field for the mismatch payload;
+ *                   defaults to `existingRv ?? 1`
+ */
+export function checkIfMatch(
+  existingRv: number | undefined,
+  ifMatch: string | undefined,
+  generation?: number,
+): CasMismatchResult | null {
+  if (ifMatch === undefined) return null;
+  const currentRv = String(existingRv ?? 1);
+  if (currentRv === ifMatch) return null;
+  return {
+    kind: "rv-mismatch",
+    current: {
+      resourceVersion: currentRv,
+      generation: generation ?? existingRv ?? 1,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Content-Addressable Storage (CAS) protocol
 // ---------------------------------------------------------------------------

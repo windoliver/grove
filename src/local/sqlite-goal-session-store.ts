@@ -15,7 +15,7 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
-import type { CasMutationResult, CasOpts } from "../core/cas.js";
+import { type CasMutationResult, type CasOpts, checkIfMatch } from "../core/cas.js";
 import type { GroveContract } from "../core/contract.js";
 import type { DeletionAuditEvent, OwnerRef, SessionFinalizer } from "../core/lifecycle-metadata.js";
 import {
@@ -708,7 +708,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const setAt = new Date().toISOString();
     const acceptanceJson = JSON.stringify(acceptance);
 
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<GoalData> | null = null;
     let nextRv = 1;
 
     const tx = this.db.transaction(() => {
@@ -728,16 +728,10 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         return;
       }
 
-      if (opts?.ifMatch !== undefined) {
-        const currentRv = String(existing.resource_version ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            // Goals have no separate generation column; surface RV for both.
-            generation: existing.resource_version ?? 1,
-          };
-          return;
-        }
+      const cas = checkIfMatch(existing.resource_version, opts?.ifMatch);
+      if (cas !== null) {
+        mismatch = cas;
+        return;
       }
 
       nextRv = (existing.resource_version ?? 1) + 1;
@@ -753,7 +747,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     tx();
 
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
 
     return {
@@ -971,7 +965,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       return { kind: "ok", view: existing };
     }
 
-    let mismatch: { resourceVersion: string; generation: number } | null = null;
+    let mismatch: CasMutationResult<Session | undefined> | null = null;
     let updatedView: Session | undefined;
 
     const tx = this.db.transaction(() => {
@@ -982,15 +976,10 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         return;
       }
 
-      if (opts?.ifMatch !== undefined) {
-        const currentRv = String(existingRow.resource_version ?? 1);
-        if (currentRv !== opts.ifMatch) {
-          mismatch = {
-            resourceVersion: currentRv,
-            generation: existingRow.resource_version ?? 1,
-          };
-          return;
-        }
+      const cas = checkIfMatch(existingRow.resource_version, opts?.ifMatch);
+      if (cas !== null) {
+        mismatch = cas;
+        return;
       }
 
       const nextRv = (existingRow.resource_version ?? 1) + 1;
@@ -1040,7 +1029,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     tx();
 
     if (mismatch !== null) {
-      return { kind: "rv-mismatch", current: mismatch };
+      return mismatch;
     }
     return { kind: "ok", view: updatedView };
   };
@@ -1104,23 +1093,11 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       };
     }
 
-    // C6 (#304): If the caller supplied an `ifMatch`, compare against the
-    // persisted resource_version BEFORE running any finalizers or deleting
-    // rows. Delete is a "tombstone" — there's nothing to bump-on-write on
-    // success, but a stale token still means the caller saw a session view
-    // that's no longer current.
-    if (options?.ifMatch !== undefined) {
-      const currentRv = String(session.resourceVersion ?? 1);
-      if (currentRv !== options.ifMatch) {
-        return {
-          kind: "rv-mismatch",
-          current: {
-            resourceVersion: currentRv,
-            generation: session.resourceVersion ?? 1,
-          },
-        };
-      }
-    }
+    // C6 (#304): the CAS check itself must run INSIDE each write transaction
+    // so the resource_version read can't be invalidated by a concurrent
+    // updateSession between read and write. The not-found early-return above
+    // is idempotent and safe outside the tx. See updateSession() for the same
+    // closure-captured-mismatch pattern.
 
     const ownerRef = ownerRefForSession(session);
     const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
@@ -1136,8 +1113,20 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       const auditEvent = auditTrail.at(-1);
       const cleanupErrors: string[] = [];
       const pendingClaimWrites: PendingClaimWrite[] = [];
+      let casMismatch: CasMutationResult<SessionDeleteResult> | null = null;
 
       const forceDeleteTx = this.db.transaction(() => {
+        // Re-read RV inside the tx so a concurrent updateSession can't slip
+        // between the pre-tx snapshot and the DELETE.
+        const fresh = this.db
+          .prepare("SELECT resource_version FROM sessions WHERE session_id = ?")
+          .get(id) as { resource_version: number } | null;
+        if (fresh === null) return;
+        const mismatch = checkIfMatch(fresh.resource_version, options?.ifMatch);
+        if (mismatch !== null) {
+          casMismatch = mismatch;
+          return;
+        }
         try {
           this.releaseOwnedClaimsSync(ownerRef, pendingClaimWrites);
           this.deleteTerminalOwnedClaimsSync(ownerRef, pendingClaimWrites);
@@ -1176,6 +1165,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
       });
       forceDeleteTx.immediate();
+      if (casMismatch !== null) return casMismatch;
       this.flushPendingClaimWrites(pendingClaimWrites);
       return {
         kind: "ok",
@@ -1195,10 +1185,33 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const remainingFinalizers = [...startingFinalizers];
     const pendingClaimWrites: PendingClaimWrite[] = [];
     let pendingDeleteState: PendingSessionDeleteState = { deleted: true, blockers: [] };
+    let casMismatch: CasMutationResult<SessionDeleteResult> | null = null;
     const closeRuntimePending =
       this.closeRuntime !== undefined && startingFinalizers.includes(Finalizer.CloseRuntime);
     try {
       this.runSessionDeleteTransaction(id, deletionTimestamp, remainingFinalizers, () => {
+        // C6 (#304): re-check ifMatch INSIDE the transaction. The pre-tx
+        // getSession snapshot is stale by the time we open the tx if any
+        // concurrent updateSession landed in between. Skipping the write on
+        // mismatch keeps the deletion_timestamp/finalizers_json UPDATE that
+        // runSessionDeleteTransaction already issued from sticking — surface
+        // via a closure-captured mismatch and let the outer logic translate
+        // it into a rv-mismatch result. We tolerate the audit-column update
+        // already applied in this tx because it's idempotent (COALESCE on
+        // deletion_timestamp + finalizers_json mirrors current state).
+        if (options?.ifMatch !== undefined) {
+          const fresh = this.db
+            .prepare("SELECT resource_version FROM sessions WHERE session_id = ?")
+            .get(id) as { resource_version: number } | null;
+          if (fresh !== null) {
+            const mismatch = checkIfMatch(fresh.resource_version, options.ifMatch);
+            if (mismatch !== null) {
+              casMismatch = mismatch;
+              return;
+            }
+          }
+        }
+
         for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
           if (!remainingFinalizers.includes(finalizer)) continue;
           if (closeRuntimePending && finalizer === Finalizer.CloseRuntime) break;
@@ -1249,6 +1262,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         },
       };
     }
+    if (casMismatch !== null) return casMismatch;
     this.flushPendingClaimWrites(pendingClaimWrites);
     if (!pendingDeleteState.deleted) {
       return {
