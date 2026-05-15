@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { expectOk } from "../../../src/core/cas.js";
 import { runClaimStoreTests } from "../../../src/core/claim-store.conformance.js";
 import { StateConflictError } from "../../../src/core/errors.js";
 import { makeAgent, makeClaim } from "../../../src/core/test-helpers.js";
@@ -177,22 +178,26 @@ describe("NexusClaimStore adapter-specific", () => {
   });
 
   test("patchClaimStatus preserves spec fields in Nexus compatibility storage", async () => {
-    const created = await store.putClaimSpec({
-      id: "nexus-split",
-      roleName: "coder",
-      platform: "codex",
-      targetRef: "target-nexus-split",
-      agent: { agentId: "agent-nexus", role: "coder", platform: "codex" },
-      intentSummary: "nexus split",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      generation: 1,
-    });
+    const created = expectOk(
+      await store.putClaimSpec({
+        id: "nexus-split",
+        roleName: "coder",
+        platform: "codex",
+        targetRef: "target-nexus-split",
+        agent: { agentId: "agent-nexus", role: "coder", platform: "codex" },
+        intentSummary: "nexus split",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+      }),
+    );
 
-    const patched = await store.patchClaimStatus("nexus-split", {
-      phase: "completed",
-      observedGeneration: created.spec.generation,
-      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
-    });
+    const patched = expectOk(
+      await store.patchClaimStatus("nexus-split", {
+        phase: "completed",
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+      }),
+    );
 
     expect(patched.spec.intentSummary).toBe("nexus split");
     expect(patched.spec.generation).toBe(created.spec.generation);
@@ -242,14 +247,16 @@ describe("NexusClaimStore adapter-specific", () => {
   });
 
   test("legacy heartbeat and release preserve split-only status fields", async () => {
-    const created = await store.putClaimSpec({
-      id: "split-status-preserve",
-      targetRef: "target-split-status-preserve",
-      agent: makeAgent({ agentId: "agent-split-status-preserve" }),
-      intentSummary: "preserve split-only status fields",
-      createdAt: new Date().toISOString(),
-      generation: 1,
-    });
+    const created = expectOk(
+      await store.putClaimSpec({
+        id: "split-status-preserve",
+        targetRef: "target-split-status-preserve",
+        agent: makeAgent({ agentId: "agent-split-status-preserve" }),
+        intentSummary: "preserve split-only status fields",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      }),
+    );
     await store.patchClaimStatus("split-status-preserve", {
       observedGeneration: created.spec.generation,
       agentSessionId: "session-preserved",
@@ -311,46 +318,54 @@ describe("NexusClaimStore adapter-specific", () => {
     const oldTargetClaims = await store.activeClaims("target-before-move");
     expect(oldTargetClaims.map((claim) => claim.claimId)).not.toContain("moved-active");
 
-    const replacement = await store.putClaimSpec({
-      id: "old-target-replacement",
-      targetRef: "target-before-move",
-      agent: makeAgent({ agentId: "agent-old-target-replacement" }),
-      intentSummary: "replacement",
-      createdAt: new Date().toISOString(),
-      generation: 1,
-    });
+    const replacement = expectOk(
+      await store.putClaimSpec({
+        id: "old-target-replacement",
+        targetRef: "target-before-move",
+        agent: makeAgent({ agentId: "agent-old-target-replacement" }),
+        intentSummary: "replacement",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      }),
+    );
     expect(replacement.spec.id).toBe("old-target-replacement");
   });
 
   test("putClaimSpec active move releases the old target and reports only the new target", async () => {
-    const created = await store.putClaimSpec({
-      id: "normal-active-move",
-      targetRef: "target-normal-move-old",
-      agent: makeAgent({ agentId: "agent-normal-active-move" }),
-      intentSummary: "before normal move",
-      createdAt: new Date().toISOString(),
-      generation: 1,
-    });
+    const created = expectOk(
+      await store.putClaimSpec({
+        id: "normal-active-move",
+        targetRef: "target-normal-move-old",
+        agent: makeAgent({ agentId: "agent-normal-active-move" }),
+        intentSummary: "before normal move",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      }),
+    );
 
-    const moved = await store.putClaimSpec({
-      ...created.spec,
-      targetRef: "target-normal-move-new",
-      intentSummary: "after normal move",
-    });
+    const moved = expectOk(
+      await store.putClaimSpec({
+        ...created.spec,
+        targetRef: "target-normal-move-new",
+        intentSummary: "after normal move",
+      }),
+    );
 
     const oldTargetClaims = await store.activeClaims("target-normal-move-old");
     const newTargetClaims = await store.activeClaims("target-normal-move-new");
     expect(oldTargetClaims.map((claim) => claim.claimId)).not.toContain("normal-active-move");
     expect(newTargetClaims.map((claim) => claim.claimId)).toContain("normal-active-move");
 
-    const oldReplacement = await store.putClaimSpec({
-      id: "normal-move-old-replacement",
-      targetRef: "target-normal-move-old",
-      agent: makeAgent({ agentId: "agent-normal-move-old-replacement" }),
-      intentSummary: "old target replacement",
-      createdAt: new Date().toISOString(),
-      generation: 1,
-    });
+    const oldReplacement = expectOk(
+      await store.putClaimSpec({
+        id: "normal-move-old-replacement",
+        targetRef: "target-normal-move-old",
+        agent: makeAgent({ agentId: "agent-normal-move-old-replacement" }),
+        intentSummary: "old target replacement",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      }),
+    );
     expect(moved.spec.targetRef).toBe("target-normal-move-new");
     expect(oldReplacement.spec.id).toBe("normal-move-old-replacement");
   });
@@ -492,14 +507,16 @@ describe("NexusClaimStore adapter-specific", () => {
       retryMaxAttempts: 1,
     });
     try {
-      const created = await rollbackStore.putClaimSpec({
-        id: "rollback-read-fail",
-        targetRef: "rollback-read-fail-old",
-        agent: makeAgent({ agentId: "agent-rollback-read-fail" }),
-        intentSummary: "before rollback read failure",
-        createdAt: new Date().toISOString(),
-        generation: 1,
-      });
+      const created = expectOk(
+        await rollbackStore.putClaimSpec({
+          id: "rollback-read-fail",
+          targetRef: "rollback-read-fail-old",
+          agent: makeAgent({ agentId: "agent-rollback-read-fail" }),
+          intentSummary: "before rollback read failure",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      );
 
       await expect(
         rollbackStore.putClaimSpec({
@@ -552,14 +569,16 @@ describe("NexusClaimStore adapter-specific", () => {
       retryMaxAttempts: 1,
     });
     try {
-      const created = await moveStore.putClaimSpec({
-        id: "move-race",
-        targetRef: "move-race-old",
-        agent: makeAgent({ agentId: "agent-move-race" }),
-        intentSummary: "before race",
-        createdAt: new Date().toISOString(),
-        generation: 1,
-      });
+      const created = expectOk(
+        await moveStore.putClaimSpec({
+          id: "move-race",
+          targetRef: "move-race-old",
+          agent: makeAgent({ agentId: "agent-move-race" }),
+          intentSummary: "before race",
+          createdAt: new Date().toISOString(),
+          generation: 1,
+        }),
+      );
 
       await expect(
         moveStore.putClaimSpec({
