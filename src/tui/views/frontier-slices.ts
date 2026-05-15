@@ -70,8 +70,13 @@ const SCALAR_BADGES: Record<string, (entry: FrontierEntry) => string> = {
 
 /**
  * Structural equality across slice arrays. Compares slice key + entry count
- * + (cid, value) tuples in order. summary deltas don't trigger re-render
- * (purely cosmetic, server-driven).
+ * + (cid, value, summary) tuples in order.
+ *
+ * summary is included because it flows into the spawned-agent's adopt
+ * context: a server-side summary refresh that changes only the summary
+ * (cid + value unchanged) must trigger a re-render so onFrontierEntriesChanged
+ * fires with the fresh text — otherwise pressing 'a' on a row would inject
+ * a stale summary into the new agent's CLAUDE.md.
  */
 export function slicesEqual(a: readonly FrontierSlice[], b: readonly FrontierSlice[]): boolean {
   if (a === b) return true;
@@ -84,7 +89,7 @@ export function slicesEqual(a: readonly FrontierSlice[], b: readonly FrontierSli
     for (let j = 0; j < sa.entries.length; j++) {
       const ea = sa.entries[j] as FrontierEntry;
       const eb = sb.entries[j] as FrontierEntry;
-      if (ea.cid !== eb.cid || ea.value !== eb.value) return false;
+      if (ea.cid !== eb.cid || ea.value !== eb.value || ea.summary !== eb.summary) return false;
     }
   }
   return true;

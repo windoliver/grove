@@ -834,4 +834,17 @@ describe("routeKey — Frontier panel tab nav + adopt", () => {
     routeKey(keyEvent("escape"), actions);
     expect(log.calls).not.toContain("onPaletteClose");
   });
+
+  test("Ctrl+P toggle-OFF dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Ctrl+P toggle-ON dispatches onSpawnPalette (defensively clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onSpawnPalette");
+    expect(log.calls).not.toContain("onPaletteClose");
+  });
 });

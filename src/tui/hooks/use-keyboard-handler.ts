@@ -172,9 +172,13 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
   }
 
-  // Command palette toggle (works in all modes except help)
+  // Command palette toggle (works in all modes except help). Both
+  // dismissal AND opening route through onPaletteClose / onSpawnPalette
+  // (which also clears adoptContext) to ensure a stale adopt target from
+  // a prior 'a'-on-Frontier press cannot leak into the next spawn.
   if (isCtrl && input === "p") {
     if (mode === InputMode.CommandPalette) {
+      actions.onPaletteClose();
       actions.panels.setMode(InputMode.Normal);
     } else {
       actions.onSpawnPalette();

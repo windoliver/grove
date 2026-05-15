@@ -199,4 +199,10 @@ describe("slicesEqual", () => {
     );
     expect(slicesEqual(a, b)).toBe(false);
   });
+
+  test("different summary → false (summary feeds adopt context)", () => {
+    const a = toSlices(makeFrontier({ byAdoption: [{ cid: "x", value: 5, summary: "old" }] }));
+    const b = toSlices(makeFrontier({ byAdoption: [{ cid: "x", value: 5, summary: "new" }] }));
+    expect(slicesEqual(a, b)).toBe(false);
+  });
 });

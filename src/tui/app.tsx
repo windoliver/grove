@@ -712,20 +712,25 @@ export function App({
       if (role?.platform) context.platform = role.platform;
       if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;
+      // Snapshot adoptContext into the spawn-call context, then clear it
+      // synchronously. Two reasons:
+      //  1. Race-safety: if spawn A is in flight and the user starts spawn B
+      //     with a new adoptContext, an async clear in A's success handler
+      //     would clobber B's pending target. Synchronous clear here means
+      //     B's ADOPT_SET runs after A's clear.
+      //  2. Failure path: if spawn rejects, the stale target would otherwise
+      //     leak into the next palette open. The spawn already has its copy
+      //     in `context` regardless of subsequent reducer state.
       if (ks.adoptContext) {
         context.adoptTarget = ks.adoptContext.targetCid;
         context.adoptSummary = ks.adoptContext.summary;
+        dispatch({ type: "ADOPT_CLEAR" });
       }
 
-      const spawnPromise = spawnManager.spawn(agentId, command, parentAgentId, depth, context);
-      spawnPromise
-        .then(() => {
-          if (ks.adoptContext) dispatch({ type: "ADOPT_CLEAR" });
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Spawn failed";
-          showError(msg);
-        });
+      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Spawn failed";
+        showError(msg);
+      });
     },
     [topology, activeClaims, showError, spawnManager, ks.adoptContext],
   );
@@ -758,7 +763,13 @@ export function App({
       panels,
       nav,
       onQuit: handleQuit,
-      onSpawnPalette: () => dispatch({ type: "PALETTE_RESET" }),
+      onSpawnPalette: () => {
+        // Defensive: opening a fresh palette must not inherit a stale adopt
+        // target from a previous 'a'-on-Frontier press that was dismissed
+        // through a path other than onPaletteClose.
+        dispatch({ type: "ADOPT_CLEAR" });
+        dispatch({ type: "PALETTE_RESET" });
+      },
       onPaletteClose: handleCommandPaletteClose,
       onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
       onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
