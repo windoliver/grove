@@ -1,0 +1,152 @@
+import { describe, it, expect } from "bun:test";
+import { hash as blake3Hash } from "blake3";
+import { FederationFetcher } from "./federation.js";
+import type { GossipTransport, PeerInfo } from "../core/gossip/types.js";
+import type { ContentStore } from "../core/cas.js";
+import type { ContributionStore } from "../core/store.js";
+import type { Contribution } from "../core/models.js";
+
+function makePeer(id: string): PeerInfo {
+  return { peerId: id, address: `http://${id}:1`, age: 0, lastSeen: new Date().toISOString() };
+}
+
+function blake3Of(bytes: Uint8Array): string {
+  return `blake3:${blake3Hash(bytes).toString("hex")}`;
+}
+
+class StubTransport implements GossipTransport {
+  constructor(
+    private readonly manifest: Contribution | undefined,
+    private readonly blobs: Map<string, Uint8Array> = new Map(),
+  ) {}
+  exchange = async () => ({}) as never;
+  shuffle = async () => ({}) as never;
+  fetchContribution = async () => this.manifest;
+  fetchArtifact = async (_p: PeerInfo, h: string) => this.blobs.get(h);
+}
+
+class MemContributionStore implements Pick<ContributionStore, "get" | "put"> {
+  readonly map = new Map<string, Contribution>();
+  async get(cid: string) {
+    return this.map.get(cid);
+  }
+  async put(c: Contribution) {
+    this.map.set(c.cid, c);
+    return { kind: "stored" as const, contribution: c };
+  }
+}
+
+class MemCas implements Pick<ContentStore, "put" | "exists" | "get"> {
+  readonly map = new Map<string, Uint8Array>();
+  async put(b: Uint8Array) {
+    const h = blake3Of(b);
+    this.map.set(h, b);
+    return h;
+  }
+  async exists(h: string) {
+    return this.map.has(h);
+  }
+  async get(h: string) {
+    return this.map.get(h);
+  }
+}
+
+describe("FederationFetcher.fetchRemoteContribution", () => {
+  const cid = "blake3:" + "1".repeat(64);
+
+  it("returns already-local when the cid exists locally", async () => {
+    const store = new MemContributionStore();
+    store.map.set(cid, { cid } as Contribution);
+    const fetcher = new FederationFetcher({
+      contributionStore: store as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(undefined),
+      peersFor: () => [],
+    });
+    const result = await fetcher.fetchRemoteContribution(cid);
+    expect(result.kind).toBe("already-local");
+  });
+
+  it("returns no-source when no peer has advertised the cid", async () => {
+    const fetcher = new FederationFetcher({
+      contributionStore: new MemContributionStore() as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(undefined),
+      peersFor: () => [],
+    });
+    const result = await fetcher.fetchRemoteContribution(cid);
+    expect(result.kind).toBe("no-source");
+  });
+
+  it("fetches manifest + artifacts and verifies BLAKE3 before storing", async () => {
+    const artifactBytes = new Uint8Array([1, 2, 3]);
+    const artifactHash = blake3Of(artifactBytes);
+    const manifest: Contribution = {
+      cid,
+      summary: "remote",
+      artifacts: { "out.txt": artifactHash },
+    } as Contribution;
+    const cas = new MemCas();
+    const contribs = new MemContributionStore();
+    const fetcher = new FederationFetcher({
+      contributionStore: contribs as unknown as ContributionStore,
+      cas: cas as unknown as ContentStore,
+      transport: new StubTransport(manifest, new Map([[artifactHash, artifactBytes]])),
+      peersFor: () => [makePeer("A")],
+    });
+    const result = await fetcher.fetchRemoteContribution(cid);
+    expect(result.kind).toBe("ok");
+    expect(contribs.map.has(cid)).toBe(true);
+    expect(cas.map.has(artifactHash)).toBe(true);
+  });
+
+  it("rejects an artifact whose bytes do not match the manifest hash", async () => {
+    const bogus = new Uint8Array([9, 9, 9]);
+    const declared = "blake3:" + "0".repeat(64); // does not match bogus
+    const manifest: Contribution = {
+      cid,
+      summary: "x",
+      artifacts: { "out.txt": declared },
+    } as Contribution;
+    const fetcher = new FederationFetcher({
+      contributionStore: new MemContributionStore() as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(manifest, new Map([[declared, bogus]])),
+      peersFor: () => [makePeer("A")],
+    });
+    const result = await fetcher.fetchRemoteContribution(cid);
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.reason).toMatch(/hash mismatch/i);
+  });
+
+  it("falls back to next peer when the first errors", async () => {
+    const artifactBytes = new Uint8Array([7]);
+    const artifactHash = blake3Of(artifactBytes);
+    const manifest: Contribution = {
+      cid,
+      summary: "x",
+      artifacts: { "a": artifactHash },
+    } as Contribution;
+    let calls = 0;
+    const flakyTransport: GossipTransport = {
+      exchange: async () => ({}) as never,
+      shuffle: async () => ({}) as never,
+      fetchContribution: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("boom");
+        return manifest;
+      },
+      fetchArtifact: async () => artifactBytes,
+    };
+    const contribs = new MemContributionStore();
+    const fetcher = new FederationFetcher({
+      contributionStore: contribs as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: flakyTransport,
+      peersFor: () => [makePeer("A"), makePeer("B")],
+    });
+    const result = await fetcher.fetchRemoteContribution(cid);
+    expect(result.kind).toBe("ok");
+    expect(calls).toBe(2);
+  });
+});

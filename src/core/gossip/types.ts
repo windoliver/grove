@@ -207,6 +207,21 @@ export interface GossipTransport {
   fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined>;
 }
 
+/**
+ * Result of a federation fetch attempt for a remote contribution.
+ *
+ * - `ok` — manifest + artifacts were verified and persisted locally.
+ * - `already-local` — the cid was already present in the local store.
+ * - `no-source` — no peer has advertised this cid via gossip.
+ * - `failed` — every advertising peer errored; `reason` is an aggregated
+ *   diagnostic string (peer id + error) for logging.
+ */
+export type FetchContributionResult =
+  | { readonly kind: "ok"; readonly cid: string }
+  | { readonly kind: "already-local"; readonly cid: string }
+  | { readonly kind: "no-source"; readonly cid: string }
+  | { readonly kind: "failed"; readonly cid: string; readonly reason: string };
+
 /** Protocol for the gossip service. */
 export interface GossipService {
   /** Start the gossip background loop. */
@@ -238,4 +253,13 @@ export interface GossipService {
    * Order is unspecified — callers must not rely on it.
    */
   peersAdvertising(cid: string): readonly PeerInfo[];
+  /**
+   * Pull a contribution (and its artifacts) from any peer that has advertised
+   * this CID via gossip. Verifies BLAKE3 hashes on every artifact before
+   * persisting. Returns `{ kind: "ok", cid }` when the local store now contains
+   * the contribution, `{ kind: "already-local" }` when it was already present,
+   * `{ kind: "no-source" }` when no peer has advertised it, and
+   * `{ kind: "failed", reason }` when all advertising peers errored.
+   */
+  fetchRemoteContribution(cid: string): Promise<FetchContributionResult>;
 }

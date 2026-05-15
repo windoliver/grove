@@ -26,8 +26,10 @@ import {
   MAX_GOSSIP_FRONTIER_ENTRIES,
   MAX_MERGED_FRONTIER_ENTRIES,
 } from "../core/constants.js";
+import type { ContentStore } from "../core/cas.js";
 import type { FrontierCalculator, FrontierEntry } from "../core/frontier.js";
 import {
+  type FetchContributionResult,
   type FrontierDigestEntry,
   type GossipConfig,
   type GossipEvent,
@@ -44,7 +46,9 @@ import {
   type ShuffleRequest,
   type ShuffleResponse,
 } from "../core/gossip/types.js";
+import type { ContributionStore } from "../core/store.js";
 import { CyclonPeerSampler } from "./cyclon.js";
+import { FederationFetcher } from "./federation.js";
 
 /** Maximum age of a signed gossip message before it is rejected as a potential replay. */
 const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
@@ -178,6 +182,13 @@ export class DefaultGossipService implements GossipService {
   private readonly now: () => number;
   /** Per-peer monotonic timestamp (ms) for replay detection. */
   private readonly peerLastTimestamp = new Map<string, number>();
+  /**
+   * Federation fetcher for pulling remote contributions over gossip.
+   * Undefined when the gossip service was constructed without a local
+   * contribution store + CAS (e.g., in unit tests that only exercise
+   * peer sampling and frontier merge).
+   */
+  private readonly federation: FederationFetcher | undefined;
 
   constructor(opts: {
     config: GossipConfig;
@@ -192,6 +203,10 @@ export class DefaultGossipService implements GossipService {
     getActiveClaimCount?: () => Promise<number>;
     /** Maximum agent slots available on this peer (default: 8). */
     maxAgentSlots?: number;
+    /** Local contribution store; required to enable federation features. */
+    contributionStore?: ContributionStore;
+    /** Local CAS; required to enable federation features. */
+    cas?: ContentStore;
   }) {
     this.config = {
       peerId: opts.config.peerId,
@@ -242,6 +257,17 @@ export class DefaultGossipService implements GossipService {
     if (opts.initialFrontier && opts.initialFrontier.length > 0) {
       this.remoteFrontier = [...opts.initialFrontier];
     }
+
+    // Federation: only enabled when caller provided both store and CAS.
+    this.federation =
+      opts.contributionStore && opts.cas
+        ? new FederationFetcher({
+            contributionStore: opts.contributionStore,
+            cas: opts.cas,
+            transport: opts.transport,
+            peersFor: (cid) => this.peersAdvertising(cid),
+          })
+        : undefined;
   }
 
   // -------------------------------------------------------------------------
@@ -481,6 +507,13 @@ export class DefaultGossipService implements GossipService {
     const byPeer = this.advertisements.get(cid);
     if (!byPeer) return [];
     return [...byPeer.values()];
+  }
+
+  async fetchRemoteContribution(cid: string): Promise<FetchContributionResult> {
+    if (!this.federation) {
+      return { kind: "failed", cid, reason: "federation not configured (missing store or cas)" };
+    }
+    return this.federation.fetchRemoteContribution(cid);
   }
 
   // -------------------------------------------------------------------------
