@@ -655,7 +655,7 @@ export function resolveBunExecutable(execPath: string = process.execPath): strin
   return basename(execPath) === "bun" ? execPath : "bun";
 }
 
-function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
+function serviceEnv(name: string, groveDir: string, readinessToken: string): NodeJS.ProcessEnv {
   const port = resolveServicePort(name);
   // Propagate the server's bound port (as resolved by the parent — the same
   // value the server child receives via PORT) so siblings like the MCP
@@ -668,6 +668,9 @@ function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
     GROVE_DIR: groveDir,
     PORT: String(port),
     GROVE_SERVER_PORT: String(serverPort),
+    // Per-spawn unforgeable readiness proof — child echoes on /health, parent
+    // checks. Foreign listener cannot guess this value (round-4 finding).
+    GROVE_HEALTH_TOKEN: readinessToken,
   };
 }
 
@@ -677,38 +680,43 @@ type OwnedReadiness =
   | { ok: false; kind: "no-listener" }
   | { ok: false; kind: "child-exited" }
   | { ok: false; kind: "owned-by-foreign"; foreignPid: number; owner: string }
-  | { ok: false; kind: "owned-but-unhealthy"; lastStatus: number; lastBody: string };
+  | { ok: false; kind: "owned-but-unhealthy"; lastStatus: number; lastBody: string }
+  | { ok: false; kind: "owned-but-unresponsive"; lastError: string };
 
 /**
- * Race-free readiness check for a spawned service (issue #219, review rounds 2-3).
+ * Race-free readiness check for a spawned service (issue #219, review rounds 2-4).
  *
- * Uses the `Grove-Server-Pid` header that grove-server + grove-mcp-http now
- * include on every /health response. This is strictly stronger than the
- * round-2 lsof bracketing: the response itself proves WHICH process answered.
+ * **Authority model**: the `Grove-Health-Token` header is the canonical
+ * proof. spawnService generates an unpredictable per-spawn token, injects
+ * it into the child via env (`GROVE_HEALTH_TOKEN`), and the child echoes
+ * it on every /health response. A foreign listener cannot guess the token,
+ * so it cannot spoof the readiness signal (round-4 finding: pid header
+ * alone is forgeable on an unauthenticated endpoint).
+ *
+ * `Grove-Server-Pid` is kept as a diagnostic but not as authority.
  *
  * Verdicts:
- *   - ok                    header PID matches spawnedPid AND status is 2xx
- *   - child-exited          spawnedPid no longer alive
- *   - owned-but-unhealthy   header PID matches BUT /health returned non-2xx
- *                           across `OWNED_UNHEALTHY_REPEATS` polls — the
- *                           process is ours, the service is degraded; do NOT
- *                           classify as bind-race
- *   - owned-by-foreign      header PID stayed different across
- *                           `FOREIGN_STABILITY_REPEATS` consecutive polls
- *   - no-listener           deadline exceeded without any /health response
- *
- * Falls back to lsof ONLY when the header is missing (older child build).
- * Closes the round-3 finding that hot-path lsof failures (ENOENT, permission,
- * 800ms timeout under load) silently misclassified healthy children.
+ *   - ok                       header token matches AND status 2xx
+ *   - child-exited             spawnedExit resolved
+ *   - owned-but-unhealthy      token matches BUT /health returned non-2xx
+ *                              across OWNED_UNHEALTHY_REPEATS polls
+ *   - owned-but-unresponsive   token-bearing /health never returned in time,
+ *                              but the listener IS our spawned PID (lsof) —
+ *                              dependency stall; do NOT kill our child
+ *   - owned-by-foreign         a different stable PID held the port AND
+ *                              never echoed the token across
+ *                              FOREIGN_STABILITY_REPEATS samples
+ *   - no-listener              deadline with no listener at all
  */
 async function waitForOwnedReadiness(opts: {
   port: number;
   spawnedPid: number;
   spawnedExit: Promise<number>;
+  readinessToken: string;
   url: string;
   timeoutMs: number;
 }): Promise<OwnedReadiness> {
-  const { spawnedPid, spawnedExit, url, timeoutMs, port } = opts;
+  const { spawnedPid, spawnedExit, readinessToken, url, timeoutMs, port } = opts;
   const deadline = Date.now() + timeoutMs;
   const FOREIGN_STABILITY_REPEATS = 3;
   const OWNED_UNHEALTHY_REPEATS = 4;
@@ -717,66 +725,62 @@ async function waitForOwnedReadiness(opts: {
   let ownedUnhealthySeen = 0;
   let lastStatus = 0;
   let lastBody = "";
-  let exited = false;
-  spawnedExit.then(() => {
-    exited = true;
+  let lastFetchError = "";
+  let exitCode: number | undefined;
+  spawnedExit.then((code) => {
+    exitCode = code;
   });
   let delay = 250;
   while (Date.now() < deadline) {
-    if (exited) return { ok: false, kind: "child-exited" };
+    // Yield once so any already-settled `spawnedExit` resolves its .then
+    // before we make any syscall (round-4 microtask-race fix).
+    await Promise.resolve();
+    if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
     let resp: Response | undefined;
     try {
       resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-    } catch {
-      // not reachable yet — listener not bound, or transient
+    } catch (err) {
+      lastFetchError = (err as Error).message ?? String(err);
       await sleep(delay);
       delay = Math.min(delay * 1.5, 2_000);
       continue;
     }
+    // Re-check exit AFTER the network call settles — the child may have
+    // exited while we awaited the response (round-4 recommendation).
+    await Promise.resolve();
+    if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
+
+    const responseToken = resp.headers.get("Grove-Health-Token");
     const headerPid = parseHeaderPid(resp.headers.get("Grove-Server-Pid"));
-    // Path A: response carried Grove-Server-Pid — authoritative.
-    if (headerPid !== undefined) {
-      if (headerPid !== spawnedPid) {
-        if (headerPid === lastForeignPid) {
-          foreignSeen += 1;
-        } else {
-          lastForeignPid = headerPid;
-          foreignSeen = 1;
-        }
-        if (foreignSeen >= FOREIGN_STABILITY_REPEATS) {
-          const owner = await describePortOwner(port);
-          return { ok: false, kind: "owned-by-foreign", foreignPid: headerPid, owner };
-        }
-      } else {
-        foreignSeen = 0;
-        lastForeignPid = 0;
-        if (resp.ok) return { ok: true };
-        // Owned by us BUT degraded (e.g. grove-server 503 from store error).
-        // Don't conflate with bind-race; track distinctly.
-        lastStatus = resp.status;
-        try {
-          lastBody = (await resp.text()).slice(0, 500);
-        } catch {
-          lastBody = "";
-        }
-        ownedUnhealthySeen += 1;
-        if (ownedUnhealthySeen >= OWNED_UNHEALTHY_REPEATS) {
-          return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
-        }
+
+    // Path A: token matches — authoritatively ours.
+    if (responseToken && responseToken === readinessToken) {
+      foreignSeen = 0;
+      lastForeignPid = 0;
+      if (resp.ok) return { ok: true };
+      lastStatus = resp.status;
+      try {
+        lastBody = (await resp.text()).slice(0, 500);
+      } catch {
+        lastBody = "";
+      }
+      ownedUnhealthySeen += 1;
+      if (ownedUnhealthySeen >= OWNED_UNHEALTHY_REPEATS) {
+        return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
       }
     } else {
-      // Path B: response without Grove-Server-Pid header (older child, or
-      // probe served by a foreign listener that doesn't speak our protocol).
-      // Fall back to lsof, but only as a hint: lsof failure here is NOT
-      // treated as authoritative.
-      if (!resp.ok) {
-        await sleep(delay);
-        delay = Math.min(delay * 1.5, 2_000);
-        continue;
-      }
+      // Path B: no token (or wrong token). Could be a foreign listener
+      // or an old build of our service that doesn't emit the token yet.
+      // Use lsof to attribute, but never let probe failure count as
+      // foreign — only a stable, DIFFERENT pid does.
       const probe = await probeListenerPid(port);
-      if (probe.kind === "pid") {
-        if (probe.pid === spawnedPid) return { ok: true };
+      if (probe.kind === "pid" && probe.pid === spawnedPid && resp.ok) {
+        // Listener IS us — diagnostic header pid likely matches too. Treat
+        // as success only if BOTH lsof says spawnedPid AND status is ok;
+        // this is the legacy-no-token fallback that older builds need.
+        return { ok: true };
+      }
+      if (probe.kind === "pid" && probe.pid !== spawnedPid) {
         if (probe.pid === lastForeignPid) foreignSeen += 1;
         else {
           lastForeignPid = probe.pid;
@@ -786,19 +790,39 @@ async function waitForOwnedReadiness(opts: {
           const owner = await describePortOwner(port);
           return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
         }
+      } else if (headerPid !== undefined && headerPid !== spawnedPid && probe.kind !== "pid") {
+        // lsof unavailable, diagnostic header says foreign — soft signal,
+        // count toward foreign-stability but don't treat as authoritative.
+        if (headerPid === lastForeignPid) foreignSeen += 1;
+        else {
+          lastForeignPid = headerPid;
+          foreignSeen = 1;
+        }
       }
-      // probe.kind === "no-listener" | "unavailable" → indeterminate, keep polling
+      // Other cases: indeterminate, keep polling.
     }
     await sleep(delay);
     delay = Math.min(delay * 1.5, 2_000);
   }
-  // Deadline exceeded.
-  if (exited) return { ok: false, kind: "child-exited" };
+
+  // Deadline exceeded. Classify based on the most recent evidence.
+  await Promise.resolve();
+  if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
   if (ownedUnhealthySeen > 0) {
     return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
   }
   const probe = await probeListenerPid(port);
-  if (probe.kind === "pid" && probe.pid !== spawnedPid) {
+  if (probe.kind === "pid") {
+    if (probe.pid === spawnedPid) {
+      // Listener IS our child but /health never answered with the token
+      // within the deadline — dependency stall, NOT a bind-race. Operator
+      // must investigate the child, not assume the port is being squatted.
+      return {
+        ok: false,
+        kind: "owned-but-unresponsive",
+        lastError: lastFetchError || "no /health response within deadline",
+      };
+    }
     const owner = await describePortOwner(port);
     return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
   }
@@ -851,7 +875,11 @@ async function probeListenerPid(port: number): Promise<ListenerProbe> {
  * Bounded SIGTERM → wait → SIGKILL of a child we spawned. Uses the actual
  * `exited` promise to stop signalling once the child reaps, so a PID reuse
  * (OS recycling the spawned PID before our SIGKILL fires) cannot signal an
- * unrelated user process — round-3 finding.
+ * unrelated user process — round-3 finding, hardened in round 4.
+ *
+ * Both signal sites flush microtasks via `await Promise.resolve()` before
+ * checking the exit flag, so an already-settled `exited` promise reliably
+ * inhibits the signal.
  */
 async function terminateChild(
   pid: number,
@@ -862,6 +890,10 @@ async function terminateChild(
   exited.then(() => {
     isExited = true;
   });
+  // Flush microtask queue so an ALREADY-settled exit promise lights up the
+  // flag before we read it (round 4: .then callbacks aren't synchronous
+  // even when the promise was settled at await-entry).
+  await Promise.resolve();
   if (isExited) return;
   try {
     process.kill(pid, "SIGTERM");
@@ -873,37 +905,13 @@ async function terminateChild(
     sleep(deadlineMs).then(() => "timeout" as const),
   ]);
   if (winner === "exited") return;
-  // Re-check the exit flag after the race — Promise.race resolves on the
-  // first settle but our `.then(() => isExited=true)` above may have run
-  // microseconds later; avoid signalling an exited+reaped child by reuse.
+  await Promise.resolve();
   if (isExited) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
     /* already gone */
   }
-}
-
-/**
- * Poll a /health endpoint until it returns 200 OK or the timeout expires.
- *
- * Uses exponential backoff starting at 250ms. Does not throw on timeout —
- * the caller checks process liveness separately.
- */
-async function waitForServiceHealth(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let delay = 250;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (resp.ok) return;
-    } catch {
-      // not ready yet
-    }
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    delay = Math.min(delay * 1.5, 2_000);
-  }
-  // Timeout — caller will check process.kill(pid, 0) to determine liveness
 }
 
 function waitForChildExit(child: NodeChildProcess): Promise<number> {
@@ -1217,33 +1225,45 @@ async function spawnService(
   try {
     const { spawn: nodeSpawn } = await import("node:child_process");
     const { openSync } = await import("node:fs");
+    const { randomUUID } = await import("node:crypto");
     const logPath = join(groveDir, `${name}.log`);
     const logFd = openSync(logPath, "a");
+    // Per-spawn unforgeable readiness token. Injected via env, echoed by
+    // child on /health, checked by parent in waitForOwnedReadiness. A
+    // foreign listener cannot guess this value, closing the round-4 finding
+    // that a public Pid header alone is spoofable on an unauthenticated
+    // endpoint.
+    const readinessToken = randomUUID();
     const child = nodeSpawn(resolveBunExecutable(), [entryPoint], {
       cwd: join(groveDir, ".."),
       stdio: ["ignore", logFd, logFd],
-      env: serviceEnv(name, groveDir),
+      env: serviceEnv(name, groveDir, readinessToken),
       detached: true,
     });
     const pid = child.pid ?? 0;
     const exited = waitForChildExit(child);
     child.unref();
 
-    // Unified readiness predicate (issue #219 review rounds 2-3). Reads
-    // the Grove-Server-Pid header from /health to confirm the response
-    // came from OUR spawned child, distinguishes owned-but-unhealthy from
-    // bind-race, and uses the child's exit event (not raw PID polling)
-    // for teardown.
+    // Unified readiness predicate (issue #219 review rounds 2-4). Token in
+    // /health header is authoritative; lsof is fallback for legacy builds;
+    // owned-but-unhealthy / owned-but-unresponsive distinguish dependency
+    // problems from bind-races so we don't kill our own healthy child.
     if (port) {
       const readiness = await waitForOwnedReadiness({
         port,
         spawnedPid: pid,
         spawnedExit: exited,
+        readinessToken,
         url: `http://localhost:${port}/health`,
         timeoutMs: SERVICE_HEALTH_TIMEOUT_MS,
       });
       if (!readiness.ok) {
-        await terminateChild(pid, exited);
+        // Only kill the child when WE need to clean it up; if readiness
+        // says the child already exited, signalling its PID risks hitting
+        // a recycled process (round 4 finding).
+        if (readiness.kind !== "child-exited") {
+          await terminateChild(pid, exited);
+        }
         const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
         const detail = (() => {
           switch (readiness.kind) {
@@ -1255,6 +1275,12 @@ async function spawnService(
               return (
                 `${name} bound the port but /health returned ${readiness.lastStatus}; ` +
                 `service is dependency-degraded (not a bind-race). Body: ${readiness.lastBody}`
+              );
+            case "owned-but-unresponsive":
+              return (
+                `${name} bound the port (PID ${pid}) but /health never responded within ` +
+                `${SERVICE_HEALTH_TIMEOUT_MS}ms — dependency stall, not a bind-race. ` +
+                `Last fetch error: ${readiness.lastError}`
               );
             case "no-listener":
               return `no listener bound within ${SERVICE_HEALTH_TIMEOUT_MS}ms`;

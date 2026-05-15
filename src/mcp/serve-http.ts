@@ -1137,16 +1137,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // every fresh spawn waited the full 10s SERVICE_HEALTH_TIMEOUT_MS — the
   // perceived "restart lag" from issue #219.
   //
-  // Grove-Server-Pid header lets the spawner in service-lifecycle.
-  // waitForOwnedReadiness attribute the response to a specific process
-  // without an lsof race — eliminates the host-portability issue where
-  // missing/restricted/slow lsof made the spawner kill its own healthy
-  // child (round 3 finding).
+  // Grove-Server-Pid: diagnostic only.
+  // Grove-Health-Token: authoritative readiness proof — echoes the
+  // GROVE_HEALTH_TOKEN env value the parent injected at spawn time. The
+  // spawner in service-lifecycle.waitForOwnedReadiness checks this against
+  // a per-spawn unguessable token so a foreign listener cannot spoof
+  // readiness on this unauthenticated endpoint (round 4 finding).
   if (url === "/health" || url.startsWith("/health?")) {
-    res.writeHead(200, {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "Grove-Server-Pid": String(process.pid),
-    });
+    };
+    const token = process.env.GROVE_HEALTH_TOKEN;
+    if (token) headers["Grove-Health-Token"] = token;
+    res.writeHead(200, headers);
     res.end(JSON.stringify({ status: "ok" }));
     return;
   }

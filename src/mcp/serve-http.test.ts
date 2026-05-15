@@ -104,10 +104,16 @@ function buildTestServer(deps: McpDeps, opts: BuildTestServerOptions): TestServe
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
-    // Mirrors production: unauthenticated liveness probe for
-    // service-lifecycle.waitForServiceHealth (issue #219).
+    // Mirrors production: unauthenticated liveness probe + Grove-Health-Token
+    // for service-lifecycle.waitForOwnedReadiness (issue #219).
     if (url === "/health" || url.startsWith("/health?")) {
-      res.writeHead(200, { "Content-Type": "application/json" });
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Grove-Server-Pid": String(process.pid),
+      };
+      const token = process.env.GROVE_HEALTH_TOKEN;
+      if (token) headers["Grove-Health-Token"] = token;
+      res.writeHead(200, headers);
       res.end(JSON.stringify({ status: "ok" }));
       return;
     }
