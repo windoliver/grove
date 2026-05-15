@@ -895,37 +895,69 @@ async function probeListenerPid(port: number): Promise<ListenerProbe> {
  * checking the exit flag, so an already-settled `exited` promise reliably
  * inhibits the signal.
  */
+/** Result returned by terminateChild — see function docs. */
+type TerminateResult =
+  | { ok: true; how: "already-exited" | "sigterm" | "sigkill" }
+  | { ok: false; reason: string; stillAlive: boolean };
+
 async function terminateChild(
   pid: number,
   exited: Promise<number>,
   deadlineMs: number = 3_000,
-): Promise<void> {
+): Promise<TerminateResult> {
   let isExited = false;
   exited.then(() => {
     isExited = true;
   });
-  // Flush microtask queue so an ALREADY-settled exit promise lights up the
-  // flag before we read it (round 4: .then callbacks aren't synchronous
-  // even when the promise was settled at await-entry).
   await Promise.resolve();
-  if (isExited) return;
+  if (isExited) return { ok: true, how: "already-exited" };
+
   try {
     process.kill(pid, "SIGTERM");
-  } catch {
-    return; // already gone
+  } catch (err) {
+    // ESRCH = already gone (success); EPERM/EACCES = sandboxed, hopeless.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, how: "already-exited" };
+    return { ok: false, reason: `SIGTERM failed: ${code ?? String(err)}`, stillAlive: true };
   }
+
   const winner = await Promise.race([
     exited.then(() => "exited" as const),
     sleep(deadlineMs).then(() => "timeout" as const),
   ]);
-  if (winner === "exited") return;
+  if (winner === "exited") return { ok: true, how: "sigterm" };
+
   await Promise.resolve();
-  if (isExited) return;
+  if (isExited) return { ok: true, how: "sigterm" };
+
   try {
     process.kill(pid, "SIGKILL");
-  } catch {
-    /* already gone */
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, how: "already-exited" };
+    return { ok: false, reason: `SIGKILL failed: ${code ?? String(err)}`, stillAlive: true };
   }
+
+  // Round 7 postcondition: SIGKILL was DELIVERED, but on macOS/Linux it is
+  // asynchronous — confirm the child actually went away before declaring
+  // success. Otherwise a sandboxed/D-state process can survive the call
+  // and orphan the listener.
+  const sigkillDeadline = Date.now() + 1_500;
+  while (Date.now() < sigkillDeadline) {
+    await Promise.resolve();
+    if (isExited) return { ok: true, how: "sigkill" };
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return { ok: true, how: "sigkill" };
+    }
+    await sleep(50);
+  }
+  return {
+    ok: false,
+    reason: `process ${pid} still alive 1.5s after SIGKILL`,
+    stillAlive: true,
+  };
 }
 
 function waitForChildExit(child: NodeChildProcess): Promise<number> {
@@ -1273,15 +1305,19 @@ async function spawnService(
       });
       if (!readiness.ok) {
         // Teardown policy (round 6): every non-ok verdict EXCEPT
-        // child-exited gets terminated. Round 5 tried to preserve
-        // owned-but-* children for operator inspection, but spawnService
-        // throws and startServices' rollback only sees fulfilled spawn
-        // promises — leaving a non-tracked child running would (a) keep
-        // the port bound and (b) trigger "foreign listener" on the next
-        // grove tui run. The startup log file (`${groveDir}/${name}.log`)
-        // is preserved on disk for post-mortem.
+        // child-exited gets terminated. The startup log file
+        // (`${groveDir}/${name}.log`) is preserved on disk for post-mortem.
+        let cleanupError = "";
         if (readiness.kind !== "child-exited") {
-          await terminateChild(pid, exited);
+          const term = await terminateChild(pid, exited);
+          if (!term.ok) {
+            // Round 7: SIGKILL failed or child survived it. The port stays
+            // bound by an unmanaged PID. Make this LOUD in the error so
+            // operators clean up manually before grove down/up tries again.
+            cleanupError =
+              `\nCLEANUP FAILED: spawned PID ${pid} could not be terminated (${term.reason}). ` +
+              `Port ${port} is leaked. Run: kill -9 ${pid}; lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill -9`;
+          }
         }
         const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
         const detail = (() => {
@@ -1308,7 +1344,7 @@ async function spawnService(
         throw new Error(
           `${name} did not reach readiness on port ${port}: ${detail}\n` +
             `Startup log preserved at: ${join(groveDir, `${name}.log`)}\n` +
-            `Diagnose live state with: lsof -iTCP:${port} -sTCP:LISTEN`,
+            `Diagnose live state with: lsof -iTCP:${port} -sTCP:LISTEN${cleanupError}`,
         );
       }
     } else {

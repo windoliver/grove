@@ -3,9 +3,15 @@
  *
  * Reads .grove/grove.pid, sends SIGTERM to each child PID,
  * waits for graceful shutdown, then cleans up the PID file.
+ *
+ * Round-7 hardening: identity-checks each recorded PID against the
+ * expected listening port before signalling so a PID reused by an
+ * unrelated user process can't get killed. On partial failure the
+ * pidfile is rewritten with the surviving entries so the next
+ * grove down can finish the job.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -74,27 +80,59 @@ Options:
   }
 
   let stopped = 0;
+  const targetedPids: number[] = [];
+  const survivors: typeof pidData.children = [];
 
   for (const child of pidData.children) {
+    // Liveness check.
     try {
-      // Check if process is still running
       process.kill(child.pid, 0);
-      // Send SIGTERM
+    } catch {
+      console.log(`${child.name} (PID ${child.pid}) already stopped`);
+      continue;
+    }
+
+    // Identity check (round-7): is THIS pid still bound to the port we
+    // recorded it on? If not, treat as PID reuse — refuse to signal so we
+    // don't terminate an unrelated user process.
+    const identity = await verifyChildIdentity(child.name, child.pid);
+    if (!identity.matched) {
+      console.warn(
+        `${child.name} (PID ${child.pid}) does not own the expected port — ` +
+          `assuming PID reuse and skipping. ${identity.reason}`,
+      );
+      survivors.push(child);
+      continue;
+    }
+
+    try {
       process.kill(child.pid, "SIGTERM");
       console.log(`Sent SIGTERM to ${child.name} (PID ${child.pid})`);
+      targetedPids.push(child.pid);
       stopped++;
-    } catch {
-      // Process not running
-      console.log(`${child.name} (PID ${child.pid}) already stopped`);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") {
+        console.log(`${child.name} (PID ${child.pid}) exited mid-down`);
+      } else {
+        console.warn(`SIGTERM to ${child.name} (PID ${child.pid}) failed: ${code ?? String(err)}`);
+        survivors.push(child);
+      }
     }
   }
 
-  // Wait for graceful shutdown
-  if (stopped > 0) {
-    await waitForPids(
-      pidData.children.map((c) => c.pid),
-      5_000,
-    );
+  if (targetedPids.length > 0) {
+    const remaining = await waitForPids(targetedPids, 5_000);
+    // Anything still alive after SIGKILL is a survivor that must NOT be
+    // forgotten — the pidfile is the only record future lifecycle code can
+    // use to recover.
+    for (const pid of remaining) {
+      const child = pidData.children.find((c) => c.pid === pid);
+      if (child) {
+        console.error(`PID ${pid} (${child.name}) survived SIGKILL`);
+        survivors.push(child);
+      }
+    }
   }
 
   // Stop managed Nexus if applicable
@@ -110,23 +148,85 @@ Options:
     }
   }
 
-  // Clean up PID file
-  try {
-    unlinkSync(pidFilePath);
-  } catch {
-    /* ignore */
+  // Pidfile policy:
+  //   - All children stopped: unlink (clean state)
+  //   - Any survivor (signal failed / SIGKILL ignored / PID-reuse skip):
+  //     rewrite with survivors so next `grove down` can finish the job.
+  if (survivors.length === 0) {
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      /* ignore */
+    }
+    console.log(`Stopped ${stopped} service(s).`);
+  } else {
+    try {
+      const rewritten = {
+        ...pidData,
+        children: survivors,
+      };
+      writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
+    } catch {
+      /* best-effort */
+    }
+    console.error(
+      `Stopped ${stopped} service(s); ${survivors.length} entry(ies) preserved in grove.pid ` +
+        `(SIGKILL ignored or PID-reuse skip). Run \`grove down\` again after manual cleanup.`,
+    );
+    process.exitCode = 1;
   }
+}
 
-  console.log(`Stopped ${stopped} service(s).`);
+/**
+ * Cross-check that `pid` actually owns the TCP port we expect for the named
+ * service. Uses lsof — same identity gate as service-lifecycle's adoption
+ * path. Returns matched=true only when the listening PID equals `pid`.
+ */
+async function verifyChildIdentity(
+  name: string,
+  pid: number,
+): Promise<{ matched: boolean; reason: string }> {
+  // Resolve the expected default port from env or fall back to the same
+  // defaults service-lifecycle uses.
+  const port = (() => {
+    if (name === "server") return Number.parseInt(process.env.PORT ?? "", 10) || 4515;
+    if (name === "mcp") return Number.parseInt(process.env.MCP_PORT ?? "", 10) || 4015;
+    return 0;
+  })();
+  if (!port) return { matched: true, reason: "no port to verify" };
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: 800,
+    });
+    if (r.error || r.status === null) {
+      return { matched: true, reason: `lsof unavailable (${r.error?.message ?? "timeout"})` };
+    }
+    const listenerPid = Number.parseInt((r.stdout ?? "").trim().split(/\s+/)[0] ?? "", 10);
+    if (!Number.isFinite(listenerPid) || listenerPid <= 0) {
+      return { matched: false, reason: `port ${port} not bound` };
+    }
+    if (listenerPid !== pid) {
+      return { matched: false, reason: `port ${port} held by PID ${listenerPid}, not ${pid}` };
+    }
+    return { matched: true, reason: "lsof confirmed" };
+  } catch (err) {
+    return { matched: true, reason: `lsof error: ${(err as Error).message}` };
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function waitForPids(pids: readonly number[], timeoutMs: number): Promise<void> {
+/**
+ * Wait for `pids` to exit, escalate to SIGKILL after `timeoutMs`, and return
+ * the PIDs that are STILL alive afterward. Callers preserve survivors in the
+ * pidfile so a future `grove down` can finish what we couldn't (round 7).
+ */
+async function waitForPids(pids: readonly number[], timeoutMs: number): Promise<readonly number[]> {
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
     const alive = pids.filter((pid) => {
       try {
@@ -136,19 +236,38 @@ async function waitForPids(pids: readonly number[], timeoutMs: number): Promise<
         return false;
       }
     });
-
-    if (alive.length === 0) return;
-
+    if (alive.length === 0) return [];
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  // Force kill any remaining
+  // Force kill any remaining, then poll briefly for the kernel to reap.
   for (const pid of pids) {
     try {
-      process.kill(pid, 0); // Check if alive
+      process.kill(pid, 0);
       process.kill(pid, "SIGKILL");
     } catch {
       /* already dead */
     }
   }
+  const sigkillDeadline = Date.now() + 1_500;
+  while (Date.now() < sigkillDeadline) {
+    const alive = pids.filter((pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (alive.length === 0) return [];
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
