@@ -978,4 +978,31 @@ describe("DefaultGossipService", () => {
       await minimal.stop();
     });
   });
+
+  describe("peersAdvertising()", () => {
+    it("returns peers whose frontier digests included the cid", async () => {
+      const cid = "blake3:" + "a".repeat(64);
+      await service.handleExchange({
+        ...makeGossipMessage("peer-A", [
+          { metric: "tests_passed", value: 5, cid, direction: "maximize" },
+        ]),
+      });
+      expect(service.peersAdvertising(cid).map((p) => p.peerId)).toEqual(["peer-A"]);
+    });
+
+    it("returns empty when no peer has advertised the cid", () => {
+      expect(service.peersAdvertising("blake3:" + "b".repeat(64))).toEqual([]);
+    });
+
+    it("aggregates advertisements from multiple peers", async () => {
+      const cid = "blake3:" + "c".repeat(64);
+      const entry = { metric: "m", value: 1, cid, direction: "maximize" as const };
+      await service.handleExchange(makeGossipMessage("peer-A", [entry]));
+      await service.handleExchange(makeGossipMessage("peer-B", [entry]));
+      expect(service.peersAdvertising(cid).map((p) => p.peerId).sort()).toEqual([
+        "peer-A",
+        "peer-B",
+      ]);
+    });
+  });
 });

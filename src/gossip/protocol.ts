@@ -161,6 +161,8 @@ export class DefaultGossipService implements GossipService {
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
+  /** Map of cid → set of advertising peer ids. Bounded by MAX_MERGED_FRONTIER_ENTRIES × view size. */
+  private readonly advertisements = new Map<string, Map<string, PeerInfo>>();
   private localDigest: FrontierDigestEntry[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
@@ -283,6 +285,10 @@ export class DefaultGossipService implements GossipService {
 
     // Merge remote frontier entries
     this.mergeRemoteFrontier(message.frontier);
+
+    if (message.address) {
+      this.recordAdvertisements(message.peerId, message.address, message.frontier);
+    }
 
     // Add sender to our view only if they provided a routable address
     if (message.address) {
@@ -430,6 +436,46 @@ export class DefaultGossipService implements GossipService {
   }
 
   // -------------------------------------------------------------------------
+  // CID → advertising peers tracking
+  // -------------------------------------------------------------------------
+
+  private recordAdvertisements(
+    peerId: string,
+    address: string,
+    frontier: readonly FrontierDigestEntry[],
+  ): void {
+    const peer: PeerInfo = {
+      peerId,
+      address,
+      age: 0,
+      lastSeen: new Date(this.now()).toISOString(),
+    };
+    for (const entry of frontier) {
+      let byPeer = this.advertisements.get(entry.cid);
+      if (!byPeer) {
+        byPeer = new Map();
+        this.advertisements.set(entry.cid, byPeer);
+      }
+      byPeer.set(peerId, peer);
+    }
+    this.evictAdvertisementsForMissingCids();
+  }
+
+  private evictAdvertisementsForMissingCids(): void {
+    // Drop entries for CIDs no longer present in remoteFrontier (eviction parity).
+    const liveCids = new Set(this.remoteFrontier.map((e) => e.cid));
+    for (const cid of this.advertisements.keys()) {
+      if (!liveCids.has(cid)) this.advertisements.delete(cid);
+    }
+  }
+
+  peersAdvertising(cid: string): readonly PeerInfo[] {
+    const byPeer = this.advertisements.get(cid);
+    if (!byPeer) return [];
+    return [...byPeer.values()];
+  }
+
+  // -------------------------------------------------------------------------
   // Event listeners
   // -------------------------------------------------------------------------
 
@@ -553,6 +599,9 @@ export class DefaultGossipService implements GossipService {
         const response = await this.transport.exchange(peer, message);
         this.markAlive(peer.peerId);
         this.mergeRemoteFrontier(response.frontier);
+        if (response.address) {
+          this.recordAdvertisements(response.peerId, response.address, response.frontier);
+        }
       } catch {
         this.markUnresponsive(peer.peerId);
       }

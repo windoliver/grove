@@ -215,4 +215,11 @@ export interface GossipService {
   on(listener: GossipEventListener): void;
   /** Remove a listener. */
   off(listener: GossipEventListener): void;
+  /**
+   * Peers that have advertised the given CID via gossip frontier (most-recent
+   * advertisement wins per peer). Returns an empty array if no peer has
+   * advertised this CID. The address may be undefined for legacy peers that
+   * gossiped without an address — those entries cannot be fetched from.
+   */
+  peersAdvertising(cid: string): readonly PeerInfo[];
 }
