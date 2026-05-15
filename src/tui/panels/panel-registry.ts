@@ -326,9 +326,11 @@ export function getBuiltInTuiRegistryEntries(): readonly TuiRegistryEntry[] {
 }
 
 /** Groups panel definitions by their row group number. */
-export function getRowGroups(): Map<number, readonly PanelDef[]> {
+export function getRowGroups(
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
+): Map<number, readonly PanelDef[]> {
   const groups = new Map<number, PanelDef[]>();
-  for (const def of PANEL_REGISTRY) {
+  for (const def of registry) {
     let group = groups.get(def.rowGroup);
     if (group === undefined) {
       group = [];
@@ -351,15 +353,16 @@ export function getVisiblePanelsForLayout(
   panelState: PanelFocusState,
   mode: LayoutMode,
   allowedPanels?: ReadonlySet<Panel>,
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
 ): readonly PanelDef[] {
   if (mode === "tab") {
-    const def = PANEL_REGISTRY.find((d) => d.panel === panelState.focused);
+    const def = registry.find((d) => d.panel === panelState.focused);
     return def !== undefined ? [def] : [];
   }
 
   // Grid mode: core panels always visible, operator panels per state.
   // Also filter by allowedPanels if provided (preset-based visibility).
-  return PANEL_REGISTRY.filter(
+  return registry.filter(
     (def) =>
       isPanelVisible(panelState, def.panel) &&
       (allowedPanels === undefined || allowedPanels.has(def.panel)),
@@ -376,6 +379,7 @@ export function getVisiblePanelsForLayout(
 export function getActivePanelsForLayout(
   panelState: PanelFocusState,
   mode: LayoutMode,
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
 ): ReadonlySet<Panel> {
   if (mode === "tab") {
     return new Set([panelState.focused]);
@@ -383,7 +387,7 @@ export function getActivePanelsForLayout(
 
   // Grid mode: every visible panel is active.
   const active = new Set<Panel>();
-  for (const def of PANEL_REGISTRY) {
+  for (const def of registry) {
     if (isPanelVisible(panelState, def.panel)) {
       active.add(def.panel);
     }

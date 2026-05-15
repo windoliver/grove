@@ -488,3 +488,28 @@ describe("stable panel IDs", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Injectable registry helpers
+// ---------------------------------------------------------------------------
+
+describe("injectable registry helpers", () => {
+  it("groups an injected registry instead of always reading PANEL_REGISTRY", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const groups = getRowGroups(registry);
+    expect(groups.size).toBe(1);
+    expect(groups.get(2)?.map((def) => def.id)).toEqual(["claims"]);
+  });
+
+  it("computes visible panels from an injected registry", () => {
+    const registry = getRegistry().filter((def) => def.id === "dag" || def.id === "claims");
+    const visible = getVisiblePanelsForLayout(initialPanelState(), "grid", undefined, registry);
+    expect(visible.map((def) => def.id)).toEqual(["dag", "claims"]);
+  });
+
+  it("computes active panels from an injected registry", () => {
+    const registry = getRegistry().filter((def) => def.id === "dag" || def.id === "claims");
+    const active = getActivePanelsForLayout(initialPanelState(), "grid", registry);
+    expect([...active]).toEqual([Panel.Dag, Panel.Claims]);
+  });
+});
