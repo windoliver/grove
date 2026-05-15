@@ -1867,6 +1867,9 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   private readonly db: Database;
   private readonly stmtGetTask: Statement;
 
+  /** Optional callback invoked after a successful AgentTask spec/status write. */
+  onAgentTaskWrite?: (op: "ADDED" | "MODIFIED", view: AgentTaskView) => void;
+
   constructor(db: Database) {
     this.db = db;
     this.storeIdentity = db.filename;
@@ -1879,9 +1882,11 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   }
 
   putAgentTaskSpec = async (spec: AgentTaskSpecRecord): Promise<AgentTaskView> => {
+    let op: "ADDED" | "MODIFIED" = "MODIFIED";
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(spec.id);
       if (existing === null) {
+        op = "ADDED";
         const nowIso = new Date().toISOString();
         this.insertTaskSpecRow({ ...spec, generation: 1 });
         this.insertTaskStatusRow({
@@ -1930,6 +1935,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
 
     const view = this.readAgentTask(spec.id);
     if (view === null) throw new Error(`Failed to read back agent task '${spec.id}'`);
+    this.emitAgentTaskWrite(op, view);
     return view;
   };
 
@@ -2012,7 +2018,9 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
       return view;
     });
 
-    return tx.immediate();
+    const view = tx.immediate();
+    this.emitAgentTaskWrite("MODIFIED", view);
+    return view;
   };
 
   async listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]> {
@@ -2077,6 +2085,14 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     const row = this.stmtGetTask.get(taskId) as AgentTaskViewRow | null;
     if (row === null) return null;
     return rowToAgentTaskView(row);
+  }
+
+  private emitAgentTaskWrite(op: "ADDED" | "MODIFIED", view: AgentTaskView): void {
+    try {
+      this.onAgentTaskWrite?.(op, view);
+    } catch {
+      // Local watch fan-out must not make the underlying SQLite write fail.
+    }
   }
 }
 

@@ -48,10 +48,11 @@ export interface LocalRuntimeOptions {
   /** Whether to parse the GROVE.md contract. Default: `true`. */
   readonly parseContract?: boolean;
   /**
-   * Optional process-local `WatchHub` to which contribution + claim writes
+   * Optional process-local `WatchHub` to which contribution, claim, and task writes
    * are republished as `EntityWriteEvent`s. When provided, the runtime
    * wires `SqliteContributionStore.onContributionWrite` and
-   * `SqliteClaimStore.onClaimWrite` to the recorder shipped in #388 PR2.
+   * `SqliteClaimStore.onClaimWrite` / `SqliteAgentTaskStore.onAgentTaskWrite`
+   * to the recorder shipped in #388 PR2.
    * When omitted, no hub plumbing is created — existing CLI / server
    * callers that supply their own `OperationDeps.onEntityWrite` path are
    * unaffected.
@@ -145,7 +146,8 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   stores.contributionStore.onWrite = onContributionWrite;
 
   // Wire local-mode WatchHub republish (#388 PR2). The recorder projects
-  // domain types via `contributionToEntity` / `claimToEntity` and calls
+  // domain types via `contributionToEntity` / `claimToEntity` /
+  // `agentTaskViewToEntity` and calls
   // `WatchHub.recordWrite`. AgentSession is wired by the TUI main entry
   // (it owns the AgentRuntime), not here.
   if (options.watchHub) {
@@ -158,6 +160,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     });
     stores.contributionStore.onContributionWrite = (op, c) => recorder.contribution(op, c);
     stores.claimStore.onClaimWrite = (op, c) => recorder.claim(op, c);
+    stores.agentTaskStore.onAgentTaskWrite = (op, view) => recorder.agentTask(op, view);
   }
 
   let workspace: LocalWorkspaceManager | undefined;

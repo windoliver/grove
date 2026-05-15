@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTaskView } from "../core/agent-task.js";
 import { AgentTaskPhase } from "../core/agent-task.js";
 import type { Condition } from "../core/entity.js";
 import { createSqliteStores } from "./sqlite-store.js";
@@ -110,5 +111,48 @@ describe("SqliteAgentTaskStore", () => {
     expect(patched.status.phase).toBe(AgentTaskPhase.Succeeded);
     expect(patched.status.contributions).toEqual(["b3:done"]);
     expect(patched.status.conditions).toEqual([condition]);
+  });
+
+  test("write callback sees spec creates, spec updates, and status patches", async () => {
+    const stores = createSqliteStores(join(tempDir, "test.db"));
+    closeStores = stores.close;
+    const events: Array<{
+      readonly op: "ADDED" | "MODIFIED";
+      readonly view: AgentTaskView;
+    }> = [];
+    stores.agentTaskStore.onAgentTaskWrite = (op, view) => {
+      events.push({ op, view });
+    };
+
+    const created = await stores.agentTaskStore.putAgentTaskSpec({
+      id: "task-callback",
+      worktree: "/tmp/worktree",
+      runtime: "codex",
+      role: "worker",
+      prompt: "Initial",
+      dependsOn: [],
+      generation: 0,
+      createdAt: "2026-05-13T11:00:00.000Z",
+    });
+
+    await stores.agentTaskStore.putAgentTaskSpec({
+      ...created.spec,
+      prompt: "Changed",
+    });
+
+    await stores.agentTaskStore.patchAgentTaskStatus("task-callback", {
+      phase: AgentTaskPhase.PendingBind,
+      observedGeneration: created.spec.generation + 1,
+    });
+
+    expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED", "MODIFIED"]);
+    expect(events.map((event) => event.view.spec.id)).toEqual([
+      "task-callback",
+      "task-callback",
+      "task-callback",
+    ]);
+    expect(events[0]?.view.spec.prompt).toBe("Initial");
+    expect(events[1]?.view.spec.prompt).toBe("Changed");
+    expect(events[2]?.view.status.phase).toBe(AgentTaskPhase.PendingBind);
   });
 });
