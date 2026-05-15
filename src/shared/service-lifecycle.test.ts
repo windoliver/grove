@@ -18,6 +18,7 @@ import { stopServices } from "./service-lifecycle.js";
 const helpers = lifecycle as typeof lifecycle & {
   resolveBunExecutable?: (execPath?: string) => string;
   resolveServicePort?: (name: string, env?: NodeJS.ProcessEnv) => number;
+  pickFreePort?: () => Promise<number>;
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,42 @@ describe("service startup configuration", () => {
 
     expect(resolveBunExecutable("/Users/example/.bun/bin/bun")).toBe("/Users/example/.bun/bin/bun");
     expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
+  });
+
+  // Concurrent grove worktrees on the same host should not collide on the
+  // default service port. When the configured port is held by a foreign
+  // process, spawnService falls back to an OS-assigned ephemeral port via
+  // pickFreePort instead of throwing. (#191 follow-up)
+  test("pickFreePort returns an unused port we can bind to", async () => {
+    expect(helpers.pickFreePort).toBeDefined();
+    const pickFreePort = helpers.pickFreePort;
+    if (pickFreePort === undefined) throw new Error("pickFreePort is not exported");
+
+    const port = await pickFreePort();
+    expect(port).toBeGreaterThan(0);
+    expect(port).toBeLessThan(65_536);
+
+    // Bind to the returned port to prove it's actually free at this moment.
+    const server = Bun.serve({ port, fetch: () => new Response("ok") });
+    try {
+      expect(server.port).toBe(port);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("pickFreePort returns distinct ports on consecutive calls", async () => {
+    const pickFreePort = helpers.pickFreePort;
+    if (pickFreePort === undefined) throw new Error("pickFreePort is not exported");
+
+    const a = await pickFreePort();
+    const srv = Bun.serve({ port: a, fetch: () => new Response("ok") });
+    try {
+      const b = await pickFreePort();
+      expect(b).not.toBe(a);
+    } finally {
+      srv.stop();
+    }
   });
 });
 

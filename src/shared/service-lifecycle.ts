@@ -788,7 +788,7 @@ async function describePortOwner(port: number): Promise<string> {
 async function getListeningPid(port: number): Promise<number | undefined> {
   try {
     const { spawnSync } = await import("node:child_process");
-    const r = spawnSync("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+    const r = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
       encoding: "utf8",
       timeout: 1500,
     });
@@ -852,6 +852,41 @@ export async function verifyPortIdentity(
  * the case where a process is bound but its /health returns 404/500 or
  * isn't HTTP at all.
  */
+/**
+ * Ask the OS for an unused TCP port.
+ *
+ * Used as the auto-fallback when the configured service port (PORT for
+ * server, MCP_PORT for mcp) is held by a foreign process — typically
+ * another grove worktree on the same host. Without this, `grove up`
+ * would fail with "Port X is bound by a process that this grove project
+ * did not spawn"; concurrent worktrees need to coexist.
+ *
+ * Implementation: bind a server to port 0 (let kernel assign), read the
+ * assigned port, close. Race window between close and the caller's bind
+ * exists but is small in practice.
+ */
+export async function pickFreePort(): Promise<number> {
+  const { createServer } = await import("node:net");
+  return new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.unref();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      if (typeof addr !== "object" || addr === null) {
+        srv.close();
+        reject(new Error("pickFreePort: no address from listener"));
+        return;
+      }
+      const port = addr.port;
+      srv.close((closeErr) => {
+        if (closeErr) reject(closeErr);
+        else resolve(port);
+      });
+    });
+  });
+}
+
 async function isPortBound(port: number): Promise<boolean> {
   const { Socket } = await import("node:net");
   return new Promise<boolean>((resolve) => {
@@ -918,7 +953,7 @@ async function spawnService(
   entryPoint: string,
   groveDir: string,
 ): Promise<ManagedChildProcess | null> {
-  const port = resolveServicePort(name);
+  let port = resolveServicePort(name);
   if (port) {
     // Identity gate (NO credentials): if the port is bound, the listening
     // PID must match a record in our pidfile for this service name. Any
@@ -931,39 +966,47 @@ async function spawnService(
       const pidFilePath = join(groveDir, "grove.pid");
       const identity = await verifyPortIdentity(port, pidFilePath, name);
       if (!identity.ok) {
+        // Foreign owner — most commonly another grove worktree's server on
+        // the same host. Auto-fall-back to an OS-assigned ephemeral port
+        // instead of failing. Update the matching env var so serviceEnv()
+        // (called below to build the child's env) and downstream services
+        // that read GROVE_SERVER_PORT see the rebound port.
         const owner = await describePortOwner(port);
-        throw new Error(
-          `Port ${port} is bound by a process that this grove project did not spawn.\n` +
-            `${identity.reason}\n` +
-            `Owner: ${owner}\n` +
-            `Free the port with: \`lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill\`,\n` +
-            `or set PORT to an unused port and retry.`,
+        const freePort = await pickFreePort();
+        process.stderr.write(
+          `[grove] ${name} port ${port} held by foreign process (${owner.split("\n")[0]}); ` +
+            `using free port ${freePort} instead.\n`,
         );
-      }
-      // PID identity matches our pidfile record — but a detached child
-      // can survive a crashed parent, and `grove init --force` rotates
-      // .grove/api-key without removing grove.pid. After identity is
-      // proven, also confirm the live server still accepts the current
-      // api-key; if not, the recorded child is stale relative to the
-      // current credentials and must be restarted.
-      if (name === "server") {
-        const ownership = await verifyServerOwnership(port, groveDir);
-        if (!ownership.ok) {
-          throw new Error(
-            `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
-              `${ownership.reason}\n` +
-              `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
-              `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
-          );
+        port = freePort;
+        const portEnvVar = name === "server" ? "PORT" : "MCP_PORT";
+        process.env[portEnvVar] = String(freePort);
+        if (name === "server") process.env.GROVE_SERVER_PORT = String(freePort);
+      } else {
+        // PID identity matches our pidfile record — but a detached child
+        // can survive a crashed parent, and `grove init --force` rotates
+        // .grove/api-key without removing grove.pid. After identity is
+        // proven, also confirm the live server still accepts the current
+        // api-key; if not, the recorded child is stale relative to the
+        // current credentials and must be restarted.
+        if (name === "server") {
+          const ownership = await verifyServerOwnership(port, groveDir);
+          if (!ownership.ok) {
+            throw new Error(
+              `Recorded grove-server (PID ${identity.pid}) on port ${port} no longer accepts this project's API key.\n` +
+                `${ownership.reason}\n` +
+                `This usually means .grove/api-key was rotated (e.g. \`grove init --force\`) while the server kept running.\n` +
+                `Stop the server (\`kill ${identity.pid}\`) and retry, or rotate the running server with the new key.`,
+            );
+          }
         }
+        // Identity + ownership both verified — adopt the existing PID into
+        // our managed-child set so the rewritten pidfile records it AND
+        // stopServices/grove-down can kill it. Returning null here would
+        // drop the live process from RunningServices: a subsequent
+        // pidfile rewrite (other children may still spawn fresh) would
+        // forget the server PID, breaking shutdown.
+        return adoptExistingChild(name, identity.pid);
       }
-      // Identity + ownership both verified — adopt the existing PID into
-      // our managed-child set so the rewritten pidfile records it AND
-      // stopServices/grove-down can kill it. Returning null here would
-      // drop the live process from RunningServices: a subsequent
-      // pidfile rewrite (other children may still spawn fresh) would
-      // forget the server PID, breaking shutdown.
-      return adoptExistingChild(name, identity.pid);
     }
   }
 
