@@ -71,7 +71,20 @@ describe("AgentTask entity projection", () => {
     expect(entity.observedGeneration).toBe(1);
     expect(entity.metadata.generation).toBe(2);
     expect(entity.metadata.creationTimestamp).toBe("2026-05-13T11:00:00.000Z");
-    expect(entity.resourceVersion).toBe("5");
+    expect(entity.resourceVersion).toBe("7:2:5");
+  });
+
+  test("resourceVersion changes when spec generation or status revision changes", () => {
+    const base = agentTaskViewToEntity(taskView());
+    const specUpdated = agentTaskViewToEntity(
+      taskView({ spec: { ...taskView().spec, generation: 3 } }),
+    );
+    const statusUpdated = agentTaskViewToEntity(
+      taskView({ status: { ...taskView().status, revision: 6 } }),
+    );
+
+    expect(specUpdated.resourceVersion).not.toBe(base.resourceVersion);
+    expect(statusUpdated.resourceVersion).not.toBe(base.resourceVersion);
   });
 
   test("detects stale specs when status has not observed current generation", () => {

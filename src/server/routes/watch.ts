@@ -13,6 +13,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { agentTaskViewToEntity } from "../../core/agent-task.js";
 import { claimToEntity, contributionToEntity } from "../../core/entity.js";
 import {
   StaleResourceVersionError,
@@ -22,7 +23,7 @@ import {
 import { BufferOverflowError, type WatchHub } from "../../core/watch-hub.js";
 import type { ServerDeps, ServerEnv } from "../deps.js";
 
-const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
+const KIND_VALUES = ["Contribution", "Claim", "AgentSession", "AgentTask"] as const;
 // Subset of KIND_VALUES for which list+watch are actually backed by
 // stores and fan-out hooks. AgentSession remains in KIND_VALUES so the
 // type narrowing stays exhaustive, but watching it returns 501 until
@@ -30,6 +31,7 @@ const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
 const SUPPORTED_KINDS: ReadonlySet<(typeof KIND_VALUES)[number]> = new Set([
   "Contribution",
   "Claim",
+  "AgentTask",
 ]);
 
 const listQuerySchema = z.object({
@@ -59,6 +61,17 @@ watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
     );
   }
   const deps = c.get("deps");
+  if (kind === "AgentTask" && deps.agentTaskStore === undefined) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: "AgentTask store is not configured",
+        },
+      },
+      501,
+    );
+  }
   const hub: WatchHub = deps.watchHub;
 
   // Race-correctness invariant (spec §Critical path): capture RV BEFORE the
@@ -90,6 +103,18 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       501,
     );
   }
+  const deps = c.get("deps");
+  if (kind === "AgentTask" && deps.agentTaskStore === undefined) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: "AgentTask store is not configured",
+        },
+      },
+      501,
+    );
+  }
   const lastEventId = c.req.header("last-event-id");
   // Last-Event-ID overrides resumeFrom on auto-reconnect (browser EventSource).
   // If present but malformed, fail fast with 400 — silently falling back to
@@ -107,7 +132,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
     );
   }
   const fromRv = BigInt(lastEventId ?? resumeFrom);
-  const hub: WatchHub = c.get("deps").watchHub;
+  const hub: WatchHub = deps.watchHub;
 
   // SSE-route per-connection byte cap. The WatchHub already bounds its
   // per-subscriber queue, but once a hub event is drained into the route's
@@ -442,6 +467,13 @@ async function hydrateEntity(
     }
     return undefined;
   }
+  if (kind === "AgentTask") {
+    const view = await deps.agentTaskStore?.getAgentTask(entityId);
+    if (view !== undefined) {
+      return agentTaskViewToEntity(view, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
   // Unsupported kinds are rejected at the route entry; this path is
   // unreachable but kept for type exhaustiveness.
   return undefined;
@@ -468,6 +500,17 @@ watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => 
   }
 
   const deps = c.get("deps") as ServerDeps;
+  if (kind === "AgentTask" && deps.agentTaskStore === undefined) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: "AgentTask store is not configured",
+        },
+      },
+      501,
+    );
+  }
   const hub: WatchHub = deps.watchHub;
 
   // Session-scoped contribution writes cannot be safely fanned out to
@@ -527,7 +570,6 @@ async function listForKind(
   namespace: string,
   kind: WatchKind,
 ): Promise<readonly unknown[]> {
-  void namespace;
   switch (kind) {
     case "Contribution":
       return deps.contributionStore.listEntities();
@@ -537,6 +579,13 @@ async function listForKind(
       // AgentSession listing is not yet a Store API. Return empty until the
       // session-orchestrator integration lands (out of scope for #292).
       return [];
+    case "AgentTask":
+      if (deps.agentTaskStore === undefined) {
+        throw new Error("AgentTask store is not configured");
+      }
+      return (await deps.agentTaskStore.listAgentTasks()).map((view) =>
+        agentTaskViewToEntity(view, namespace),
+      );
     default: {
       const _exhaustive: never = kind;
       void _exhaustive;

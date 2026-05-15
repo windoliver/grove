@@ -1,6 +1,6 @@
 /**
  * WatchHubRecorder — typed adapter that bridges domain writes (Contribution,
- * Claim, AgentSession) to `WatchHub.recordWrite` (#388 PR2).
+ * Claim, AgentSession, AgentTask) to `WatchHub.recordWrite` (#388 PR2).
  *
  * Local mode publishes to a process-local `WatchHub`; the existing remote
  * path goes through `OperationDeps.onEntityWrite` → server-side hub. This
@@ -12,6 +12,7 @@
  */
 
 import type { AgentSession } from "../core/agent-runtime.js";
+import { type AgentTaskView, agentTaskViewToEntity } from "../core/agent-task.js";
 import { agentSessionToEntity, claimToEntity, contributionToEntity } from "../core/entity.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { WatchOp } from "../core/watch-events.js";
@@ -21,6 +22,7 @@ export interface WatchHubRecorder {
   contribution(op: WatchOp, c: Contribution): void;
   claim(op: WatchOp, c: Claim): void;
   agentSession(op: WatchOp, s: AgentSession): void;
+  agentTask(op: WatchOp, view: AgentTaskView): void;
 }
 
 export interface CreateWatchHubRecorderOptions {
@@ -38,12 +40,13 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
   const now = opts.now ?? (() => Date.now());
 
   const safeRecord = (
-    kind: "Contribution" | "Claim" | "AgentSession",
+    kind: "Contribution" | "Claim" | "AgentSession" | "AgentTask",
     op: WatchOp,
     entity:
       | ReturnType<typeof contributionToEntity>
       | ReturnType<typeof claimToEntity>
-      | ReturnType<typeof agentSessionToEntity>,
+      | ReturnType<typeof agentSessionToEntity>
+      | ReturnType<typeof agentTaskViewToEntity>,
   ): void => {
     try {
       hub.recordWrite({ kind, namespace, op, entity });
@@ -62,6 +65,9 @@ export function createWatchHubRecorder(opts: CreateWatchHubRecorderOptions): Wat
     },
     agentSession(op, s) {
       safeRecord("AgentSession", op, agentSessionToEntity(s, undefined, namespace));
+    },
+    agentTask(op, view) {
+      safeRecord("AgentTask", op, agentTaskViewToEntity(view, namespace));
     },
   };
 }
