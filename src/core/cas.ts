@@ -91,14 +91,16 @@ export function expectOk<V>(result: CasMutationResult<V>): V {
  * not (yet) supply `ifMatch`. Throws with a caller-specific context string
  * if the result is `rv-mismatch`.
  *
- * Until C6 T6 wires real If-Match handling into mutating routes and
- * controllers, every call site that invokes a CAS-aware store method
- * without an `ifMatch` MUST use this helper so the unreachable mismatch
- * branch fails loudly with route/controller context.
+ * Routes (T6) read `If-Match` via `getIfMatch(c)`, and controllers (T7)
+ * use `withIfMatch()` for retry loops. This helper remains for the
+ * remaining one-shot / user-facing callers (CLI commands, MCP tools,
+ * TUI providers, SessionManager) where a fail-fast on RV mismatch is
+ * acceptable until the `confirmAndMutate` UI surface lands (T10/T11).
  *
  * @param result the discriminated result from a store CAS method
  * @param context a human description of the caller, e.g.
- *                `"PUT /api/claims/abc-123"` or `"reconcileClaim(abc-123)"`
+ *                `"cli grove session delete (abc-123)"` or
+ *                `"SessionManager.archiveSession(abc-123)"`
  */
 export function expectCasOk<V>(result: CasMutationResult<V>, context: string): V {
   if (result.kind === "rv-mismatch") {

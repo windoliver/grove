@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type CasMutationResult, casOk } from "./cas.js";
+import { type CasMutationResult, type CasOpts, casOk } from "./cas.js";
 import {
   type ClaimControllerStore,
   ClaimReconciliationController,
@@ -51,6 +51,13 @@ class FakeClaimControllerStore implements ClaimControllerStore {
   readonly patches: RecordedPatch[] = [];
   listEntitiesError: Error | undefined;
   specMutationCalls = 0;
+  /**
+   * Number of forced mismatch responses still to emit. Each
+   * `patchClaimStatus` call decrements and bumps the stored RV (simulating
+   * a concurrent writer) before returning `rv-mismatch` with the new RV.
+   * Used to exercise the {@link withIfMatch} retry loop in the controller.
+   */
+  forcedMismatches = 0;
 
   seed(view: ClaimView): void {
     this.views.set(view.spec.id, view);
@@ -63,10 +70,25 @@ class FakeClaimControllerStore implements ClaimControllerStore {
   patchClaimStatus = async (
     claimId: string,
     patch: ClaimStatusPatch,
+    _opts?: CasOpts,
   ): Promise<CasMutationResult<ClaimView>> => {
     const view = this.views.get(claimId);
     if (view === undefined) {
       throw new Error(`missing claim ${claimId}`);
+    }
+    if (this.forcedMismatches > 0) {
+      this.forcedMismatches -= 1;
+      const bumpedRv = (view.status.resourceVersion ?? view.status.revision) + 1;
+      const bumpedStatus: ClaimStatusRecord = {
+        ...view.status,
+        revision: view.status.revision + 1,
+        resourceVersion: bumpedRv,
+      };
+      this.views.set(claimId, { spec: view.spec, status: bumpedStatus });
+      return {
+        kind: "rv-mismatch",
+        current: { resourceVersion: String(bumpedRv), generation: view.spec.generation },
+      };
     }
     this.patches.push({ claimId, patch });
     const updatedStatus: ClaimStatusRecord = {
@@ -564,6 +586,30 @@ describe("ClaimReconciliationController", () => {
     expect(() => controller.start()).toThrow("Work queue is closed");
     await sleep(5);
     expect(store.patches).toEqual([]);
+  });
+
+  test("reconcileClaim retries on rv-mismatch via withIfMatch", async () => {
+    // Simulate concurrent status writers: the first two patch attempts hit
+    // a forced rv-mismatch (store bumps its RV but does NOT apply the
+    // patch), and the third attempt succeeds. The withIfMatch retry loop
+    // in reconcileClaim must re-read and re-issue the patch so the
+    // expired-lease transition still lands.
+    const store = new FakeClaimControllerStore();
+    store.seed(makeView({ leaseExpiresAt: BEFORE_NOW_ISO }));
+    store.forcedMismatches = 2;
+
+    const transitions: ClaimStatusTransition[] = [];
+    const controller = makeController(store, {
+      onTransition: (transition) => transitions.push(transition),
+    });
+
+    const transition = await controller.reconcileClaim("claim-1");
+
+    expect(store.forcedMismatches).toBe(0);
+    expect(store.patches).toHaveLength(1);
+    expect(transition).toBeDefined();
+    expect(transition?.toPhase).toBe(ClaimStatus.Expired);
+    expect(transitions).toHaveLength(1);
   });
 });
 
