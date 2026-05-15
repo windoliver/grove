@@ -26,9 +26,19 @@ import type {
   TuiGoalProvider,
   TuiSessionProvider,
 } from "../provider.js";
+import { type ConfirmAndMutateEntityBus, ConfirmAndMutateProvider } from "../safety/index.js";
 import type { SpawnManager, SpawnResult } from "../spawn-manager.js";
 import { SpawnManagerContext } from "../spawn-manager-context.js";
 import type { TuiPresetEntry } from "../tui-app.js";
+
+// C6 (#304) round-3+: ScreenManager now requires the provider as an
+// ancestor. Production wires it via BoardroomShell; tests mount it
+// inline with a no-op entity bus.
+const TEST_ENTITY_BUS: ConfirmAndMutateEntityBus = {
+  get: () => undefined,
+  subscribe: () => () => undefined,
+};
+
 import type { AgentDetectProps } from "./agent-detect.js";
 import type { CompleteViewProps } from "./complete-view.js";
 import type { PresetSelectProps } from "./preset-select.js";
@@ -116,13 +126,30 @@ interface TestSpawnManager {
 }
 
 let captured: CapturedScreens = {};
+// C6 (#304) round-3+: track ALL useKeyboard handlers, not just the
+// last one. After hoisting ConfirmAndMutateProvider above ScreenManager,
+// pressKey() needs to dispatch to every registered handler so the modal's
+// keystrokes (registered by the ancestor provider) reach it alongside
+// ScreenManager / PagesRouter handlers (registered by descendants).
+const keyboardHandlers: KeyboardHandler[] = [];
 let keyboardHandler: KeyboardHandler | undefined;
 let rendererDestroy = mock(() => undefined);
 
 mock.module("@opentui/react", () => ({
+  // C6 (#304) round-3+: register/unregister via useEffect so per-render
+  // re-registrations properly cleanup their predecessor. Without this,
+  // every render of a useKeyboard caller leaves a stale closure in the
+  // handlers array, producing duplicated input on text-entry tests.
   useKeyboard: (handler: KeyboardHandler): void => {
-    keyboardHandler = handler;
-    (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
+    React.useEffect(() => {
+      keyboardHandlers.push(handler);
+      keyboardHandler = handler;
+      (globalThis as KeyboardHandlerGlobal).__groveTestKeyboardHandler = handler;
+      return () => {
+        const idx = keyboardHandlers.indexOf(handler);
+        if (idx >= 0) keyboardHandlers.splice(idx, 1);
+      };
+    }, [handler]);
   },
   useRenderer: (): { destroy: () => void } => ({
     destroy: rendererDestroy,
@@ -245,6 +272,7 @@ const mountedRenderers: TestRenderer.ReactTestRenderer[] = [];
 beforeEach(() => {
   captured = {};
   keyboardHandler = undefined;
+  keyboardHandlers.length = 0;
   rendererDestroy = mock(() => undefined);
 });
 
@@ -494,7 +522,18 @@ function renderScreenManager(options?: {
       React.createElement(
         SpawnManagerContext.Provider,
         { value: spawnManager as unknown as SpawnManager },
-        React.createElement(ScreenManager, props),
+        // C6 (#304) round-3+: ScreenManager calls usePermissionDetection
+        // (which reads useConfirmAndMutateOpen) and the running page
+        // calls useConfirmAndMutate. Both require the provider as an
+        // ancestor; production wires it via BoardroomShell in
+        // tui-app.tsx. Tests mount it directly. createElement passes
+        // children as the third arg; the cast satisfies TS without
+        // tripping biome's noChildrenProp rule.
+        React.createElement(
+          ConfirmAndMutateProvider as React.ComponentType<{ entityBus: ConfirmAndMutateEntityBus }>,
+          { entityBus: TEST_ENTITY_BUS },
+          React.createElement(ScreenManager, props),
+        ),
       ),
     );
   });
@@ -533,12 +572,18 @@ function expectGoalInput(renderer: TestRenderer.ReactTestRenderer): void {
 }
 
 async function pressKey(key: KeyboardKey): Promise<void> {
-  const handler = keyboardHandler;
-  if (!handler) {
+  if (keyboardHandlers.length === 0) {
     throw new Error("No keyboard handler registered");
   }
+  // C6 (#304) round-3+: dispatch to every registered handler. Production
+  // @opentui/react fires all handlers on every key (no stopPropagation).
+  // Snapshot the array so handler-internal state changes that re-register
+  // don't affect this dispatch.
+  const handlers = [...keyboardHandlers];
   await act(async () => {
-    handler(key);
+    for (const handler of handlers) {
+      handler(key);
+    }
     await flushAsync();
   });
 }
