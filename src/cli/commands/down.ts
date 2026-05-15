@@ -109,12 +109,17 @@ Options:
       if (identity.portHeldBy === undefined) {
         console.log(`${child.name} (PID ${child.pid}) already stopped`);
       } else {
+        // Round-9: don't write the DEAD PID back as a survivor — the next
+        // `grove down` would just hit the same dead-pid branch in a loop.
+        // Persist the actual current holder instead so future runs target
+        // the right process (with --force, since we can't be sure the
+        // current holder belongs to this grove project).
         console.warn(
           `${child.name} recorded PID ${child.pid} exited, but port is now ` +
-            `held by PID ${identity.portHeldBy} — preserving pidfile so the ` +
-            `real listener stays visible. Re-record with: grove up`,
+            `held by PID ${identity.portHeldBy} — updating pidfile to the ` +
+            `current holder. Re-run with --force to stop it.`,
         );
-        survivors.push(child);
+        survivors.push({ name: child.name, pid: identity.portHeldBy });
       }
       continue;
     }
@@ -158,7 +163,10 @@ Options:
   }
 
   if (targetedPids.length > 0) {
-    const remaining = await waitForPids(targetedPids, 5_000);
+    const targetedChildren: SignalledChild[] = targetedPids
+      .map((pid) => pidData.children.find((c) => c.pid === pid))
+      .filter((c): c is { name: string; pid: number } => c !== undefined);
+    const remaining = await waitForPids(targetedChildren, 5_000);
     // Anything still alive after SIGKILL is a survivor that must NOT be
     // forgotten — the pidfile is the only record future lifecycle code can
     // use to recover.
@@ -284,54 +292,80 @@ async function verifyChildIdentity(name: string, pid: number): Promise<IdentityC
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Service metadata associated with a PID we signalled. */
+interface SignalledChild {
+  readonly name: string;
+  readonly pid: number;
+}
+
 /**
- * Wait for `pids` to exit, escalate to SIGKILL after `timeoutMs`, and return
- * the PIDs that are STILL alive afterward. Callers preserve survivors in the
- * pidfile so a future `grove down` can finish what we couldn't (round 7).
+ * Wait for the signalled children to exit, escalate to SIGKILL after
+ * `timeoutMs`, and return the PIDs that are STILL alive afterward.
+ *
+ * Round 9: re-verifies identity IMMEDIATELY before SIGKILL escalation.
+ * If the child exited during the grace window and the OS reused the PID,
+ * we MUST NOT SIGKILL the replacement — that was the whole point of the
+ * round-7/8 identity gate.
  */
-async function waitForPids(pids: readonly number[], timeoutMs: number): Promise<readonly number[]> {
+async function waitForPids(
+  children: readonly SignalledChild[],
+  timeoutMs: number,
+): Promise<readonly number[]> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const alive = pids.filter((pid) => {
+    const aliveCount = children.filter((c) => {
       try {
-        process.kill(pid, 0);
+        process.kill(c.pid, 0);
         return true;
       } catch {
         return false;
       }
-    });
-    if (alive.length === 0) return [];
+    }).length;
+    if (aliveCount === 0) return [];
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  // Force kill any remaining, then poll briefly for the kernel to reap.
-  for (const pid of pids) {
+  // Force-kill any remaining, but only after re-confirming identity. A PID
+  // that exited mid-grace and got reused by an unrelated same-UID process
+  // would otherwise be killed.
+  for (const child of children) {
     try {
-      process.kill(pid, 0);
-      process.kill(pid, "SIGKILL");
+      process.kill(child.pid, 0);
     } catch {
-      /* already dead */
+      continue; // already dead
+    }
+    const recheck = await verifyChildIdentity(child.name, child.pid);
+    if (recheck.outcome === "match") {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already dead */
+      }
+    } else {
+      console.warn(`${child.name} (PID ${child.pid}) escalation skipped: ${recheck.reason}`);
     }
   }
   const sigkillDeadline = Date.now() + 1_500;
   while (Date.now() < sigkillDeadline) {
-    const alive = pids.filter((pid) => {
+    const aliveCount = children.filter((c) => {
       try {
-        process.kill(pid, 0);
+        process.kill(c.pid, 0);
         return true;
       } catch {
         return false;
       }
-    });
-    if (alive.length === 0) return [];
+    }).length;
+    if (aliveCount === 0) return [];
     await new Promise((r) => setTimeout(r, 50));
   }
-  return pids.filter((pid) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  return children
+    .filter((c) => {
+      try {
+        process.kill(c.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .map((c) => c.pid);
 }

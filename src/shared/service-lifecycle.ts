@@ -417,28 +417,51 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     // failure would mirror the round-5 Nexus-tear-down regression.
     const toKill = children.filter((c) => c.acquired === "spawned");
     const ROLLBACK_DEADLINE_MS = 5_000;
-    const deadline = Date.now() + ROLLBACK_DEADLINE_MS;
+    // Route through the verified terminateChild helper (round 9): the old
+    // raw-kill loop swallowed delivery errors and never confirmed the
+    // SIGKILL postcondition, so a sandboxed/D-state sibling that survived
+    // would be silently leaked.
+    const rollbackSurvivors: ManagedChildProcess[] = [];
     await Promise.all(
       toKill.map(async (child) => {
-        try {
-          child.proc.kill("SIGTERM");
-        } catch {
-          /* already dead */
-        }
-        const remaining = Math.max(0, deadline - Date.now());
-        const exited = await Promise.race([
-          child.proc.exited,
-          new Promise<false>((resolve) => setTimeout(() => resolve(false), remaining)),
-        ]);
-        if (exited === false) {
-          try {
-            child.proc.kill("SIGKILL");
-          } catch {
-            /* already dead */
-          }
+        const result = await terminateChild(
+          {
+            pid: child.pid,
+            kill: (sig: NodeJS.Signals) => child.proc.kill(sig),
+            exited: child.proc.exited,
+          },
+          ROLLBACK_DEADLINE_MS,
+        );
+        if (!result.ok) {
+          rollbackSurvivors.push(child);
+          report(
+            `[startServices] rollback: ${child.name} (PID ${child.pid}) survived teardown: ${result.reason}`,
+          );
         }
       }),
     );
+    // Persist any rollback survivors to grove.pid so the next grove
+    // up/down can target them, instead of leaving them as untracked
+    // orphan listeners.
+    if (rollbackSurvivors.length > 0) {
+      try {
+        const existing = (() => {
+          try {
+            return JSON.parse(readFileSync(pidFilePath, "utf-8")) as Record<string, unknown>;
+          } catch {
+            return {} as Record<string, unknown>;
+          }
+        })();
+        const rewritten = {
+          ...existing,
+          children: rollbackSurvivors.map((c) => ({ name: c.name, pid: c.pid })),
+          startedAt: existing.startedAt ?? new Date().toISOString(),
+        };
+        writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
+      } catch {
+        /* best-effort */
+      }
+    }
     // Only tear down Nexus if THIS call started it. Reusing a healthy
     // pre-existing Nexus must not get torn down because the HTTP server
     // failed to bind — other work may depend on it.
