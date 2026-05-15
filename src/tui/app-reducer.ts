@@ -15,6 +15,9 @@ export interface TuiKeyboardState {
   readonly goalBuffer: string;
   readonly compareMode: boolean;
   readonly compareCids: readonly string[];
+  readonly activeFrontierSlice: string;
+  readonly frontierTabKeys: readonly string[];
+  readonly adoptContext: { readonly targetCid: string; readonly summary: string } | undefined;
   readonly zoomLevel: ZoomLevel;
   readonly terminalScrollOffset: number;
   readonly layoutMode: "grid" | "tab";
@@ -47,6 +50,12 @@ export type TuiAction =
   | { readonly type: "COMPARE_TOGGLE" }
   | { readonly type: "COMPARE_SELECT"; readonly cid: string }
   | { readonly type: "COMPARE_ADOPT" }
+  | { readonly type: "FRONTIER_SET_TABS"; readonly keys: readonly string[] }
+  | { readonly type: "FRONTIER_SLICE_SET"; readonly key: string }
+  | { readonly type: "FRONTIER_SLICE_NEXT" }
+  | { readonly type: "FRONTIER_SLICE_PREV" }
+  | { readonly type: "ADOPT_SET"; readonly targetCid: string; readonly summary: string }
+  | { readonly type: "ADOPT_CLEAR" }
   | { readonly type: "ZOOM_CYCLE" }
   | { readonly type: "ZOOM_RESET" }
   | { readonly type: "TERMINAL_SCROLL_UP" }
@@ -67,6 +76,9 @@ export const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   goalBuffer: "",
   compareMode: false,
   compareCids: [],
+  activeFrontierSlice: "overview",
+  frontierTabKeys: ["overview"],
+  adoptContext: undefined,
   zoomLevel: "normal",
   terminalScrollOffset: 0,
   layoutMode: "tab",
@@ -137,7 +149,40 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
       return { ...state, compareCids: [...prev, action.cid] };
     }
     case "COMPARE_ADOPT":
-      return { ...state, compareMode: false, compareCids: [] };
+      return { ...state, compareMode: false, compareCids: [], adoptContext: undefined };
+    case "FRONTIER_SET_TABS": {
+      const keys = action.keys.length > 0 ? action.keys : ["overview"];
+      const stillValid = keys.includes(state.activeFrontierSlice);
+      return {
+        ...state,
+        frontierTabKeys: keys,
+        activeFrontierSlice: stillValid ? state.activeFrontierSlice : "overview",
+      };
+    }
+    case "FRONTIER_SLICE_SET":
+      return state.frontierTabKeys.includes(action.key)
+        ? { ...state, activeFrontierSlice: action.key }
+        : state;
+    case "FRONTIER_SLICE_NEXT": {
+      const idx = state.frontierTabKeys.indexOf(state.activeFrontierSlice);
+      const next = state.frontierTabKeys[(idx + 1) % state.frontierTabKeys.length];
+      return next ? { ...state, activeFrontierSlice: next } : state;
+    }
+    case "FRONTIER_SLICE_PREV": {
+      const idx = state.frontierTabKeys.indexOf(state.activeFrontierSlice);
+      const prev =
+        state.frontierTabKeys[
+          (idx - 1 + state.frontierTabKeys.length) % state.frontierTabKeys.length
+        ];
+      return prev ? { ...state, activeFrontierSlice: prev } : state;
+    }
+    case "ADOPT_SET":
+      return {
+        ...state,
+        adoptContext: { targetCid: action.targetCid, summary: action.summary },
+      };
+    case "ADOPT_CLEAR":
+      return state.adoptContext === undefined ? state : { ...state, adoptContext: undefined };
     case "ZOOM_CYCLE":
       return { ...state, zoomLevel: nextZoom(state.zoomLevel) };
     case "ZOOM_RESET":
