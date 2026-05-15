@@ -144,11 +144,19 @@ export type {
   ContributionStatus,
   Entity,
   EntityMetadata,
+  TimelineEventEntity,
+  TimelineEventSpec,
+  TimelineEventStatus,
+  WorkBlockEntity,
+  WorkBlockSpec,
+  WorkBlockStatusBody,
 } from "./entity.js";
 export {
   agentSessionToEntity,
   claimToEntity,
   contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
 } from "./entity.js";
 export {
   ArtifactLimitError,
@@ -327,7 +335,21 @@ export type {
 export { ExpiryReason } from "./store.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { SubprocessRuntime } from "./subprocess-runtime.js";
+export type {
+  AgentTaskStatusTransition,
+  TaskBinder,
+  TaskBindRequest,
+  TaskBindResult,
+  TaskControllerOptions,
+  TaskControllerRuntime,
+  TaskControllerStore,
+} from "./task-controller.js";
+export { DefaultTaskBinder, TaskController } from "./task-controller.js";
 export { toUtcIso } from "./time.js";
+export * from "./timeline.js";
+export * from "./timeline-projector.js";
+export * from "./timeline-schemas.js";
+export * from "./timeline-store.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
 export type { RouteResult } from "./topology-router.js";

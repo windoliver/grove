@@ -18,7 +18,9 @@ import {
   type SessionFinalizer,
 } from "../core/lifecycle-metadata.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
@@ -26,6 +28,7 @@ import type {
   SessionQuery,
   SessionStore,
 } from "../core/session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "../core/session.js";
 import type { ClaimStore } from "../core/store.js";
 import type { NexusClient } from "./client.js";
 import { NexusConflictError } from "./errors.js";
@@ -145,7 +148,7 @@ function isContributionSidecarV2(value: unknown): value is ContributionSidecarV2
   );
 }
 
-export class NexusSessionStore implements SessionStore {
+export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore {
   private readonly client: NexusClient;
   private readonly zoneId: string;
   private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
@@ -527,6 +530,45 @@ export class NexusSessionStore implements SessionStore {
       throw error;
     }
     return casOk(updated);
+  }
+
+  async appendSessionRoleSkill(
+    id: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const loaded = await this.readPersistedSessionRecordWithEtag(id);
+      if (loaded === undefined) return "session_missing";
+      const existing = this.normalizeSessionRecord(loaded.persisted).session;
+      if (existing.topology === undefined) return "role_missing";
+
+      const topologyResult = appendSkillToTopology(existing.topology, roleName, skillName);
+      const configResult = appendSkillToSessionConfigTopology(existing.config, roleName, skillName);
+
+      if (!topologyResult.foundRole) return "role_missing";
+      if (!topologyResult.changed && !configResult.changed) return "already_present";
+
+      const nextPersisted: PersistedSessionRecord = {
+        ...loaded.persisted,
+        uid: existing.uid,
+        topology: topologyResult.topology,
+        config: configResult.config,
+      };
+
+      try {
+        await this.client.write(
+          this.sessionPath(id),
+          encoder.encode(JSON.stringify(nextPersisted)),
+          { ifMatch: loaded.etag },
+        );
+        return "appended";
+      } catch (error) {
+        if (!isCasConflict(error)) throw error;
+      }
+    }
+
+    throw new Error("appendSessionRoleSkill retry loop exhausted");
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {

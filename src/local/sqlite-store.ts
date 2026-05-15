@@ -58,6 +58,7 @@ import { SQLITE_CREDITS_DDL, SqliteCreditsService } from "./sqlite-credits-servi
 import { GOAL_SESSION_DDL, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
+import { SQLITE_TIMELINE_DDL, SqliteTimelineStore } from "./sqlite-timeline-store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -369,6 +370,7 @@ export function initSqliteDb(dbPath: string): Database {
 
     db.exec(HANDOFF_DDL);
     db.exec(SQLITE_CREDITS_DDL);
+    db.exec(SQLITE_TIMELINE_DDL);
 
     // Check current schema version for migrations
     const currentVersion = (
@@ -1061,6 +1063,7 @@ export function createSqliteStores(
   outcomeStore: SqliteOutcomeStore;
   goalSessionStore: SqliteGoalSessionStore;
   handoffStore: SqliteHandoffStore;
+  timelineStore: SqliteTimelineStore;
   idempotencyStore: SqliteIdempotencyStore;
   close: () => void;
 } {
@@ -1078,6 +1081,7 @@ export function createSqliteStores(
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db, { claimStore }),
     handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
+    timelineStore: new SqliteTimelineStore(db),
     idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
       db.run("PRAGMA optimize");
@@ -2019,6 +2023,9 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
   private readonly db: Database;
   private readonly stmtGetTask: Statement;
 
+  /** Optional callback invoked after a successful AgentTask spec/status write. */
+  onAgentTaskWrite?: (op: "ADDED" | "MODIFIED", view: AgentTaskView) => void;
+
   constructor(db: Database) {
     this.db = db;
     this.storeIdentity = db.filename;
@@ -2035,6 +2042,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     opts?: CasOpts,
   ): Promise<CasMutationResult<AgentTaskView>> => {
     let mismatch: CasMutationResult<AgentTaskView> | null = null;
+    let op: "ADDED" | "MODIFIED" = "MODIFIED";
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(spec.id);
 
@@ -2054,6 +2062,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
       }
 
       if (existing === null) {
+        op = "ADDED";
         const nowIso = new Date().toISOString();
         this.insertTaskSpecRow({ ...spec, generation: 1 });
         this.insertTaskStatusRow({
@@ -2107,6 +2116,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
 
     const view = this.readAgentTask(spec.id);
     if (view === null) throw new Error(`Failed to read back agent task '${spec.id}'`);
+    this.emitAgentTaskWrite(op, view);
     return { kind: "ok", view };
   };
 
@@ -2212,6 +2222,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
       return mismatch;
     }
     if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
+    this.emitAgentTaskWrite("MODIFIED", view);
     return { kind: "ok", view };
   };
 
@@ -2277,6 +2288,15 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     const row = this.stmtGetTask.get(taskId) as AgentTaskViewRow | null;
     if (row === null) return null;
     return rowToAgentTaskView(row);
+  }
+
+  private emitAgentTaskWrite(op: "ADDED" | "MODIFIED", view: AgentTaskView): void {
+    try {
+      this.onAgentTaskWrite?.(op, view);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[sqlite-agent-task-store] onAgentTaskWrite failed: ${detail}\n`);
+    }
   }
 }
 

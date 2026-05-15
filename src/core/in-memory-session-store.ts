@@ -6,7 +6,9 @@ import {
   Finalizer,
 } from "./lifecycle-metadata.js";
 import type {
+  AppendSessionRoleSkillResult,
   CreateSessionInput,
+  RuntimeSkillSessionStore,
   Session,
   SessionDeleteBlocker,
   SessionDeleteOptions,
@@ -14,12 +16,13 @@ import type {
   SessionQuery,
   SessionStore,
 } from "./session.js";
+import { appendSkillToSessionConfigTopology, appendSkillToTopology } from "./session.js";
 
 /**
  * In-memory session store. Suitable for testing and single-process CLI usage.
  * Sessions are lost on process restart.
  */
-export class InMemorySessionStore implements SessionStore {
+export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionStore {
   private sessions: Session[] = [];
   private readonly contributions = new Map<string, string[]>();
 
@@ -31,6 +34,7 @@ export class InMemorySessionStore implements SessionStore {
       goal: input.goal,
       presetName: input.presetName,
       topology: input.topology,
+      config: input.config,
       status: "pending",
       createdAt: new Date().toISOString(),
       finalizers: DEFAULT_SESSION_FINALIZERS,
@@ -140,6 +144,30 @@ export class InMemorySessionStore implements SessionStore {
       blockers: [],
       ...(warning !== undefined ? { warning } : {}),
     });
+  }
+
+  async appendSessionRoleSkill(
+    sessionId: string,
+    roleName: string,
+    skillName: string,
+  ): Promise<AppendSessionRoleSkillResult> {
+    const idx = this.sessions.findIndex((s) => s.id === sessionId);
+    if (idx === -1) return "session_missing";
+    const existing = this.sessions[idx];
+    if (!existing?.topology) return "role_missing";
+
+    const topologyResult = appendSkillToTopology(existing.topology, roleName, skillName);
+    const configResult = appendSkillToSessionConfigTopology(existing.config, roleName, skillName);
+
+    if (!topologyResult.foundRole) return "role_missing";
+    if (!topologyResult.changed && !configResult.changed) return "already_present";
+
+    this.sessions[idx] = {
+      ...existing,
+      topology: topologyResult.topology,
+      config: configResult.config,
+    };
+    return "appended";
   }
 
   async archiveSession(

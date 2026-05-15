@@ -10,7 +10,7 @@
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
 import { computeContributionContentHash } from "../content-dedup.js";
-import { contributionToEntity } from "../entity.js";
+import { contributionToEntity, workBlockToEntity } from "../entity.js";
 import { PolicyViolationError } from "../errors.js";
 import type { EventBus, GroveEvent, PublishResult } from "../event-bus.js";
 import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
@@ -32,6 +32,8 @@ import { PolicyEnforcer } from "../policy-enforcer.js";
 import { attachRoutingSignatureToInput } from "../routing-provenance.js";
 import type { ContributionPutOutcome, ContributionPutResult, ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
+import { mergeCostSummary } from "../timeline.js";
+import { costSummaryForUsageReport, timelineEventsForContribution } from "../timeline-projector.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
 import { isEphemeralMessageContext } from "./context-schemas.js";
@@ -838,6 +840,101 @@ async function publishLocalContributionEvent(
   return eventBus.publish(event);
 }
 
+async function appendContributionTimelineEvents(
+  deps: OperationDeps,
+  contribution: Contribution,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  if (timelineStore === undefined) return;
+  try {
+    const previousPlan = await previousPlanForContribution(deps, contribution);
+    for (const event of timelineEventsForContribution(contribution, { previousPlan })) {
+      await timelineStore.appendTimelineEvent(event);
+    }
+    await updateLinkedWorkBlockForContribution(deps, contribution);
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: timeline projection failed after contribution commit: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+async function previousPlanForContribution(
+  deps: OperationDeps,
+  contribution: Contribution,
+): Promise<Contribution | undefined> {
+  if (contribution.kind !== CK.Plan) return undefined;
+  const previousCid = contribution.relations.find(
+    (relation) => relation.relationType === RelationType.DerivesFrom,
+  )?.targetCid;
+  if (previousCid === undefined) return undefined;
+  try {
+    return await deps.contributionStore?.get(previousCid);
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: previous plan lookup failed during timeline projection: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    return undefined;
+  }
+}
+
+async function updateLinkedWorkBlockForContribution(
+  deps: OperationDeps,
+  contribution: Contribution,
+): Promise<void> {
+  const timelineStore = deps.timelineStore;
+  const workBlockId = contextString(contribution.context, "work_block_id");
+  const costSummary = costSummaryForUsageReport(contribution.context?.usage_report);
+  if (timelineStore === undefined || workBlockId === undefined || costSummary === undefined) {
+    return;
+  }
+  try {
+    const existing = await timelineStore.getWorkBlock(workBlockId);
+    if (existing === undefined) return;
+    const updated = await timelineStore.patchWorkBlock(workBlockId, {
+      costSummary: mergeCostSummary(existing.costSummary, costSummary),
+      contributionCids: appendUnique(existing.contributionCids, contribution.cid),
+      artifactHashes: appendUnique(
+        existing.artifactHashes,
+        ...Object.values(contribution.artifacts),
+      ),
+    });
+    if (deps.onEntityWrite && deps.namespace) {
+      deps.onEntityWrite({
+        kind: "WorkBlock",
+        namespace: deps.namespace,
+        op: "MODIFIED",
+        entity: workBlockToEntity(updated, deps.namespace),
+      });
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: linked WorkBlock cost update failed after contribution commit: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+function contextString(
+  context: Readonly<Record<string, JsonValue>> | undefined,
+  key: string,
+): string | undefined {
+  const value = context?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function appendUnique(
+  values: readonly string[],
+  ...incoming: readonly string[]
+): readonly string[] {
+  return [...new Set([...values, ...incoming])];
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -1421,6 +1518,7 @@ export async function contributeOperation(
         }\n`,
       );
     }
+    await appendContributionTimelineEvents(deps, contribution);
 
     if (isDoneMarker && deps.eventBus !== undefined && agentRole !== undefined) {
       const eventBus = deps.eventBus;

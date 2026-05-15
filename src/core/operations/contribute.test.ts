@@ -8,6 +8,12 @@ import { FrontierRewardService } from "../frontier-reward-service.js";
 import { LocalEventBus } from "../local-event-bus.js";
 import type { Contribution } from "../models.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
+import {
+  TimelineEventType,
+  type WorkBlock,
+  WorkBlockOrigin,
+  WorkBlockStatus,
+} from "../timeline.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
 import type { EntityWriteEvent } from "../watch-events.js";
@@ -240,6 +246,68 @@ describe("contributeOperation", () => {
     expect(stored?.summary).toBe("retrievable");
   });
 
+  test("appends projected timeline events for new contribution writes", async () => {
+    const hash = await storeTestContent(deps.cas, "timeline evidence");
+    await deps.timelineStore.putWorkBlock(makeWorkBlock("wb_timeline", "session-timeline"));
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "timeline projection",
+        artifacts: { "evidence.txt": hash },
+        context: {
+          session_id: "session-timeline",
+          work_block_id: "wb_timeline",
+          usage_report: { input_tokens: 12, output_tokens: 8, cost_usd: 0.04 },
+        },
+        agent: { agentId: "timeline-agent" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await deps.timelineStore.listTimelineEvents({ sessionId: "session-timeline" });
+    expect(events.map((event) => event.type)).toContain(TimelineEventType.ContributionCreated);
+    expect(events.map((event) => event.type)).toContain(TimelineEventType.ArtifactLinked);
+    expect(events.map((event) => event.type)).toContain(TimelineEventType.CostReported);
+    expect(events.find((event) => event.type === TimelineEventType.CostReported)?.workBlockId).toBe(
+      "wb_timeline",
+    );
+    const block = await deps.timelineStore.getWorkBlock("wb_timeline");
+    expect(block?.costSummary).toEqual({
+      inputTokens: 12,
+      outputTokens: 8,
+      costUsd: 0.04,
+    });
+  });
+
+  test("does not double-count linked WorkBlock cost on duplicate contribution retry", async () => {
+    const hash = await storeTestContent(deps.cas, "timeline duplicate evidence");
+    await deps.timelineStore.putWorkBlock(makeWorkBlock("wb_timeline_retry", "session-retry"));
+    const input = {
+      kind: "work" as const,
+      summary: "timeline projection retry",
+      artifacts: { "evidence.txt": hash },
+      context: {
+        session_id: "session-retry",
+        work_block_id: "wb_timeline_retry",
+        usage_report: { input_tokens: 12, output_tokens: 8, cost_usd: 0.04 },
+      },
+      agent: { agentId: "timeline-agent" },
+    };
+
+    const first = await contributeOperation(input, deps);
+    const second = await contributeOperation(input, deps);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    const block = await deps.timelineStore.getWorkBlock("wb_timeline_retry");
+    expect(block?.costSummary).toEqual({
+      inputTokens: 12,
+      outputTokens: 8,
+      costUsd: 0.04,
+    });
+  });
+
   // -----------------------------------------------------------------------
   // Timezone normalization (toUtcIso in contributeOperation)
   // -----------------------------------------------------------------------
@@ -305,6 +373,28 @@ describe("contributeOperation", () => {
     expect(stored?.createdAt).toBe("2026-06-01T12:00:00.000Z");
   });
 });
+
+function makeWorkBlock(workBlockId: string, sessionId: string): WorkBlock {
+  return {
+    workBlockId,
+    sessionId,
+    goal: "Track contribution cost",
+    actor: { agentId: "timeline-agent" },
+    origin: WorkBlockOrigin.Agent,
+    status: WorkBlockStatus.Running,
+    startedAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    inputRefs: [],
+    outputRefs: [],
+    evidenceRefs: [],
+    approvalRefs: [],
+    contributionCids: [],
+    artifactHashes: [],
+    claimIds: [],
+    revision: 1,
+    createdAt: "2026-05-13T10:00:00.000Z",
+  };
+}
 
 describe("contributeOperation: idempotencyKey", () => {
   let testDeps: TestOperationDeps;

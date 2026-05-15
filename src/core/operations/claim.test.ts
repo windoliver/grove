@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { InMemoryClaimStore } from "../../server/test-helpers.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../timeline.js";
 import { claimOperation, listClaimsOperation, releaseOperation } from "./claim.js";
 import type { OperationDeps } from "./deps.js";
 import type { TestOperationDeps } from "./test-helpers.js";
@@ -171,6 +172,35 @@ describe("claimOperation", () => {
     const stored = await claimStore.getClaim(result.value.claimId);
     expect(stored?.ownerRef).toEqual(ownerRef);
   });
+
+  test("appends claim-created and lease-refreshed timeline events", async () => {
+    const first = await claimOperation(
+      {
+        targetRef: "timeline-target",
+        intentSummary: "timeline claim",
+        context: { session_id: "session-claim", work_block_id: "wb_claim" },
+        agent: { agentId: "agent-timeline" },
+      },
+      deps,
+    );
+    const renewed = await claimOperation(
+      {
+        targetRef: "timeline-target",
+        intentSummary: "timeline claim renewed",
+        context: { session_id: "session-claim", work_block_id: "wb_claim" },
+        agent: { agentId: "agent-timeline" },
+      },
+      deps,
+    );
+
+    expect(first.ok).toBe(true);
+    expect(renewed.ok).toBe(true);
+    const events = await deps.timelineStore?.listTimelineEvents({ sessionId: "session-claim" });
+    expect(events?.map((event) => event.type)).toEqual([
+      TimelineEventType.ClaimCreated,
+      TimelineEventType.ClaimLeaseRefreshed,
+    ]);
+  });
 });
 
 describe("releaseOperation", () => {
@@ -237,6 +267,33 @@ describe("releaseOperation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("appends completion timeline event and completes linked work block", async () => {
+    await deps.timelineStore?.putWorkBlock(makeWorkBlock("wb_claim_complete", "session-claim"));
+    const claim = await claimOperation(
+      {
+        targetRef: "task-complete",
+        intentSummary: "complete task",
+        context: { session_id: "session-claim", work_block_id: "wb_claim_complete" },
+        agent: { agentId: "agent-1" },
+      },
+      deps,
+    );
+    expect(claim.ok).toBe(true);
+    if (!claim.ok) return;
+
+    const result = await releaseOperation(
+      { claimId: claim.value.claimId, action: "complete" },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await deps.timelineStore?.listTimelineEvents({ sessionId: "session-claim" });
+    expect(events?.map((event) => event.type)).toContain(TimelineEventType.ClaimCompleted);
+    expect(events?.map((event) => event.type)).toContain(TimelineEventType.WorkBlockCompleted);
+    const block = await deps.timelineStore?.getWorkBlock("wb_claim_complete");
+    expect(block?.status).toBe(WorkBlockStatus.Completed);
   });
 });
 
@@ -316,6 +373,28 @@ describe("listClaimsOperation", () => {
     if (releasedResult.ok) expect(releasedResult.value.count).toBe(1);
   });
 });
+
+function makeWorkBlock(workBlockId: string, sessionId: string) {
+  return {
+    workBlockId,
+    sessionId,
+    goal: "Complete claimed work",
+    actor: { agentId: "agent-1" },
+    origin: WorkBlockOrigin.Agent,
+    status: WorkBlockStatus.Running,
+    startedAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    inputRefs: [],
+    outputRefs: [],
+    evidenceRefs: [],
+    approvalRefs: [],
+    contributionCids: [],
+    artifactHashes: [],
+    claimIds: [],
+    revision: 1,
+    createdAt: "2026-05-13T10:00:00.000Z",
+  };
+}
 
 describe("claim → onEntityWrite", () => {
   let testDeps: TestOperationDeps;

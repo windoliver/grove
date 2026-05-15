@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { expectOk } from "./cas.js";
 import { ownerRefsEqual } from "./lifecycle-metadata.js";
-import type { SessionStore } from "./session.js";
+import type { RuntimeSkillSessionStore, SessionStore } from "./session.js";
 import type { AgentTopology } from "./topology.js";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,15 @@ const SAMPLE_TOPOLOGY: AgentTopology = {
   structure: "flat",
   roles: [{ name: "worker" }],
 };
+
+function hasRuntimeSkillCapability(
+  store: SessionStore,
+): store is SessionStore & RuntimeSkillSessionStore {
+  return (
+    typeof (store as unknown as { appendSessionRoleSkill?: unknown }).appendSessionRoleSkill ===
+    "function"
+  );
+}
 
 /**
  * Run the full SessionStore conformance test suite.
@@ -485,6 +494,43 @@ export function sessionStoreConformance(
         const stillThere = await store.getSession(session.id);
         expect(stillThere).toBeDefined();
       });
+    });
+
+    test("appendSessionRoleSkill appends and dedupes role skills", async () => {
+      if (!hasRuntimeSkillCapability(store)) return;
+      const session = await store.createSession({
+        goal: "runtime skill",
+        topology: {
+          structure: "flat",
+          roles: [{ name: "coder", skills: ["grove"] }, { name: "reviewer" }],
+        },
+      });
+
+      await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+        "appended",
+      );
+      await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+        "already_present",
+      );
+
+      const fetched = await store.getSession(session.id);
+      expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+      expect(fetched?.topology?.roles[1]?.skills).toBeUndefined();
+    });
+
+    test("appendSessionRoleSkill reports missing session and missing role", async () => {
+      if (!hasRuntimeSkillCapability(store)) return;
+      await expect(
+        store.appendSessionRoleSkill("missing-session", "coder", "review"),
+      ).resolves.toBe("session_missing");
+
+      const session = await store.createSession({
+        goal: "runtime skill missing role",
+        topology: SAMPLE_TOPOLOGY,
+      });
+      await expect(store.appendSessionRoleSkill(session.id, "reviewer", "review")).resolves.toBe(
+        "role_missing",
+      );
     });
   });
 }

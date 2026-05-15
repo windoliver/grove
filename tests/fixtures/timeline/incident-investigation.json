@@ -1,0 +1,544 @@
+{
+  "sessionId": "incident-2026-05-13-checkout-latency",
+  "workBlocks": [
+    {
+      "workBlockId": "wb_incident_triage",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "goal": "Triage checkout latency report",
+      "actor": {
+        "agentId": "incident-lead",
+        "role": "triage"
+      },
+      "origin": "triggered",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:00:00.000Z",
+      "updatedAt": "2026-05-13T10:05:00.000Z",
+      "completedAt": "2026-05-13T10:05:00.000Z",
+      "inputRefs": [
+        {
+          "kind": "ticket",
+          "id": "INC-1042",
+          "label": "Checkout latency report"
+        }
+      ],
+      "outputRefs": [
+        {
+          "kind": "summary",
+          "id": "triage-summary",
+          "label": "Initial impact summary"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "dashboard",
+          "id": "checkout-latency",
+          "label": "Checkout latency dashboard",
+          "href": "https://example.invalid/dashboards/checkout-latency"
+        }
+      ],
+      "approvalRefs": [],
+      "contributionCids": [],
+      "artifactHashes": [],
+      "claimIds": [],
+      "costSummary": {
+        "inputTokens": 1200,
+        "outputTokens": 300,
+        "costUsd": 0.08,
+        "model": "analysis-model"
+      },
+      "context": {
+        "severity": "sev2",
+        "reportedBy": "support"
+      },
+      "revision": 2,
+      "createdAt": "2026-05-13T10:00:00.000Z"
+    },
+    {
+      "workBlockId": "wb_incident_evidence",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "goal": "Collect service evidence for checkout latency",
+      "actor": {
+        "agentId": "incident-analyst",
+        "role": "evidence"
+      },
+      "origin": "agent",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:05:00.000Z",
+      "updatedAt": "2026-05-13T10:12:00.000Z",
+      "completedAt": "2026-05-13T10:12:00.000Z",
+      "inputRefs": [
+        {
+          "kind": "summary",
+          "id": "triage-summary",
+          "label": "Initial impact summary"
+        }
+      ],
+      "outputRefs": [
+        {
+          "kind": "evidence_pack",
+          "id": "checkout-evidence-pack",
+          "label": "Dashboard and log evidence"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "dashboard",
+          "id": "payment-service-p95",
+          "label": "Payment service p95 latency"
+        },
+        {
+          "kind": "log_search",
+          "id": "checkout-timeout-window",
+          "label": "Timeout spike from 10:02-10:10 UTC"
+        }
+      ],
+      "approvalRefs": [],
+      "contributionCids": [],
+      "artifactHashes": [],
+      "claimIds": [],
+      "costSummary": {
+        "inputTokens": 2200,
+        "outputTokens": 550,
+        "costUsd": 0.14,
+        "model": "analysis-model"
+      },
+      "revision": 2,
+      "createdAt": "2026-05-13T10:05:00.000Z"
+    },
+    {
+      "workBlockId": "wb_incident_mitigation_review",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "goal": "Review proposed mitigation with operator approval",
+      "actor": {
+        "agentId": "incident-reviewer",
+        "role": "review"
+      },
+      "origin": "agent",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:12:00.000Z",
+      "updatedAt": "2026-05-13T10:18:00.000Z",
+      "completedAt": "2026-05-13T10:18:00.000Z",
+      "inputRefs": [
+        {
+          "kind": "evidence_pack",
+          "id": "checkout-evidence-pack",
+          "label": "Dashboard and log evidence"
+        }
+      ],
+      "outputRefs": [
+        {
+          "kind": "mitigation_plan",
+          "id": "route-checkout-traffic",
+          "label": "Route checkout traffic away from degraded payment shard"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "runbook",
+          "id": "checkout-latency-runbook",
+          "label": "Checkout latency mitigation runbook"
+        }
+      ],
+      "approvalRefs": [
+        {
+          "kind": "approval",
+          "id": "approval-mitigation-1",
+          "label": "Operator approval for mitigation"
+        }
+      ],
+      "contributionCids": [],
+      "artifactHashes": [],
+      "claimIds": [],
+      "costSummary": {
+        "inputTokens": 900,
+        "outputTokens": 250,
+        "costUsd": 0.06,
+        "model": "analysis-model"
+      },
+      "revision": 3,
+      "createdAt": "2026-05-13T10:12:00.000Z"
+    },
+    {
+      "workBlockId": "wb_incident_customer_update",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "goal": "Prepare customer-facing incident update",
+      "actor": {
+        "agentId": "incident-comms",
+        "role": "communications"
+      },
+      "origin": "agent",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:18:00.000Z",
+      "updatedAt": "2026-05-13T10:23:00.000Z",
+      "completedAt": "2026-05-13T10:23:00.000Z",
+      "inputRefs": [
+        {
+          "kind": "mitigation_plan",
+          "id": "route-checkout-traffic",
+          "label": "Approved mitigation plan"
+        },
+        {
+          "kind": "approval",
+          "id": "approval-mitigation-1",
+          "label": "Operator approval for mitigation"
+        }
+      ],
+      "outputRefs": [
+        {
+          "kind": "customer_update",
+          "id": "checkout-latency-update",
+          "label": "Customer support update"
+        },
+        {
+          "kind": "status_page",
+          "id": "status-page-incident-note",
+          "label": "Status page incident note"
+        }
+      ],
+      "evidenceRefs": [
+        {
+          "kind": "status_page",
+          "id": "status-page-incident-note",
+          "label": "Published status page update"
+        }
+      ],
+      "approvalRefs": [
+        {
+          "kind": "approval",
+          "id": "approval-mitigation-1",
+          "label": "Operator approval for mitigation"
+        }
+      ],
+      "contributionCids": [],
+      "artifactHashes": [],
+      "claimIds": [],
+      "costSummary": {
+        "inputTokens": 650,
+        "outputTokens": 220,
+        "costUsd": 0.04,
+        "model": "analysis-model"
+      },
+      "revision": 2,
+      "createdAt": "2026-05-13T10:18:00.000Z"
+    }
+  ],
+  "events": [
+    {
+      "eventId": "te_incident_triage_created",
+      "resourceVersion": "1",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.created",
+      "occurredAt": "2026-05-13T10:00:00.000Z",
+      "recordedAt": "2026-05-13T10:00:01.000Z",
+      "actor": {
+        "agentId": "incident-lead",
+        "role": "triage"
+      },
+      "workBlockId": "wb_incident_triage",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_triage"
+        }
+      ],
+      "payload": {
+        "goal": "Triage checkout latency report",
+        "trigger": "ticket"
+      }
+    },
+    {
+      "eventId": "te_incident_triage_started",
+      "resourceVersion": "2",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.started",
+      "occurredAt": "2026-05-13T10:00:00.000Z",
+      "recordedAt": "2026-05-13T10:00:02.000Z",
+      "actor": {
+        "agentId": "incident-lead",
+        "role": "triage"
+      },
+      "workBlockId": "wb_incident_triage",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_triage"
+        }
+      ],
+      "payload": {
+        "status": "running"
+      }
+    },
+    {
+      "eventId": "te_incident_triage_completed",
+      "resourceVersion": "3",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.completed",
+      "occurredAt": "2026-05-13T10:05:00.000Z",
+      "recordedAt": "2026-05-13T10:05:01.000Z",
+      "actor": {
+        "agentId": "incident-lead",
+        "role": "triage"
+      },
+      "workBlockId": "wb_incident_triage",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_triage"
+        },
+        {
+          "kind": "summary",
+          "id": "triage-summary"
+        }
+      ],
+      "payload": {
+        "status": "completed",
+        "impact": "checkout p95 latency above threshold"
+      }
+    },
+    {
+      "eventId": "te_incident_evidence_created",
+      "resourceVersion": "4",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.created",
+      "occurredAt": "2026-05-13T10:05:00.000Z",
+      "recordedAt": "2026-05-13T10:05:02.000Z",
+      "actor": {
+        "agentId": "incident-analyst",
+        "role": "evidence"
+      },
+      "workBlockId": "wb_incident_evidence",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_evidence"
+        }
+      ],
+      "payload": {
+        "goal": "Collect service evidence for checkout latency"
+      }
+    },
+    {
+      "eventId": "te_incident_evidence_linked",
+      "resourceVersion": "5",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "artifact.linked",
+      "occurredAt": "2026-05-13T10:10:00.000Z",
+      "recordedAt": "2026-05-13T10:10:01.000Z",
+      "actor": {
+        "agentId": "incident-analyst",
+        "role": "evidence"
+      },
+      "workBlockId": "wb_incident_evidence",
+      "targetRefs": [
+        {
+          "kind": "dashboard",
+          "id": "payment-service-p95"
+        },
+        {
+          "kind": "log_search",
+          "id": "checkout-timeout-window"
+        }
+      ],
+      "payload": {
+        "evidenceCount": 2
+      }
+    },
+    {
+      "eventId": "te_incident_evidence_cost",
+      "resourceVersion": "6",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "cost.reported",
+      "occurredAt": "2026-05-13T10:11:00.000Z",
+      "recordedAt": "2026-05-13T10:11:01.000Z",
+      "actor": {
+        "agentId": "incident-analyst",
+        "role": "evidence"
+      },
+      "workBlockId": "wb_incident_evidence",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_evidence"
+        }
+      ],
+      "payload": {
+        "inputTokens": 2200,
+        "outputTokens": 550,
+        "costUsd": 0.14,
+        "model": "analysis-model"
+      }
+    },
+    {
+      "eventId": "te_incident_evidence_completed",
+      "resourceVersion": "7",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.completed",
+      "occurredAt": "2026-05-13T10:12:00.000Z",
+      "recordedAt": "2026-05-13T10:12:01.000Z",
+      "actor": {
+        "agentId": "incident-analyst",
+        "role": "evidence"
+      },
+      "workBlockId": "wb_incident_evidence",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_evidence"
+        },
+        {
+          "kind": "evidence_pack",
+          "id": "checkout-evidence-pack"
+        }
+      ],
+      "payload": {
+        "status": "completed"
+      }
+    },
+    {
+      "eventId": "te_incident_review_created",
+      "resourceVersion": "8",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.created",
+      "occurredAt": "2026-05-13T10:12:00.000Z",
+      "recordedAt": "2026-05-13T10:12:02.000Z",
+      "actor": {
+        "agentId": "incident-reviewer",
+        "role": "review"
+      },
+      "workBlockId": "wb_incident_mitigation_review",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_mitigation_review"
+        }
+      ],
+      "payload": {
+        "goal": "Review proposed mitigation with operator approval"
+      }
+    },
+    {
+      "eventId": "te_incident_approval_requested",
+      "resourceVersion": "9",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "approval.requested",
+      "occurredAt": "2026-05-13T10:14:00.000Z",
+      "recordedAt": "2026-05-13T10:14:01.000Z",
+      "actor": {
+        "agentId": "incident-reviewer",
+        "role": "review"
+      },
+      "workBlockId": "wb_incident_mitigation_review",
+      "targetRefs": [
+        {
+          "kind": "approval",
+          "id": "approval-mitigation-1"
+        }
+      ],
+      "payload": {
+        "question": "Approve routing checkout traffic away from the degraded payment shard?"
+      }
+    },
+    {
+      "eventId": "te_incident_approval_decided",
+      "resourceVersion": "10",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "approval.decided",
+      "occurredAt": "2026-05-13T10:17:00.000Z",
+      "recordedAt": "2026-05-13T10:17:01.000Z",
+      "actor": {
+        "agentId": "operator",
+        "role": "operator"
+      },
+      "workBlockId": "wb_incident_mitigation_review",
+      "targetRefs": [
+        {
+          "kind": "approval",
+          "id": "approval-mitigation-1"
+        }
+      ],
+      "payload": {
+        "decision": "approved"
+      }
+    },
+    {
+      "eventId": "te_incident_review_completed",
+      "resourceVersion": "11",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.completed",
+      "occurredAt": "2026-05-13T10:18:00.000Z",
+      "recordedAt": "2026-05-13T10:18:01.000Z",
+      "actor": {
+        "agentId": "incident-reviewer",
+        "role": "review"
+      },
+      "workBlockId": "wb_incident_mitigation_review",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_mitigation_review"
+        },
+        {
+          "kind": "mitigation_plan",
+          "id": "route-checkout-traffic"
+        }
+      ],
+      "payload": {
+        "status": "completed"
+      }
+    },
+    {
+      "eventId": "te_incident_customer_update_created",
+      "resourceVersion": "12",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.created",
+      "occurredAt": "2026-05-13T10:18:00.000Z",
+      "recordedAt": "2026-05-13T10:18:02.000Z",
+      "actor": {
+        "agentId": "incident-comms",
+        "role": "communications"
+      },
+      "workBlockId": "wb_incident_customer_update",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_customer_update"
+        }
+      ],
+      "payload": {
+        "goal": "Prepare customer-facing incident update"
+      }
+    },
+    {
+      "eventId": "te_incident_customer_update_completed",
+      "resourceVersion": "13",
+      "sessionId": "incident-2026-05-13-checkout-latency",
+      "type": "work_block.completed",
+      "occurredAt": "2026-05-13T10:23:00.000Z",
+      "recordedAt": "2026-05-13T10:23:01.000Z",
+      "actor": {
+        "agentId": "incident-comms",
+        "role": "communications"
+      },
+      "workBlockId": "wb_incident_customer_update",
+      "targetRefs": [
+        {
+          "kind": "WorkBlock",
+          "id": "wb_incident_customer_update"
+        },
+        {
+          "kind": "customer_update",
+          "id": "checkout-latency-update"
+        },
+        {
+          "kind": "status_page",
+          "id": "status-page-incident-note"
+        }
+      ],
+      "payload": {
+        "status": "completed",
+        "audience": "customer_support"
+      }
+    }
+  ],
+  "timelineResourceVersion": "13"
+}

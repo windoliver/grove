@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { AGENT_COLORS, theme } from "./theme.js";
+import { AGENT_COLORS, replaceTheme, theme } from "./theme.js";
 
 describe("theme", () => {
   test("has all focus/chrome tokens", () => {
@@ -74,6 +74,22 @@ describe("theme", () => {
         expect(isValid).toBe(true);
       }
     }
+  });
+
+  test("replaceTheme resets removed override keys", () => {
+    const initialFocus = theme.focus;
+    const initialError = theme.error;
+
+    replaceTheme({ focus: "red", error: "green" });
+    expect(theme.focus).toBe("red");
+    expect(theme.error).toBe("green");
+
+    replaceTheme({ error: "yellow" });
+    expect(theme.focus).toBe(initialFocus);
+    expect(theme.error).toBe("yellow");
+
+    replaceTheme({});
+    expect(theme.error).toBe(initialError);
   });
 });
 

@@ -2,7 +2,7 @@
  * Entity<Kind, Spec, Status> — Kubernetes-style envelope for domain objects.
  *
  * This file only defines the envelope shape and per-kind projections for
- * Contribution, Claim, AgentSession. Stores still return the flat types;
+ * Contribution, Claim, AgentSession, WorkBlock, and TimelineEvent. Stores still return the flat types;
  * callers project to Entity via the adapters in this module.
  */
 
@@ -23,6 +23,15 @@ import type {
   Relation,
   Score,
 } from "./models.js";
+import type {
+  CostSummary,
+  ResourceRef,
+  TimelineEvent,
+  TimelineEventType,
+  WorkBlock,
+  WorkBlockOrigin,
+  WorkBlockStatus as WorkBlockPhase,
+} from "./timeline.js";
 import type { AgentPlatformType } from "./topology.js";
 
 export type ConditionStatus = "True" | "False" | "Unknown";
@@ -423,6 +432,147 @@ export function agentSessionToEntity(
     resourceVersion: "0",
     metadata: {
       generation: 1,
+    },
+  };
+}
+
+export interface WorkBlockSpec {
+  readonly sessionId?: string | undefined;
+  readonly goal: string;
+  readonly actor: AgentIdentity;
+  readonly origin: WorkBlockOrigin;
+  readonly inputRefs: readonly ResourceRef[];
+  readonly outputRefs: readonly ResourceRef[];
+  readonly evidenceRefs: readonly ResourceRef[];
+  readonly approvalRefs: readonly ResourceRef[];
+  readonly contributionCids: readonly string[];
+  readonly artifactHashes: readonly string[];
+  readonly claimIds: readonly string[];
+  readonly costSummary?: CostSummary | undefined;
+  readonly links?: readonly ResourceRef[] | undefined;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+}
+
+export interface WorkBlockStatusBody {
+  readonly phase: WorkBlockPhase;
+  readonly startedAt?: string | undefined;
+  readonly updatedAt: string;
+  readonly completedAt?: string | undefined;
+}
+
+export type WorkBlockEntity = Entity<"WorkBlock", WorkBlockSpec, WorkBlockStatusBody>;
+
+export function workBlockToEntity(block: WorkBlock, namespace = "default"): WorkBlockEntity {
+  const mkCond = (
+    type: string,
+    active: boolean,
+    lastTransitionTime: string,
+    reason: string = block.status,
+  ): Condition => ({
+    type,
+    status: active ? "True" : "False",
+    observedGeneration: block.revision,
+    lastTransitionTime,
+    reason,
+    message: "",
+  });
+
+  return {
+    kind: "WorkBlock",
+    namespace,
+    id: block.workBlockId,
+    spec: {
+      sessionId: block.sessionId,
+      goal: block.goal,
+      actor: block.actor,
+      origin: block.origin,
+      inputRefs: block.inputRefs,
+      outputRefs: block.outputRefs,
+      evidenceRefs: block.evidenceRefs,
+      approvalRefs: block.approvalRefs,
+      contributionCids: block.contributionCids,
+      artifactHashes: block.artifactHashes,
+      claimIds: block.claimIds,
+      costSummary: block.costSummary,
+      links: block.links,
+      context: block.context,
+    },
+    status: {
+      phase: block.status,
+      startedAt: block.startedAt,
+      updatedAt: block.updatedAt,
+      completedAt: block.completedAt,
+    },
+    conditions: [
+      mkCond("Running", block.status === "running", block.updatedAt),
+      mkCond(
+        "Blocked",
+        block.status === "blocked" || block.status === "waiting_approval",
+        block.updatedAt,
+      ),
+      mkCond("Completed", block.status === "completed", block.updatedAt),
+      mkCond("Failed", block.status === "failed", block.updatedAt),
+    ],
+    observedGeneration: block.revision,
+    resourceVersion: String(block.revision),
+    metadata: {
+      generation: block.revision,
+      creationTimestamp: block.createdAt,
+    },
+  };
+}
+
+export interface TimelineEventSpec {
+  readonly sessionId?: string | undefined;
+  readonly type: TimelineEventType;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly actor?: AgentIdentity | undefined;
+  readonly workBlockId?: string | undefined;
+  readonly targetRefs: readonly ResourceRef[];
+  readonly payload: Readonly<Record<string, JsonValue>>;
+}
+
+export type TimelineEventStatus = Record<string, never>;
+
+export type TimelineEventEntity = Entity<"TimelineEvent", TimelineEventSpec, TimelineEventStatus>;
+
+export function timelineEventToEntity(
+  event: TimelineEvent,
+  namespace = "default",
+): TimelineEventEntity {
+  const generation = Number(event.resourceVersion);
+
+  return {
+    kind: "TimelineEvent",
+    namespace,
+    id: event.eventId,
+    spec: {
+      sessionId: event.sessionId,
+      type: event.type,
+      occurredAt: event.occurredAt,
+      recordedAt: event.recordedAt,
+      actor: event.actor,
+      workBlockId: event.workBlockId,
+      targetRefs: event.targetRefs,
+      payload: event.payload,
+    },
+    status: {},
+    conditions: [
+      {
+        type: "Recorded",
+        status: "True",
+        observedGeneration: generation,
+        lastTransitionTime: event.recordedAt,
+        reason: "recorded",
+        message: "",
+      },
+    ],
+    observedGeneration: generation,
+    resourceVersion: event.resourceVersion,
+    metadata: {
+      generation,
+      creationTimestamp: event.recordedAt,
     },
   };
 }

@@ -15,6 +15,7 @@ import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
 import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
+import type { RuntimeSkillAcquisitionService } from "../core/runtime-skill-acquisition.js";
 import type { Session } from "../core/session.js";
 import type { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceManager } from "../core/workspace.js";
@@ -72,6 +73,8 @@ export interface McpDeps extends ServerDeps {
   readonly messageDelivery?: MessageDelivery | undefined;
   /** Optional handoff store for querying routing coordination records. */
   readonly handoffStore?: HandoffStore | undefined;
+  /** Optional runtime skill acquisition service for stdio-bound agents. */
+  readonly runtimeSkillService?: RuntimeSkillAcquisitionService | undefined;
   /**
    * Workspace boundary root directory. All file-system access from MCP tools
    * (filePath args, git cwd, etc.) must resolve within this directory.

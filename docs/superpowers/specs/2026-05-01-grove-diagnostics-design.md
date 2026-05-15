@@ -187,6 +187,9 @@ Current exports:
 - `handoffs.json`: rows from `handoffs` when the table exists.
 - `outcomes.json`: rows from outcome tables when they exist.
 - `bounties.json`: rows from bounty tables when they exist.
+- `work-blocks.json`: rows from `work_blocks` when they exist.
+- `timeline-events.json`: rows from `timeline_events` when they exist.
+- `timeline-cursors.json`: rows from `timeline_cursors` when they exist.
 - `workspaces.json`: rows from `workspaces`.
 - `idempotency.json`: `cache_key`, `status`, and `stored_at`; fingerprints and
   cached results are redacted as text before writing.
@@ -203,9 +206,10 @@ already exist. Each item contains `name`, `status`, `sources`, and `notes`.
 
 Initial statuses:
 
-- `session_timeline`: `partial`, sourced from `sessions`,
-  `session_contributions`, `agent-logs`, and contribution timestamps.
-- `work_blocks`: `unavailable`, pending #375.
+- `session_timeline`: `partial`, sourced from `timeline_events`,
+  `timeline_cursors`, `sessions`, and `agent-logs`.
+- `work_blocks`: `partial`, sourced from `work_blocks`, `timeline_events`, and
+  `timeline_cursors`.
 - `run_health`: `partial`, sourced from session status, stop reasons, claims,
   handoffs, and watch/backpressure metadata when available.
 - `autonomy_profile`: `unavailable`, pending #378.

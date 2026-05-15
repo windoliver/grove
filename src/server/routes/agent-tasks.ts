@@ -12,9 +12,10 @@ import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
-import { AgentTaskPhase } from "../../core/agent-task.js";
+import { AgentTaskPhase, agentTaskViewToEntity } from "../../core/agent-task.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
+import { hasAgentTaskWriteCallback } from "../agent-task-store-wiring.js";
 import type { ServerEnv } from "../deps.js";
 import { dangerous, getIfMatch } from "../middleware/dangerous.js";
 
@@ -166,11 +167,12 @@ agentTasks.put(
   "/:id",
   zValidator("json", specBodySchema),
   dangerous<"/:id">(async (c) => {
+    const deps = c.get("deps");
     const taskId = c.req.param("id");
     // Re-narrow validator output — `dangerous()` wraps as `Handler<ServerEnv, P>`
     // which discards the zValidator typing contribution.
     const body = c.req.valid("json" as never) as z.infer<typeof specBodySchema>;
-    const store = c.get("deps").agentTaskStore;
+    const store = deps.agentTaskStore;
     if (store === undefined) throw new Error("AgentTask store middleware did not run");
 
     const existing = await store.getAgentTask(taskId);
@@ -204,7 +206,31 @@ agentTasks.put(
         409,
       );
     }
-    return c.json(result.view, existing === undefined ? 201 : 200);
+    const view = result.view;
+    const namespace = c.get("namespace");
+    const entity = agentTaskViewToEntity(view, namespace);
+    if (!hasAgentTaskWriteCallback(store)) {
+      try {
+        deps.watchHub.recordWrite({
+          kind: "AgentTask",
+          namespace,
+          op: existing === undefined ? "ADDED" : "MODIFIED",
+          entity,
+        });
+        deps.watchSubscriber?.markSeen({
+          kind: "AgentTask",
+          entityId: view.spec.id,
+          generation: entity.metadata.generation,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: watch fan-out threw after PUT /api/agent-tasks/${taskId}: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+    return c.json(view, existing === undefined ? 201 : 200);
   }),
 );
 
@@ -247,7 +273,8 @@ agentTasks.patch(
   requireControllerToken,
   zValidator("json", statusBodySchema),
   dangerous<"/:id/status">(async (c) => {
-    const store = c.get("deps").agentTaskStore;
+    const deps = c.get("deps");
+    const store = deps.agentTaskStore;
     if (store === undefined) throw new Error("AgentTask store middleware did not run");
     // Re-narrow validator output — see PUT /:id for rationale.
     const body = c.req.valid("json" as never) as z.infer<typeof statusBodySchema>;
@@ -274,6 +301,25 @@ agentTasks.patch(
         409,
       );
     }
-    return c.json(result.view);
+    const view = result.view;
+    const namespace = c.get("namespace");
+    const entity = agentTaskViewToEntity(view, namespace);
+    if (!hasAgentTaskWriteCallback(store)) {
+      try {
+        deps.watchHub.recordWrite({ kind: "AgentTask", namespace, op: "MODIFIED", entity });
+        deps.watchSubscriber?.markSeen({
+          kind: "AgentTask",
+          entityId: view.spec.id,
+          generation: entity.metadata.generation,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: watch fan-out threw after PATCH /api/agent-tasks/${taskId}/status: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+    return c.json(view);
   }),
 );

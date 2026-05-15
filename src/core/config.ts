@@ -43,6 +43,14 @@ export interface SkillCatalogConfig {
   readonly cacheTtlSeconds?: number | undefined;
 }
 
+export type RuntimeSkillsMode = "role-allowlist";
+
+export interface RuntimeSkillsConfig {
+  readonly mode: RuntimeSkillsMode;
+  readonly roles: Readonly<Record<string, readonly string[]>>;
+  readonly returnSkillMdMaxBytes: number;
+}
+
 /** Typed grove.json configuration. */
 export interface GroveConfig {
   readonly name: string;
@@ -64,6 +72,7 @@ export interface GroveConfig {
    */
   readonly nexusChannel?: string | undefined;
   readonly skillCatalog?: SkillCatalogConfig | undefined;
+  readonly runtimeSkills?: RuntimeSkillsConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +124,30 @@ const SkillCatalogConfigSchema: z.ZodType<SkillCatalogConfig> = z
   })
   .strict();
 
+const SAFE_SKILL_NAME_PATTERN = /^[^/\\\0]+$/;
+
+function isSafeSkillName(value: string): boolean {
+  return value.length > 0 && value !== "." && value !== ".." && SAFE_SKILL_NAME_PATTERN.test(value);
+}
+
+const RuntimeSkillsModeSchema = z.literal("role-allowlist");
+
+const RuntimeSkillNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine(isSafeSkillName, "skill name must be a safe path segment");
+
+const RuntimeSkillsConfigSchema: z.ZodType<RuntimeSkillsConfig> = z
+  .object({
+    mode: RuntimeSkillsModeSchema,
+    roles: z
+      .record(z.string().min(1).max(128), z.array(RuntimeSkillNameSchema).max(100))
+      .default({}),
+    returnSkillMdMaxBytes: z.number().int().min(1).max(262_144).default(65_536),
+  })
+  .strict();
+
 /** Full grove.json configuration schema. */
 export const GroveConfigSchema: z.ZodType<GroveConfig> = z
   .object({
@@ -128,6 +161,7 @@ export const GroveConfigSchema: z.ZodType<GroveConfig> = z
     nexusManaged: z.boolean().optional(),
     nexusChannel: z.string().min(1).max(64).optional(),
     skillCatalog: SkillCatalogConfigSchema.optional(),
+    runtimeSkills: RuntimeSkillsConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -193,6 +227,7 @@ export function writeGroveConfig(config: GroveConfig, path: string): void {
   if (config.nexusManaged !== undefined) obj.nexusManaged = config.nexusManaged;
   if (config.nexusChannel !== undefined) obj.nexusChannel = config.nexusChannel;
   if (config.skillCatalog !== undefined) obj.skillCatalog = config.skillCatalog;
+  if (config.runtimeSkills !== undefined) obj.runtimeSkills = config.runtimeSkills;
 
   writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }

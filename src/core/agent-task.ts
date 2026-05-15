@@ -1,4 +1,3 @@
-import { rvComposite } from "./cas.js";
 import type { Condition, Entity } from "./entity.js";
 import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type { JsonValue } from "./models.js";
@@ -93,6 +92,14 @@ export interface AgentTaskStatus {
 export type AgentTaskEntity = Entity<"AgentTask", AgentTaskSpec, AgentTaskStatus>;
 
 export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"): AgentTaskEntity {
+  // WatchClient parses the leading numeric prefix for snapshot dedup ordering.
+  // C6 (#304): prefer the persisted `resource_version` columns (bumped per
+  // CAS write by `putAgentTaskSpec` / `patchAgentTaskStatus`); fall back to
+  // generation/revision for stores that haven't migrated yet.
+  const specRv = view.spec.resourceVersion ?? view.spec.generation;
+  const statusRv = view.status.resourceVersion ?? view.status.revision;
+  const resourceVersionPrefix = specRv + statusRv;
+  const resourceVersion = `${resourceVersionPrefix}:${specRv}:${statusRv}`;
   return {
     kind: "AgentTask",
     namespace,
@@ -115,16 +122,7 @@ export function agentTaskViewToEntity(view: AgentTaskView, namespace = "default"
     },
     conditions: view.status.conditions,
     observedGeneration: view.status.observedGeneration,
-    // C6 (#304): The Entity's `resourceVersion` is a composite of the
-    // persisted spec `resource_version` (bumped by `putAgentTaskSpec`) and
-    // the status `resource_version` (bumped by `patchAgentTaskStatus`).
-    // Mirrors the `claimViewToEntity` formula: (specRv + statusRv - 1) so
-    // a freshly-created task has RV "1" rather than "2". `status.revision`
-    // remains a backstop for stores that haven't migrated the
-    // `resource_version` column yet.
-    resourceVersion: String(
-      rvComposite(view.spec.resourceVersion, view.status.resourceVersion ?? view.status.revision),
-    ),
+    resourceVersion,
     metadata: {
       generation: view.spec.generation,
       creationTimestamp: view.spec.createdAt,

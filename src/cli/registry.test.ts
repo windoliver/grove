@@ -108,6 +108,8 @@ describe("COMMANDS registry", () => {
         "json",
       ],
       release: ["completed", "json"],
+      "work-blocks": ["session"],
+      timeline: ["session", "after-rv", "limit", "include-work-blocks"],
       checkout: ["to", "frontier", "agent", "json"],
       "check-trajectory": ["transcript", "spec", "runtime", "format", "annotated-log"],
       thread: ["depth", "n", "json"],

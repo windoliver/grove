@@ -87,6 +87,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_release",
     "grove_report_usage",
     "grove_reproduce",
+    "grove_request_skill",
     "grove_search",
     "grove_send_message",
     "grove_session_delete_blockers",
@@ -120,6 +121,18 @@ describe("createMcpServer preset scoping", () => {
     const server = await createMcpServer(deps, { eval: true });
     const names = getRegisteredToolNames(server);
     expect(names).toContain("grove_eval");
+  });
+
+  test("stdio transport registers runtime skill request tool", async () => {
+    const server = await createMcpServer(deps, { transport: "stdio" });
+    const names = getRegisteredToolNames(server);
+    expect(names).toContain("grove_request_skill");
+  });
+
+  test("http transport omits runtime skill request tool", async () => {
+    const server = await createMcpServer(deps, { transport: "http" });
+    const names = getRegisteredToolNames(server);
+    expect(names).not.toContain("grove_request_skill");
   });
 
   test("claims: false excludes claim tools but keeps others", async () => {
@@ -280,8 +293,10 @@ describe("createMcpServer preset scoping", () => {
     // ask_user always present
     expect(names).toContain("ask_user");
 
-    // Only contribution tools + done + ask_user
-    expect(names).toEqual(["ask_user", "grove_done", ...contributionTools].sort());
+    // Only contribution tools + done + runtime skill request + ask_user
+    expect(names).toEqual(
+      ["ask_user", "grove_done", "grove_request_skill", ...contributionTools].sort(),
+    );
   });
 
   test("review-loop preset example (selective disabling)", async () => {

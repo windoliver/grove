@@ -759,4 +759,205 @@ describe("NexusSessionStore", () => {
     });
     expect(await claimStore.getClaim("legacy-delete-claim")).toBeUndefined();
   });
+
+  test("appendSessionRoleSkill updates persisted topology and dedupes", async () => {
+    const store = new NexusSessionStore(client, "test-zone");
+    const topology = {
+      structure: "flat" as const,
+      roles: [{ name: "coder", skills: ["grove"] }],
+    };
+    const session = await store.createSession({
+      goal: "runtime skill",
+      topology,
+      config: {
+        contractVersion: 3,
+        name: "runtime-skill-config",
+        mode: "evaluation",
+        topology,
+      } as unknown as import("../core/contract.js").GroveContract,
+    });
+
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+      "appended",
+    );
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+      "already_present",
+    );
+
+    const fetched = await store.getSession(session.id);
+    expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+    expect(fetched?.config?.topology?.roles[0]?.skills).toEqual(["grove", "review"]);
+  });
+
+  test("appendSessionRoleSkill reports missing session and role", async () => {
+    const store = new NexusSessionStore(client, "test-zone");
+    await expect(store.appendSessionRoleSkill("missing", "coder", "review")).resolves.toBe(
+      "session_missing",
+    );
+
+    const session = await store.createSession({
+      goal: "runtime skill",
+      topology: { structure: "flat", roles: [{ name: "coder" }] },
+    });
+    await expect(store.appendSessionRoleSkill(session.id, "reviewer", "review")).resolves.toBe(
+      "role_missing",
+    );
+  });
+
+  test("appendSessionRoleSkill preserves missing legacy finalizers and delete cleanup", async () => {
+    const sessionId = "legacy-append";
+    await client.write(
+      `/zones/test-zone/sessions/${sessionId}.json`,
+      encoder.encode(
+        JSON.stringify({
+          id: sessionId,
+          goal: "legacy append",
+          status: "active",
+          createdAt: "2026-05-07T00:00:00.000Z",
+          contributionCount: 0,
+          topology: {
+            structure: "flat",
+            roles: [{ name: "coder", skills: ["grove"] }],
+          },
+        }),
+      ),
+    );
+    await claimStore.createClaim(
+      makeClaim({
+        claimId: "legacy-append-claim",
+        targetRef: "legacy-append-target",
+        ownerRef: { kind: "session", id: sessionId, uid: sessionId },
+      }),
+    );
+    const store = new NexusSessionStore(client, "test-zone", { claimStore });
+
+    await expect(store.appendSessionRoleSkill(sessionId, "coder", "review")).resolves.toBe(
+      "appended",
+    );
+    const rawAfterAppend = (await readJson(
+      client,
+      `/zones/test-zone/sessions/${sessionId}.json`,
+    )) as {
+      finalizers?: readonly string[];
+      topology?: { roles?: Array<{ skills?: readonly string[] }> };
+      uid?: string;
+    };
+    const deleted = await store.deleteSession(sessionId);
+
+    expect(rawAfterAppend.uid).toBe(sessionId);
+    expect(rawAfterAppend.finalizers).toBeUndefined();
+    expect(rawAfterAppend.topology?.roles?.[0]?.skills).toEqual(["grove", "review"]);
+    expect(deleted).toEqual({
+      kind: "ok",
+      view: {
+        sessionId,
+        deleted: true,
+        forced: false,
+        blockers: [],
+      },
+    });
+    expect(await claimStore.getClaim("legacy-append-claim")).toBeUndefined();
+  });
+
+  test("appendSessionRoleSkill retries ETag conflict from latest topology", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({
+      goal: "runtime skill conflict",
+      topology: {
+        structure: "flat",
+        roles: [{ name: "coder", skills: ["grove"] }],
+      },
+    });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let conflicted = false;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined && !conflicted) {
+          conflicted = true;
+          const current = await client.read(path);
+          if (current !== undefined) {
+            const currentSession = JSON.parse(decoder.decode(current)) as Session;
+            await client.write(
+              path,
+              encoder.encode(
+                JSON.stringify({
+                  ...currentSession,
+                  topology: {
+                    ...currentSession.topology,
+                    roles:
+                      currentSession.topology?.roles.map((role) =>
+                        role.name === "coder"
+                          ? { ...role, skills: [...(role.skills ?? []), "audit"] }
+                          : role,
+                      ) ?? [],
+                  },
+                }),
+              ),
+            );
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      writeBatch: (files) => client.writeBatch(files),
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone");
+
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).resolves.toBe(
+      "appended",
+    );
+    const fetched = await setupStore.getSession(session.id);
+
+    expect(conflicted).toBe(true);
+    expect(fetched?.topology?.roles[0]?.skills).toEqual(["grove", "audit", "review"]);
+  });
+
+  test("appendSessionRoleSkill reports retry exhaustion after repeated ETag conflicts", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({
+      goal: "runtime skill conflict exhaustion",
+      topology: {
+        structure: "flat",
+        roles: [{ name: "coder", skills: ["grove"] }],
+      },
+    });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let conflicts = 0;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined) {
+          conflicts++;
+          const current = await client.read(path);
+          if (current !== undefined) {
+            await client.write(path, current);
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      writeBatch: (files) => client.writeBatch(files),
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone");
+
+    await expect(store.appendSessionRoleSkill(session.id, "coder", "review")).rejects.toThrow(
+      "appendSessionRoleSkill retry loop exhausted",
+    );
+    expect(conflicts).toBe(3);
+  });
 });

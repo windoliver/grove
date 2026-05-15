@@ -13,7 +13,13 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import { claimToEntity, contributionToEntity } from "../../core/entity.js";
+import { agentTaskViewToEntity } from "../../core/agent-task.js";
+import {
+  claimToEntity,
+  contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
+} from "../../core/entity.js";
 import {
   StaleResourceVersionError,
   type WatchEvent,
@@ -22,7 +28,14 @@ import {
 import { BufferOverflowError, type WatchHub } from "../../core/watch-hub.js";
 import type { ServerDeps, ServerEnv } from "../deps.js";
 
-const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
+const KIND_VALUES = [
+  "Contribution",
+  "Claim",
+  "AgentSession",
+  "AgentTask",
+  "WorkBlock",
+  "TimelineEvent",
+] as const;
 // Subset of KIND_VALUES for which list+watch are actually backed by
 // stores and fan-out hooks. AgentSession remains in KIND_VALUES so the
 // type narrowing stays exhaustive, but watching it returns 501 until
@@ -30,7 +43,35 @@ const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
 const SUPPORTED_KINDS: ReadonlySet<(typeof KIND_VALUES)[number]> = new Set([
   "Contribution",
   "Claim",
+  "AgentTask",
+  "WorkBlock",
+  "TimelineEvent",
 ]);
+
+function isTimelineKind(kind: (typeof KIND_VALUES)[number]): kind is "WorkBlock" | "TimelineEvent" {
+  return kind === "WorkBlock" || kind === "TimelineEvent";
+}
+
+function isKindConfigured(kind: (typeof KIND_VALUES)[number], deps: ServerDeps): boolean {
+  if (!SUPPORTED_KINDS.has(kind)) return false;
+  if (kind === "AgentTask") return deps.agentTaskStore !== undefined;
+  if (isTimelineKind(kind)) return deps.timelineStore !== undefined;
+  return true;
+}
+
+function unavailableKindMessage(
+  kind: (typeof KIND_VALUES)[number],
+  deps: ServerDeps,
+  operation: string,
+): string {
+  if (kind === "AgentTask" && deps.agentTaskStore === undefined) {
+    return `kind '${kind}' requires an agent task store; ${operation} is unavailable`;
+  }
+  if (isTimelineKind(kind) && deps.timelineStore === undefined) {
+    return `kind '${kind}' requires a timeline store; ${operation} is unavailable`;
+  }
+  return `kind '${kind}' is accepted by the schema but not yet backed by a store; ${operation} is unavailable`;
+}
 
 const listQuerySchema = z.object({
   kind: z.enum(KIND_VALUES),
@@ -47,18 +88,18 @@ const watch: HonoType<ServerEnv> = new Hono<ServerEnv>();
 watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
   const namespace = c.get("namespace");
   const { kind } = c.req.valid("query");
-  if (!SUPPORTED_KINDS.has(kind)) {
+  const deps = c.get("deps");
+  if (!isKindConfigured(kind, deps)) {
     return c.json(
       {
         error: {
           code: "NOT_CONFIGURED",
-          message: `kind '${kind}' is accepted by the schema but not yet backed by a store; list is unavailable`,
+          message: unavailableKindMessage(kind, deps, "list"),
         },
       },
       501,
     );
   }
-  const deps = c.get("deps");
   const hub: WatchHub = deps.watchHub;
 
   // Race-correctness invariant (spec §Critical path): capture RV BEFORE the
@@ -79,12 +120,13 @@ watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
 watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const namespace = c.get("namespace");
   const { kind, resumeFrom } = c.req.valid("query");
-  if (!SUPPORTED_KINDS.has(kind)) {
+  const deps = c.get("deps");
+  if (!isKindConfigured(kind, deps)) {
     return c.json(
       {
         error: {
           code: "NOT_CONFIGURED",
-          message: `kind '${kind}' is accepted by the schema but not yet backed by fan-out hooks; watch would silently miss events`,
+          message: unavailableKindMessage(kind, deps, "watch"),
         },
       },
       501,
@@ -107,7 +149,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
     );
   }
   const fromRv = BigInt(lastEventId ?? resumeFrom);
-  const hub: WatchHub = c.get("deps").watchHub;
+  const hub: WatchHub = deps.watchHub;
 
   // SSE-route per-connection byte cap. The WatchHub already bounds its
   // per-subscriber queue, but once a hub event is drained into the route's
@@ -442,6 +484,27 @@ async function hydrateEntity(
     }
     return undefined;
   }
+  if (kind === "WorkBlock") {
+    const flat = await deps.timelineStore?.getWorkBlock(entityId);
+    if (flat !== undefined) {
+      return workBlockToEntity(flat, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
+  if (kind === "TimelineEvent") {
+    const flat = await deps.timelineStore?.getTimelineEvent(entityId);
+    if (flat !== undefined) {
+      return timelineEventToEntity(flat, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
+  if (kind === "AgentTask") {
+    const view = await deps.agentTaskStore?.getAgentTask(entityId);
+    if (view !== undefined) {
+      return agentTaskViewToEntity(view, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
   // Unsupported kinds are rejected at the route entry; this path is
   // unreachable but kept for type exhaustiveness.
   return undefined;
@@ -449,26 +512,64 @@ async function hydrateEntity(
 
 watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
   const namespace = c.get("namespace");
-  const { kind, entityId, sessionId } = c.req.valid("json");
+  const payload = c.req.valid("json");
+  const { kind, entityId, sessionId } = payload;
+  const deps = c.get("deps") as ServerDeps;
 
   // Fail-fast: only kinds with both a list endpoint and a watch fan-out
   // are accepted. AgentSession passes the schema but has no point-lookup
   // and no list-store backing, so silently emitting DELETED for it would
   // mask miswiring as "data loss" rather than surface it.
-  if (!SUPPORTED_KINDS.has(kind)) {
+  if (!isKindConfigured(kind, deps)) {
     return c.json(
       {
         error: {
           code: "NOT_CONFIGURED",
-          message: `kind '${kind}' is accepted by the schema but not yet backed by a store; notify is unavailable`,
+          message: unavailableKindMessage(kind, deps, "notify"),
         },
       },
       501,
     );
   }
 
-  const deps = c.get("deps") as ServerDeps;
   const hub: WatchHub = deps.watchHub;
+
+  if (kind === "TimelineEvent") {
+    if (payload.op !== undefined && payload.op !== "ADDED") {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "TimelineEvent notify is append-only and only accepts op 'ADDED'",
+          },
+        },
+        400,
+      );
+    }
+    const timelineStore = deps.timelineStore;
+    if (timelineStore === undefined) {
+      return c.json(
+        {
+          error: {
+            code: "NOT_CONFIGURED",
+            message: unavailableKindMessage(kind, deps, "notify"),
+          },
+        },
+        501,
+      );
+    }
+    const flat = await timelineStore.getTimelineEvent(entityId);
+    if (flat === undefined) {
+      return c.json({ error: { code: "NOT_FOUND", message: "TimelineEvent not found" } }, 404);
+    }
+    hub.recordWrite({
+      kind: "TimelineEvent",
+      namespace,
+      op: "ADDED",
+      entity: timelineEventToEntity(flat, namespace),
+    });
+    return c.json({ ok: true, op: "ADDED" });
+  }
 
   // Session-scoped contribution writes cannot be safely fanned out to
   // the namespace-global watch stream: the watch hub keys on
@@ -516,7 +617,7 @@ watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => 
 
   // ADDED vs MODIFIED is a hint to subscribers, not a security boundary;
   // honor caller's hint (default MODIFIED). Forbid DELETED when found.
-  const hintOp = c.req.valid("json").op ?? "MODIFIED";
+  const hintOp = payload.op ?? "MODIFIED";
   const op = hintOp === "DELETED" ? "MODIFIED" : hintOp;
   hub.recordWrite({ kind: kind as WatchKind, namespace, op, entity: found as never });
   return c.json({ ok: true, op });
@@ -527,7 +628,6 @@ async function listForKind(
   namespace: string,
   kind: WatchKind,
 ): Promise<readonly unknown[]> {
-  void namespace;
   switch (kind) {
     case "Contribution":
       return deps.contributionStore.listEntities();
@@ -537,6 +637,17 @@ async function listForKind(
       // AgentSession listing is not yet a Store API. Return empty until the
       // session-orchestrator integration lands (out of scope for #292).
       return [];
+    case "WorkBlock":
+      return deps.timelineStore?.listWorkBlockEntities() ?? [];
+    case "TimelineEvent":
+      return deps.timelineStore?.listAllTimelineEventEntities() ?? [];
+    case "AgentTask":
+      if (deps.agentTaskStore === undefined) {
+        throw new Error("AgentTask store is not configured");
+      }
+      return (await deps.agentTaskStore.listAgentTasks()).map((view) =>
+        agentTaskViewToEntity(view, namespace),
+      );
     default: {
       const _exhaustive: never = kind;
       void _exhaustive;
