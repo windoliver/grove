@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { CasMutationResult } from "../../core/cas.js";
+import type { CasMutationResult } from "./cas.js";
 import { withIfMatch } from "./with-if-match.js";
 
 describe("withIfMatch", () => {
@@ -44,6 +44,9 @@ describe("withIfMatch", () => {
       }),
     );
     await expect(withIfMatch(read, patch, { maxRetries: 2 })).rejects.toThrow(/retries/);
+    // Verify the error message includes the last current RV per the
+    // documented contract — protects the message format from drift.
+    await expect(withIfMatch(read, patch, { maxRetries: 2 })).rejects.toThrow(/last current RV=x/);
   });
 
   test("uses default maxRetries of 3 when none supplied", async () => {

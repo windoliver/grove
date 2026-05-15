@@ -1,7 +1,7 @@
-import { withIfMatch } from "../server/middleware/with-if-match.js";
 import type { ClaimEntity, Condition } from "./entity.js";
 import { ClaimStatus, type ClaimView } from "./models.js";
 import type { ClaimStatusPatch, ClaimStore } from "./store.js";
+import { withIfMatch } from "./with-if-match.js";
 import { KeyedWorkQueue, QueueClosedError, type WorkItemResult } from "./workqueue.js";
 
 export type ClaimControllerStore = Pick<

@@ -1,4 +1,4 @@
-import type { CasMutationResult } from "../../core/cas.js";
+import type { CasMutationResult } from "./cas.js";
 
 /**
  * Controller-side helper for CAS-aware store mutations: reads current RV,
