@@ -610,20 +610,37 @@ const DEFAULT_SERVICE_PORTS = { server: 4515, mcp: 4015 } as const;
 const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
 
 /**
- * Per-probe ceilings for adoption-path checks against localhost. These are
- * upper bounds, not expected durations — happy-path latency is single-digit
- * milliseconds. Sizing for remote calls (1500-5000ms) was inflating reconnect
- * time when probes had to fail before falling through (issue #219).
+ * Per-probe ceilings for adoption-path checks. Split into two tiers:
+ *
+ * **Cheap transport probes** (tight): TCP connect, lsof — these are kernel-
+ *   speed on localhost. Tight ceilings let an unbound port fall through to
+ *   the spawn path immediately (issue #219).
+ * **Semantic probes** (looser): authenticated HTTP that hits a DB / external
+ *   Nexus that can be slow under load. A tight ceiling here would mis-
+ *   classify a valid-but-slow listener as foreign (review round 1).
+ *
+ * Treat timeout on semantic probes as INDETERMINATE — not a definitive
+ * "foreign" verdict.
  */
 const PROBE_TIMEOUTS = {
   /** TCP connect probe against localhost in isPortBound. */
   portBindSocketMs: 300,
   /** lsof spawnSync timeout in getListeningPid + describePortOwner. */
   lsofMs: 800,
-  /** HTTP fetch against localhost in verifyServerOwnership. */
-  ownershipFetchMs: 800,
-  /** HTTP fetch against Nexus /health on the reuse fast path. */
-  nexusHealthFetchMs: 1500,
+  /**
+   * HTTP fetch against localhost grove-server in verifyServerOwnership.
+   * This is a semantic probe: /api/list?kind=Claim enumerates store state
+   * and can be slow under load. Keep generous to avoid declaring a valid
+   * but slow same-project server foreign.
+   */
+  ownershipFetchMs: 2_000,
+  /**
+   * HTTP fetch against Nexus /health on the reuse fast path. config.nexusUrl
+   * may point at an externally-managed Nexus that responds slower than a
+   * local container; treat sub-3s timeout as failure-to-confirm, not proof
+   * of absence (caller falls through to ensureNexusRunning).
+   */
+  nexusHealthFetchMs: 3_000,
 } as const;
 
 /** Resolve the port a managed service should bind to. */
@@ -1017,6 +1034,32 @@ async function spawnService(
         `${name} exited during startup. Last log lines:\n${tail || "(empty)"}\n` +
           `Common cause: another listener on the configured port. Run: lsof -iTCP:${port} -sTCP:LISTEN`,
       );
+    }
+
+    // TOCTOU guard (issue #219 review round 1): the /health success we just
+    // observed may have been served by a DIFFERENT process — another grove
+    // start that won the bind race, or a stale MCP/server from another
+    // worktree. Now that MCP /health is unauthenticated, ANY MCP instance
+    // can answer the probe. Resolve the actual listening PID and require it
+    // to equal our spawned child before declaring this service ours; mis-
+    // recording in grove.pid would break adoption + shutdown bookkeeping for
+    // every subsequent run.
+    if (port) {
+      const listenerPid = await getListeningPid(port);
+      if (listenerPid !== pid) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already gone */
+        }
+        const owner = await describePortOwner(port);
+        throw new Error(
+          `${name} spawn lost the bind race on port ${port}: spawned PID ${pid}, ` +
+            `but port is held by PID ${listenerPid ?? "<unknown>"}.\n` +
+            `Owner: ${owner}\n` +
+            `Another grove instance or a stale service answered /health before our child bound.`,
+        );
+      }
     }
 
     const proc = {
