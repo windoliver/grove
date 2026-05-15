@@ -1,6 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AcpxTurn } from "../acp/types.js";
-import type { AgentRuntime } from "../core/agent-runtime.js";
+import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
+import type { AgentSessionEntity } from "../core/entity.js";
+import { createServerAgentRuntime, taskControllerEnabled } from "./task-controller-wiring.js";
 
 function emptyTurn(sessionId: string): AcpxTurn {
   return {
@@ -32,33 +34,65 @@ const selectedRuntime: AgentRuntime = {
   isAvailable: mock(async () => selectedRuntimeAvailable),
 };
 
-class FakeTmuxRuntime {
+class FakeTmuxRuntime implements AgentRuntime {
   readonly fallbackRuntime = true;
+
+  readonly sendsInitialPromptOnSpawn = true;
+
+  async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
+    return {
+      id: "fallback-session",
+      role,
+      status: "running",
+      platform: config.platform,
+      model: config.model,
+    };
+  }
+
+  async send(session: AgentSession): Promise<AcpxTurn> {
+    return emptyTurn(session.id);
+  }
+
+  async close(): Promise<void> {
+    return undefined;
+  }
+
+  onIdle(): void {
+    // no-op
+  }
+
+  async listSessions(): Promise<readonly AgentSession[]> {
+    return [];
+  }
+
+  async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
+    return [];
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
 }
-
-mock.module("../core/select-runtime.js", () => ({
-  selectRuntime: () => selectedRuntime,
-}));
-
-mock.module("../core/tmux-runtime.js", () => ({
-  TmuxRuntime: FakeTmuxRuntime,
-}));
-
-const { createServerAgentRuntime, taskControllerEnabled } = await import(
-  "./task-controller-wiring.js"
-);
 
 describe("task controller server wiring", () => {
   test("uses selected runtime when available", async () => {
     selectedRuntimeAvailable = true;
 
-    await expect(createServerAgentRuntime()).resolves.toBe(selectedRuntime);
+    await expect(
+      createServerAgentRuntime({
+        selectRuntime: () => selectedRuntime,
+        createFallbackRuntime: () => new FakeTmuxRuntime(),
+      }),
+    ).resolves.toBe(selectedRuntime);
   });
 
   test("falls back to tmux runtime when selected runtime is unavailable", async () => {
     selectedRuntimeAvailable = false;
 
-    const runtime = await createServerAgentRuntime();
+    const runtime = await createServerAgentRuntime({
+      selectRuntime: () => selectedRuntime,
+      createFallbackRuntime: () => new FakeTmuxRuntime(),
+    });
 
     expect(runtime).toBeInstanceOf(FakeTmuxRuntime);
   });
