@@ -140,14 +140,21 @@ async function archiveSessionForCompensation(
   sessionId: string,
 ): Promise<void> {
   let lastErr: unknown;
+  // C6 (#304) round-6: on 409 the server returns the current RV in
+  // `err.current.resourceVersion`. Carry that forward as the next
+  // attempt's ifMatch so we don't blindly retry with the same stale
+  // token if the provider's read path is degraded (returns undefined
+  // or throws). Falls back to getSession when no conflict has yet
+  // told us the truth.
+  let nextIfMatch: string | undefined;
   for (let attempt = 0; attempt <= COMPENSATION_MAX_RETRIES; attempt++) {
-    // Re-read RV between attempts. Provider implementations whose
-    // getSession returns undefined for the requested id (e.g., session
-    // not yet replicated to a remote provider, or test fixtures with
-    // synthetic ids) fall back to "0" — the server's CAS check will
-    // 409 if the row exists at a higher RV, prompting another retry.
-    const fresh = await provider.getSession(sessionId).catch(() => undefined);
-    const rv = String(fresh?.resourceVersion ?? 0);
+    let rv: string;
+    if (nextIfMatch !== undefined) {
+      rv = nextIfMatch;
+    } else {
+      const fresh = await provider.getSession(sessionId).catch(() => undefined);
+      rv = String(fresh?.resourceVersion ?? 0);
+    }
     const token = mintTokenForCompensation("AgentSession", sessionId, rv);
     try {
       await provider.archiveSession(token);
@@ -158,6 +165,11 @@ async function archiveSessionForCompensation(
       // bail immediately; retry won't help.
       const status = (err as { status?: number } | undefined)?.status;
       if (status !== 409) break;
+      const conflictRv = (err as { current?: { resourceVersion?: string } } | undefined)?.current
+        ?.resourceVersion;
+      // Prefer the server-supplied current RV; if absent, fall through
+      // to getSession again on the next iteration.
+      nextIfMatch = typeof conflictRv === "string" ? conflictRv : undefined;
     }
   }
   debugLog(
