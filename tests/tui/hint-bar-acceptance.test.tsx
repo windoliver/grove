@@ -118,7 +118,7 @@ describe("issue #309 acceptance", () => {
     });
 
     const beforePush = JSON.stringify(renderer.toJSON());
-    expect(beforePush).toContain("Goto"); // running hint
+    expect(beforePush).toContain("Move"); // supervision (running) hint
     expect(beforePush).not.toContain("Focus"); // not DAG hint yet
 
     await act(async () => {
