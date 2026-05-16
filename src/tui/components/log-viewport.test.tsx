@@ -26,13 +26,7 @@ describe("LogViewport", () => {
     await act(async () => {
       renderer = TestRenderer.create(
         (
-          <LogViewport
-            buffer={buf}
-            paused={false}
-            filter=""
-            scrollOffset={0}
-            viewportLines={5}
-          />
+          <LogViewport buffer={buf} paused={false} filter="" scrollOffset={0} viewportLines={5} />
         ) as React.ReactElement,
       );
       await new Promise((r) => setTimeout(r, 80));
@@ -51,13 +45,7 @@ describe("LogViewport", () => {
     await act(async () => {
       renderer = TestRenderer.create(
         (
-          <LogViewport
-            buffer={buf}
-            paused={false}
-            filter=""
-            scrollOffset={10}
-            viewportLines={5}
-          />
+          <LogViewport buffer={buf} paused={false} filter="" scrollOffset={10} viewportLines={5} />
         ) as React.ReactElement,
       );
       await new Promise((r) => setTimeout(r, 80));
@@ -105,13 +93,7 @@ describe("LogViewport", () => {
     await act(async () => {
       renderer = TestRenderer.create(
         (
-          <LogViewport
-            buffer={buf}
-            paused={true}
-            filter=""
-            scrollOffset={0}
-            viewportLines={5}
-          />
+          <LogViewport buffer={buf} paused={true} filter="" scrollOffset={0} viewportLines={5} />
         ) as React.ReactElement,
       );
       await new Promise((r) => setTimeout(r, 80));

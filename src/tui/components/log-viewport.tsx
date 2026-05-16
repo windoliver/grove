@@ -83,11 +83,7 @@ export const LogViewport: React.NamedExoticComponent<LogViewportProps> = React.m
           <text color={theme.secondary}>
             {` | ${allLines.length} lines | auto: ${isAutoScroll ? "ON" : `OFF (${scrollOffset}↑)`}`}
           </text>
-          {filter && (
-            <text color={theme.warning}>
-              {` | /${filter} (${matchCountChip})`}
-            </text>
-          )}
+          {filter && <text color={theme.warning}>{` | /${filter} (${matchCountChip})`}</text>}
           {paused && (
             <text color={theme.warning} bold>
               {" | ❚❚ PAUSED"}

@@ -11,8 +11,8 @@
  */
 
 import React from "react";
-import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { LogViewport } from "../components/log-viewport.js";
+import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { theme } from "../theme.js";
 
 export interface LogViewProps {
@@ -26,40 +26,38 @@ export interface LogViewProps {
   readonly viewportLines?: number;
 }
 
-export const LogView: React.NamedExoticComponent<LogViewProps> = React.memo(
-  function LogView({
-    sessionId,
-    buffer,
-    paused,
-    filter,
-    filterMode,
-    scrollOffset,
-    viewportLines,
-  }: LogViewProps): React.ReactNode {
-    if (!buffer) {
-      return (
-        <box flexDirection="column" paddingX={1}>
-          <text color={theme.secondary}>{`No log buffer for ${sessionId}`}</text>
-        </box>
-      );
-    }
+export const LogView: React.NamedExoticComponent<LogViewProps> = React.memo(function LogView({
+  sessionId,
+  buffer,
+  paused,
+  filter,
+  filterMode,
+  scrollOffset,
+  viewportLines,
+}: LogViewProps): React.ReactNode {
+  if (!buffer) {
     return (
-      <box flexDirection="column" flexGrow={1}>
-        {filterMode && (
-          <box flexDirection="row" paddingX={1}>
-            <text color={theme.focus}>filter: </text>
-            <text>{filter}</text>
-            <text color={theme.focus}>_</text>
-          </box>
-        )}
-        <LogViewport
-          buffer={buffer}
-          paused={paused}
-          filter={filter}
-          scrollOffset={scrollOffset}
-          {...(viewportLines !== undefined ? { viewportLines } : {})}
-        />
+      <box flexDirection="column" paddingX={1}>
+        <text color={theme.secondary}>{`No log buffer for ${sessionId}`}</text>
       </box>
     );
-  },
-);
+  }
+  return (
+    <box flexDirection="column" flexGrow={1}>
+      {filterMode && (
+        <box flexDirection="row" paddingX={1}>
+          <text color={theme.focus}>filter: </text>
+          <text>{filter}</text>
+          <text color={theme.focus}>_</text>
+        </box>
+      )}
+      <LogViewport
+        buffer={buffer}
+        paused={paused}
+        filter={filter}
+        scrollOffset={scrollOffset}
+        {...(viewportLines !== undefined ? { viewportLines } : {})}
+      />
+    </box>
+  );
+});

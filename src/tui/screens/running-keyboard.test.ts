@@ -1000,11 +1000,7 @@ describe("routeRunningKey — LogView mode (#310)", () => {
 
   test("'/' enters filter mode (overrides global C2 filter)", () => {
     const { actions, log } = mockActions({ logViewActive: true });
-    const handled = routeRunningKey(
-      keyEvent("/", { sequence: "/" }),
-      logActiveState(),
-      actions,
-    );
+    const handled = routeRunningKey(keyEvent("/", { sequence: "/" }), logActiveState(), actions);
     expect(handled).toBe(true);
     expect(log.calls).toContain("logEnterFilterMode");
     expect(log.calls).not.toContain("enterFilterMode");
@@ -1068,11 +1064,7 @@ describe("routeRunningKey — LogView mode (#310)", () => {
 
   test("in filter mode, printable keys append to filter buffer", () => {
     const { actions, log } = mockActions({ logViewActive: true });
-    const handled = routeRunningKey(
-      keyEvent("a", { sequence: "a" }),
-      logFilterState(),
-      actions,
-    );
+    const handled = routeRunningKey(keyEvent("a", { sequence: "a" }), logFilterState(), actions);
     expect(handled).toBe(true);
     expect(log.args.logFilterAppend).toEqual(["a"]);
   });
