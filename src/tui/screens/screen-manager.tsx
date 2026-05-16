@@ -42,6 +42,7 @@ import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
+import { SupervisionScreen } from "../views/supervision/supervision-screen.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
@@ -1282,6 +1283,24 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
 
+    if (process.env.GROVE_TUI_SUPERVISION === "1") {
+      return (
+        <SupervisionScreen
+          provider={provider}
+          intervalMs={rest.intervalMs}
+          goal={rest.goal}
+          pendingApprovals={[]}
+          onAcceptApproval={
+            // no-op stub — full wiring lands in Task 15
+            async (_requestId: string) => Promise.resolve()
+          }
+          onRejectApproval={
+            // no-op stub — full wiring lands in Task 15
+            async (_requestId: string) => Promise.resolve()
+          }
+        />
+      );
+    }
     return (
       <RunningView
         {...rest}
