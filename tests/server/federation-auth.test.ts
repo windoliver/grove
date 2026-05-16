@@ -3,7 +3,10 @@
  * createApp() (#226).
  *
  * Covers:
- *   - GET /api/cas/blake3:<hex>          — exempt when gossip is configured.
+ *   - GET /api/cas/blake3:<hex>          — exempt only with a valid HMAC
+ *     signature when gossip is configured.
+ *   - GET /api/cas/blake3:<hex>          — unsigned requests get bearer-auth
+ *     rejection (no anonymous content-hash leak).
  *   - GET /api/cas/blake3:<hex>          — bearer-required when gossip is NOT
  *     configured.
  *   - POST /api/gossip/fetch/:cid        — bearer-required even when gossip IS
@@ -13,6 +16,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  signGetRequest,
+} from "../../src/gossip/protocol.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import type {
   FrontierDigestEntry,
@@ -142,15 +150,58 @@ function appWithoutGossip(): ReturnType<typeof createApp> {
 // Tests
 // ---------------------------------------------------------------------------
 
+function signedHeaders(path: string): Record<string, string> {
+  const ts = new Date().toISOString();
+  return {
+    [GOSSIP_GET_TIMESTAMP_HEADER]: ts,
+    [GOSSIP_GET_SIGNATURE_HEADER]: signGetRequest("GET", path, ts, TEST_HMAC_SECRET),
+  };
+}
+
 describe("federation auth exemptions (#226)", () => {
-  it("GET /api/cas/:hash with NO auth succeeds when gossip is configured", async () => {
+  it("GET /api/cas/:hash with valid HMAC headers passes auth when gossip is configured", async () => {
     const app = appWithGossip();
-    const res = await app.request(`/api/cas/${SAMPLE_CID}`);
+    const path = `/api/cas/${SAMPLE_CID}`;
+    const res = await app.request(path, { headers: signedHeaders(path) });
     // Exempt path → middleware lets it through. CAS is empty, so the handler
     // returns 404. Any non-{400,401} status proves auth was bypassed.
     expect(res.status).not.toBe(400);
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(404);
+  });
+
+  it("GET /api/cas/:hash with NO headers fails even when gossip is configured", async () => {
+    const app = appWithGossip();
+    const res = await app.request(`/api/cas/${SAMPLE_CID}`);
+    // Anonymous content-hash reads must NOT bypass auth: without the HMAC
+    // headers the request falls through to bearer-auth, which rejects.
+    expect([400, 401]).toContain(res.status);
+  });
+
+  it("GET /api/cas/:hash with FORGED HMAC fails", async () => {
+    const app = appWithGossip();
+    const path = `/api/cas/${SAMPLE_CID}`;
+    const ts = new Date().toISOString();
+    const res = await app.request(path, {
+      headers: {
+        [GOSSIP_GET_TIMESTAMP_HEADER]: ts,
+        [GOSSIP_GET_SIGNATURE_HEADER]: "f".repeat(64), // bogus hex
+      },
+    });
+    expect([400, 401]).toContain(res.status);
+  });
+
+  it("GET /api/cas/:hash with stale HMAC timestamp fails", async () => {
+    const app = appWithGossip();
+    const path = `/api/cas/${SAMPLE_CID}`;
+    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago
+    const res = await app.request(path, {
+      headers: {
+        [GOSSIP_GET_TIMESTAMP_HEADER]: stale,
+        [GOSSIP_GET_SIGNATURE_HEADER]: signGetRequest("GET", path, stale, TEST_HMAC_SECRET),
+      },
+    });
+    expect([400, 401]).toContain(res.status);
   });
 
   it("GET /api/cas/:hash with NO auth fails when gossip is NOT configured", async () => {

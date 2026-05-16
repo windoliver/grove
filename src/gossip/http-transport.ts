@@ -8,6 +8,7 @@
 
 import { resolve4, resolve6 } from "node:dns/promises";
 
+import { MAX_REQUEST_SIZE } from "../core/constants.js";
 import { GossipTimeoutError, PeerUnreachableError } from "../core/gossip/errors.js";
 import type {
   GossipMessage,
@@ -16,7 +17,19 @@ import type {
   ShuffleRequest,
   ShuffleResponse,
 } from "../core/gossip/types.js";
-import { verifyPayload } from "./protocol.js";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  signGetRequest,
+  verifyPayload,
+} from "./protocol.js";
+
+/**
+ * Hard cap on the size of a single federation-fetched response body. Mirrors
+ * the existing ingest cap (MAX_REQUEST_SIZE) so a peer cannot push a larger
+ * artifact than the local server would accept on direct POST.
+ */
+const MAX_FEDERATION_RESPONSE_BYTES = MAX_REQUEST_SIZE;
 
 // ---------------------------------------------------------------------------
 // URL validation — SSRF prevention
@@ -387,8 +400,18 @@ export class HttpGossipTransport implements GossipTransport {
           },
           body: JSON.stringify(body),
           signal: controller.signal,
+          redirect: "manual",
         });
 
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
         if (!response.ok) {
           throw new PeerUnreachableError({
             peerId,
@@ -397,7 +420,8 @@ export class HttpGossipTransport implements GossipTransport {
           });
         }
 
-        return (await response.json()) as T;
+        const bytes = await this.readWithCap(response, peerId, pinnedUrl);
+        return JSON.parse(new TextDecoder().decode(bytes)) as T;
       } finally {
         clearTimeout(timeout);
       }
@@ -420,18 +444,117 @@ export class HttpGossipTransport implements GossipTransport {
     }
   }
 
+  /**
+   * Build the HMAC-signed headers for a peer GET request when a shared
+   * gossip secret is configured. Returns an empty object when no secret is
+   * set (the peer will fall back to bearer auth — this mode is only useful
+   * for tests and one-off curl checks; in production GROVE_GOSSIP_HMAC_SECRET
+   * is required when gossip is enabled).
+   */
+  private signedGetHeaders(path: string): Record<string, string> {
+    if (!this.hmacSecret) return {};
+    const ts = new Date().toISOString();
+    return {
+      [GOSSIP_GET_TIMESTAMP_HEADER]: ts,
+      [GOSSIP_GET_SIGNATURE_HEADER]: signGetRequest("GET", path, ts, this.hmacSecret),
+    };
+  }
+
+  /**
+   * Read the response body up to a fixed byte cap, aborting if either the
+   * advertised Content-Length or the streamed total exceeds it. Returns the
+   * concatenated bytes when the body fits under the cap.
+   */
+  private async readWithCap(
+    response: Response,
+    peerId: string,
+    pinnedUrl: string,
+  ): Promise<Uint8Array> {
+    const declared = response.headers.get("content-length");
+    if (declared !== null) {
+      const declaredBytes = Number(declared);
+      if (!Number.isFinite(declaredBytes) || declaredBytes < 0) {
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(`Invalid Content-Length '${declared}'`),
+        });
+      }
+      if (declaredBytes > MAX_FEDERATION_RESPONSE_BYTES) {
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(
+            `Response Content-Length ${declaredBytes} exceeds federation cap ${MAX_FEDERATION_RESPONSE_BYTES}`,
+          ),
+        });
+      }
+    }
+    const body = response.body;
+    if (!body) return new Uint8Array(0);
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_FEDERATION_RESPONSE_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(
+            `Streamed response exceeded federation cap ${MAX_FEDERATION_RESPONSE_BYTES} bytes`,
+          ),
+        });
+      }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.byteLength;
+    }
+    return out;
+  }
+
   private async getJson<T>(validated: ValidatedUrl, peerId: string): Promise<T | undefined> {
     const { pinnedUrl, hostHeader } = validated;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
+        const path = new URL(pinnedUrl).pathname;
         const response = await fetch(pinnedUrl, {
           method: "GET",
-          headers: { Host: hostHeader, Accept: "application/json" },
+          headers: {
+            Host: hostHeader,
+            Accept: "application/json",
+            ...this.signedGetHeaders(path),
+          },
           signal: controller.signal,
+          // Block automatic redirect-following: an attacker-controlled peer
+          // could otherwise return a 3xx Location pointing at a private/
+          // metadata endpoint and bypass our SSRF check.
+          redirect: "manual",
         });
         if (response.status === 404) return undefined;
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
         if (!response.ok) {
           throw new PeerUnreachableError({
             peerId,
@@ -439,7 +562,8 @@ export class HttpGossipTransport implements GossipTransport {
             cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
           });
         }
-        return (await response.json()) as T;
+        const bytes = await this.readWithCap(response, peerId, pinnedUrl);
+        return JSON.parse(new TextDecoder().decode(bytes)) as T;
       } finally {
         clearTimeout(timeout);
       }
@@ -465,12 +589,23 @@ export class HttpGossipTransport implements GossipTransport {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
+        const path = new URL(pinnedUrl).pathname;
         const response = await fetch(pinnedUrl, {
           method: "GET",
-          headers: { Host: hostHeader },
+          headers: { Host: hostHeader, ...this.signedGetHeaders(path) },
           signal: controller.signal,
+          redirect: "manual",
         });
         if (response.status === 404) return undefined;
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
         if (!response.ok) {
           throw new PeerUnreachableError({
             peerId,
@@ -478,7 +613,7 @@ export class HttpGossipTransport implements GossipTransport {
             cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
           });
         }
-        return new Uint8Array(await response.arrayBuffer());
+        return await this.readWithCap(response, peerId, pinnedUrl);
       } finally {
         clearTimeout(timeout);
       }

@@ -133,6 +133,56 @@ export function verifyPayload(
   return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
 }
 
+/**
+ * Headers used to authenticate peer-to-peer GET requests against
+ * content-addressed federation endpoints (#226). The transport signs
+ * `${method}\n${path}\n${timestamp}` with the shared HMAC secret; the server
+ * verifies before exempting the request from namespace bearer auth.
+ */
+export const GOSSIP_GET_TIMESTAMP_HEADER = "x-gossip-timestamp";
+export const GOSSIP_GET_SIGNATURE_HEADER = "x-gossip-signature";
+
+/** Compute HMAC-SHA256 over the canonical "method\npath\ntimestamp" string. */
+export function signGetRequest(
+  method: string,
+  path: string,
+  timestamp: string,
+  secret: string,
+): string {
+  const hmac = createHmac("sha256", secret);
+  hmac.update(`${method.toUpperCase()}\n${path}\n${timestamp}`);
+  return hmac.digest("hex");
+}
+
+/**
+ * Verify a peer-signed GET request. Returns true when:
+ *   - the timestamp is within ±GOSSIP_MAX_MESSAGE_AGE_MS of `nowMs`,
+ *   - the signature is well-formed hex,
+ *   - the signature matches signGetRequest(method, path, timestamp, secret)
+ *     under timing-safe comparison.
+ */
+export function verifyGetRequest(args: {
+  readonly method: string;
+  readonly path: string;
+  readonly timestamp: string | undefined;
+  readonly signature: string | undefined;
+  readonly secret: string;
+  readonly nowMs: number;
+}): boolean {
+  const { method, path, timestamp, signature, secret, nowMs } = args;
+  if (!timestamp || !signature) return false;
+  if (!/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const tsMs = Date.parse(timestamp);
+  if (!Number.isFinite(tsMs)) return false;
+  if (Math.abs(nowMs - tsMs) > GOSSIP_MAX_MESSAGE_AGE_MS) return false;
+  const expected = signGetRequest(method, path, timestamp, secret);
+  try {
+    return timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"));
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DefaultGossipService
 // ---------------------------------------------------------------------------
@@ -505,6 +555,14 @@ export class DefaultGossipService implements GossipService {
     // Purely additive: never deletes. Eviction is bound to mergeRemoteFrontier
     // (which is the only place that prunes the frontier — and therefore the
     // only place that can cause an advertisement to become orphaned).
+    //
+    // Filter to cids that survived the merge: an incoming cid that ranked
+    // below the eviction cutoff is never recorded in the first place. Without
+    // this filter, `peersAdvertising` would expose pruned cids and on-demand
+    // fetch could chase entries the frontier already rejected.
+    const survivingCids = new Set<string>();
+    for (const entry of this.remoteFrontier) survivingCids.add(entry.cid);
+
     const peer: PeerInfo = {
       peerId,
       address,
@@ -512,6 +570,7 @@ export class DefaultGossipService implements GossipService {
       lastSeen,
     };
     for (const entry of frontier) {
+      if (!survivingCids.has(entry.cid)) continue;
       let byPeer = this.advertisements.get(entry.cid);
       if (!byPeer) {
         byPeer = new Map();

@@ -21,6 +21,11 @@
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  verifyGetRequest,
+} from "../gossip/protocol.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
 import { type KeyRegistry, namespaceAuth } from "./middleware/namespace-auth.js";
@@ -97,14 +102,13 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
   //
-  // Federation read paths (#226): when gossip is configured, the
-  // content-addressed read endpoints used by peer fetchers are exempt as well.
-  // Namespace API keys must never be sent to peer servers (see serve.ts), so
-  // peer-to-peer auth relies on HMAC over the gossip exchange that advertised
-  // the cid — anyone who knows the cid learned it through that authenticated
-  // exchange. Without this exemption the federation fetch path is unusable in
-  // production because HttpGossipTransport.fetchContribution / fetchArtifact
-  // intentionally send no bearer token.
+  // Federation read paths (#226): the content-addressed read endpoints used
+  // by peer fetchers are auth-exempt **only** when the request carries a
+  // valid HMAC signature over `${method}\n${path}\n${timestamp}` keyed by
+  // the shared gossip secret, with the timestamp inside the standard 5-minute
+  // clock-skew window. Namespace API keys never leave the server (see
+  // serve.ts), so peer-to-peer trust is bound to the same HMAC that protects
+  // gossip exchange — not to "anyone who learned the cid".
   //
   //   GET /api/cas/:hash{,/meta}       — content-addressed blob fetch.
   //   GET /api/contributions/:cid      — content-addressed manifest fetch.
@@ -129,9 +133,22 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
           return true;
         }
         if (c.req.method === "GET") {
-          return (
-            FEDERATION_CAS_PATH.test(c.req.path) || FEDERATION_CONTRIB_PATH.test(c.req.path)
-          );
+          const path = c.req.path;
+          if (!FEDERATION_CAS_PATH.test(path) && !FEDERATION_CONTRIB_PATH.test(path)) {
+            return false;
+          }
+          const secret = deps.gossipHmacSecret;
+          if (!secret) return false;
+          const timestamp = c.req.header(GOSSIP_GET_TIMESTAMP_HEADER);
+          const signature = c.req.header(GOSSIP_GET_SIGNATURE_HEADER);
+          return verifyGetRequest({
+            method: "GET",
+            path,
+            timestamp,
+            signature,
+            secret,
+            nowMs: Date.now(),
+          });
         }
         return false;
       },
