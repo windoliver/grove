@@ -357,6 +357,9 @@ if (seedPeers.length > 0) {
       address: peerAddress,
       seedPeers: [...seedPeers],
       hmacSecret: gossipHmacSecret,
+      intervalMs: process.env.GROVE_GOSSIP_INTERVAL_MS
+        ? Number(process.env.GROVE_GOSSIP_INTERVAL_MS)
+        : undefined,
       antiEntropy: {
         enabled: process.env.GROVE_GOSSIP_ANTI_ENTROPY === "1",
         intervalMs: process.env.GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS
