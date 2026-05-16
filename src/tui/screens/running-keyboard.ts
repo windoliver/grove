@@ -74,6 +74,13 @@ export interface RunningKeyboardState {
    * approve/deny a pending tmux permission prompt.
    */
   readonly confirmModalOpen: boolean;
+  /**
+   * #310: LogView filter-input mode. When true, the dispatcher swallows
+   * printable keys into the LogView filter buffer instead of routing them
+   * to normal-mode handlers. Only meaningful when LogView is mounted
+   * (Terminal panel expanded + actions.logViewActive).
+   */
+  readonly logFilterMode: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,12 +138,31 @@ export interface RunningKeyboardActions {
   // Permission
   readonly approvePermission: () => void;
   readonly denyPermission: () => void;
+  // LogView (#310): controlled-state action callbacks for the live-log pane.
+  // State (logPaused/logFilter/logFilterMode/logScrollOffset) lives in
+  // running-view; the dispatcher fires these when the Terminal panel is
+  // expanded AND running-view chose to mount <LogView> (logViewActive=true).
+  readonly logTogglePause: () => void;
+  readonly logScrollDown: () => void;
+  readonly logScrollUp: () => void;
+  readonly logScrollToBottom: () => void;
+  readonly logScrollToTop: () => void;
+  readonly logEnterFilterMode: () => void;
+  readonly logCommitFilter: () => void;
+  readonly logCancelFilter: () => void;
+  readonly logFilterAppend: (ch: string) => void;
+  readonly logFilterBackspace: () => void;
   // Context flags (not actions, just state the handler needs to make decisions)
   readonly hasPermissions: boolean;
   readonly hasActiveRoles: boolean;
   readonly hasSendToAgent: boolean;
   readonly feedLength: number;
   readonly hasAskUser: boolean;
+  /**
+   * #310: true when running-view has chosen to render <LogView> in the
+   * Terminal panel slot. Gates the LogView key-dispatch block.
+   */
+  readonly logViewActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +286,62 @@ export function routeRunningKey(
       return true;
     }
     return true; // Swallow keys in help mode
+  }
+
+  // ─── LogView mode (#310): live-log keys when Terminal panel hosts LogView ───
+  // Active only when running-view chose to mount <LogView> in the Terminal
+  // panel slot (e.g., ACPX sessions, currently gated by GROVE_LOGVIEW=1).
+  // Placed BEFORE normal-mode handlers because LogView shadows '/', escape,
+  // and j/k/g/G with its own behavior. Unmatched keys fall through to
+  // global handlers so the operator can still press 1-5 to switch panels,
+  // 'q' to quit, etc.
+  if (state.expandedPanel === RunningPanel.Terminal && actions.logViewActive) {
+    if (state.logFilterMode) {
+      if (input === "return") {
+        actions.logCommitFilter();
+        return true;
+      }
+      if (input === "escape") {
+        actions.logCancelFilter();
+        return true;
+      }
+      if (input === "backspace") {
+        actions.logFilterBackspace();
+        return true;
+      }
+      if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        actions.logFilterAppend(key.sequence);
+        return true;
+      }
+      return true; // swallow other keys while filter prompt is open
+    }
+
+    if (input === "space") {
+      actions.logTogglePause();
+      return true;
+    }
+    if (input === "/" || key.sequence === "/") {
+      actions.logEnterFilterMode();
+      return true;
+    }
+    // Shift+G must be checked before plain "g" since input === "g" matches both.
+    if (key.shift && input === "g") {
+      actions.logScrollToBottom();
+      return true;
+    }
+    if (input === "g") {
+      actions.logScrollToTop();
+      return true;
+    }
+    if (input === "j" || input === "down") {
+      actions.logScrollDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.logScrollUp();
+      return true;
+    }
+    // Unmatched keys fall through to global handlers.
   }
 
   // ─── Normal mode ───
