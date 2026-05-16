@@ -13,7 +13,7 @@ import {
 import type { RuntimeProfile } from "./profile.js";
 import type { ScorePluginEntry } from "./scheduler.js";
 
-const PlatformSchema = z.enum(["claude-code", "codex", "gemini", "custom"]);
+const PlatformSchema = z.enum(["claude-code", "codex", "gemini"]);
 
 const RuntimeProfileBudgetSchema = z
   .object({
