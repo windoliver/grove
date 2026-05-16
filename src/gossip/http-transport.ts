@@ -96,6 +96,7 @@ function isPrivateIPv4(ip: string): boolean {
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
   if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmark)
   if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+  if (a === 192 && b === 88 && c === 99) return true; // 192.88.99.0/24 (deprecated 6to4 anycast, non-global)
   if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
   if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 (multicast)
   if (a >= 240) return true; // 240.0.0.0/4 (reserved) — also covers 255.255.255.255
@@ -158,12 +159,15 @@ const IPV6_BLOCKED_PREFIXES: ReadonlyArray<{ prefix: number; groups: readonly nu
   { prefix: 96, groups: [0x0064, 0xff9b, 0, 0, 0, 0] }, // 64:ff9b::/96 well-known NAT64
   { prefix: 48, groups: [0x0064, 0xff9b, 0x0001] }, // 64:ff9b:1::/48 local NAT64
   { prefix: 64, groups: [0x0100, 0, 0, 0] }, // 100::/64 discard
+  { prefix: 64, groups: [0x0100, 0, 0, 1] }, // 100:0:0:1::/64 dummy IETF prefix
   // 2001::/23 — IETF protocol assignments. /23 = full group 0 (0x2001) plus
   // top 7 bits of group 1, masked against 0x0000 → reject 2001:0000-01ff.
   // Public 2001:* (e.g. 2001:4860::, 2001:67c::) are NOT blocked here.
   { prefix: 23, groups: [0x2001, 0x0000] },
   { prefix: 32, groups: [0x2001, 0x0db8] }, // 2001:db8::/32 documentation
   { prefix: 16, groups: [0x2002] }, // 2002::/16 6to4
+  { prefix: 20, groups: [0x3fff, 0x0000] }, // 3fff::/20 documentation (RFC 9637)
+  { prefix: 16, groups: [0x5f00] }, // 5f00::/16 SRv6 SIDs (non-global)
   { prefix: 7, groups: [0xfc00] }, // fc00::/7 unique local
   { prefix: 10, groups: [0xfe80] }, // fe80::/10 link-local
   { prefix: 10, groups: [0xfec0] }, // fec0::/10 deprecated site-local
@@ -462,10 +466,14 @@ export class HttpGossipTransport implements GossipTransport {
    * HMAC verification is intentionally skipped: contributions are
    * content-addressed, and callers verify the manifest CID before storing.
    */
-  async fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined> {
+  async fetchContribution(
+    peer: PeerInfo,
+    cid: string,
+    maxBytes?: number,
+  ): Promise<unknown | undefined> {
     const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
-    return this.getJson<unknown>(validated, peer.peerId);
+    return this.getJson<unknown>(validated, peer.peerId, maxBytes);
   }
 
   /**
@@ -630,7 +638,11 @@ export class HttpGossipTransport implements GossipTransport {
     return out;
   }
 
-  private async getJson<T>(validated: ValidatedUrl, peerId: string): Promise<T | undefined> {
+  private async getJson<T>(
+    validated: ValidatedUrl,
+    peerId: string,
+    maxBytes?: number,
+  ): Promise<T | undefined> {
     const { pinnedUrl, hostHeader } = validated;
     try {
       const controller = new AbortController();
@@ -667,7 +679,7 @@ export class HttpGossipTransport implements GossipTransport {
             cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
           });
         }
-        const bytes = await this.readWithCap(response, peerId, pinnedUrl);
+        const bytes = await this.readWithCap(response, peerId, pinnedUrl, maxBytes);
         return JSON.parse(new TextDecoder().decode(bytes)) as T;
       } finally {
         clearTimeout(timeout);

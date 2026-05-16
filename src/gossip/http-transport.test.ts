@@ -641,6 +641,24 @@ describe("validatePeerUrl", () => {
     await expect(validatePeerUrl("http://[2001:67c::1]:4515")).resolves.toBeDefined();
   });
 
+  it("rejects 3fff:: (RFC 9637 documentation)", async () => {
+    await expect(validatePeerUrl("http://[3fff::1]:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
+  it("rejects 5f00:: (SRv6 SIDs, non-global)", async () => {
+    await expect(validatePeerUrl("http://[5f00::1]:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
+  it("rejects 100:0:0:1:: (IETF dummy prefix)", async () => {
+    await expect(validatePeerUrl("http://[100:0:0:1::1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  it("rejects 192.88.99.x (deprecated 6to4 anycast)", async () => {
+    await expect(validatePeerUrl("http://192.88.99.2:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
   it("rejects ::ffff:127.0.0.1 (IPv4-mapped loopback)", async () => {
     await expect(validatePeerUrl("http://[::ffff:127.0.0.1]:4515")).rejects.toThrow(
       /private\/reserved/,

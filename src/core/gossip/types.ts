@@ -210,9 +210,16 @@ export interface GossipTransport {
   /**
    * Fetch a contribution manifest from a peer by CID. Returns undefined when the
    * peer responds 404. Throws PeerUnreachableError / GossipTimeoutError for
-   * network failures.
+   * network failures. The optional `maxBytes` bound caps the response so a
+   * malicious peer cannot force the server to buffer a very large JSON body
+   * (e.g. multi-MB strings inside context/description) before the manifest
+   * schema check runs.
    */
-  fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined>;
+  fetchContribution(
+    peer: PeerInfo,
+    cid: string,
+    maxBytes?: number,
+  ): Promise<unknown | undefined>;
 
   /**
    * Fetch raw artifact bytes from a peer scoped to a (contribution CID,

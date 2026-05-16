@@ -39,6 +39,16 @@ const MAX_ARTIFACTS_PER_CONTRIBUTION = 64;
  */
 const MAX_FEDERATION_CUMULATIVE_BYTES = MAX_REQUEST_SIZE;
 
+/**
+ * Hard cap on the size of a fetched contribution manifest. Manifests are
+ * mostly metadata (CID, scores, agent identity, relations); the strings
+ * that can grow unbounded — context, description — should still fit in
+ * a small budget. 1 MB is far above realistic manifests and far below
+ * the per-artifact 50 MB cap, so a peer can't force the server to buffer
+ * tens of megabytes of JSON before fromManifest() runs.
+ */
+const MAX_MANIFEST_BYTES = 1 * 1024 * 1024;
+
 function blake3Of(bytes: Uint8Array): string {
   return `${HASH_PREFIX}${blake3Hash(bytes).toString("hex")}`;
 }
@@ -64,7 +74,11 @@ export class FederationFetcher {
     const errors: string[] = [];
     for (const peer of peers) {
       try {
-        const manifestRaw = await this.opts.transport.fetchContribution(peer, cid);
+        const manifestRaw = await this.opts.transport.fetchContribution(
+          peer,
+          cid,
+          MAX_MANIFEST_BYTES,
+        );
         if (!manifestRaw) {
           errors.push(`${peer.peerId}: 404`);
           continue;
