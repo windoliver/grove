@@ -17,16 +17,50 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ZoomLevel } from "../panels/panel-registry.js";
-import type { RunningPanel } from "../screens/running-keyboard.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Legacy numeric values from the deleted RunningPanel enum.
+ * Used only in the migration shim inside readViewState().
+ */
+type LegacyRunningPanelNumber = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+/** String identifiers for the drill panel — successor to the numeric RunningPanel enum. */
+export type DrillTab =
+  | "feed"
+  | "agents"
+  | "dag"
+  | "terminal"
+  | "trace"
+  | "handoffs"
+  | "sessions"
+  | "tasks"
+  | "reviews";
+
+/**
+ * Map legacy RunningPanel numeric enum values to DrillTab string identifiers.
+ * Values not listed here return undefined (panel collapsed).
+ */
+function migrateRunningPanel(n: number): DrillTab | undefined {
+  switch (n as LegacyRunningPanelNumber) {
+    case 0:
+      return "feed";
+    case 2:
+      return "dag";
+    case 3:
+      return "terminal";
+    default:
+      return undefined;
+  }
+}
+
 /** Per-session TUI view state that is persisted and restored on resume. */
 export interface TuiViewState {
   /** Which panel is currently focused/expanded, or null for feed-only. */
-  readonly expandedPanel?: RunningPanel | null | undefined;
+  readonly expandedPanel?: DrillTab | null | undefined;
   /** Zoom level of the expanded panel. */
   readonly zoomLevel?: ZoomLevel | undefined;
   /** Index of the selected agent in the trace view. */
@@ -82,8 +116,10 @@ export async function readViewState(
         json.expandedPanel === null
           ? null
           : typeof json.expandedPanel === "number"
-            ? (json.expandedPanel as RunningPanel)
-            : undefined,
+            ? migrateRunningPanel(json.expandedPanel)
+            : typeof json.expandedPanel === "string"
+              ? (json.expandedPanel as DrillTab)
+              : undefined,
       zoomLevel: typeof json.zoomLevel === "string" ? (json.zoomLevel as ZoomLevel) : undefined,
       traceSelectedAgent:
         typeof json.traceSelectedAgent === "number" ? json.traceSelectedAgent : undefined,

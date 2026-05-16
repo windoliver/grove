@@ -292,9 +292,9 @@ describe("PagesRouter rendering", () => {
       );
     });
 
-    // Running hints visible
-    expect(JSON.stringify(renderer.toJSON())).toContain("[:]");
-    expect(JSON.stringify(renderer.toJSON())).toContain("Goto");
+    // Running hints visible (SupervisionScreen hints — successor to RUNNING_VIEW_HINTS)
+    expect(JSON.stringify(renderer.toJSON())).toContain("[h/j/k/l]");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Move");
     expect(JSON.stringify(renderer.toJSON())).toContain("[/]");
     expect(JSON.stringify(renderer.toJSON())).toContain("Filter");
 
@@ -314,11 +314,11 @@ describe("PagesRouter rendering", () => {
     expect(dagFlat).toContain("[L]");
     expect(dagFlat).toContain("Logs");
 
-    // Pop → running hints again
+    // Pop → running hints again (supervision hints)
     await act(async () => {
       store.pop();
     });
-    expect(JSON.stringify(renderer.toJSON())).toContain("Goto");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Move");
 
     renderer.unmount();
   });
