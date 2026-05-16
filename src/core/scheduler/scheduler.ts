@@ -61,8 +61,7 @@ export class Scheduler {
       return { kind: "unschedulable", rejections: filtered };
     }
 
-    // Score/permit/bind are added in later tasks. For Task 4, take the first admitted profile.
-    const winner = admitted[0]!.profile;
+    const winner = await this.pickWinner(ctx, admitted.map((entry) => entry.profile));
     const { session } = await this.bindPlugin.bind(ctx, winner);
     return { kind: "bound", profile: winner, session, reservationToken: undefined };
   }
@@ -84,6 +83,34 @@ export class Scheduler {
         return { profile, rejections } satisfies ProfileRejection;
       }),
     );
+  }
+
+  private async pickWinner(
+    ctx: SchedulerContext,
+    admitted: readonly RuntimeProfile[],
+  ): Promise<RuntimeProfile> {
+    if (admitted.length === 1) return admitted[0]!;
+
+    const totals = new Map<string, number>();
+    for (const profile of admitted) totals.set(profile.name, 0);
+
+    for (const entry of this.scores) {
+      const weight = entry.weight ?? 1;
+      for (const profile of admitted) {
+        const raw = await entry.plugin.score(ctx, profile);
+        totals.set(profile.name, (totals.get(profile.name) ?? 0) + raw * weight);
+      }
+    }
+
+    const orderIndex = (profile: RuntimeProfile): number =>
+      ctx.profiles.findIndex((candidate) => candidate.name === profile.name);
+
+    const ranked = [...admitted].sort((a, b) => {
+      const diff = (totals.get(b.name) ?? 0) - (totals.get(a.name) ?? 0);
+      if (diff !== 0) return diff;
+      return orderIndex(a) - orderIndex(b);
+    });
+    return ranked[0]!;
   }
 }
 

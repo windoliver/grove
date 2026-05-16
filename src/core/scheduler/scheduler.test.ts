@@ -91,3 +91,75 @@ describe("Scheduler.schedule — unschedulable", () => {
     }
   });
 });
+
+describe("Scheduler.schedule — scoring", () => {
+  test("highest weighted-sum score wins", async () => {
+    const session: AgentSession = { id: "s", role: "worker", status: "running" };
+    const scheduler = new Scheduler({
+      profiles: [profile("a"), profile("b")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [
+        { plugin: constantScoreFor(profile("a").name, 20, profile("b").name, 80), weight: 1 },
+      ],
+      permits: [autoPermit()],
+      bindPlugin: staticBind(session),
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("bound");
+    if (result.kind === "bound") expect(result.profile.name).toBe("b");
+  });
+
+  test("tie broken by config declaration order", async () => {
+    const session: AgentSession = { id: "s", role: "worker", status: "running" };
+    const scheduler = new Scheduler({
+      profiles: [profile("first"), profile("second")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [{ plugin: constantScore("flat", 50), weight: 1 }],
+      permits: [autoPermit()],
+      bindPlugin: staticBind(session),
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("bound");
+    if (result.kind === "bound") expect(result.profile.name).toBe("first");
+  });
+
+  test("weights multiply per-score contributions", async () => {
+    const session: AgentSession = { id: "s", role: "worker", status: "running" };
+    const scheduler = new Scheduler({
+      profiles: [profile("a"), profile("b")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [
+        { plugin: constantScoreFor("a", 100, "b", 0), weight: 1 },
+        { plugin: constantScoreFor("a", 0, "b", 100), weight: 2 },
+      ],
+      permits: [autoPermit()],
+      bindPlugin: staticBind(session),
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("bound");
+    if (result.kind === "bound") expect(result.profile.name).toBe("b");
+  });
+});
+
+function constantScoreFor(nameA: string, valueA: number, nameB: string, valueB: number): ScorePlugin {
+  return {
+    name: `pair-${nameA}-${nameB}`,
+    score: async (_ctx, profile) => {
+      if (profile.name === nameA) return valueA;
+      if (profile.name === nameB) return valueB;
+      return 0;
+    },
+  };
+}
