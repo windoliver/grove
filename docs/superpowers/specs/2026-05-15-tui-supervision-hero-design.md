@@ -226,18 +226,18 @@ First match wins. Priority encodes operator urgency (approvals before failures b
 
 ### State color & icon
 
-All colors reuse existing `theme.ts` keys. No new theme entries.
+All colors reuse existing `theme.ts` keys (`error / stale / secondary / success / warning / info`). No new theme entries.
 
 | State | Color (theme key) | Icon |
 |-------|-------------------|------|
 | `running` | `success` (green) | `●` |
-| `silent` | `warn` (yellow) | `◐` |
-| `stuck` | `warn` (yellow) | `↻` |
-| `thrashing` | `danger` (red) | `↯` |
-| `blocked` | `danger` (red) | `⨯` |
-| `awaiting` | `accent` (cyan) | `⏸` |
-| `done` | `muted` (grey) | `✓` |
-| `idle` | `muted` (grey) | `·` |
+| `silent` | `stale` (orange) | `◐` |
+| `stuck` | `warning` (yellow) | `↻` |
+| `thrashing` | `error` (red) | `↯` |
+| `blocked` | `error` (red) | `⨯` |
+| `awaiting` | `info` (blue/cyan) | `⏸` |
+| `done` | `secondary` (grey) | `✓` |
+| `idle` | `secondary` (grey) | `·` |
 
 ### Sort & filter
 
