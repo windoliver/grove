@@ -185,6 +185,16 @@ export interface AntiEntropySweepOpts {
    */
   readonly negativeCache?: Set<string>;
   /**
+   * Optional locality predicate. CIDs for which `isLocal` resolves to true
+   * are excluded from the target list before any peer round-trip. This
+   * prevents the merged-frontier digest (which includes local entries from
+   * the local frontier calculator) from consuming batch slots that should
+   * go to genuine federation work — fetchRemoteContribution would short
+   * circuit to `already-local` for these CIDs anyway, but only after a
+   * batch slot was already burned.
+   */
+  readonly isLocal?: (cid: string) => Promise<boolean>;
+  /**
    * Hook invoked with the sweep result for each attempted CID. Lets the
    * caller emit telemetry (logs, metrics) and update the negative cache.
    * Called once per CID — exceptions are swallowed so the sweep loop
@@ -209,6 +219,13 @@ export async function runAntiEntropySweep(opts: AntiEntropySweepOpts): Promise<v
     if (opts.negativeCache?.has(entry.cid)) continue;
     const threshold = opts.thresholds[entry.metric];
     if (threshold !== undefined && entry.value < threshold) continue;
+    if (opts.isLocal && (await opts.isLocal(entry.cid))) {
+      // Mark as seen so it doesn't reappear later in the same sweep, but
+      // do not consume a batch slot — the goal is to fill the batch with
+      // remote-only work.
+      seen.add(entry.cid);
+      continue;
+    }
     seen.add(entry.cid);
     targets.push(entry.cid);
   }

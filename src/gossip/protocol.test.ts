@@ -153,6 +153,63 @@ describe("DefaultGossipService", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Constructor validation
+  // -------------------------------------------------------------------------
+
+  describe("constructor validation", () => {
+    const baseConfig = {
+      peerId: "x",
+      address: "http://x:1",
+      seedPeers: [],
+    };
+    const baseOpts = {
+      transport: new MockGossipTransport(),
+      frontier: new MockFrontierCalculator(),
+    };
+
+    it("rejects NaN intervalMs", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: { ...baseConfig, intervalMs: Number.NaN },
+            ...baseOpts,
+          }),
+      ).toThrow(/intervalMs/);
+    });
+
+    it("rejects zero intervalMs", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: { ...baseConfig, intervalMs: 0 },
+            ...baseOpts,
+          }),
+      ).toThrow(/intervalMs/);
+    });
+
+    it("rejects negative anti-entropy batchSize", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: {
+              ...baseConfig,
+              antiEntropy: { enabled: true, batchSize: -5 },
+            },
+            ...baseOpts,
+          }),
+      ).toThrow(/batchSize/);
+    });
+
+    it("accepts undefined for optional fields (defaults apply)", () => {
+      const svc = new DefaultGossipService({
+        config: baseConfig,
+        ...baseOpts,
+      });
+      expect(svc).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // currentMessage()
   // -------------------------------------------------------------------------
 

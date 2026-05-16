@@ -250,6 +250,12 @@ export class DefaultGossipService implements GossipService {
    * peer sampling and frontier merge).
    */
   private readonly federation: FederationFetcher | undefined;
+  /**
+   * Reference to the same contribution store federation reads through.
+   * Used by anti-entropy to skip already-local CIDs when filtering
+   * sweep candidates so batch slots don't get wasted on `already-local`.
+   */
+  private readonly contributionStore: ContributionStore | undefined;
 
   constructor(opts: {
     config: GossipConfig;
@@ -270,10 +276,24 @@ export class DefaultGossipService implements GossipService {
     cas?: ContentStore;
   }) {
     const ae = opts.config.antiEntropy;
+    // Defensive validation: a NaN / zero / negative interval would make
+    // setTimeout fire on every tick and turn gossip into a hot loop. Reject
+    // bad values rather than silently melting CPU.
+    const validPositiveInt = (n: number | undefined, name: string): number | undefined => {
+      if (n === undefined) return undefined;
+      if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+        throw new Error(
+          `DefaultGossipService: invalid ${name}=${n}; must be a positive integer`,
+        );
+      }
+      return n;
+    };
+    const intervalMs =
+      validPositiveInt(opts.config.intervalMs, "intervalMs") ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.config = {
       peerId: opts.config.peerId,
       address: opts.config.address,
-      intervalMs: opts.config.intervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS,
+      intervalMs,
       fanOut: opts.config.fanOut ?? DEFAULT_GOSSIP_FAN_OUT,
       jitter: opts.config.jitter ?? DEFAULT_GOSSIP_JITTER,
       digestLimit: opts.config.digestLimit ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
@@ -282,8 +302,9 @@ export class DefaultGossipService implements GossipService {
       hmacSecret: opts.config.hmacSecret,
       antiEntropyEnabled: ae?.enabled ?? false,
       antiEntropyIntervalMs:
-        ae?.intervalMs ?? (opts.config.intervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS) * 5,
-      antiEntropyBatchSize: ae?.batchSize ?? 16,
+        validPositiveInt(ae?.intervalMs, "antiEntropy.intervalMs") ?? intervalMs * 5,
+      antiEntropyBatchSize:
+        validPositiveInt(ae?.batchSize, "antiEntropy.batchSize") ?? 16,
       antiEntropyThresholds: ae?.metricThresholds ?? {},
     };
 
@@ -325,6 +346,7 @@ export class DefaultGossipService implements GossipService {
       this.remoteFrontier = [...opts.initialFrontier];
     }
 
+    this.contributionStore = opts.contributionStore;
     // Federation: only enabled when caller provided both store and CAS.
     this.federation =
       opts.contributionStore && opts.cas
@@ -685,6 +707,7 @@ export class DefaultGossipService implements GossipService {
       // work every sweep. Recovered peers and resigned advertisements
       // get retried on the next tick after the entry expires.
       const failureTtlMs = this.config.antiEntropyIntervalMs;
+      const contributionStore = this.contributionStore;
       try {
         await runAntiEntropySweep({
           frontier: this.mergedFrontier(),
@@ -692,6 +715,13 @@ export class DefaultGossipService implements GossipService {
           batchSize: this.config.antiEntropyBatchSize,
           thresholds: this.config.antiEntropyThresholds,
           negativeCache: negative,
+          // Locality predicate: skip CIDs already in the local store so
+          // batch slots fill with genuine federation work. Without this,
+          // a node whose local frontier exceeds batchSize would chew up
+          // every sweep on already-local entries from the merged digest.
+          isLocal: contributionStore
+            ? async (cid) => (await contributionStore.get(cid)) !== undefined
+            : undefined,
           onResult: (result) => {
             switch (result.kind) {
               case "failed":

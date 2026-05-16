@@ -364,6 +364,25 @@ if (nexusUrl) {
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
 }
 
+/**
+ * Parse a positive-integer env var. Returns undefined when unset, empty,
+ * or malformed (so callers fall through to the library default). Refuses
+ * NaN, non-finite, zero, and negative values — setTimeout(NaN) and
+ * setTimeout(<=0) run on every tick and would turn gossip into a hot loop.
+ */
+function parsePositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+    console.error(
+      `grove-server: invalid ${name}='${raw}' (must be a positive integer). Ignoring; using default.`,
+    );
+    return undefined;
+  }
+  return n;
+}
+
 if (seedPeers.length > 0) {
   const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
   // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
@@ -374,17 +393,11 @@ if (seedPeers.length > 0) {
       address: peerAddress,
       seedPeers: [...seedPeers],
       hmacSecret: gossipHmacSecret,
-      intervalMs: process.env.GROVE_GOSSIP_INTERVAL_MS
-        ? Number(process.env.GROVE_GOSSIP_INTERVAL_MS)
-        : undefined,
+      intervalMs: parsePositiveIntEnv("GROVE_GOSSIP_INTERVAL_MS"),
       antiEntropy: {
         enabled: process.env.GROVE_GOSSIP_ANTI_ENTROPY === "1",
-        intervalMs: process.env.GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS
-          ? Number(process.env.GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS)
-          : undefined,
-        batchSize: process.env.GROVE_GOSSIP_ANTI_ENTROPY_BATCH
-          ? Number(process.env.GROVE_GOSSIP_ANTI_ENTROPY_BATCH)
-          : undefined,
+        intervalMs: parsePositiveIntEnv("GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS"),
+        batchSize: parsePositiveIntEnv("GROVE_GOSSIP_ANTI_ENTROPY_BATCH"),
       },
     },
     transport,

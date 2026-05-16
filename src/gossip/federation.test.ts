@@ -283,6 +283,40 @@ describe("runAntiEntropySweep", () => {
     expect(events.map((e) => e.kind).sort()).toEqual(["failed", "ok"]);
   });
 
+  it("skips CIDs reported as local by isLocal and still fills the batch with remote work", async () => {
+    // mergedFrontier() returns local entries first; without the locality
+    // predicate they would consume every batch slot and remote work would
+    // starve. With isLocal, the sweep keeps scanning until the batch is
+    // full of genuine federation candidates.
+    const fetched: string[] = [];
+    const fakeFetcher = {
+      fetchRemoteContribution: async (cid: string) => {
+        fetched.push(cid);
+        return { kind: "ok", cid } as const;
+      },
+    };
+    const localCids = new Set<string>([
+      `blake3:${"a".repeat(64)}`,
+      `blake3:${"b".repeat(64)}`,
+    ]);
+    const remoteCid = `blake3:${"c".repeat(64)}`;
+    const frontier: FrontierDigestEntry[] = [
+      { metric: "m", value: 10, cid: `blake3:${"a".repeat(64)}` },
+      { metric: "m", value: 10, cid: `blake3:${"b".repeat(64)}` },
+      { metric: "m", value: 10, cid: remoteCid },
+    ];
+    await runAntiEntropySweep({
+      frontier,
+      fetcher: fakeFetcher as unknown as FederationFetcher,
+      batchSize: 2,
+      thresholds: {},
+      isLocal: async (cid) => localCids.has(cid),
+    });
+    // Only the remote CID should reach the fetcher; locality predicate
+    // dropped the two locally-present advertisements first.
+    expect(fetched).toEqual([remoteCid]);
+  });
+
   it("skips CIDs present in the negative cache", async () => {
     let fetchCount = 0;
     const fakeFetcher = {
