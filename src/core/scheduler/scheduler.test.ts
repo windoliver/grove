@@ -252,3 +252,31 @@ describe("Scheduler.schedule — permit stage", () => {
     expect(calls).toEqual(["first"]);
   });
 });
+
+describe("Scheduler.schedule — fallback profile", () => {
+  test("synthesizes a single profile from task.spec.runtime when none configured", async () => {
+    const bindCalls: RuntimeProfile[] = [];
+    const scheduler = new Scheduler({
+      profiles: [],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [],
+      permits: [autoPermit()],
+      bindPlugin: {
+        name: "capture",
+        bind: async (_ctx, profile) => {
+          bindCalls.push(profile);
+          return { session: { id: "s", role: "worker", status: "running" } };
+        },
+      },
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("bound");
+    expect(bindCalls).toHaveLength(1);
+    expect(bindCalls[0]?.name).toBe("fallback-claude");
+    expect(bindCalls[0]?.runtimeCommand).toBe("claude");
+  });
+});
