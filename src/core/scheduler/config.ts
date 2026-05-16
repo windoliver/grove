@@ -127,7 +127,7 @@ export function loadSchedulerConfig(
 }
 
 function unknownPluginError(kind: string, name: string): Error {
-  const known = builtinPluginNames().sort().join(", ");
+  const known = [...builtinPluginNames()].sort().join(", ");
   return new Error(
     `unknown scheduler ${kind} plugin '${name}'. Known plugins: ${known}.`,
   );
