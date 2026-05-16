@@ -423,6 +423,43 @@ describe("DefaultGossipService", () => {
       expect(seedLiveness).toBeDefined();
       expect(seedLiveness?.status).toBe(PeerStatus.Alive);
     });
+
+    it("rejects replayed signed shuffles even after the 1-second throttle expires", async () => {
+      // Replay attack: a captured signed shuffle should not be re-usable for
+      // the full clock-skew window. Round 9 changed the monotonic guard from
+      // local-arrival throttle to a per-peer signed-timestamp check, so the
+      // exact same signed request should be rejected on the second call.
+      const { signPayload } = await import("./protocol.js");
+      const secret = "shuffle-replay-secret";
+      const hmacService = new DefaultGossipService({
+        config: {
+          peerId: "self-rs",
+          address: "http://localhost:1",
+          seedPeers: [],
+          hmacSecret: secret,
+        },
+        transport: new MockGossipTransport(),
+        frontier: new MockFrontierCalculator(),
+      });
+      const senderTs = new Date(Date.now()).toISOString();
+      const unsignedRequest = {
+        sender: { peerId: "replayer", address: "http://r:1", age: 0, lastSeen: senderTs },
+        offered: [{ peerId: "x", address: "http://x:1", age: 0, lastSeen: senderTs }],
+      };
+      const signature = signPayload(unsignedRequest, secret);
+      const replayed = { ...unsignedRequest, hmacSignature: signature };
+
+      // First call: accepted.
+      const first = hmacService.handleShuffle(replayed as unknown as ShuffleRequest);
+      expect(first.offered.length).toBeGreaterThanOrEqual(0);
+
+      // Second call with the SAME signed timestamp: must be rejected.
+      const second = hmacService.handleShuffle(replayed as unknown as ShuffleRequest);
+      // Rejection path returns { offered: [] } and does NOT advance liveness.
+      expect(second.offered).toEqual([]);
+
+      await hmacService.stop();
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -512,20 +512,21 @@ export class DefaultGossipService implements GossipService {
         );
         return { offered: [] };
       }
-      // Monotonic guard: use our clock to bound how often a peer can shuffle
-      // with us. We can't rely on sender-provided timestamps being monotonic
-      // (peers may reuse the same lastSeen if they don't refresh it per round).
-      // Rate-limiting by our own receive time ensures forward progress without
-      // depending on sender clock accuracy.
+      // Monotonic timestamp guard on the SIGNED sender timestamp: reject any
+      // shuffle whose `sender.lastSeen` is at or before the highest we've
+      // already accepted from this peer. This is stricter than a local-clock
+      // throttle: a captured signed request cannot be replayed even hours
+      // later within the 5-minute skew window. The signed timestamp must
+      // strictly advance per peer for forward progress.
       const shuffleKey = `shuffle:${request.sender.peerId}`;
-      const nowMs = this.now();
-      const lastReceived = this.peerLastTimestamp.get(shuffleKey);
-      if (lastReceived !== undefined && nowMs - lastReceived < 1000) {
-        // Reject if the same peer shuffles again within 1 s (likely a replay).
-        console.warn(`Gossip: rejecting rapid-fire shuffle from ${request.sender.peerId}`);
+      const lastSenderTs = this.peerLastTimestamp.get(shuffleKey);
+      if (lastSenderTs !== undefined && senderTs <= lastSenderTs) {
+        console.warn(
+          `Gossip: rejecting replayed shuffle from ${request.sender.peerId} (ts=${senderTs} <= last=${lastSenderTs})`,
+        );
         return { offered: [] };
       }
-      this.peerLastTimestamp.set(shuffleKey, nowMs);
+      this.peerLastTimestamp.set(shuffleKey, senderTs);
     }
 
     this.markAlive(request.sender.peerId);
