@@ -62,6 +62,28 @@ export class Scheduler {
     }
 
     const winner = await this.pickWinner(ctx, admitted.map((entry) => entry.profile));
+
+    for (const plugin of this.permits) {
+      const verdict = await plugin.permit(ctx, winner);
+      if (verdict.status === "denied") {
+        return {
+          kind: "denied",
+          plugin: plugin.name,
+          reason: verdict.reason,
+          message: verdict.message,
+        };
+      }
+      if (verdict.status === "wait") {
+        return {
+          kind: "wait",
+          plugin: plugin.name,
+          reason: verdict.reason,
+          message: verdict.message,
+          profile: winner,
+        };
+      }
+    }
+
     const { session } = await this.bindPlugin.bind(ctx, winner);
     return { kind: "bound", profile: winner, session, reservationToken: undefined };
   }

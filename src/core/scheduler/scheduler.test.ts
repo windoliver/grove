@@ -163,3 +163,92 @@ function constantScoreFor(nameA: string, valueA: number, nameB: string, valueB: 
     },
   };
 }
+
+describe("Scheduler.schedule — permit stage", () => {
+  test("permit wait short-circuits before bind", async () => {
+    const bind = staticBind({ id: "s", role: "worker", status: "running" });
+    const bindSpy = { called: false };
+    const observingBind: BindPlugin = {
+      name: "watch",
+      bind: async (ctx, profile) => {
+        bindSpy.called = true;
+        return bind.bind(ctx, profile);
+      },
+    };
+    const scheduler = new Scheduler({
+      profiles: [profile("a")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [],
+      permits: [
+        { name: "manual", permit: async () => ({ status: "wait", reason: "awaiting-user" }) },
+      ],
+      bindPlugin: observingBind,
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("wait");
+    expect(bindSpy.called).toBe(false);
+    if (result.kind === "wait") {
+      expect(result.plugin).toBe("manual");
+      expect(result.reason).toBe("awaiting-user");
+      expect(result.profile.name).toBe("a");
+    }
+  });
+
+  test("permit denied short-circuits before bind", async () => {
+    const scheduler = new Scheduler({
+      profiles: [profile("a")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [],
+      permits: [
+        { name: "policy", permit: async () => ({ status: "denied", reason: "not-allowed" }) },
+      ],
+      bindPlugin: staticBind({ id: "s", role: "worker", status: "running" }),
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    const result = await scheduler.schedule(taskView());
+
+    expect(result.kind).toBe("denied");
+    if (result.kind === "denied") {
+      expect(result.plugin).toBe("policy");
+      expect(result.reason).toBe("not-allowed");
+    }
+  });
+
+  test("permit stage stops at first non-granted verdict", async () => {
+    const calls: string[] = [];
+    const scheduler = new Scheduler({
+      profiles: [profile("a")],
+      filters: [alwaysAdmit("admit-all")],
+      scores: [],
+      permits: [
+        {
+          name: "first",
+          permit: async () => {
+            calls.push("first");
+            return { status: "wait", reason: "later" };
+          },
+        },
+        {
+          name: "second",
+          permit: async () => {
+            calls.push("second");
+            return { status: "granted" };
+          },
+        },
+      ],
+      bindPlugin: staticBind({ id: "s", role: "worker", status: "running" }),
+      store: emptyStore(),
+      now: () => 0,
+    });
+
+    await scheduler.schedule(taskView());
+
+    expect(calls).toEqual(["first"]);
+  });
+});
