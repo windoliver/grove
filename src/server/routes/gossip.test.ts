@@ -1,8 +1,8 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { Hono } from "hono";
-import { gossip as gossipRoute } from "./gossip.js";
 import type { GossipService } from "../../core/gossip/types.js";
 import type { ServerDeps, ServerEnv } from "../deps.js";
+import { gossip as gossipRoute } from "./gossip.js";
 
 function makeApp(svc: GossipService | undefined) {
   const app = new Hono<ServerEnv>();
@@ -16,7 +16,7 @@ function makeApp(svc: GossipService | undefined) {
 }
 
 describe("POST /api/gossip/fetch/:cid", () => {
-  const cid = "blake3:" + "a".repeat(64);
+  const cid = `blake3:${"a".repeat(64)}`;
 
   it("returns 200 with the fetched contribution on success", async () => {
     const stub = {
@@ -57,7 +57,9 @@ describe("POST /api/gossip/fetch/:cid", () => {
   });
 
   it("rejects malformed cids with 400", async () => {
-    const stub = { fetchRemoteContribution: async () => ({ kind: "ok", cid }) } as unknown as GossipService;
+    const stub = {
+      fetchRemoteContribution: async () => ({ kind: "ok", cid }),
+    } as unknown as GossipService;
     const res = await makeApp(stub).request(`/api/gossip/fetch/notacid`, { method: "POST" });
     expect(res.status).toBe(400);
   });

@@ -322,7 +322,7 @@ describe("HttpGossipTransport", () => {
 
   describe("fetchContribution()", () => {
     it("GETs /api/contributions/:cid and returns the JSON body", async () => {
-      const cid = "blake3:" + "a".repeat(64);
+      const cid = `blake3:${"a".repeat(64)}`;
       const manifest = { cid, summary: "hi" };
       const server = Bun.serve({
         port: 0,
@@ -363,7 +363,7 @@ describe("HttpGossipTransport", () => {
           age: 0,
           lastSeen: new Date().toISOString(),
         };
-        expect(await transport.fetchContribution(peer, "blake3:" + "0".repeat(64))).toBeUndefined();
+        expect(await transport.fetchContribution(peer, `blake3:${"0".repeat(64)}`)).toBeUndefined();
       } finally {
         server.stop();
       }
@@ -384,7 +384,8 @@ describe("HttpGossipTransport", () => {
         fetch: (req) => {
           const url = new URL(req.url);
           if (
-            decodeURIComponent(url.pathname) === `/api/contributions/${cid}/artifacts/${artifactName}`
+            decodeURIComponent(url.pathname) ===
+            `/api/contributions/${cid}/artifacts/${artifactName}`
           ) {
             return new Response(bytes, {
               headers: { "Content-Type": "application/octet-stream" },
@@ -594,9 +595,7 @@ describe("validatePeerUrl", () => {
   });
 
   it("rejects 2001:db8:: (IPv6 documentation)", async () => {
-    await expect(validatePeerUrl("http://[2001:db8::1]:4515")).rejects.toThrow(
-      /private\/reserved/,
-    );
+    await expect(validatePeerUrl("http://[2001:db8::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
   it("rejects 2002:: (6to4)", async () => {
@@ -620,9 +619,7 @@ describe("validatePeerUrl", () => {
   });
 
   it("rejects 2001:0001:: (inside IETF protocol-assignment range)", async () => {
-    await expect(validatePeerUrl("http://[2001:1::1]:4515")).rejects.toThrow(
-      /private\/reserved/,
-    );
+    await expect(validatePeerUrl("http://[2001:1::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
   // Public IPv6 addresses inside 2001::/16 but outside 2001::/23 (the IETF

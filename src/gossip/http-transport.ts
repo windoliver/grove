@@ -108,7 +108,10 @@ function isPrivateIPv4(ip: string): boolean {
  * and IPv4-mapped notation. Returns null on syntactic error.
  */
 function expandIPv6(raw: string): number[] | null {
-  const ip = raw.replace(/%.*$/, "").toLowerCase().replace(/^\[|\]$/g, "");
+  const ip = raw
+    .replace(/%.*$/, "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
 
   // Handle IPv4-mapped suffix like ::ffff:1.2.3.4 — convert the dotted quad to
   // two 16-bit groups so the rest of the expansion is uniform hex.
@@ -186,7 +189,11 @@ for (const row of IPV6_BLOCKED_PREFIXES) {
   }
 }
 
-function ipv6MatchesPrefix(addr: readonly number[], prefix: number, blocked: readonly number[]): boolean {
+function ipv6MatchesPrefix(
+  addr: readonly number[],
+  prefix: number,
+  blocked: readonly number[],
+): boolean {
   let remaining = prefix;
   let i = 0;
   while (remaining > 0) {

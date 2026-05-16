@@ -13,7 +13,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-
+import type { ContentStore } from "../core/cas.js";
 import {
   DEFAULT_FAILURE_TIMEOUT_MS,
   DEFAULT_FRONTIER_DIGEST_LIMIT,
@@ -26,7 +26,6 @@ import {
   MAX_GOSSIP_FRONTIER_ENTRIES,
   MAX_MERGED_FRONTIER_ENTRIES,
 } from "../core/constants.js";
-import type { ContentStore } from "../core/cas.js";
 import type { FrontierCalculator, FrontierEntry } from "../core/frontier.js";
 import {
   type FetchContributionResult,
@@ -290,9 +289,7 @@ export class DefaultGossipService implements GossipService {
     const validPositiveInt = (n: number | undefined, name: string): number | undefined => {
       if (n === undefined) return undefined;
       if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-        throw new Error(
-          `DefaultGossipService: invalid ${name}=${n}; must be a positive integer`,
-        );
+        throw new Error(`DefaultGossipService: invalid ${name}=${n}; must be a positive integer`);
       }
       return n;
     };
@@ -328,20 +325,17 @@ export class DefaultGossipService implements GossipService {
       peerId: opts.config.peerId,
       address: opts.config.address,
       intervalMs,
-      fanOut:
-        validPositiveInt(opts.config.fanOut, "fanOut") ?? DEFAULT_GOSSIP_FAN_OUT,
+      fanOut: validPositiveInt(opts.config.fanOut, "fanOut") ?? DEFAULT_GOSSIP_FAN_OUT,
       jitter: validJitter(opts.config.jitter) ?? DEFAULT_GOSSIP_JITTER,
       digestLimit:
-        validPositiveInt(opts.config.digestLimit, "digestLimit") ??
-        DEFAULT_FRONTIER_DIGEST_LIMIT,
+        validPositiveInt(opts.config.digestLimit, "digestLimit") ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
       suspicionTimeoutMs,
       failureTimeoutMs,
       hmacSecret: opts.config.hmacSecret,
       antiEntropyEnabled: ae?.enabled ?? false,
       antiEntropyIntervalMs:
         validPositiveInt(ae?.intervalMs, "antiEntropy.intervalMs") ?? intervalMs * 5,
-      antiEntropyBatchSize:
-        validPositiveInt(ae?.batchSize, "antiEntropy.batchSize") ?? 16,
+      antiEntropyBatchSize: validPositiveInt(ae?.batchSize, "antiEntropy.batchSize") ?? 16,
       antiEntropyThresholds: ae?.metricThresholds ?? {},
     };
 

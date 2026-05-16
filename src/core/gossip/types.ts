@@ -215,11 +215,7 @@ export interface GossipTransport {
    * (e.g. multi-MB strings inside context/description) before the manifest
    * schema check runs.
    */
-  fetchContribution(
-    peer: PeerInfo,
-    cid: string,
-    maxBytes?: number,
-  ): Promise<unknown | undefined>;
+  fetchContribution(peer: PeerInfo, cid: string, maxBytes?: number): Promise<unknown | undefined>;
 
   /**
    * Fetch raw artifact bytes from a peer scoped to a (contribution CID,

@@ -382,9 +382,9 @@ describe("DefaultGossipService", () => {
         ...bad,
         hmacSignature: signPayload(bad as unknown as Record<string, unknown>, secret),
       };
-      await expect(
-        hmacService.handleExchange(signed as unknown as GossipMessage),
-      ).rejects.toThrow(/invalid timestamp/);
+      await expect(hmacService.handleExchange(signed as unknown as GossipMessage)).rejects.toThrow(
+        /invalid timestamp/,
+      );
       await hmacService.stop();
     });
   });
@@ -1123,7 +1123,7 @@ describe("DefaultGossipService", () => {
 
   describe("peersAdvertising()", () => {
     it("returns peers whose frontier digests included the cid", async () => {
-      const cid = "blake3:" + "a".repeat(64);
+      const cid = `blake3:${"a".repeat(64)}`;
       await service.handleExchange({
         ...makeGossipMessage("peer-A", [
           { metric: "tests_passed", value: 5, cid, direction: "maximize" },
@@ -1133,7 +1133,7 @@ describe("DefaultGossipService", () => {
     });
 
     it("returns empty when no peer has advertised the cid", () => {
-      expect(service.peersAdvertising("blake3:" + "b".repeat(64))).toEqual([]);
+      expect(service.peersAdvertising(`blake3:${"b".repeat(64)}`)).toEqual([]);
     });
 
     it("aggregates advertisements from multiple peers", async () => {
@@ -1241,9 +1241,7 @@ describe("DefaultGossipService", () => {
       // the peer is back in the view.
       const cid = `blake3:${"e".repeat(64)}`;
       await service.handleExchange({
-        ...makeGossipMessage("peer-fail", [
-          { metric: "m", value: 1, cid, direction: "maximize" },
-        ]),
+        ...makeGossipMessage("peer-fail", [{ metric: "m", value: 1, cid, direction: "maximize" }]),
       });
       expect(service.peersAdvertising(cid).map((p) => p.peerId)).toEqual(["peer-fail"]);
 

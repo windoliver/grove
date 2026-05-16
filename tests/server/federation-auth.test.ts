@@ -16,18 +16,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-  GOSSIP_GET_SIGNATURE_HEADER,
-  GOSSIP_GET_TIMESTAMP_HEADER,
-  signGetRequest,
-} from "../../src/gossip/protocol.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import type {
   FrontierDigestEntry,
   GossipEventListener,
   GossipMessage,
   GossipService,
-  GossipTransport,
   PeerInfo,
   PeerLiveness,
   ShuffleRequest,
@@ -35,6 +29,11 @@ import type {
 } from "../../src/core/gossip/types.js";
 import { InMemoryContributionStore } from "../../src/core/testing.js";
 import { WatchHub } from "../../src/core/watch-hub.js";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  signGetRequest,
+} from "../../src/gossip/protocol.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
 import {
@@ -53,31 +52,6 @@ const SAMPLE_CID = `blake3:${"a".repeat(64)}`;
 // take the "gossip is configured" branch and the route handler short-circuit
 // to a deterministic response.
 // ---------------------------------------------------------------------------
-
-class NoOpTransport implements GossipTransport {
-  async exchange(_peer: PeerInfo, _message: GossipMessage): Promise<GossipMessage> {
-    return {
-      peerId: "stub",
-      frontier: [],
-      load: { queueDepth: 0 },
-      capabilities: {},
-      timestamp: new Date().toISOString(),
-    };
-  }
-  async shuffle(_peer: PeerInfo, _request: ShuffleRequest): Promise<ShuffleResponse> {
-    return { offered: [] };
-  }
-  async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
-    return undefined;
-  }
-  async fetchArtifact(
-    _peer: PeerInfo,
-    _cid: string,
-    _artifactName: string,
-  ): Promise<Uint8Array | undefined> {
-    return undefined;
-  }
-}
 
 class StubGossipService implements GossipService {
   start(): void {
@@ -119,9 +93,7 @@ class StubGossipService implements GossipService {
   // Used by gossip.post("/fetch/:cid"). Returning "no-source" lets the route
   // handler emit a deterministic 404 without touching the network, so the auth
   // test only asserts the middleware decision (request reached handler).
-  async fetchRemoteContribution(
-    cid: string,
-  ): Promise<{ kind: "no-source"; cid: string }> {
+  async fetchRemoteContribution(cid: string): Promise<{ kind: "no-source"; cid: string }> {
     return { kind: "no-source", cid };
   }
 }

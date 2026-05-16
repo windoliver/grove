@@ -163,10 +163,10 @@ describe("gossip federation e2e", () => {
     await serverB.gossipService.runRound();
 
     // 3. Ask B to fetch the cid on demand.
-    const res = await fetch(
-      `${serverB.url}/api/gossip/fetch/${encodeURIComponent(cid)}`,
-      { method: "POST", headers: TEST_AUTH_HEADERS },
-    );
+    const res = await fetch(`${serverB.url}/api/gossip/fetch/${encodeURIComponent(cid)}`, {
+      method: "POST",
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const result = (await res.json()) as { kind: string; cid: string };
     expect(result.kind).toBe("ok");

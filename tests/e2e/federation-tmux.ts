@@ -18,12 +18,12 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { parse as parseYaml } from "yaml";
 import { hash as blake3Hash } from "blake3";
+import { parse as parseYaml } from "yaml";
 
 const SOCKET = "grove-federation-e2e";
 const SESSION = "grove-federation-e2e";
@@ -50,11 +50,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 function capturePane(target: string): string {
-  const out = spawnSync(
-    "tmux",
-    ["-L", SOCKET, "capture-pane", "-t", target, "-p", "-S", "-5000"],
-    { encoding: "utf-8" },
-  );
+  const out = spawnSync("tmux", ["-L", SOCKET, "capture-pane", "-t", target, "-p", "-S", "-5000"], {
+    encoding: "utf-8",
+  });
   return out.stdout;
 }
 
@@ -171,7 +169,7 @@ async function main(): Promise<void> {
       "50",
       "sh",
       "-c",
-      [
+      `${[
         `GROVE_DIR=${groveA}`,
         `PORT=${PORT_A}`,
         `GOSSIP_PEER_ID=peer-a`,
@@ -184,7 +182,7 @@ async function main(): Promise<void> {
         // will retry-on-failure until B comes up shortly after.
         `GOSSIP_SEEDS=peer-b@${baseB}`,
         `bun run ${join(PROJECT_ROOT, "src/server/serve.ts")} 2>&1`,
-      ].join(" ") + "; cat",
+      ].join(" ")}; cat`,
     ],
     { stdio: "inherit" },
   );
@@ -202,7 +200,7 @@ async function main(): Promise<void> {
       "-h",
       "sh",
       "-c",
-      [
+      `${[
         `GROVE_DIR=${groveB}`,
         `PORT=${PORT_B}`,
         `GOSSIP_PEER_ID=peer-b`,
@@ -212,7 +210,7 @@ async function main(): Promise<void> {
         `GROVE_GOSSIP_ALLOW_PRIVATE_IPS=true`,
         `GROVE_GOSSIP_INTERVAL_MS=${GOSSIP_INTERVAL_MS}`,
         `bun run ${join(PROJECT_ROOT, "src/server/serve.ts")} 2>&1`,
-      ].join(" ") + "; cat",
+      ].join(" ")}; cat`,
     ],
     { stdio: "inherit" },
   );
@@ -251,7 +249,9 @@ async function main(): Promise<void> {
     body: form,
   });
   if (submitRes.status !== 201) {
-    throw new Error(`POST /api/contributions on A → HTTP ${submitRes.status}: ${await submitRes.text()}`);
+    throw new Error(
+      `POST /api/contributions on A → HTTP ${submitRes.status}: ${await submitRes.text()}`,
+    );
   }
   const submitted = (await submitRes.json()) as { cid: string };
   const cid = submitted.cid;
@@ -269,7 +269,11 @@ async function main(): Promise<void> {
   await sleep(GOSSIP_INTERVAL_MS * 3);
 
   // 5. Trigger federation fetch on B.
-  const fetchRes = await postJson(`${baseB}/api/gossip/fetch/${encodeURIComponent(cid)}`, tokenB, {});
+  const fetchRes = await postJson(
+    `${baseB}/api/gossip/fetch/${encodeURIComponent(cid)}`,
+    tokenB,
+    {},
+  );
   const fetchJson = (await fetchRes.json()) as { kind: string; cid: string; reason?: string };
   console.log(`[step] B fetch → HTTP ${fetchRes.status}, kind=${fetchJson.kind}`);
   if (fetchRes.status !== 200 || (fetchJson.kind !== "ok" && fetchJson.kind !== "already-local")) {

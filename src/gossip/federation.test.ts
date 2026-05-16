@@ -1,11 +1,11 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { hash as blake3Hash } from "blake3";
-import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
-import type { FrontierDigestEntry, GossipTransport, PeerInfo } from "../core/gossip/types.js";
 import type { ContentStore } from "../core/cas.js";
-import type { ContributionStore } from "../core/store.js";
+import type { FrontierDigestEntry, GossipTransport, PeerInfo } from "../core/gossip/types.js";
 import { createContribution } from "../core/manifest.js";
 import type { Contribution } from "../core/models.js";
+import type { ContributionStore } from "../core/store.js";
+import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
 
 function makeContribution(opts: {
   artifacts?: Record<string, string>;
@@ -246,9 +246,9 @@ describe("runAntiEntropySweep", () => {
       },
     };
     const frontier: FrontierDigestEntry[] = [
-      { metric: "tests_passed", value: 9, cid: "blake3:" + "a".repeat(64) },
-      { metric: "tests_passed", value: 1, cid: "blake3:" + "b".repeat(64) }, // below threshold
-      { metric: "_recency", value: 1, cid: "blake3:" + "c".repeat(64) },
+      { metric: "tests_passed", value: 9, cid: `blake3:${"a".repeat(64)}` },
+      { metric: "tests_passed", value: 1, cid: `blake3:${"b".repeat(64)}` }, // below threshold
+      { metric: "_recency", value: 1, cid: `blake3:${"c".repeat(64)}` },
     ];
     await runAntiEntropySweep({
       frontier,
@@ -256,9 +256,7 @@ describe("runAntiEntropySweep", () => {
       batchSize: 4,
       thresholds: { tests_passed: 5 },
     });
-    expect(fetched.sort()).toEqual(
-      ["blake3:" + "a".repeat(64), "blake3:" + "c".repeat(64)].sort(),
-    );
+    expect(fetched.sort()).toEqual([`blake3:${"a".repeat(64)}`, `blake3:${"c".repeat(64)}`].sort());
   });
 
   it("invokes onResult for every attempted fetch (ok and failed)", async () => {
@@ -295,10 +293,7 @@ describe("runAntiEntropySweep", () => {
         return { kind: "ok", cid } as const;
       },
     };
-    const localCids = new Set<string>([
-      `blake3:${"a".repeat(64)}`,
-      `blake3:${"b".repeat(64)}`,
-    ]);
+    const localCids = new Set<string>([`blake3:${"a".repeat(64)}`, `blake3:${"b".repeat(64)}`]);
     const remoteCid = `blake3:${"c".repeat(64)}`;
     const frontier: FrontierDigestEntry[] = [
       { metric: "m", value: 10, cid: `blake3:${"a".repeat(64)}` },

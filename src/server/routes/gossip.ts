@@ -167,10 +167,7 @@ gossip.post("/fetch/:cid", async (c) => {
         404,
       );
     case "failed":
-      return c.json(
-        { ...result, error: { code: "BAD_GATEWAY", message: result.reason } },
-        502,
-      );
+      return c.json({ ...result, error: { code: "BAD_GATEWAY", message: result.reason } }, 502);
   }
 });
 
