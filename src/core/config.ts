@@ -8,6 +8,7 @@
 import { Buffer } from "node:buffer";
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
+import { SchedulerConfigSchema, type SchedulerConfig } from "./scheduler/config.js";
 
 // ---------------------------------------------------------------------------
 // Zod Schema
@@ -73,6 +74,7 @@ export interface GroveConfig {
   readonly nexusChannel?: string | undefined;
   readonly skillCatalog?: SkillCatalogConfig | undefined;
   readonly runtimeSkills?: RuntimeSkillsConfig | undefined;
+  readonly scheduler?: SchedulerConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +164,7 @@ export const GroveConfigSchema: z.ZodType<GroveConfig> = z
     nexusChannel: z.string().min(1).max(64).optional(),
     skillCatalog: SkillCatalogConfigSchema.optional(),
     runtimeSkills: RuntimeSkillsConfigSchema.optional(),
+    scheduler: SchedulerConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -228,6 +231,7 @@ export function writeGroveConfig(config: GroveConfig, path: string): void {
   if (config.nexusChannel !== undefined) obj.nexusChannel = config.nexusChannel;
   if (config.skillCatalog !== undefined) obj.skillCatalog = config.skillCatalog;
   if (config.runtimeSkills !== undefined) obj.runtimeSkills = config.runtimeSkills;
+  if (config.scheduler !== undefined) obj.scheduler = config.scheduler;
 
   writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }

@@ -9,7 +9,10 @@
  * This is the only file excluded from test coverage — use createApp() for testing.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseGroveConfig, type GroveConfig } from "../core/config.js";
+import { buildSchedulerFromConfig } from "./scheduler-wiring.js";
 import { agentTaskViewToEntity } from "../core/agent-task.js";
 import {
   claimToEntity,
@@ -645,9 +648,29 @@ function startServer() {
 const server = startServer();
 
 if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
+  const sharedRuntime = await getSharedAgentRuntime();
+  let groveConfig: GroveConfig | undefined;
+  const groveJsonPath = join(GROVE_DIR, "grove.json");
+  if (existsSync(groveJsonPath)) {
+    try {
+      groveConfig = parseGroveConfig(readFileSync(groveJsonPath, "utf-8"));
+    } catch (err) {
+      console.error(`grove-server: failed to parse ${groveJsonPath}: ${(err as Error).message}`);
+    }
+  }
+  const scheduler =
+    groveConfig === undefined
+      ? undefined
+      : buildSchedulerFromConfig({
+          config: groveConfig,
+          runtime: sharedRuntime,
+          store: runtime.agentTaskStore,
+        });
+
   taskController = new TaskController({
     taskStore: runtime.agentTaskStore,
-    runtime: await getSharedAgentRuntime(),
+    runtime: sharedRuntime,
+    ...(scheduler === undefined ? {} : { scheduler }),
     onError(error, taskId) {
       const detail = error instanceof Error ? error.message : String(error);
       process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
@@ -655,7 +678,11 @@ if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) 
   });
   await taskController.resync();
   taskController.start();
-  console.log("task-controller enabled");
+  console.log(
+    scheduler === undefined
+      ? "task-controller enabled"
+      : `task-controller enabled (scheduler: ${groveConfig?.scheduler?.profiles?.length ?? 0} profiles, ${groveConfig?.scheduler?.pipeline?.filters?.length ?? 0} filters)`,
+  );
 }
 
 // Start gossip after server is listening
