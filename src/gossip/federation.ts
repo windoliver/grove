@@ -95,50 +95,57 @@ export class FederationFetcher {
           );
           continue;
         }
-        // Track every CAS write we made during this fetch so that we can roll
-        // them back if a later artifact (or the final contributionStore.put)
-        // fails. Without this, a partial fetch leaks orphan blobs into CAS.
-        const writtenThisCall: string[] = [];
         let cumulativeBytes = 0;
-        try {
-          for (const [name, declaredHash] of artifactEntries) {
-            if (await this.opts.cas.exists(declaredHash)) continue;
-            const bytes = await this.opts.transport.fetchArtifact(peer, cid, name);
-            if (!bytes) {
-              throw new Error(`artifact ${name} (${declaredHash}) missing on ${peer.peerId}`);
-            }
-            cumulativeBytes += bytes.byteLength;
-            if (cumulativeBytes > MAX_FEDERATION_CUMULATIVE_BYTES) {
-              throw new Error(
-                `cumulative artifact bytes ${cumulativeBytes} exceeds per-contribution budget ${MAX_FEDERATION_CUMULATIVE_BYTES}`,
-              );
-            }
-            const actual = blake3Of(bytes);
-            if (actual !== declaredHash) {
-              throw new Error(
-                `hash mismatch for artifact ${name} on ${peer.peerId}: declared=${declaredHash} actual=${actual}`,
-              );
-            }
-            await this.opts.cas.put(bytes);
-            writtenThisCall.push(declaredHash);
+        for (const [name, declaredHash] of artifactEntries) {
+          if (await this.opts.cas.exists(declaredHash)) continue;
+          const remaining = MAX_FEDERATION_CUMULATIVE_BYTES - cumulativeBytes;
+          if (remaining <= 0) {
+            throw new Error(
+              `cumulative artifact bytes ${cumulativeBytes} exceeds per-contribution budget ${MAX_FEDERATION_CUMULATIVE_BYTES}`,
+            );
           }
-          await this.opts.contributionStore.put(manifest);
-          return { kind: "ok", cid };
-        } catch (err) {
-          // Best-effort rollback: delete blobs we wrote inside this call. We
-          // intentionally don't delete pre-existing CAS entries (cas.exists
-          // returned true above, so they were skipped). Cleanup errors are
-          // swallowed — the next periodic sweep can garbage-collect any
-          // residue. Re-throw to drive the per-peer fallback.
-          for (const h of writtenThisCall) {
-            try {
-              await this.opts.cas.delete(h);
-            } catch {
-              /* ignore */
-            }
+          // Pass the remaining per-contribution budget so the transport can
+          // short-circuit (Content-Length + streamed cap) before downloading
+          // bytes that would push us past the budget.
+          const bytes = await this.opts.transport.fetchArtifact(peer, cid, name, remaining);
+          if (!bytes) {
+            throw new Error(`artifact ${name} (${declaredHash}) missing on ${peer.peerId}`);
           }
-          throw err;
+          cumulativeBytes += bytes.byteLength;
+          if (cumulativeBytes > MAX_FEDERATION_CUMULATIVE_BYTES) {
+            throw new Error(
+              `cumulative artifact bytes ${cumulativeBytes} exceeds per-contribution budget ${MAX_FEDERATION_CUMULATIVE_BYTES}`,
+            );
+          }
+          const actual = blake3Of(bytes);
+          if (actual !== declaredHash) {
+            throw new Error(
+              `hash mismatch for artifact ${name} on ${peer.peerId}: declared=${declaredHash} actual=${actual}`,
+            );
+          }
+          // Content-addressed store: idempotent put. We do NOT roll back
+          // these writes on a later failure — under concurrency we cannot
+          // distinguish a blob we just wrote from one another in-flight
+          // fetch or direct upload committed at the same hash. Deleting
+          // would risk breaking an already-committed contribution that
+          // references the same blob. Orphan CAS entries are acceptable;
+          // garbage collection sweeps reference-based reachability.
+          await this.opts.cas.put(bytes);
         }
+        await this.opts.contributionStore.put(manifest);
+        // Defend against dedup paths: some stores treat identical logical
+        // content under a different CID as a duplicate and don't write
+        // the new manifest. After put, verify the requested CID is now
+        // resolvable; otherwise federation would silently lie ("ok" but
+        // /api/contributions/:cid still 404s) and anti-entropy would
+        // refetch indefinitely.
+        const persisted = await this.opts.contributionStore.get(cid);
+        if (!persisted) {
+          throw new Error(
+            `contribution ${cid} not present after put (likely deduped against existing content-hash)`,
+          );
+        }
+        return { kind: "ok", cid };
       } catch (err) {
         errors.push(`${peer.peerId}: ${err instanceof Error ? err.message : String(err)}`);
       }

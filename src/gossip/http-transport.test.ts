@@ -589,6 +589,58 @@ describe("validatePeerUrl", () => {
     await expect(validatePeerUrl("http://[fe80::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
+  it("rejects fec0:: (IPv6 deprecated site-local)", async () => {
+    await expect(validatePeerUrl("http://[fec0::1]:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
+  it("rejects 2001:db8:: (IPv6 documentation)", async () => {
+    await expect(validatePeerUrl("http://[2001:db8::1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  it("rejects 2002:: (6to4)", async () => {
+    await expect(validatePeerUrl("http://[2002:0a00:0001::]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  it("rejects 100:: (IPv6 discard)", async () => {
+    await expect(validatePeerUrl("http://[100::1]:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
+  it("rejects 64:ff9b:: (well-known NAT64) wrapping 10.0.0.1", async () => {
+    await expect(validatePeerUrl("http://[64:ff9b::0a00:1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  it("rejects ff00:: (IPv6 multicast)", async () => {
+    await expect(validatePeerUrl("http://[ff02::1]:4515")).rejects.toThrow(/private\/reserved/);
+  });
+
+  it("rejects 2001:0001:: (inside IETF protocol-assignment range)", async () => {
+    await expect(validatePeerUrl("http://[2001:1::1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  // Public IPv6 addresses inside 2001::/16 but outside 2001::/23 (the IETF
+  // protocol-assignment block). The matcher previously over-blocked these
+  // because the 2001::/23 row only specified one group; the fix requires
+  // ceil(prefix/16) groups, so the mask on group 1 (top 7 bits) correctly
+  // distinguishes assignment-block addresses from public addresses.
+  it("accepts 2001:4860:: (public Google IPv6)", async () => {
+    // We can't fully validate without DNS, but the IP-literal classifier
+    // must NOT reject this with the "private/reserved" message. The call
+    // either succeeds or fails for a non-private-IP reason.
+    await expect(validatePeerUrl("http://[2001:4860::1]:4515")).resolves.toBeDefined();
+  });
+
+  it("accepts 2001:67c:: (public RIPE IPv6)", async () => {
+    await expect(validatePeerUrl("http://[2001:67c::1]:4515")).resolves.toBeDefined();
+  });
+
   it("rejects ::ffff:127.0.0.1 (IPv4-mapped loopback)", async () => {
     await expect(validatePeerUrl("http://[::ffff:127.0.0.1]:4515")).rejects.toThrow(
       /private\/reserved/,

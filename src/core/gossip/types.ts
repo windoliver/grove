@@ -232,6 +232,14 @@ export interface GossipTransport {
     peer: PeerInfo,
     cid: string,
     artifactName: string,
+    /**
+     * Optional upper bound on the response size in bytes. When supplied,
+     * the transport rejects responses whose declared Content-Length exceeds
+     * the bound and aborts streaming if the running total goes past it.
+     * Callers (federation fetcher) pass the remaining per-contribution
+     * byte budget so a single oversized response cannot blow past the cap.
+     */
+    maxBytes?: number,
   ): Promise<Uint8Array | undefined>;
 }
 

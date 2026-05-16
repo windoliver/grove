@@ -146,19 +146,22 @@ function expandIPv6(raw: string): number[] | null {
 }
 
 /**
- * Non-global / private / reserved IPv6 ranges (RFC 6890 special-purpose
- * registry, plus the IETF documentation/transition prefixes). Each entry
- * specifies the prefix length in bits and the first N 16-bit group values
- * (in network order) that must match.
+ * Non-global / private / reserved IPv6 ranges. Each entry's `groups` array
+ * MUST have exactly `ceil(prefix / 16)` entries — the matcher takes the
+ * supplied values as authoritative and any missing trailing group is
+ * treated as a configuration error (overblock). Validated at module load.
  */
 const IPV6_BLOCKED_PREFIXES: ReadonlyArray<{ prefix: number; groups: readonly number[] }> = [
   { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 0] }, // ::
   { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 1] }, // ::1
   { prefix: 96, groups: [0, 0, 0, 0, 0, 0xffff] }, // ::ffff:0:0/96 (IPv4-mapped)
-  { prefix: 96, groups: [0x0064, 0xff9b] }, // 64:ff9b::/96 well-known NAT64
+  { prefix: 96, groups: [0x0064, 0xff9b, 0, 0, 0, 0] }, // 64:ff9b::/96 well-known NAT64
   { prefix: 48, groups: [0x0064, 0xff9b, 0x0001] }, // 64:ff9b:1::/48 local NAT64
   { prefix: 64, groups: [0x0100, 0, 0, 0] }, // 100::/64 discard
-  { prefix: 23, groups: [0x2001] }, // 2001::/23 IETF protocol assignments
+  // 2001::/23 — IETF protocol assignments. /23 = full group 0 (0x2001) plus
+  // top 7 bits of group 1, masked against 0x0000 → reject 2001:0000-01ff.
+  // Public 2001:* (e.g. 2001:4860::, 2001:67c::) are NOT blocked here.
+  { prefix: 23, groups: [0x2001, 0x0000] },
   { prefix: 32, groups: [0x2001, 0x0db8] }, // 2001:db8::/32 documentation
   { prefix: 16, groups: [0x2002] }, // 2002::/16 6to4
   { prefix: 7, groups: [0xfc00] }, // fc00::/7 unique local
@@ -167,13 +170,27 @@ const IPV6_BLOCKED_PREFIXES: ReadonlyArray<{ prefix: number; groups: readonly nu
   { prefix: 8, groups: [0xff00] }, // ff00::/8 multicast
 ];
 
+// Compile-time sanity check: every row's groups array must cover ceil(prefix/16)
+// 16-bit groups. Throws on load so a misconfigured prefix is caught immediately
+// rather than silently overblocking at runtime.
+for (const row of IPV6_BLOCKED_PREFIXES) {
+  const required = Math.ceil(row.prefix / 16);
+  if (row.groups.length < required) {
+    throw new Error(
+      `IPV6_BLOCKED_PREFIXES misconfigured: prefix ${row.prefix} requires ${required} groups, got ${row.groups.length}`,
+    );
+  }
+}
+
 function ipv6MatchesPrefix(addr: readonly number[], prefix: number, blocked: readonly number[]): boolean {
   let remaining = prefix;
-  for (let i = 0; i < blocked.length && remaining > 0; i++) {
+  let i = 0;
+  while (remaining > 0) {
     const bits = Math.min(16, remaining);
     const mask = bits === 16 ? 0xffff : ((0xffff << (16 - bits)) & 0xffff) >>> 0;
     if (((addr[i] ?? 0) & mask) !== ((blocked[i] ?? 0) & mask)) return false;
     remaining -= bits;
+    i += 1;
   }
   return true;
 }
@@ -462,6 +479,7 @@ export class HttpGossipTransport implements GossipTransport {
     peer: PeerInfo,
     cid: string,
     artifactName: string,
+    maxBytes?: number,
   ): Promise<Uint8Array | undefined> {
     // Contribution-scoped: the peer's root contribution store resolves the
     // (cid, name) tuple and only returns bytes for artifacts referenced by a
@@ -469,7 +487,7 @@ export class HttpGossipTransport implements GossipTransport {
     // from being reachable by federation.
     const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(artifactName)}`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
-    return this.getBytes(validated, peer.peerId);
+    return this.getBytes(validated, peer.peerId, maxBytes);
   }
 
   private async post<T>(validated: ValidatedUrl, body: unknown, peerId: string): Promise<T> {
@@ -550,13 +568,17 @@ export class HttpGossipTransport implements GossipTransport {
   /**
    * Read the response body up to a fixed byte cap, aborting if either the
    * advertised Content-Length or the streamed total exceeds it. Returns the
-   * concatenated bytes when the body fits under the cap.
+   * concatenated bytes when the body fits under the cap. The cap is the
+   * lesser of MAX_FEDERATION_RESPONSE_BYTES and the optional `limit` (used
+   * by federation to pass through the remaining per-contribution budget).
    */
   private async readWithCap(
     response: Response,
     peerId: string,
     pinnedUrl: string,
+    limit?: number,
   ): Promise<Uint8Array> {
+    const cap = Math.min(MAX_FEDERATION_RESPONSE_BYTES, limit ?? MAX_FEDERATION_RESPONSE_BYTES);
     const declared = response.headers.get("content-length");
     if (declared !== null) {
       const declaredBytes = Number(declared);
@@ -567,13 +589,11 @@ export class HttpGossipTransport implements GossipTransport {
           cause: new Error(`Invalid Content-Length '${declared}'`),
         });
       }
-      if (declaredBytes > MAX_FEDERATION_RESPONSE_BYTES) {
+      if (declaredBytes > cap) {
         throw new PeerUnreachableError({
           peerId,
           address: pinnedUrl,
-          cause: new Error(
-            `Response Content-Length ${declaredBytes} exceeds federation cap ${MAX_FEDERATION_RESPONSE_BYTES}`,
-          ),
+          cause: new Error(`Response Content-Length ${declaredBytes} exceeds cap ${cap}`),
         });
       }
     }
@@ -587,7 +607,7 @@ export class HttpGossipTransport implements GossipTransport {
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > MAX_FEDERATION_RESPONSE_BYTES) {
+      if (total > cap) {
         try {
           await reader.cancel();
         } catch {
@@ -596,9 +616,7 @@ export class HttpGossipTransport implements GossipTransport {
         throw new PeerUnreachableError({
           peerId,
           address: pinnedUrl,
-          cause: new Error(
-            `Streamed response exceeded federation cap ${MAX_FEDERATION_RESPONSE_BYTES} bytes`,
-          ),
+          cause: new Error(`Streamed response exceeded cap ${cap} bytes`),
         });
       }
       chunks.push(value);
@@ -670,6 +688,7 @@ export class HttpGossipTransport implements GossipTransport {
   private async getBytes(
     validated: ValidatedUrl,
     peerId: string,
+    maxBytes?: number,
   ): Promise<Uint8Array | undefined> {
     const { pinnedUrl, hostHeader } = validated;
     try {
@@ -700,7 +719,7 @@ export class HttpGossipTransport implements GossipTransport {
             cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
           });
         }
-        return await this.readWithCap(response, peerId, pinnedUrl);
+        return await this.readWithCap(response, peerId, pinnedUrl, maxBytes);
       } finally {
         clearTimeout(timeout);
       }

@@ -177,6 +177,37 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
     if (result.kind === "failed") expect(result.reason).toMatch(/artifacts > cap/);
   });
 
+  it("returns failed if the store accepts put but get(cid) still 404s afterwards", async () => {
+    // Simulates a content-hash dedup store: put() succeeds (silently dedupes
+    // against an existing logical-content row under a different CID), but
+    // get(cid) for the requested CID never resolves. Without the post-put
+    // verification, federation would lie ("ok") and anti-entropy would
+    // refetch indefinitely.
+    const artifactBytes = new Uint8Array([42]);
+    const artifactHash = blake3Of(artifactBytes);
+    const manifest = makeContribution({
+      summary: "dedup-test",
+      artifacts: { a: artifactHash },
+    });
+    const dedupStore: Pick<ContributionStore, "get" | "put"> = {
+      async get() {
+        return undefined; // never finds the CID, even after put
+      },
+      async put() {
+        return undefined; // accepts but doesn't actually store under this CID
+      },
+    };
+    const fetcher = new FederationFetcher({
+      contributionStore: dedupStore as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(manifest, new Map([[artifactHash, artifactBytes]])),
+      peersFor: () => [makePeer("A")],
+    });
+    const result = await fetcher.fetchRemoteContribution(manifest.cid);
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.reason).toMatch(/not present after put|deduped/i);
+  });
+
   it("falls back to next peer when the first errors", async () => {
     const artifactBytes = new Uint8Array([7]);
     const artifactHash = blake3Of(artifactBytes);
