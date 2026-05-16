@@ -62,7 +62,10 @@ export interface FederationFetcherOpts {
 }
 
 export class FederationFetcher {
-  constructor(private readonly opts: FederationFetcherOpts) {}
+  private readonly opts: FederationFetcherOpts;
+  constructor(opts: FederationFetcherOpts) {
+    this.opts = opts;
+  }
 
   async fetchRemoteContribution(cid: string): Promise<FetchContributionResult> {
     const existing = await this.opts.contributionStore.get(cid);

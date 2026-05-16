@@ -32,10 +32,12 @@ function blake3Of(bytes: Uint8Array): string {
 }
 
 class StubTransport implements GossipTransport {
-  constructor(
-    private readonly manifest: Contribution | undefined,
-    private readonly blobs: Map<string, Uint8Array> = new Map(),
-  ) {}
+  private readonly manifest: Contribution | undefined;
+  private readonly blobs: Map<string, Uint8Array>;
+  constructor(manifest: Contribution | undefined, blobs: Map<string, Uint8Array> = new Map()) {
+    this.manifest = manifest;
+    this.blobs = blobs;
+  }
   exchange = async () => ({}) as never;
   shuffle = async () => ({}) as never;
   fetchContribution = async () => this.manifest;
@@ -54,9 +56,8 @@ class MemContributionStore implements Pick<ContributionStore, "get" | "put"> {
   async get(cid: string) {
     return this.map.get(cid);
   }
-  async put(c: Contribution) {
+  async put(c: Contribution): Promise<void> {
     this.map.set(c.cid, c);
-    return { kind: "stored" as const, contribution: c };
   }
 }
 
