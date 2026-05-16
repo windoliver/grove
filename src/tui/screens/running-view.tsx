@@ -107,8 +107,10 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
 // #310: LogView mount gate. Read process.env once at module load — env vars
 // don't change at runtime, so re-reading on every render is wasted work and
 // (more importantly) churns useMemo deps that include `useLogView`.
-// TODO(#310): swap for session.runtime==="acpx" detection once session
-// metadata is plumbed through to running-view.
+// TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+// spawnManager.getSession(role).runtime), drop the env gate and detect
+// per-role: useLogView = session?.runtime === "acpx". Tracked as a
+// follow-up of issue #310.
 const useLogView = process.env.GROVE_LOGVIEW === "1";
 
 /** Props for the RunningView screen. */
@@ -1760,8 +1762,11 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
 
     case RunningPanel.Terminal: {
       // #310: when ACPX/log-streaming is in use, render LogView instead of
-      // TerminalView. Gate is currently env-driven; TODO follow-up: switch
-      // to session.runtime === "acpx" once session metadata reaches the ctx.
+      // TerminalView. Gate is currently env-driven.
+      // TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+      // spawnManager.getSession(role).runtime), drop the env gate and detect
+      // per-role: useLogView = session?.runtime === "acpx". Tracked as a
+      // follow-up of issue #310.
       if (ctx.logViewActive) {
         // Temporary: pick the first available role's buffer. Future work:
         // track the operator's selected agent and route to its buffer

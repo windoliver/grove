@@ -112,4 +112,37 @@ describe("LogViewport", () => {
     renderer.unmount();
     buf.dispose();
   });
+
+  test("autoscroll re-clamps to bottom when buffer grows with scrollOffset=0", async () => {
+    const buf = makeBuffer(10);
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <LogViewport buffer={buf} paused={false} filter="" scrollOffset={0} viewportLines={5} />
+        ) as React.ReactElement,
+      );
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    // Initial viewport tail: line-5..line-9.
+    let flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("line-9");
+
+    // Push new lines while autoscroll is on; viewport must advance.
+    await act(async () => {
+      buf.push({ ts: 100, line: "line-fresh-A", type: "output" });
+      buf.push({ ts: 101, line: "line-fresh-B", type: "output" });
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("line-fresh-A");
+    expect(flat).toContain("line-fresh-B");
+    // Tail advanced: line-5 should have fallen off the 5-line viewport.
+    expect(flat).not.toContain("line-5");
+
+    renderer.unmount();
+    buf.dispose();
+  });
 });
