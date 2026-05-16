@@ -8,6 +8,7 @@
 
 import { resolve4, resolve6 } from "node:dns/promises";
 
+import { MAX_REQUEST_SIZE } from "../core/constants.js";
 import { GossipTimeoutError, PeerUnreachableError } from "../core/gossip/errors.js";
 import type {
   GossipMessage,
@@ -16,7 +17,19 @@ import type {
   ShuffleRequest,
   ShuffleResponse,
 } from "../core/gossip/types.js";
-import { verifyPayload } from "./protocol.js";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  signGetRequest,
+  verifyPayload,
+} from "./protocol.js";
+
+/**
+ * Hard cap on the size of a single federation-fetched response body. Mirrors
+ * the existing ingest cap (MAX_REQUEST_SIZE) so a peer cannot push a larger
+ * artifact than the local server would accept on direct POST.
+ */
+const MAX_FEDERATION_RESPONSE_BYTES = MAX_REQUEST_SIZE;
 
 // ---------------------------------------------------------------------------
 // URL validation — SSRF prevention
@@ -48,75 +61,182 @@ export interface ValidatePeerUrlOptions {
 }
 
 /**
- * Return true if `ip` falls in a private or reserved IPv4 range.
+ * Return true if `ip` falls in a non-global / private / reserved IPv4 range.
  *
- * Ranges covered:
- *  - 0.0.0.0/8
- *  - 10.0.0.0/8
- *  - 127.0.0.0/8
- *  - 169.254.0.0/16
- *  - 172.16.0.0/12
- *  - 192.168.0.0/16
+ * Covers IANA-registered non-global ranges per RFC 6890 / RFC 5735:
+ *  - 0.0.0.0/8           "This network"
+ *  - 10.0.0.0/8          RFC 1918 private
+ *  - 100.64.0.0/10       Shared address space (CGNAT, RFC 6598)
+ *  - 127.0.0.0/8         Loopback
+ *  - 169.254.0.0/16      Link-local (incl. AWS / GCP metadata)
+ *  - 172.16.0.0/12       RFC 1918 private
+ *  - 192.0.0.0/24        IETF Protocol Assignments
+ *  - 192.0.2.0/24        TEST-NET-1
+ *  - 192.168.0.0/16      RFC 1918 private
+ *  - 198.18.0.0/15       Benchmarking
+ *  - 198.51.100.0/24     TEST-NET-2
+ *  - 203.0.113.0/24      TEST-NET-3
+ *  - 224.0.0.0/4         Multicast
+ *  - 240.0.0.0/4         Reserved for future use (covers 255.255.255.255)
  */
 function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split(".").map(Number);
   if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
     return false; // not a valid IPv4 — let caller decide
   }
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   if (a === 0) return true; // 0.0.0.0/8
   if (a === 10) return true; // 10.0.0.0/8
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
   if (a === 127) return true; // 127.0.0.0/8
   if (a === 169 && b === 254) return true; // 169.254.0.0/16
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24
+  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmark)
+  if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+  if (a === 192 && b === 88 && c === 99) return true; // 192.88.99.0/24 (deprecated 6to4 anycast, non-global)
+  if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
+  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 (multicast)
+  if (a >= 240) return true; // 240.0.0.0/4 (reserved) — also covers 255.255.255.255
   return false;
 }
 
 /**
- * Return true if `ip` is a private or reserved IPv6 address.
+ * Expand an IPv6 textual form to 8 16-bit groups. Handles `::` compression
+ * and IPv4-mapped notation. Returns null on syntactic error.
+ */
+function expandIPv6(raw: string): number[] | null {
+  const ip = raw
+    .replace(/%.*$/, "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+
+  // Handle IPv4-mapped suffix like ::ffff:1.2.3.4 — convert the dotted quad to
+  // two 16-bit groups so the rest of the expansion is uniform hex.
+  const dotted = ip.match(/^(.*?:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  let normalized = ip;
+  if (dotted) {
+    const prefix = dotted[1] ?? "";
+    const quad = (dotted[2] as string).split(".").map(Number);
+    if (quad.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+    const hi = ((quad[0] as number) << 8) | (quad[1] as number);
+    const lo = ((quad[2] as number) << 8) | (quad[3] as number);
+    normalized = `${prefix}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+
+  let leftParts: string[];
+  let rightParts: string[];
+  if (normalized.includes("::")) {
+    if (normalized.split("::").length > 2) return null;
+    const [left, right] = normalized.split("::");
+    leftParts = left ? left.split(":") : [];
+    rightParts = right ? right.split(":") : [];
+    const missing = 8 - leftParts.length - rightParts.length;
+    if (missing < 0) return null;
+    leftParts = [...leftParts, ...Array(missing).fill("0"), ...rightParts];
+    rightParts = [];
+  } else {
+    leftParts = normalized.split(":");
+  }
+  if (leftParts.length !== 8) return null;
+  const groups: number[] = [];
+  for (const g of leftParts) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    groups.push(parseInt(g, 16));
+  }
+  return groups;
+}
+
+/**
+ * Non-global / private / reserved IPv6 ranges. Each entry's `groups` array
+ * MUST have exactly `ceil(prefix / 16)` entries — the matcher takes the
+ * supplied values as authoritative and any missing trailing group is
+ * treated as a configuration error (overblock). Validated at module load.
+ */
+const IPV6_BLOCKED_PREFIXES: ReadonlyArray<{ prefix: number; groups: readonly number[] }> = [
+  { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 0] }, // ::
+  { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 1] }, // ::1
+  { prefix: 96, groups: [0, 0, 0, 0, 0, 0xffff] }, // ::ffff:0:0/96 (IPv4-mapped)
+  { prefix: 96, groups: [0x0064, 0xff9b, 0, 0, 0, 0] }, // 64:ff9b::/96 well-known NAT64
+  { prefix: 48, groups: [0x0064, 0xff9b, 0x0001] }, // 64:ff9b:1::/48 local NAT64
+  { prefix: 64, groups: [0x0100, 0, 0, 0] }, // 100::/64 discard
+  { prefix: 64, groups: [0x0100, 0, 0, 1] }, // 100:0:0:1::/64 dummy IETF prefix
+  // 2001::/23 — IETF protocol assignments. /23 = full group 0 (0x2001) plus
+  // top 7 bits of group 1, masked against 0x0000 → reject 2001:0000-01ff.
+  // Public 2001:* (e.g. 2001:4860::, 2001:67c::) are NOT blocked here.
+  { prefix: 23, groups: [0x2001, 0x0000] },
+  { prefix: 32, groups: [0x2001, 0x0db8] }, // 2001:db8::/32 documentation
+  { prefix: 16, groups: [0x2002] }, // 2002::/16 6to4
+  { prefix: 20, groups: [0x3fff, 0x0000] }, // 3fff::/20 documentation (RFC 9637)
+  { prefix: 16, groups: [0x5f00] }, // 5f00::/16 SRv6 SIDs (non-global)
+  { prefix: 7, groups: [0xfc00] }, // fc00::/7 unique local
+  { prefix: 10, groups: [0xfe80] }, // fe80::/10 link-local
+  { prefix: 10, groups: [0xfec0] }, // fec0::/10 deprecated site-local
+  { prefix: 8, groups: [0xff00] }, // ff00::/8 multicast
+];
+
+// Compile-time sanity check: every row's groups array must cover ceil(prefix/16)
+// 16-bit groups. Throws on load so a misconfigured prefix is caught immediately
+// rather than silently overblocking at runtime.
+for (const row of IPV6_BLOCKED_PREFIXES) {
+  const required = Math.ceil(row.prefix / 16);
+  if (row.groups.length < required) {
+    throw new Error(
+      `IPV6_BLOCKED_PREFIXES misconfigured: prefix ${row.prefix} requires ${required} groups, got ${row.groups.length}`,
+    );
+  }
+}
+
+function ipv6MatchesPrefix(
+  addr: readonly number[],
+  prefix: number,
+  blocked: readonly number[],
+): boolean {
+  let remaining = prefix;
+  let i = 0;
+  while (remaining > 0) {
+    const bits = Math.min(16, remaining);
+    const mask = bits === 16 ? 0xffff : ((0xffff << (16 - bits)) & 0xffff) >>> 0;
+    if (((addr[i] ?? 0) & mask) !== ((blocked[i] ?? 0) & mask)) return false;
+    remaining -= bits;
+    i += 1;
+  }
+  return true;
+}
+
+/**
+ * Return true if `ip` is a non-global / private / reserved IPv6 address.
  *
- * Covers:
- *  - ::1              (loopback)
- *  - fc00::/7         (unique local addresses, i.e. fc00:: – fdff::)
- *  - fe80::/10        (link-local)
- *  - ::ffff:x.x.x.x  (IPv4-mapped IPv6 — delegates to isPrivateIPv4)
+ * Handles `::` compression and IPv4-mapped suffixes. Covers the RFC 6890
+ * special-purpose registry plus 6to4 (2002::/16), documentation
+ * (2001:db8::/32), and deprecated site-local (fec0::/10). The IPv4-mapped
+ * case (::ffff:a.b.c.d, in either dotted or hex form) is forwarded to
+ * isPrivateIPv4 so the IPv4 ranges remain authoritative.
  */
 function isPrivateIPv6(raw: string): boolean {
-  // Normalise: strip optional zone id (e.g. %eth0), lowercase
-  const ip = raw.replace(/%.*$/, "").toLowerCase();
-  if (ip === "::1") return true;
-
-  // IPv4-mapped IPv6 addresses: ::ffff:a.b.c.d or ::ffff:HHHH:HHHH (hex form).
-  // Runtimes may normalise the dotted-decimal form into two hex groups
-  // (e.g. Bun turns ::ffff:127.0.0.1 into ::ffff:7f00:1). Both must be
-  // checked against IPv4 private ranges to prevent SSRF bypass.
-  const v4MappedDotted = ip.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4MappedDotted) {
-    return isPrivateIPv4(v4MappedDotted[1] as string);
-  }
-  const v4MappedHex = ip.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (v4MappedHex) {
-    const hi = parseInt(v4MappedHex[1] as string, 16);
-    const lo = parseInt(v4MappedHex[2] as string, 16);
-    const a = (hi >> 8) & 0xff;
-    const b = hi & 0xff;
-    const c = (lo >> 8) & 0xff;
-    const d = lo & 0xff;
+  const groups = expandIPv6(raw);
+  if (!groups) return false;
+  // IPv4-mapped (::ffff:0:0/96): hand off to the IPv4 classifier so the
+  // canonical list of v4 private/reserved ranges applies.
+  if (
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0xffff
+  ) {
+    const a = ((groups[6] as number) >> 8) & 0xff;
+    const b = (groups[6] as number) & 0xff;
+    const c = ((groups[7] as number) >> 8) & 0xff;
+    const d = (groups[7] as number) & 0xff;
     return isPrivateIPv4(`${a}.${b}.${c}.${d}`);
   }
-
-  // Expand the first group to check prefix bits.
-  const firstGroup = ip.split(":")[0] ?? "";
-  if (firstGroup === "") return false; // starts with "::", already checked ::1
-  const val = parseInt(firstGroup, 16);
-  if (Number.isNaN(val)) return false;
-
-  // fc00::/7  → first byte 0xfc or 0xfd  → first 16-bit group 0xfc00–0xfdff
-  if (val >= 0xfc00 && val <= 0xfdff) return true;
-  // fe80::/10 → first 10 bits 0xfe80 → 0xfe80–0xfebf
-  if (val >= 0xfe80 && val <= 0xfebf) return true;
-
+  for (const { prefix, groups: blocked } of IPV6_BLOCKED_PREFIXES) {
+    if (ipv6MatchesPrefix(groups, prefix, blocked)) return true;
+  }
   return false;
 }
 
@@ -346,6 +466,45 @@ export class HttpGossipTransport implements GossipTransport {
     return response;
   }
 
+  /**
+   * Fetch a contribution manifest by CID. Returns undefined on 404. Throws
+   * PeerUnreachableError / GossipTimeoutError on network failure.
+   *
+   * HMAC verification is intentionally skipped: contributions are
+   * content-addressed, and callers verify the manifest CID before storing.
+   */
+  async fetchContribution(
+    peer: PeerInfo,
+    cid: string,
+    maxBytes?: number,
+  ): Promise<unknown | undefined> {
+    const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}`;
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    return this.getJson<unknown>(validated, peer.peerId, maxBytes);
+  }
+
+  /**
+   * Fetch an artifact's raw bytes by content hash. Returns undefined on 404.
+   * Throws PeerUnreachableError / GossipTimeoutError on network failure.
+   *
+   * HMAC verification is intentionally skipped: callers MUST re-hash the
+   * bytes and compare to the requested hash before storing.
+   */
+  async fetchArtifact(
+    peer: PeerInfo,
+    cid: string,
+    artifactName: string,
+    maxBytes?: number,
+  ): Promise<Uint8Array | undefined> {
+    // Contribution-scoped: the peer's root contribution store resolves the
+    // (cid, name) tuple and only returns bytes for artifacts referenced by a
+    // root contribution. This keeps session-only artifacts in a shared CAS
+    // from being reachable by federation.
+    const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(artifactName)}`;
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    return this.getBytes(validated, peer.peerId, maxBytes);
+  }
+
   private async post<T>(validated: ValidatedUrl, body: unknown, peerId: string): Promise<T> {
     const { pinnedUrl, hostHeader } = validated;
     try {
@@ -361,8 +520,18 @@ export class HttpGossipTransport implements GossipTransport {
           },
           body: JSON.stringify(body),
           signal: controller.signal,
+          redirect: "manual",
         });
 
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
         if (!response.ok) {
           throw new PeerUnreachableError({
             peerId,
@@ -371,7 +540,8 @@ export class HttpGossipTransport implements GossipTransport {
           });
         }
 
-        return (await response.json()) as T;
+        const bytes = await this.readWithCap(response, peerId, pinnedUrl);
+        return JSON.parse(new TextDecoder().decode(bytes)) as T;
       } finally {
         clearTimeout(timeout);
       }
@@ -386,6 +556,197 @@ export class HttpGossipTransport implements GossipTransport {
       }
 
       // Network errors (connection refused, DNS failure, etc.)
+      throw new PeerUnreachableError({
+        peerId,
+        address: pinnedUrl,
+        cause: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+
+  /**
+   * Build the HMAC-signed headers for a peer GET request when a shared
+   * gossip secret is configured. Returns an empty object when no secret is
+   * set (the peer will fall back to bearer auth — this mode is only useful
+   * for tests and one-off curl checks; in production GROVE_GOSSIP_HMAC_SECRET
+   * is required when gossip is enabled).
+   */
+  private signedGetHeaders(path: string): Record<string, string> {
+    if (!this.hmacSecret) return {};
+    const ts = new Date().toISOString();
+    return {
+      [GOSSIP_GET_TIMESTAMP_HEADER]: ts,
+      [GOSSIP_GET_SIGNATURE_HEADER]: signGetRequest("GET", path, ts, this.hmacSecret),
+    };
+  }
+
+  /**
+   * Read the response body up to a fixed byte cap, aborting if either the
+   * advertised Content-Length or the streamed total exceeds it. Returns the
+   * concatenated bytes when the body fits under the cap. The cap is the
+   * lesser of MAX_FEDERATION_RESPONSE_BYTES and the optional `limit` (used
+   * by federation to pass through the remaining per-contribution budget).
+   */
+  private async readWithCap(
+    response: Response,
+    peerId: string,
+    pinnedUrl: string,
+    limit?: number,
+  ): Promise<Uint8Array> {
+    const cap = Math.min(MAX_FEDERATION_RESPONSE_BYTES, limit ?? MAX_FEDERATION_RESPONSE_BYTES);
+    const declared = response.headers.get("content-length");
+    if (declared !== null) {
+      const declaredBytes = Number(declared);
+      if (!Number.isFinite(declaredBytes) || declaredBytes < 0) {
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(`Invalid Content-Length '${declared}'`),
+        });
+      }
+      if (declaredBytes > cap) {
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(`Response Content-Length ${declaredBytes} exceeds cap ${cap}`),
+        });
+      }
+    }
+    const body = response.body;
+    if (!body) return new Uint8Array(0);
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > cap) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
+        throw new PeerUnreachableError({
+          peerId,
+          address: pinnedUrl,
+          cause: new Error(`Streamed response exceeded cap ${cap} bytes`),
+        });
+      }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.byteLength;
+    }
+    return out;
+  }
+
+  private async getJson<T>(
+    validated: ValidatedUrl,
+    peerId: string,
+    maxBytes?: number,
+  ): Promise<T | undefined> {
+    const { pinnedUrl, hostHeader } = validated;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const path = new URL(pinnedUrl).pathname;
+        const response = await fetch(pinnedUrl, {
+          method: "GET",
+          headers: {
+            Host: hostHeader,
+            Accept: "application/json",
+            ...this.signedGetHeaders(path),
+          },
+          signal: controller.signal,
+          // Block automatic redirect-following: an attacker-controlled peer
+          // could otherwise return a 3xx Location pointing at a private/
+          // metadata endpoint and bypass our SSRF check.
+          redirect: "manual",
+        });
+        if (response.status === 404) return undefined;
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
+        if (!response.ok) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
+          });
+        }
+        const bytes = await this.readWithCap(response, peerId, pinnedUrl, maxBytes);
+        return JSON.parse(new TextDecoder().decode(bytes)) as T;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      if (err instanceof PeerUnreachableError || err instanceof GossipTimeoutError) throw err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new GossipTimeoutError({ peerId, timeoutMs: this.timeoutMs });
+      }
+      throw new PeerUnreachableError({
+        peerId,
+        address: pinnedUrl,
+        cause: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+
+  private async getBytes(
+    validated: ValidatedUrl,
+    peerId: string,
+    maxBytes?: number,
+  ): Promise<Uint8Array | undefined> {
+    const { pinnedUrl, hostHeader } = validated;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const path = new URL(pinnedUrl).pathname;
+        const response = await fetch(pinnedUrl, {
+          method: "GET",
+          headers: { Host: hostHeader, ...this.signedGetHeaders(path) },
+          signal: controller.signal,
+          redirect: "manual",
+        });
+        if (response.status === 404) return undefined;
+        if (response.status >= 300 && response.status < 400) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(
+              `Peer returned redirect (HTTP ${response.status}); redirects are rejected to preserve SSRF protections`,
+            ),
+          });
+        }
+        if (!response.ok) {
+          throw new PeerUnreachableError({
+            peerId,
+            address: pinnedUrl,
+            cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
+          });
+        }
+        return await this.readWithCap(response, peerId, pinnedUrl, maxBytes);
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      if (err instanceof PeerUnreachableError || err instanceof GossipTimeoutError) throw err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new GossipTimeoutError({ peerId, timeoutMs: this.timeoutMs });
+      }
       throw new PeerUnreachableError({
         peerId,
         address: pinnedUrl,

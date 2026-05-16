@@ -13,7 +13,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-
+import type { ContentStore } from "../core/cas.js";
 import {
   DEFAULT_FAILURE_TIMEOUT_MS,
   DEFAULT_FRONTIER_DIGEST_LIMIT,
@@ -28,6 +28,7 @@ import {
 } from "../core/constants.js";
 import type { FrontierCalculator, FrontierEntry } from "../core/frontier.js";
 import {
+  type FetchContributionResult,
   type FrontierDigestEntry,
   type GossipConfig,
   type GossipEvent,
@@ -44,10 +45,20 @@ import {
   type ShuffleRequest,
   type ShuffleResponse,
 } from "../core/gossip/types.js";
+import type { ContributionStore } from "../core/store.js";
 import { CyclonPeerSampler } from "./cyclon.js";
+import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
 
 /** Maximum age of a signed gossip message before it is rejected as a potential replay. */
 const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Hard cap on peers tracked per CID in the advertisement map. Beyond the
+ * implicit bound from CYCLON's partial-view size, this prevents transient
+ * view churn from accumulating stale advertisers. Keeps federation fetch
+ * fallback latency bounded regardless of network behavior.
+ */
+const MAX_ADVERTISERS_PER_CID = 16;
 
 /**
  * Thrown by handleExchange/handleShuffle when HMAC verification or freshness
@@ -129,6 +140,56 @@ export function verifyPayload(
   return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
 }
 
+/**
+ * Headers used to authenticate peer-to-peer GET requests against
+ * content-addressed federation endpoints (#226). The transport signs
+ * `${method}\n${path}\n${timestamp}` with the shared HMAC secret; the server
+ * verifies before exempting the request from namespace bearer auth.
+ */
+export const GOSSIP_GET_TIMESTAMP_HEADER = "x-gossip-timestamp";
+export const GOSSIP_GET_SIGNATURE_HEADER = "x-gossip-signature";
+
+/** Compute HMAC-SHA256 over the canonical "method\npath\ntimestamp" string. */
+export function signGetRequest(
+  method: string,
+  path: string,
+  timestamp: string,
+  secret: string,
+): string {
+  const hmac = createHmac("sha256", secret);
+  hmac.update(`${method.toUpperCase()}\n${path}\n${timestamp}`);
+  return hmac.digest("hex");
+}
+
+/**
+ * Verify a peer-signed GET request. Returns true when:
+ *   - the timestamp is within ±GOSSIP_MAX_MESSAGE_AGE_MS of `nowMs`,
+ *   - the signature is well-formed hex,
+ *   - the signature matches signGetRequest(method, path, timestamp, secret)
+ *     under timing-safe comparison.
+ */
+export function verifyGetRequest(args: {
+  readonly method: string;
+  readonly path: string;
+  readonly timestamp: string | undefined;
+  readonly signature: string | undefined;
+  readonly secret: string;
+  readonly nowMs: number;
+}): boolean {
+  const { method, path, timestamp, signature, secret, nowMs } = args;
+  if (!timestamp || !signature) return false;
+  if (!/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const tsMs = Date.parse(timestamp);
+  if (!Number.isFinite(tsMs)) return false;
+  if (Math.abs(nowMs - tsMs) > GOSSIP_MAX_MESSAGE_AGE_MS) return false;
+  const expected = signGetRequest(method, path, timestamp, secret);
+  try {
+    return timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"));
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DefaultGossipService
 // ---------------------------------------------------------------------------
@@ -150,6 +211,10 @@ export class DefaultGossipService implements GossipService {
     readonly suspicionTimeoutMs: number;
     readonly failureTimeoutMs: number;
     readonly hmacSecret: string | undefined;
+    readonly antiEntropyEnabled: boolean;
+    readonly antiEntropyIntervalMs: number;
+    readonly antiEntropyBatchSize: number;
+    readonly antiEntropyThresholds: Readonly<Record<string, number>>;
   };
   private readonly sampler: CyclonPeerSampler;
   private readonly transport: GossipTransport;
@@ -161,6 +226,23 @@ export class DefaultGossipService implements GossipService {
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
+  private antiEntropyTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Per-CID negative cache used by anti-entropy to throttle re-fetches of
+   * known-unfetchable advertisements. Maps cid → expiresAtMs (epoch ms);
+   * GC'd lazily on next sweep build.
+   */
+  private readonly antiEntropyNegativeCache = new Map<string, number>();
+  /**
+   * Map of cid → (peerId → PeerInfo) for peers that advertised this cid.
+   *
+   * The outer map is bounded by the number of distinct cids in
+   * `remoteFrontier` (≤ {@link MAX_MERGED_FRONTIER_ENTRIES}) — eviction is
+   * coupled to the frontier-prune step in {@link mergeRemoteFrontier}. The
+   * inner per-cid map is bounded by the partial view size (one entry per
+   * peer that has gossiped this cid).
+   */
+  private readonly advertisements = new Map<string, Map<string, PeerInfo>>();
   private localDigest: FrontierDigestEntry[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
@@ -168,6 +250,19 @@ export class DefaultGossipService implements GossipService {
   private readonly now: () => number;
   /** Per-peer monotonic timestamp (ms) for replay detection. */
   private readonly peerLastTimestamp = new Map<string, number>();
+  /**
+   * Federation fetcher for pulling remote contributions over gossip.
+   * Undefined when the gossip service was constructed without a local
+   * contribution store + CAS (e.g., in unit tests that only exercise
+   * peer sampling and frontier merge).
+   */
+  private readonly federation: FederationFetcher | undefined;
+  /**
+   * Reference to the same contribution store federation reads through.
+   * Used by anti-entropy to skip already-local CIDs when filtering
+   * sweep candidates so batch slots don't get wasted on `already-local`.
+   */
+  private readonly contributionStore: ContributionStore | undefined;
 
   constructor(opts: {
     config: GossipConfig;
@@ -182,17 +277,66 @@ export class DefaultGossipService implements GossipService {
     getActiveClaimCount?: () => Promise<number>;
     /** Maximum agent slots available on this peer (default: 8). */
     maxAgentSlots?: number;
+    /** Local contribution store; required to enable federation features. */
+    contributionStore?: ContributionStore;
+    /** Local CAS; required to enable federation features. */
+    cas?: ContentStore;
   }) {
+    const ae = opts.config.antiEntropy;
+    // Defensive validation: a NaN / zero / negative interval would make
+    // setTimeout fire on every tick and turn gossip into a hot loop. Reject
+    // bad values rather than silently melting CPU.
+    const validPositiveInt = (n: number | undefined, name: string): number | undefined => {
+      if (n === undefined) return undefined;
+      if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+        throw new Error(`DefaultGossipService: invalid ${name}=${n}; must be a positive integer`);
+      }
+      return n;
+    };
+    /**
+     * Jitter is a multiplier in [0, 1): scheduleNextRound applies
+     *   delay * (1 - jitter + Math.random() * 2 * jitter)
+     * which stays positive only when jitter < 1. Anything else risks
+     * negative delays (immediate fire).
+     */
+    const validJitter = (n: number | undefined): number | undefined => {
+      if (n === undefined) return undefined;
+      if (!Number.isFinite(n) || n < 0 || n >= 1) {
+        throw new Error(
+          `DefaultGossipService: invalid jitter=${n}; must be a finite number in [0, 1)`,
+        );
+      }
+      return n;
+    };
+    const intervalMs =
+      validPositiveInt(opts.config.intervalMs, "intervalMs") ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    const suspicionTimeoutMs =
+      validPositiveInt(opts.config.suspicionTimeoutMs, "suspicionTimeoutMs") ??
+      DEFAULT_SUSPICION_TIMEOUT_MS;
+    const failureTimeoutMs =
+      validPositiveInt(opts.config.failureTimeoutMs, "failureTimeoutMs") ??
+      DEFAULT_FAILURE_TIMEOUT_MS;
+    if (failureTimeoutMs <= suspicionTimeoutMs) {
+      throw new Error(
+        `DefaultGossipService: failureTimeoutMs (${failureTimeoutMs}) must be > suspicionTimeoutMs (${suspicionTimeoutMs})`,
+      );
+    }
     this.config = {
       peerId: opts.config.peerId,
       address: opts.config.address,
-      intervalMs: opts.config.intervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS,
-      fanOut: opts.config.fanOut ?? DEFAULT_GOSSIP_FAN_OUT,
-      jitter: opts.config.jitter ?? DEFAULT_GOSSIP_JITTER,
-      digestLimit: opts.config.digestLimit ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
-      suspicionTimeoutMs: opts.config.suspicionTimeoutMs ?? DEFAULT_SUSPICION_TIMEOUT_MS,
-      failureTimeoutMs: opts.config.failureTimeoutMs ?? DEFAULT_FAILURE_TIMEOUT_MS,
+      intervalMs,
+      fanOut: validPositiveInt(opts.config.fanOut, "fanOut") ?? DEFAULT_GOSSIP_FAN_OUT,
+      jitter: validJitter(opts.config.jitter) ?? DEFAULT_GOSSIP_JITTER,
+      digestLimit:
+        validPositiveInt(opts.config.digestLimit, "digestLimit") ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
+      suspicionTimeoutMs,
+      failureTimeoutMs,
       hmacSecret: opts.config.hmacSecret,
+      antiEntropyEnabled: ae?.enabled ?? false,
+      antiEntropyIntervalMs:
+        validPositiveInt(ae?.intervalMs, "antiEntropy.intervalMs") ?? intervalMs * 5,
+      antiEntropyBatchSize: validPositiveInt(ae?.batchSize, "antiEntropy.batchSize") ?? 16,
+      antiEntropyThresholds: ae?.metricThresholds ?? {},
     };
 
     const selfPeer: PeerInfo = {
@@ -232,6 +376,18 @@ export class DefaultGossipService implements GossipService {
     if (opts.initialFrontier && opts.initialFrontier.length > 0) {
       this.remoteFrontier = [...opts.initialFrontier];
     }
+
+    this.contributionStore = opts.contributionStore;
+    // Federation: only enabled when caller provided both store and CAS.
+    this.federation =
+      opts.contributionStore && opts.cas
+        ? new FederationFetcher({
+            contributionStore: opts.contributionStore,
+            cas: opts.cas,
+            transport: opts.transport,
+            peersFor: (cid) => this.peersAdvertising(cid),
+          })
+        : undefined;
   }
 
   // -------------------------------------------------------------------------
@@ -242,6 +398,9 @@ export class DefaultGossipService implements GossipService {
     if (this.running) return;
     this.running = true;
     this.scheduleNextRound();
+    if (this.config.antiEntropyEnabled && this.federation) {
+      this.scheduleNextAntiEntropy();
+    }
   }
 
   async stop(): Promise<void> {
@@ -249,6 +408,10 @@ export class DefaultGossipService implements GossipService {
     if (this.timer !== undefined) {
       clearTimeout(this.timer);
       this.timer = undefined;
+    }
+    if (this.antiEntropyTimer !== undefined) {
+      clearTimeout(this.antiEntropyTimer);
+      this.antiEntropyTimer = undefined;
     }
   }
 
@@ -264,6 +427,16 @@ export class DefaultGossipService implements GossipService {
       }
       // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
       const msgTimestampMs = new Date(message.timestamp).getTime();
+      // NaN bypass guard: an invalid timestamp string (e.g. "not-a-date")
+      // makes `getTime()` return NaN, and every NaN comparison (`age > max`,
+      // `msgTimestampMs <= lastSeen`) is false — meaning a signed message
+      // with a junk timestamp would silently bypass freshness + monotonic
+      // replay checks.
+      if (!Number.isFinite(msgTimestampMs)) {
+        throw new GossipAuthError(
+          `invalid timestamp '${message.timestamp}' from peer ${message.peerId}`,
+        );
+      }
       const age = Math.abs(this.now() - msgTimestampMs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         throw new GossipAuthError(`message too old (${age}ms) from peer ${message.peerId}`);
@@ -284,7 +457,10 @@ export class DefaultGossipService implements GossipService {
     // Merge remote frontier entries
     this.mergeRemoteFrontier(message.frontier);
 
-    // Add sender to our view only if they provided a routable address
+    // Admit the sender to the CYCLON view BEFORE recording advertisements:
+    // recordAdvertisements only trusts in-view peers, so the addPeer call
+    // must happen first or every advertisement from a fresh peer would be
+    // silently dropped.
     if (message.address) {
       const senderPeer: PeerInfo = {
         peerId: message.peerId,
@@ -293,6 +469,12 @@ export class DefaultGossipService implements GossipService {
         lastSeen: message.timestamp,
       };
       this.sampler.addPeer(senderPeer);
+      this.recordAdvertisements(
+        message.peerId,
+        message.address,
+        message.frontier,
+        message.timestamp,
+      );
     }
 
     // Return our current message
@@ -311,6 +493,12 @@ export class DefaultGossipService implements GossipService {
       // Reject replayed messages outside the 5-minute clock-skew window.
       const ts = request.sender.lastSeen;
       const senderTs = new Date(ts).getTime();
+      if (!Number.isFinite(senderTs)) {
+        console.warn(
+          `Gossip: rejecting shuffle from ${request.sender.peerId} — invalid timestamp '${ts}'`,
+        );
+        return { offered: [] };
+      }
       const age = Math.abs(this.now() - senderTs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         console.warn(
@@ -318,20 +506,21 @@ export class DefaultGossipService implements GossipService {
         );
         return { offered: [] };
       }
-      // Monotonic guard: use our clock to bound how often a peer can shuffle
-      // with us. We can't rely on sender-provided timestamps being monotonic
-      // (peers may reuse the same lastSeen if they don't refresh it per round).
-      // Rate-limiting by our own receive time ensures forward progress without
-      // depending on sender clock accuracy.
+      // Monotonic timestamp guard on the SIGNED sender timestamp: reject any
+      // shuffle whose `sender.lastSeen` is at or before the highest we've
+      // already accepted from this peer. This is stricter than a local-clock
+      // throttle: a captured signed request cannot be replayed even hours
+      // later within the 5-minute skew window. The signed timestamp must
+      // strictly advance per peer for forward progress.
       const shuffleKey = `shuffle:${request.sender.peerId}`;
-      const nowMs = this.now();
-      const lastReceived = this.peerLastTimestamp.get(shuffleKey);
-      if (lastReceived !== undefined && nowMs - lastReceived < 1000) {
-        // Reject if the same peer shuffles again within 1 s (likely a replay).
-        console.warn(`Gossip: rejecting rapid-fire shuffle from ${request.sender.peerId}`);
+      const lastSenderTs = this.peerLastTimestamp.get(shuffleKey);
+      if (lastSenderTs !== undefined && senderTs <= lastSenderTs) {
+        console.warn(
+          `Gossip: rejecting replayed shuffle from ${request.sender.peerId} (ts=${senderTs} <= last=${lastSenderTs})`,
+        );
         return { offered: [] };
       }
-      this.peerLastTimestamp.set(shuffleKey, nowMs);
+      this.peerLastTimestamp.set(shuffleKey, senderTs);
     }
 
     this.markAlive(request.sender.peerId);
@@ -430,6 +619,107 @@ export class DefaultGossipService implements GossipService {
   }
 
   // -------------------------------------------------------------------------
+  // CID → advertising peers tracking
+  // -------------------------------------------------------------------------
+
+  private recordAdvertisements(
+    peerId: string,
+    address: string,
+    frontier: readonly FrontierDigestEntry[],
+    lastSeen: string,
+  ): void {
+    // Purely additive: never deletes. Eviction is bound to mergeRemoteFrontier
+    // (which is the only place that prunes the frontier — and therefore the
+    // only place that can cause an advertisement to become orphaned).
+    //
+    // Filter to cids that survived the merge: an incoming cid that ranked
+    // below the eviction cutoff is never recorded in the first place. Without
+    // this filter, `peersAdvertising` would expose pruned cids and on-demand
+    // fetch could chase entries the frontier already rejected.
+    const survivingCids = new Set<string>();
+    for (const entry of this.remoteFrontier) survivingCids.add(entry.cid);
+
+    // Trust boundary: only record advertisements from peers that are
+    // currently in the CYCLON partial view (or are the bootstrap self
+    // entry, never recorded here because peerId !== self). A
+    // compromised HMAC peer cannot otherwise spam recordAdvertisements
+    // with fresh peerIds for a single CID to bloat advertisements and
+    // force federation fetch amplification — addPeer applies CYCLON's
+    // maxViewSize cap, which makes the advertisement set bounded by the
+    // view size.
+    const inView = this.sampler.getView().some((p) => p.peerId === peerId);
+    if (!inView) return;
+
+    const peer: PeerInfo = {
+      peerId,
+      address,
+      age: 0,
+      lastSeen,
+    };
+    const currentView = new Set(this.sampler.getView().map((p) => p.peerId));
+    for (const entry of frontier) {
+      if (!survivingCids.has(entry.cid)) continue;
+      let byPeer = this.advertisements.get(entry.cid);
+      if (!byPeer) {
+        byPeer = new Map();
+        this.advertisements.set(entry.cid, byPeer);
+      }
+      // Refreshing an existing entry is always fine: we just bump lastSeen.
+      if (byPeer.has(peerId)) {
+        byPeer.set(peerId, peer);
+        continue;
+      }
+      // Per-CID advertiser cap with stale-first eviction so a churn of dead
+      // peers can't permanently occupy the cap and freeze out live ones.
+      if (byPeer.size >= MAX_ADVERTISERS_PER_CID) {
+        // 1) Prefer evicting an advertiser no longer in the CYCLON view.
+        // 2) If everyone's in view, evict the oldest by lastSeen.
+        let victim: string | undefined;
+        for (const [pid] of byPeer) {
+          if (!currentView.has(pid)) {
+            victim = pid;
+            break;
+          }
+        }
+        if (!victim) {
+          let oldest = Number.POSITIVE_INFINITY;
+          for (const [pid, p] of byPeer) {
+            const t = Date.parse(p.lastSeen);
+            if (Number.isFinite(t) && t < oldest) {
+              oldest = t;
+              victim = pid;
+            }
+          }
+        }
+        if (!victim) continue; // shouldn't happen; refuse to write rather than corrupt
+        byPeer.delete(victim);
+      }
+      byPeer.set(peerId, peer);
+    }
+  }
+
+  peersAdvertising(cid: string): readonly PeerInfo[] {
+    const byPeer = this.advertisements.get(cid);
+    if (!byPeer) return [];
+    // Filter against the live CYCLON view so federation fetch only walks
+    // peers we still trust. Stale advertisers are kept in the map (they may
+    // recover on the next exchange) but are hidden from callers.
+    const currentView = new Set(this.sampler.getView().map((p) => p.peerId));
+    const live: PeerInfo[] = [];
+    for (const [pid, peer] of byPeer) {
+      if (currentView.has(pid)) live.push(peer);
+    }
+    return live;
+  }
+
+  async fetchRemoteContribution(cid: string): Promise<FetchContributionResult> {
+    if (!this.federation) {
+      return { kind: "failed", cid, reason: "federation not configured (missing store or cas)" };
+    }
+    return this.federation.fetchRemoteContribution(cid);
+  }
+
+  // -------------------------------------------------------------------------
   // Event listeners
   // -------------------------------------------------------------------------
 
@@ -492,6 +782,72 @@ export class DefaultGossipService implements GossipService {
     }, delay);
   }
 
+  private scheduleNextAntiEntropy(): void {
+    if (!this.running || !this.federation) return;
+    const jitter = 1 - this.config.jitter + Math.random() * 2 * this.config.jitter;
+    const delay = Math.floor(this.config.antiEntropyIntervalMs * jitter);
+    this.antiEntropyTimer = setTimeout(async () => {
+      const fetcher = this.federation;
+      if (!fetcher) return;
+      // Build the live negative-cache set: drop entries whose backoff has
+      // expired. Keeps the cache bounded and lets recovered CIDs retry.
+      const nowMs = this.now();
+      const negative = new Set<string>();
+      for (const [cid, expiresAt] of this.antiEntropyNegativeCache) {
+        if (expiresAt > nowMs) {
+          negative.add(cid);
+        } else {
+          this.antiEntropyNegativeCache.delete(cid);
+        }
+      }
+      // Negative-cache TTL: hold a failed CID for one full anti-entropy
+      // interval so a buggy / malicious peer can't make us redo doomed
+      // work every sweep. Recovered peers and resigned advertisements
+      // get retried on the next tick after the entry expires.
+      const failureTtlMs = this.config.antiEntropyIntervalMs;
+      const contributionStore = this.contributionStore;
+      try {
+        await runAntiEntropySweep({
+          frontier: this.mergedFrontier(),
+          fetcher,
+          batchSize: this.config.antiEntropyBatchSize,
+          thresholds: this.config.antiEntropyThresholds,
+          negativeCache: negative,
+          // Locality predicate: skip CIDs already in the local store so
+          // batch slots fill with genuine federation work. Without this,
+          // a node whose local frontier exceeds batchSize would chew up
+          // every sweep on already-local entries from the merged digest.
+          ...(contributionStore
+            ? {
+                isLocal: async (cid: string) => (await contributionStore.get(cid)) !== undefined,
+              }
+            : {}),
+          onResult: (result) => {
+            switch (result.kind) {
+              case "failed":
+                this.antiEntropyNegativeCache.set(result.cid, this.now() + failureTtlMs);
+                console.warn(
+                  `Gossip anti-entropy: fetch failed for ${result.cid}: ${result.reason}`,
+                );
+                break;
+              case "no-source":
+                this.antiEntropyNegativeCache.set(result.cid, this.now() + failureTtlMs);
+                break;
+              case "ok":
+              case "already-local":
+                // Recovered or no-op — clear any prior negative cache entry.
+                this.antiEntropyNegativeCache.delete(result.cid);
+                break;
+            }
+          },
+        });
+      } catch {
+        // best-effort
+      }
+      this.scheduleNextAntiEntropy();
+    }, delay);
+  }
+
   private async runShuffle(): Promise<void> {
     const target = this.sampler.selectOldestPeer();
     if (!target) return;
@@ -551,8 +907,39 @@ export class DefaultGossipService implements GossipService {
     const exchanges = targets.map(async (peer) => {
       try {
         const response = await this.transport.exchange(peer, message);
+        // Apply the same freshness + monotonic replay checks we apply to
+        // incoming exchange requests. The transport verifies the HMAC
+        // signature, but a captured-and-replayed signed response would
+        // otherwise be merged unconditionally, keeping stale frontier
+        // entries and obsolete advertiser addresses alive. When the HMAC
+        // secret is not configured we skip these checks (test path).
+        if (this.config.hmacSecret) {
+          const tsMs = new Date(response.timestamp).getTime();
+          if (!Number.isFinite(tsMs)) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          if (Math.abs(this.now() - tsMs) > GOSSIP_MAX_MESSAGE_AGE_MS) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          const lastSeen = this.peerLastTimestamp.get(response.peerId);
+          if (lastSeen !== undefined && tsMs <= lastSeen) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          this.peerLastTimestamp.set(response.peerId, tsMs);
+        }
         this.markAlive(peer.peerId);
         this.mergeRemoteFrontier(response.frontier);
+        if (response.address) {
+          this.recordAdvertisements(
+            response.peerId,
+            response.address,
+            response.frontier,
+            response.timestamp,
+          );
+        }
       } catch {
         this.markUnresponsive(peer.peerId);
       }
@@ -642,6 +1029,16 @@ export class DefaultGossipService implements GossipService {
     if (merged.length > MAX_MERGED_FRONTIER_ENTRIES) {
       merged.sort((a, b) => sortValueForEviction(b) - sortValueForEviction(a));
       merged = merged.slice(0, MAX_MERGED_FRONTIER_ENTRIES);
+      // Eviction-parity: drop advertisements for any cid no longer referenced
+      // by *any* surviving (metric, cid) key. Coupling this to the prune step
+      // (rather than to recordAdvertisements) eliminates the race where a
+      // freshly-recorded advertisement is wiped because its cid ranked below
+      // the eviction threshold.
+      const survivingCids = new Set<string>();
+      for (const entry of merged) survivingCids.add(entry.cid);
+      for (const cid of this.advertisements.keys()) {
+        if (!survivingCids.has(cid)) this.advertisements.delete(cid);
+      }
     }
 
     this.remoteFrontier = merged;
