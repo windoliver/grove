@@ -375,16 +375,17 @@ describe("HttpGossipTransport", () => {
   // -----------------------------------------------------------------------
 
   describe("fetchArtifact()", () => {
-    it("GETs /api/cas/:hash and returns the raw bytes", async () => {
-      const hash = "blake3:" + "f".repeat(64);
+    it("GETs /api/contributions/:cid/artifacts/:name and returns the raw bytes", async () => {
+      const cid = `blake3:${"a".repeat(64)}`;
+      const artifactName = "payload.bin";
       const bytes = new Uint8Array([1, 2, 3, 4]);
       const server = Bun.serve({
         port: 0,
         fetch: (req) => {
           const url = new URL(req.url);
-          // Hono auto-decodes path params; mirror that here so the test
-          // matches whether the transport percent-encodes the hash or not.
-          if (decodeURIComponent(url.pathname) === `/api/cas/${hash}`) {
+          if (
+            decodeURIComponent(url.pathname) === `/api/contributions/${cid}/artifacts/${artifactName}`
+          ) {
             return new Response(bytes, {
               headers: { "Content-Type": "application/octet-stream" },
             });
@@ -400,7 +401,7 @@ describe("HttpGossipTransport", () => {
           age: 0,
           lastSeen: new Date().toISOString(),
         };
-        const result = await transport.fetchArtifact(peer, hash);
+        const result = await transport.fetchArtifact(peer, cid, artifactName);
         expect(result).toBeInstanceOf(Uint8Array);
         expect([...(result as Uint8Array)]).toEqual([1, 2, 3, 4]);
       } finally {
@@ -419,7 +420,7 @@ describe("HttpGossipTransport", () => {
           lastSeen: new Date().toISOString(),
         };
         expect(
-          await transport.fetchArtifact(peer, `blake3:${"0".repeat(64)}`),
+          await transport.fetchArtifact(peer, `blake3:${"0".repeat(64)}`, "missing"),
         ).toBeUndefined();
       } finally {
         server.stop();

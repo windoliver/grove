@@ -61,7 +61,11 @@ class MockGossipTransport implements GossipTransport {
     return undefined;
   }
 
-  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+  async fetchArtifact(
+    _peer: PeerInfo,
+    _cid: string,
+    _artifactName: string,
+  ): Promise<Uint8Array | undefined> {
     return undefined;
   }
 }

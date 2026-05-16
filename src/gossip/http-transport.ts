@@ -103,70 +103,112 @@ function isPrivateIPv4(ip: string): boolean {
 }
 
 /**
+ * Expand an IPv6 textual form to 8 16-bit groups. Handles `::` compression
+ * and IPv4-mapped notation. Returns null on syntactic error.
+ */
+function expandIPv6(raw: string): number[] | null {
+  const ip = raw.replace(/%.*$/, "").toLowerCase().replace(/^\[|\]$/g, "");
+
+  // Handle IPv4-mapped suffix like ::ffff:1.2.3.4 — convert the dotted quad to
+  // two 16-bit groups so the rest of the expansion is uniform hex.
+  const dotted = ip.match(/^(.*?:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  let normalized = ip;
+  if (dotted) {
+    const prefix = dotted[1] ?? "";
+    const quad = (dotted[2] as string).split(".").map(Number);
+    if (quad.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+    const hi = ((quad[0] as number) << 8) | (quad[1] as number);
+    const lo = ((quad[2] as number) << 8) | (quad[3] as number);
+    normalized = `${prefix}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+
+  let leftParts: string[];
+  let rightParts: string[];
+  if (normalized.includes("::")) {
+    if (normalized.split("::").length > 2) return null;
+    const [left, right] = normalized.split("::");
+    leftParts = left ? left.split(":") : [];
+    rightParts = right ? right.split(":") : [];
+    const missing = 8 - leftParts.length - rightParts.length;
+    if (missing < 0) return null;
+    leftParts = [...leftParts, ...Array(missing).fill("0"), ...rightParts];
+    rightParts = [];
+  } else {
+    leftParts = normalized.split(":");
+  }
+  if (leftParts.length !== 8) return null;
+  const groups: number[] = [];
+  for (const g of leftParts) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    groups.push(parseInt(g, 16));
+  }
+  return groups;
+}
+
+/**
+ * Non-global / private / reserved IPv6 ranges (RFC 6890 special-purpose
+ * registry, plus the IETF documentation/transition prefixes). Each entry
+ * specifies the prefix length in bits and the first N 16-bit group values
+ * (in network order) that must match.
+ */
+const IPV6_BLOCKED_PREFIXES: ReadonlyArray<{ prefix: number; groups: readonly number[] }> = [
+  { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 0] }, // ::
+  { prefix: 128, groups: [0, 0, 0, 0, 0, 0, 0, 1] }, // ::1
+  { prefix: 96, groups: [0, 0, 0, 0, 0, 0xffff] }, // ::ffff:0:0/96 (IPv4-mapped)
+  { prefix: 96, groups: [0x0064, 0xff9b] }, // 64:ff9b::/96 well-known NAT64
+  { prefix: 48, groups: [0x0064, 0xff9b, 0x0001] }, // 64:ff9b:1::/48 local NAT64
+  { prefix: 64, groups: [0x0100, 0, 0, 0] }, // 100::/64 discard
+  { prefix: 23, groups: [0x2001] }, // 2001::/23 IETF protocol assignments
+  { prefix: 32, groups: [0x2001, 0x0db8] }, // 2001:db8::/32 documentation
+  { prefix: 16, groups: [0x2002] }, // 2002::/16 6to4
+  { prefix: 7, groups: [0xfc00] }, // fc00::/7 unique local
+  { prefix: 10, groups: [0xfe80] }, // fe80::/10 link-local
+  { prefix: 10, groups: [0xfec0] }, // fec0::/10 deprecated site-local
+  { prefix: 8, groups: [0xff00] }, // ff00::/8 multicast
+];
+
+function ipv6MatchesPrefix(addr: readonly number[], prefix: number, blocked: readonly number[]): boolean {
+  let remaining = prefix;
+  for (let i = 0; i < blocked.length && remaining > 0; i++) {
+    const bits = Math.min(16, remaining);
+    const mask = bits === 16 ? 0xffff : ((0xffff << (16 - bits)) & 0xffff) >>> 0;
+    if (((addr[i] ?? 0) & mask) !== ((blocked[i] ?? 0) & mask)) return false;
+    remaining -= bits;
+  }
+  return true;
+}
+
+/**
  * Return true if `ip` is a non-global / private / reserved IPv6 address.
  *
- * Covers:
- *  - ::               (unspecified)
- *  - ::1              (loopback)
- *  - 64:ff9b::/96     (well-known NAT64)
- *  - 100::/64         (discard prefix)
- *  - 2001:db8::/32    (documentation)
- *  - fc00::/7         (unique local addresses, i.e. fc00:: – fdff::)
- *  - fe80::/10        (link-local)
- *  - ff00::/8         (multicast)
- *  - ::ffff:x.x.x.x  (IPv4-mapped IPv6 — delegates to isPrivateIPv4)
+ * Handles `::` compression and IPv4-mapped suffixes. Covers the RFC 6890
+ * special-purpose registry plus 6to4 (2002::/16), documentation
+ * (2001:db8::/32), and deprecated site-local (fec0::/10). The IPv4-mapped
+ * case (::ffff:a.b.c.d, in either dotted or hex form) is forwarded to
+ * isPrivateIPv4 so the IPv4 ranges remain authoritative.
  */
 function isPrivateIPv6(raw: string): boolean {
-  // Normalise: strip optional zone id (e.g. %eth0), lowercase
-  const ip = raw.replace(/%.*$/, "").toLowerCase();
-  if (ip === "::1") return true;
-  if (ip === "::") return true;
-
-  // IPv4-mapped IPv6 addresses: ::ffff:a.b.c.d or ::ffff:HHHH:HHHH (hex form).
-  // Runtimes may normalise the dotted-decimal form into two hex groups
-  // (e.g. Bun turns ::ffff:127.0.0.1 into ::ffff:7f00:1). Both must be
-  // checked against IPv4 private ranges to prevent SSRF bypass.
-  const v4MappedDotted = ip.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4MappedDotted) {
-    return isPrivateIPv4(v4MappedDotted[1] as string);
-  }
-  const v4MappedHex = ip.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (v4MappedHex) {
-    const hi = parseInt(v4MappedHex[1] as string, 16);
-    const lo = parseInt(v4MappedHex[2] as string, 16);
-    const a = (hi >> 8) & 0xff;
-    const b = hi & 0xff;
-    const c = (lo >> 8) & 0xff;
-    const d = lo & 0xff;
+  const groups = expandIPv6(raw);
+  if (!groups) return false;
+  // IPv4-mapped (::ffff:0:0/96): hand off to the IPv4 classifier so the
+  // canonical list of v4 private/reserved ranges applies.
+  if (
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0xffff
+  ) {
+    const a = ((groups[6] as number) >> 8) & 0xff;
+    const b = (groups[6] as number) & 0xff;
+    const c = ((groups[7] as number) >> 8) & 0xff;
+    const d = (groups[7] as number) & 0xff;
     return isPrivateIPv4(`${a}.${b}.${c}.${d}`);
   }
-
-  // Expand the first group to check prefix bits.
-  const firstGroup = ip.split(":")[0] ?? "";
-  if (firstGroup === "") return false; // starts with "::", already checked ::1
-  const val = parseInt(firstGroup, 16);
-  if (Number.isNaN(val)) return false;
-
-  // fc00::/7  → first byte 0xfc or 0xfd  → first 16-bit group 0xfc00–0xfdff
-  if (val >= 0xfc00 && val <= 0xfdff) return true;
-  // fe80::/10 → first 10 bits 0xfe80 → 0xfe80–0xfebf
-  if (val >= 0xfe80 && val <= 0xfebf) return true;
-  // ff00::/8  → multicast
-  if ((val & 0xff00) === 0xff00) return true;
-  // 100::/64 — discard prefix (RFC 6666). First 16-bit group is 0x0100 and
-  // groups 2..4 must be zero; we approximate by requiring first group exact.
-  if (val === 0x0100 && ip.startsWith("100:0:0:0:")) return true;
-  // 2001:db8::/32 — documentation range.
-  if (val === 0x2001) {
-    const second = parseInt(ip.split(":")[1] ?? "", 16);
-    if (second === 0x0db8) return true;
+  for (const { prefix, groups: blocked } of IPV6_BLOCKED_PREFIXES) {
+    if (ipv6MatchesPrefix(groups, prefix, blocked)) return true;
   }
-  // 64:ff9b::/96 — well-known NAT64 prefix.
-  if (val === 0x0064) {
-    const second = parseInt(ip.split(":")[1] ?? "", 16);
-    if (second === 0xff9b) return true;
-  }
-
   return false;
 }
 
@@ -416,8 +458,16 @@ export class HttpGossipTransport implements GossipTransport {
    * HMAC verification is intentionally skipped: callers MUST re-hash the
    * bytes and compare to the requested hash before storing.
    */
-  async fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined> {
-    const url = `${peer.address}/api/cas/${encodeURIComponent(contentHash)}`;
+  async fetchArtifact(
+    peer: PeerInfo,
+    cid: string,
+    artifactName: string,
+  ): Promise<Uint8Array | undefined> {
+    // Contribution-scoped: the peer's root contribution store resolves the
+    // (cid, name) tuple and only returns bytes for artifacts referenced by a
+    // root contribution. This keeps session-only artifacts in a shared CAS
+    // from being reachable by federation.
+    const url = `${peer.address}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(artifactName)}`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     return this.getBytes(validated, peer.peerId);
   }

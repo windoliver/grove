@@ -10,6 +10,7 @@
 import { hash as blake3Hash } from "blake3";
 
 import type { ContentStore } from "../core/cas.js";
+import { MAX_REQUEST_SIZE } from "../core/constants.js";
 import type {
   FetchContributionResult,
   FrontierDigestEntry,
@@ -29,6 +30,14 @@ const HASH_PREFIX = "blake3:";
  * round-trips + CAS writes before the manifest is even durable.
  */
 const MAX_ARTIFACTS_PER_CONTRIBUTION = 64;
+
+/**
+ * Hard cap on cumulative bytes fetched per contribution. Without this, a
+ * peer could advertise a manifest with N near-cap artifacts and force the
+ * server to download N × MAX_REQUEST_SIZE of data before the contribution
+ * is even persisted. Cap parity with direct contribution submission.
+ */
+const MAX_FEDERATION_CUMULATIVE_BYTES = MAX_REQUEST_SIZE;
 
 function blake3Of(bytes: Uint8Array): string {
   return `${HASH_PREFIX}${blake3Hash(bytes).toString("hex")}`;
@@ -86,22 +95,50 @@ export class FederationFetcher {
           );
           continue;
         }
-        for (const [name, declaredHash] of artifactEntries) {
-          if (await this.opts.cas.exists(declaredHash)) continue;
-          const bytes = await this.opts.transport.fetchArtifact(peer, declaredHash);
-          if (!bytes) {
-            throw new Error(`artifact ${name} (${declaredHash}) missing on ${peer.peerId}`);
+        // Track every CAS write we made during this fetch so that we can roll
+        // them back if a later artifact (or the final contributionStore.put)
+        // fails. Without this, a partial fetch leaks orphan blobs into CAS.
+        const writtenThisCall: string[] = [];
+        let cumulativeBytes = 0;
+        try {
+          for (const [name, declaredHash] of artifactEntries) {
+            if (await this.opts.cas.exists(declaredHash)) continue;
+            const bytes = await this.opts.transport.fetchArtifact(peer, cid, name);
+            if (!bytes) {
+              throw new Error(`artifact ${name} (${declaredHash}) missing on ${peer.peerId}`);
+            }
+            cumulativeBytes += bytes.byteLength;
+            if (cumulativeBytes > MAX_FEDERATION_CUMULATIVE_BYTES) {
+              throw new Error(
+                `cumulative artifact bytes ${cumulativeBytes} exceeds per-contribution budget ${MAX_FEDERATION_CUMULATIVE_BYTES}`,
+              );
+            }
+            const actual = blake3Of(bytes);
+            if (actual !== declaredHash) {
+              throw new Error(
+                `hash mismatch for artifact ${name} on ${peer.peerId}: declared=${declaredHash} actual=${actual}`,
+              );
+            }
+            await this.opts.cas.put(bytes);
+            writtenThisCall.push(declaredHash);
           }
-          const actual = blake3Of(bytes);
-          if (actual !== declaredHash) {
-            throw new Error(
-              `hash mismatch for artifact ${name} on ${peer.peerId}: declared=${declaredHash} actual=${actual}`,
-            );
+          await this.opts.contributionStore.put(manifest);
+          return { kind: "ok", cid };
+        } catch (err) {
+          // Best-effort rollback: delete blobs we wrote inside this call. We
+          // intentionally don't delete pre-existing CAS entries (cas.exists
+          // returned true above, so they were skipped). Cleanup errors are
+          // swallowed — the next periodic sweep can garbage-collect any
+          // residue. Re-throw to drive the per-peer fallback.
+          for (const h of writtenThisCall) {
+            try {
+              await this.opts.cas.delete(h);
+            } catch {
+              /* ignore */
+            }
           }
-          await this.opts.cas.put(bytes);
+          throw err;
         }
-        await this.opts.contributionStore.put(manifest);
-        return { kind: "ok", cid };
       } catch (err) {
         errors.push(`${peer.peerId}: ${err instanceof Error ? err.message : String(err)}`);
       }

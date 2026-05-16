@@ -39,7 +39,14 @@ class StubTransport implements GossipTransport {
   exchange = async () => ({}) as never;
   shuffle = async () => ({}) as never;
   fetchContribution = async () => this.manifest;
-  fetchArtifact = async (_p: PeerInfo, h: string) => this.blobs.get(h);
+  // Stub: federation now fetches by (cid, artifactName), but the manifest
+  // in these tests carries declared hashes. Look up the hash via the
+  // manifest the StubTransport already holds.
+  fetchArtifact = async (_p: PeerInfo, _cid: string, name: string) => {
+    const declared = this.manifest?.artifacts?.[name];
+    if (!declared) return undefined;
+    return this.blobs.get(declared);
+  };
 }
 
 class MemContributionStore implements Pick<ContributionStore, "get" | "put"> {
@@ -53,7 +60,7 @@ class MemContributionStore implements Pick<ContributionStore, "get" | "put"> {
   }
 }
 
-class MemCas implements Pick<ContentStore, "put" | "exists" | "get"> {
+class MemCas implements Pick<ContentStore, "put" | "exists" | "get" | "delete"> {
   readonly map = new Map<string, Uint8Array>();
   async put(b: Uint8Array) {
     const h = blake3Of(b);
@@ -65,6 +72,9 @@ class MemCas implements Pick<ContentStore, "put" | "exists" | "get"> {
   }
   async get(h: string) {
     return this.map.get(h);
+  }
+  async delete(h: string) {
+    return this.map.delete(h);
   }
 }
 
@@ -180,7 +190,7 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
         if (calls === 1) throw new Error("boom");
         return manifest;
       },
-      fetchArtifact: async () => artifactBytes,
+      fetchArtifact: async (_p, _c, _n) => artifactBytes,
     };
     const contribs = new MemContributionStore();
     const fetcher = new FederationFetcher({

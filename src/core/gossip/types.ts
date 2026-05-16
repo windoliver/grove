@@ -215,12 +215,24 @@ export interface GossipTransport {
   fetchContribution(peer: PeerInfo, cid: string): Promise<unknown | undefined>;
 
   /**
-   * Fetch raw artifact bytes from a peer's CAS by content hash. Returns
-   * undefined when the peer responds 404. Throws PeerUnreachableError /
-   * GossipTimeoutError for network failures. Callers MUST re-hash the returned
-   * bytes and compare to the requested hash before storing them locally.
+   * Fetch raw artifact bytes from a peer scoped to a (contribution CID,
+   * artifact name) pair. Returns undefined when the peer responds 404.
+   * Throws PeerUnreachableError / GossipTimeoutError for network failures.
+   * Callers MUST re-hash the returned bytes and compare to the manifest's
+   * declared hash before storing them locally.
+   *
+   * Federation reads MUST stay scoped to a contribution rather than going
+   * by raw CAS hash: in deployments with a shared zone CAS, a hash-keyed
+   * fetch would leak any blob present in the CAS (including blobs only
+   * referenced by session-scoped contributions). The contribution-scoped
+   * path delegates the authorization boundary to the local server's root
+   * contribution store, which only resolves `:cid` against the zone root.
    */
-  fetchArtifact(peer: PeerInfo, contentHash: string): Promise<Uint8Array | undefined>;
+  fetchArtifact(
+    peer: PeerInfo,
+    cid: string,
+    artifactName: string,
+  ): Promise<Uint8Array | undefined>;
 }
 
 /**

@@ -102,24 +102,31 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
   //
-  // Federation read paths (#226): the content-addressed read endpoints used
-  // by peer fetchers are auth-exempt **only** when the request carries a
-  // valid HMAC signature over `${method}\n${path}\n${timestamp}` keyed by
+  // Federation read paths (#226): the contribution-scoped read endpoints
+  // used by peer fetchers are auth-exempt **only** when the request carries
+  // a valid HMAC signature over `${method}\n${path}\n${timestamp}` keyed by
   // the shared gossip secret, with the timestamp inside the standard 5-minute
   // clock-skew window. Namespace API keys never leave the server (see
   // serve.ts), so peer-to-peer trust is bound to the same HMAC that protects
-  // gossip exchange — not to "anyone who learned the cid".
+  // gossip exchange.
   //
-  //   GET /api/cas/:hash{,/meta}       — content-addressed blob fetch.
-  //   GET /api/contributions/:cid      — content-addressed manifest fetch.
+  //   GET /api/contributions/:cid                       — manifest fetch.
+  //   GET /api/contributions/:cid/artifacts/:name       — artifact-name fetch.
   //
-  // Other contribution routes (POST /, GET /, GET /:cid/artifacts/:name)
-  // remain bearer-protected.
+  // These paths route through the local server's root contribution store,
+  // which only resolves CIDs that exist at the zone root. Session-only
+  // contributions and their artifacts therefore stay unreachable to peers
+  // even when the underlying CAS is zone-shared.
+  //
+  // /api/cas/:hash is NOT federation-exempt — direct hash-keyed reads would
+  // bypass the contribution-scope boundary and leak any blob in the shared
+  // CAS, including those referenced only by session contributions.
   // Match either the raw or percent-encoded ":" form of the cid prefix, since
   // peer transports may encode the colon (e.g., HttpGossipTransport calls
   // encodeURIComponent(cid)).
-  const FEDERATION_CAS_PATH = /^\/api\/cas\/blake3(?::|%3A)[0-9a-f]{64}(?:\/meta)?$/;
   const FEDERATION_CONTRIB_PATH = /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}$/;
+  const FEDERATION_ARTIFACT_PATH =
+    /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}\/artifacts\/[^/]+$/;
   app.use(
     "/api/*",
     namespaceAuth(registry, {
@@ -134,7 +141,7 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
         }
         if (c.req.method === "GET") {
           const path = c.req.path;
-          if (!FEDERATION_CAS_PATH.test(path) && !FEDERATION_CONTRIB_PATH.test(path)) {
+          if (!FEDERATION_CONTRIB_PATH.test(path) && !FEDERATION_ARTIFACT_PATH.test(path)) {
             return false;
           }
           // Reject any query string on exempt federation GETs. The peer

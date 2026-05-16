@@ -70,7 +70,11 @@ class NoOpTransport implements GossipTransport {
   async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
     return undefined;
   }
-  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+  async fetchArtifact(
+    _peer: PeerInfo,
+    _cid: string,
+    _artifactName: string,
+  ): Promise<Uint8Array | undefined> {
     return undefined;
   }
 }
@@ -159,28 +163,26 @@ function signedHeaders(path: string): Record<string, string> {
 }
 
 describe("federation auth exemptions (#226)", () => {
-  it("GET /api/cas/:hash with valid HMAC headers passes auth when gossip is configured", async () => {
+  it("GET /api/contributions/:cid with valid HMAC headers passes auth when gossip is configured", async () => {
     const app = appWithGossip();
-    const path = `/api/cas/${SAMPLE_CID}`;
+    const path = `/api/contributions/${SAMPLE_CID}`;
     const res = await app.request(path, { headers: signedHeaders(path) });
-    // Exempt path → middleware lets it through. CAS is empty, so the handler
-    // returns 404. Any non-{400,401} status proves auth was bypassed.
+    // Exempt path → middleware lets it through. Contribution store is empty,
+    // so the handler returns 404. Non-{400,401} status proves auth was bypassed.
     expect(res.status).not.toBe(400);
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(404);
   });
 
-  it("GET /api/cas/:hash with NO headers fails even when gossip is configured", async () => {
+  it("GET /api/contributions/:cid with NO headers fails even when gossip is configured", async () => {
     const app = appWithGossip();
-    const res = await app.request(`/api/cas/${SAMPLE_CID}`);
-    // Anonymous content-hash reads must NOT bypass auth: without the HMAC
-    // headers the request falls through to bearer-auth, which rejects.
+    const res = await app.request(`/api/contributions/${SAMPLE_CID}`);
     expect([400, 401]).toContain(res.status);
   });
 
-  it("GET /api/cas/:hash with FORGED HMAC fails", async () => {
+  it("GET /api/contributions/:cid with FORGED HMAC fails", async () => {
     const app = appWithGossip();
-    const path = `/api/cas/${SAMPLE_CID}`;
+    const path = `/api/contributions/${SAMPLE_CID}`;
     const ts = new Date().toISOString();
     const res = await app.request(path, {
       headers: {
@@ -191,9 +193,9 @@ describe("federation auth exemptions (#226)", () => {
     expect([400, 401]).toContain(res.status);
   });
 
-  it("GET /api/cas/:hash with stale HMAC timestamp fails", async () => {
+  it("GET /api/contributions/:cid with stale HMAC timestamp fails", async () => {
     const app = appWithGossip();
-    const path = `/api/cas/${SAMPLE_CID}`;
+    const path = `/api/contributions/${SAMPLE_CID}`;
     const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago
     const res = await app.request(path, {
       headers: {
@@ -204,10 +206,29 @@ describe("federation auth exemptions (#226)", () => {
     expect([400, 401]).toContain(res.status);
   });
 
-  it("GET /api/cas/:hash with NO auth fails when gossip is NOT configured", async () => {
+  it("GET /api/contributions/:cid with query string is rejected even with valid HMAC", async () => {
+    const app = appWithGossip();
+    const path = `/api/contributions/${SAMPLE_CID}`;
+    // Sign the bare path (no query); the request adds ?sessionId=X to try to
+    // sneak in a session-scoped read. The exempt callback must refuse.
+    const res = await app.request(`${path}?sessionId=fakesess`, {
+      headers: signedHeaders(path),
+    });
+    expect([400, 401]).toContain(res.status);
+  });
+
+  it("GET /api/cas/:hash is NOT federation-exempt and stays bearer-only", async () => {
+    const app = appWithGossip();
+    const path = `/api/cas/${SAMPLE_CID}`;
+    // Even with valid HMAC, the CAS path must require bearer auth — the
+    // federation read boundary is now contribution-scoped, not hash-keyed.
+    const res = await app.request(path, { headers: signedHeaders(path) });
+    expect([400, 401]).toContain(res.status);
+  });
+
+  it("GET /api/contributions/:cid with NO auth fails when gossip is NOT configured", async () => {
     const app = appWithoutGossip();
-    const res = await app.request(`/api/cas/${SAMPLE_CID}`);
-    // Without gossip, no exemption applies — bearer auth is required.
+    const res = await app.request(`/api/contributions/${SAMPLE_CID}`);
     expect([400, 401]).toContain(res.status);
   });
 

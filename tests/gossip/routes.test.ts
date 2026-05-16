@@ -57,7 +57,11 @@ class NoOpTransport implements GossipTransport {
   async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
     return undefined;
   }
-  async fetchArtifact(_peer: PeerInfo, _contentHash: string): Promise<Uint8Array | undefined> {
+  async fetchArtifact(
+    _peer: PeerInfo,
+    _cid: string,
+    _artifactName: string,
+  ): Promise<Uint8Array | undefined> {
     return undefined;
   }
 }
