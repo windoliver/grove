@@ -104,6 +104,13 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
   [RunningPanel.Reviews]: "reviews",
 });
 
+// #310: LogView mount gate. Read process.env once at module load — env vars
+// don't change at runtime, so re-reading on every render is wasted work and
+// (more importantly) churns useMemo deps that include `useLogView`.
+// TODO(#310): swap for session.runtime==="acpx" detection once session
+// metadata is plumbed through to running-view.
+const useLogView = process.env.GROVE_LOGVIEW === "1";
+
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
   readonly provider: TuiDataProvider;
@@ -225,13 +232,23 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [traceScrollOffset, setTraceScrollOffset] = useState(0);
 
     // ─── LogView state (#310): controlled by central keyboard dispatcher ───
-    // TODO(#310): swap the GROVE_LOGVIEW env gate for session.runtime==="acpx"
-    // detection once session metadata is plumbed through to running-view.
-    const useLogView = process.env.GROVE_LOGVIEW === "1";
+    // Mount gate lives at module scope (`useLogView`) so env reads don't
+    // churn useMemo deps each render.
     const [logPaused, setLogPaused] = useState(false);
     const [logFilter, setLogFilter] = useState("");
-    const [logFilterMode, setLogFilterMode] = useState(false);
+    const [logFilterMode, setLogFilterModeRaw] = useState(false);
     const [logScrollOffset, setLogScrollOffset] = useState(0);
+    // Mirror `logFilterMode` into a ref so the keyboard dispatcher sees the
+    // latest value within a same-tick burst (paste / scripted input) — same
+    // race rationale as `cmdStateRef` below. Without this, a burst like
+    // `/foo` after committing the prior filter could see stale
+    // `logFilterMode === false` between `setLogFilterMode(true)` and React's
+    // commit, sending printable chars to normal-mode handlers.
+    const logFilterModeRef = useRef<boolean>(false);
+    const setLogFilterMode = useCallback((next: boolean) => {
+      logFilterModeRef.current = next;
+      setLogFilterModeRaw(next);
+    }, []);
 
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
@@ -1024,8 +1041,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         // latest value via React's reducer form.
         setCmdState,
         setFilterQuery,
-        // #310: LogView mount gate; flips action surface for the Terminal panel.
-        useLogView,
+        // #310: ref-mirrored setter (stable identity per render via
+        // useCallback) — keeps logEnterFilterMode/logCommitFilter/
+        // logCancelFilter exhaustive without churning the memo each render.
+        setLogFilterMode,
+        // #310: `useLogView` lives at module scope (env-derived constant), so
+        // it isn't a dep — kept out of the array deliberately.
       ],
     );
 
@@ -1081,17 +1102,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             return;
           }
 
-          // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
-          // because keyboardState's useMemo only re-runs after React commits,
-          // and a burst of keys arriving in a single tick would otherwise see
-          // stale state. See cmdState refs above for the race rationale.
+          // Live snapshot of cmdMode/cmdText/filterQuery/logFilterMode from
+          // refs — needed because keyboardState's useMemo only re-runs after
+          // React commits, and a burst of keys arriving in a single tick
+          // would otherwise see stale state. See cmdState refs above for the
+          // race rationale; logFilterMode follows the same pattern (#310).
           const liveState: RunningKeyboardState = {
             ...keyboardState,
             cmdMode: cmdStateRef.current.mode,
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
             confirmModalOpen,
-            logFilterMode,
+            logFilterMode: logFilterModeRef.current,
           };
           routeRunningKey(key, liveState, keyboardActions);
         },
@@ -1104,7 +1126,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           showHelp,
           confirmModalOpen,
-          logFilterMode,
+          // #310: logFilterMode read via logFilterModeRef (synchronous) so a
+          // same-tick burst sees the latest mode. keyboardState already lists
+          // logFilterMode in its memo deps for rendering, so committed state
+          // changes still re-create the callback through that path.
         ],
       ),
     );
@@ -1317,6 +1342,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
+                logViewActive: useLogView,
+                logPaused,
+                logFilter,
+                logFilterMode,
+                logScrollOffset,
                 sessionStartedAt,
                 handoffs,
                 activeRoles,
