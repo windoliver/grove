@@ -6,6 +6,8 @@ import {
   type AgentTaskView,
 } from "./agent-task.js";
 import type { Condition } from "./entity.js";
+import type { SchedulingResult } from "./scheduler/framework.js";
+import type { Scheduler } from "./scheduler/scheduler.js";
 import type { AgentTaskStatusPatch, AgentTaskStore } from "./store.js";
 import { KeyedWorkQueue, QueueClosedError, type WorkItemResult } from "./workqueue.js";
 
@@ -46,6 +48,7 @@ export interface TaskControllerOptions {
   readonly now?: (() => number) | undefined;
   readonly onError?: ((error: unknown, taskId: string) => void) | undefined;
   readonly onTransition?: ((transition: AgentTaskStatusTransition) => void) | undefined;
+  readonly scheduler?: Scheduler | undefined;
 }
 
 interface ReconciliationResult {
@@ -92,6 +95,7 @@ export class TaskController {
   private readonly taskStore: TaskControllerStore;
   private readonly runtime: TaskControllerRuntime;
   private readonly binder: TaskBinder;
+  private readonly scheduler: Scheduler | undefined;
   private readonly queue: KeyedWorkQueue;
   private readonly now: () => number;
   private readonly resyncIntervalMs: number;
@@ -107,6 +111,7 @@ export class TaskController {
     this.taskStore = options.taskStore;
     this.runtime = options.runtime;
     this.binder = options.binder ?? new DefaultTaskBinder(options.runtime);
+    this.scheduler = options.scheduler;
     this.now = options.now ?? Date.now;
     this.queue = options.queue ?? new KeyedWorkQueue({ now: this.now });
     this.resyncIntervalMs = options.resyncIntervalMs ?? DEFAULT_RESYNC_INTERVAL_MS;
@@ -275,6 +280,17 @@ export class TaskController {
       return this.reconcileRunning(task);
     }
 
+    if (this.scheduler === undefined) {
+      return this.directBindPendingBind(task);
+    }
+
+    const decision = await this.scheduler.schedule(task);
+    return this.applySchedulingDecision(task, decision);
+  }
+
+  private async directBindPendingBind(
+    task: AgentTaskView,
+  ): Promise<ReconciliationResult | undefined> {
     const { session } = await this.binder.bind({ task });
     const nowIso = this.nowIso();
     const conditions = upsertCondition(
@@ -306,6 +322,106 @@ export class TaskController {
       },
       transition: transition(task, AgentTaskPhase.Running, "session-bound"),
       sessionToCloseOnPatchFailure: session,
+    };
+  }
+
+  private applySchedulingDecision(
+    task: AgentTaskView,
+    decision: SchedulingResult,
+  ): ReconciliationResult | undefined {
+    const nowIso = this.nowIso();
+
+    if (decision.kind === "bound") {
+      const conditions = upsertCondition(
+        upsertCondition(task.status.conditions, {
+          type: AgentTaskConditionType.Bound,
+          status: "True",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "session-bound",
+          message: "",
+        }),
+        {
+          type: AgentTaskConditionType.Running,
+          status: "True",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "session-running",
+          message: "",
+        },
+      );
+      return {
+        patch: {
+          phase: AgentTaskPhase.Running,
+          sessionId: decision.session.id,
+          observedGeneration: task.spec.generation,
+          conditions,
+          lastTransitionAt: nowIso,
+        },
+        transition: transition(task, AgentTaskPhase.Running, "session-bound"),
+        sessionToCloseOnPatchFailure: decision.session,
+      };
+    }
+
+    if (decision.kind === "unschedulable") {
+      const reasons = decision.rejections
+        .flatMap((entry) =>
+          entry.rejections.map((r) => `${entry.profile.name}/${r.plugin}:${r.reason}`),
+        )
+        .slice(0, 3);
+      const message = reasons.length === 0 ? "no candidate profiles" : reasons.join("; ");
+      const conditions = upsertCondition(task.status.conditions, {
+        type: AgentTaskConditionType.Unschedulable,
+        status: "True",
+        observedGeneration: task.spec.generation,
+        lastTransitionTime: nowIso,
+        reason: "no-candidate",
+        message,
+      });
+      return {
+        patch: {
+          observedGeneration: task.spec.generation,
+          conditions,
+        },
+        transition: transition(task, AgentTaskPhase.PendingBind, "unschedulable"),
+      };
+    }
+
+    if (decision.kind === "wait") {
+      const conditions = upsertCondition(task.status.conditions, {
+        type: AgentTaskConditionType.PermitRequired,
+        status: "True",
+        observedGeneration: task.spec.generation,
+        lastTransitionTime: nowIso,
+        reason: decision.reason,
+        message: decision.message ?? `permit '${decision.plugin}' is waiting`,
+      });
+      return {
+        patch: {
+          observedGeneration: task.spec.generation,
+          conditions,
+        },
+        transition: transition(task, AgentTaskPhase.PendingBind, "permit-wait"),
+      };
+    }
+
+    // decision.kind === "denied"
+    const conditions = upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Failed,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: decision.reason,
+      message: decision.message ?? `permit '${decision.plugin}' denied`,
+    });
+    return {
+      patch: {
+        phase: AgentTaskPhase.Failed,
+        observedGeneration: task.spec.generation,
+        conditions,
+        lastTransitionAt: nowIso,
+      },
+      transition: transition(task, AgentTaskPhase.Failed, decision.reason),
     };
   }
 
