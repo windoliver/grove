@@ -13,10 +13,20 @@
  * Authentication: `/api/*` routes require a valid bearer token, with two
  * exemptions that apply only when gossip is configured:
  *   - POST /api/gossip/exchange and POST /api/gossip/shuffle use HMAC.
- *   - GET /api/cas/:hash{,/meta} and GET /api/contributions/:cid are
- *     content-addressed and used by peer federation fetchers (#226).
+ *   - GET /api/contributions/:cid and
+ *     GET /api/contributions/:cid/artifacts/:name are contribution-scoped
+ *     and used by peer federation fetchers — auth-exempt only when the
+ *     request carries a valid X-Gossip-Signature / X-Gossip-Timestamp pair
+ *     keyed by the shared gossip HMAC secret (#226).
  *
  * Local-trigger routes like POST /api/gossip/fetch/:cid remain bearer-protected.
+ *
+ * There is intentionally no hash-keyed CAS read endpoint: a direct
+ * /api/cas/:hash would expose every blob in the zone-shared CAS (including
+ * blobs only referenced by session contributions) to any namespace bearer
+ * that happened to learn the hash. Federation MUST use the
+ * contribution-scoped artifact route so the local server's root contribution
+ * store can authorize the read.
  */
 
 import { Hono } from "hono";
@@ -33,7 +43,6 @@ import { agentTasks } from "./routes/agent-tasks.js";
 import { agents } from "./routes/agents.js";
 import { boardroom } from "./routes/boardroom.js";
 import { bounties } from "./routes/bounties.js";
-import { cas } from "./routes/cas.js";
 import { claims } from "./routes/claims.js";
 import { contributions } from "./routes/contributions.js";
 import { dag } from "./routes/dag.js";
@@ -118,9 +127,10 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // contributions and their artifacts therefore stay unreachable to peers
   // even when the underlying CAS is zone-shared.
   //
-  // /api/cas/:hash is NOT federation-exempt — direct hash-keyed reads would
-  // bypass the contribution-scope boundary and leak any blob in the shared
-  // CAS, including those referenced only by session contributions.
+  // There is intentionally no /api/cas/:hash route — direct hash-keyed
+  // reads bypass the contribution-scope boundary and would leak any blob
+  // in the shared CAS, including blobs only referenced by session
+  // contributions.
   // Match either the raw or percent-encoded ":" form of the cid prefix, since
   // peer transports may encode the colon (e.g., HttpGossipTransport calls
   // encodeURIComponent(cid)).
@@ -184,7 +194,6 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   app.route("/api/agent-tasks", agentTasks);
   app.route("/api/boardroom", boardroom);
   app.route("/api/contributions", contributions);
-  app.route("/api/cas", cas);
   app.route("/api/frontier", frontier);
   app.route("/api/search", search);
   app.route("/api/dag", dag);

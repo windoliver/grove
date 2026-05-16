@@ -217,13 +217,17 @@ describe("federation auth exemptions (#226)", () => {
     expect([400, 401]).toContain(res.status);
   });
 
-  it("GET /api/cas/:hash is NOT federation-exempt and stays bearer-only", async () => {
+  it("GET /api/cas/:hash route no longer exists (404, not exempt)", async () => {
     const app = appWithGossip();
     const path = `/api/cas/${SAMPLE_CID}`;
-    // Even with valid HMAC, the CAS path must require bearer auth — the
-    // federation read boundary is now contribution-scoped, not hash-keyed.
+    // The hash-keyed CAS endpoint was removed: a direct content-hash read
+    // would bypass the contribution-scope boundary in zone-shared CAS
+    // deployments. Federation uses /api/contributions/:cid/artifacts/:name.
+    // The middleware still handles the /api/* prefix, so an unauthenticated
+    // request gets a 400/401 (auth challenge) rather than 404 — what matters
+    // is that there is no route handler returning blob bytes.
     const res = await app.request(path, { headers: signedHeaders(path) });
-    expect([400, 401]).toContain(res.status);
+    expect([400, 401, 404]).toContain(res.status);
   });
 
   it("GET /api/contributions/:cid with NO auth fails when gossip is NOT configured", async () => {

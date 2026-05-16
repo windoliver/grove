@@ -178,13 +178,27 @@ export interface AntiEntropySweepOpts {
    * synthetic dimensions named with a "_" prefix).
    */
   readonly thresholds: Readonly<Record<string, number>>;
+  /**
+   * Per-CID negative cache. CIDs present in this set are skipped for the
+   * current sweep without contacting any peer. The caller is responsible
+   * for inserting on failure and expiring entries.
+   */
+  readonly negativeCache?: Set<string>;
+  /**
+   * Hook invoked with the sweep result for each attempted CID. Lets the
+   * caller emit telemetry (logs, metrics) and update the negative cache.
+   * Called once per CID — exceptions are swallowed so the sweep loop
+   * always drains its target list.
+   */
+  readonly onResult?: (result: FetchContributionResult) => void;
 }
 
 /**
  * Run a single anti-entropy sweep: walk the merged frontier, pick CIDs that
- * meet per-metric thresholds (and aren't already requested in this sweep),
- * and ask the federation fetcher to pull them. Best-effort — individual fetch
- * failures are swallowed (the fetcher already reports per-peer errors).
+ * meet per-metric thresholds (and aren't already negatively cached or
+ * already requested in this sweep), and ask the federation fetcher to pull
+ * them. Each result is forwarded to `onResult` so the caller can log
+ * failures and update the negative cache.
  */
 export async function runAntiEntropySweep(opts: AntiEntropySweepOpts): Promise<void> {
   const seen = new Set<string>();
@@ -192,18 +206,29 @@ export async function runAntiEntropySweep(opts: AntiEntropySweepOpts): Promise<v
   for (const entry of opts.frontier) {
     if (targets.length >= opts.batchSize) break;
     if (seen.has(entry.cid)) continue;
+    if (opts.negativeCache?.has(entry.cid)) continue;
     const threshold = opts.thresholds[entry.metric];
     if (threshold !== undefined && entry.value < threshold) continue;
     seen.add(entry.cid);
     targets.push(entry.cid);
   }
   for (const cid of targets) {
+    let result: FetchContributionResult;
     try {
-      await opts.fetcher.fetchRemoteContribution(cid);
-    } catch {
-      // Best-effort: unexpected exceptions are swallowed. Per-peer fetch
-      // errors are already surfaced via the FetchContributionResult.failed
-      // path inside FederationFetcher, not thrown.
+      result = await opts.fetcher.fetchRemoteContribution(cid);
+    } catch (err) {
+      result = {
+        kind: "failed",
+        cid,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (opts.onResult) {
+      try {
+        opts.onResult(result);
+      } catch {
+        // Telemetry callback must not break the sweep.
+      }
     }
   }
 }

@@ -288,9 +288,13 @@ async function main(): Promise<void> {
   }
   console.log("[step] B has the contribution manifest");
 
-  // 7. Verify B has the artifact bytes via GET /api/cas/:hash (using B's bearer
-  //    even though the path is bearer-exempt — confirms the route serves the bytes).
-  const blobRes = await getJson(`${baseB}/api/cas/${encodeURIComponent(artifactHash)}`, tokenB);
+  // 7. Verify B has the artifact bytes via the contribution-scoped route
+  //    (the only federation-facing read path; hash-keyed CAS reads were
+  //    removed to keep zone-shared CAS blobs from leaking by hash).
+  const blobRes = await getJson(
+    `${baseB}/api/contributions/${encodeURIComponent(cid)}/artifacts/payload.bin`,
+    tokenB,
+  );
   if (blobRes.status !== 200) {
     throw new Error(`B should have artifact bytes; got ${blobRes.status}`);
   }

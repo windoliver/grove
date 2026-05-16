@@ -261,6 +261,51 @@ describe("runAntiEntropySweep", () => {
     );
   });
 
+  it("invokes onResult for every attempted fetch (ok and failed)", async () => {
+    const events: Array<{ kind: string; cid: string }> = [];
+    const fakeFetcher = {
+      fetchRemoteContribution: async (cid: string) => {
+        if (cid.endsWith("a".repeat(64))) return { kind: "ok", cid } as const;
+        return { kind: "failed", cid, reason: "boom" } as const;
+      },
+    };
+    const frontier: FrontierDigestEntry[] = [
+      { metric: "m", value: 10, cid: `blake3:${"a".repeat(64)}` },
+      { metric: "m", value: 10, cid: `blake3:${"b".repeat(64)}` },
+    ];
+    await runAntiEntropySweep({
+      frontier,
+      fetcher: fakeFetcher as unknown as FederationFetcher,
+      batchSize: 8,
+      thresholds: {},
+      onResult: (r) => events.push({ kind: r.kind, cid: r.cid }),
+    });
+    expect(events.map((e) => e.kind).sort()).toEqual(["failed", "ok"]);
+  });
+
+  it("skips CIDs present in the negative cache", async () => {
+    let fetchCount = 0;
+    const fakeFetcher = {
+      fetchRemoteContribution: async (cid: string) => {
+        fetchCount += 1;
+        return { kind: "ok", cid } as const;
+      },
+    };
+    const skipped = `blake3:${"d".repeat(64)}`;
+    const frontier: FrontierDigestEntry[] = [
+      { metric: "m", value: 10, cid: skipped },
+      { metric: "m", value: 10, cid: `blake3:${"e".repeat(64)}` },
+    ];
+    await runAntiEntropySweep({
+      frontier,
+      fetcher: fakeFetcher as unknown as FederationFetcher,
+      batchSize: 8,
+      thresholds: {},
+      negativeCache: new Set([skipped]),
+    });
+    expect(fetchCount).toBe(1);
+  });
+
   it("respects batchSize", async () => {
     let count = 0;
     const fakeFetcher = {

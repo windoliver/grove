@@ -221,6 +221,12 @@ export class DefaultGossipService implements GossipService {
   private remoteFrontier: FrontierDigestEntry[] = [];
   private antiEntropyTimer: ReturnType<typeof setTimeout> | undefined;
   /**
+   * Per-CID negative cache used by anti-entropy to throttle re-fetches of
+   * known-unfetchable advertisements. Maps cid → expiresAtMs (epoch ms);
+   * GC'd lazily on next sweep build.
+   */
+  private readonly antiEntropyNegativeCache = new Map<string, number>();
+  /**
    * Map of cid → (peerId → PeerInfo) for peers that advertised this cid.
    *
    * The outer map is bounded by the number of distinct cids in
@@ -663,12 +669,47 @@ export class DefaultGossipService implements GossipService {
     this.antiEntropyTimer = setTimeout(async () => {
       const fetcher = this.federation;
       if (!fetcher) return;
+      // Build the live negative-cache set: drop entries whose backoff has
+      // expired. Keeps the cache bounded and lets recovered CIDs retry.
+      const nowMs = this.now();
+      const negative = new Set<string>();
+      for (const [cid, expiresAt] of this.antiEntropyNegativeCache) {
+        if (expiresAt > nowMs) {
+          negative.add(cid);
+        } else {
+          this.antiEntropyNegativeCache.delete(cid);
+        }
+      }
+      // Negative-cache TTL: hold a failed CID for one full anti-entropy
+      // interval so a buggy / malicious peer can't make us redo doomed
+      // work every sweep. Recovered peers and resigned advertisements
+      // get retried on the next tick after the entry expires.
+      const failureTtlMs = this.config.antiEntropyIntervalMs;
       try {
         await runAntiEntropySweep({
           frontier: this.mergedFrontier(),
           fetcher,
           batchSize: this.config.antiEntropyBatchSize,
           thresholds: this.config.antiEntropyThresholds,
+          negativeCache: negative,
+          onResult: (result) => {
+            switch (result.kind) {
+              case "failed":
+                this.antiEntropyNegativeCache.set(result.cid, this.now() + failureTtlMs);
+                console.warn(
+                  `Gossip anti-entropy: fetch failed for ${result.cid}: ${result.reason}`,
+                );
+                break;
+              case "no-source":
+                this.antiEntropyNegativeCache.set(result.cid, this.now() + failureTtlMs);
+                break;
+              case "ok":
+              case "already-local":
+                // Recovered or no-op — clear any prior negative cache entry.
+                this.antiEntropyNegativeCache.delete(result.cid);
+                break;
+            }
+          },
         });
       } catch {
         // best-effort
