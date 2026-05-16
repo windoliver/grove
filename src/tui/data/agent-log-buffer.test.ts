@@ -311,3 +311,40 @@ describe("clear", () => {
     expect(buf.isEmpty).toBe(true);
   });
 });
+
+describe("AgentLogBuffer flushMs", () => {
+  test("constructor accepts custom flushMs (50ms) and coalesces notifies", async () => {
+    const buf = new AgentLogBuffer("coder", "sess-flush", 10_000, 50);
+    let notifies = 0;
+    buf.subscribe(() => {
+      notifies += 1;
+    });
+
+    for (let i = 0; i < 100; i++) {
+      buf.push({ ts: Date.now(), line: `line-${i}`, type: "output" });
+    }
+    expect(notifies).toBe(0);
+
+    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(notifies).toBe(0);
+
+    await new Promise((r) => setTimeout(r, 40));
+    expect(buf.size).toBe(100);
+    expect(notifies).toBe(1);
+
+    buf.dispose();
+  });
+
+  test("defaults to 16ms when flushMs is not supplied", async () => {
+    const buf = new AgentLogBuffer("coder", "sess-default");
+    let notifies = 0;
+    buf.subscribe(() => {
+      notifies += 1;
+    });
+    buf.push({ ts: 0, line: "x", type: "output" });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(notifies).toBe(1);
+    buf.dispose();
+  });
+});

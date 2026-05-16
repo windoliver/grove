@@ -55,11 +55,12 @@ export function classifyLine(line: string): LogLineType {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CAPACITY = 10_000;
-const FLUSH_INTERVAL_MS = 16; // ~60fps
+const DEFAULT_FLUSH_INTERVAL_MS = 16; // ~60fps
 
 export class AgentLogBuffer {
   readonly role: string;
   readonly sessionId: string;
+  readonly flushMs: number;
 
   private readonly buffer: RingBuffer<LogLine>;
   private readonly listeners = new Set<LogBufferListener>();
@@ -78,9 +79,15 @@ export class AgentLogBuffer {
    */
   private readonly seekedPositions = new Map<string, number>();
 
-  constructor(role: string, sessionId: string, capacity: number = DEFAULT_CAPACITY) {
+  constructor(
+    role: string,
+    sessionId: string,
+    capacity: number = DEFAULT_CAPACITY,
+    flushMs: number = DEFAULT_FLUSH_INTERVAL_MS,
+  ) {
     this.role = role;
     this.sessionId = sessionId;
+    this.flushMs = flushMs;
     this.buffer = new RingBuffer<LogLine>(capacity);
   }
 
@@ -288,7 +295,7 @@ export class AgentLogBuffer {
           this.dirty = false;
           this.notifyListeners();
         }
-      }, FLUSH_INTERVAL_MS);
+      }, this.flushMs);
     }
   }
 
