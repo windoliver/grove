@@ -817,9 +817,12 @@ export class DefaultGossipService implements GossipService {
           // batch slots fill with genuine federation work. Without this,
           // a node whose local frontier exceeds batchSize would chew up
           // every sweep on already-local entries from the merged digest.
-          isLocal: contributionStore
-            ? async (cid) => (await contributionStore.get(cid)) !== undefined
-            : undefined,
+          ...(contributionStore
+            ? {
+                isLocal: async (cid: string) =>
+                  (await contributionStore.get(cid)) !== undefined,
+              }
+            : {}),
           onResult: (result) => {
             switch (result.kind) {
               case "failed":
