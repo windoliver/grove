@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { computeCid } from "../core/manifest.js";
 import type { ContributionInput } from "../core/models.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../core/timeline.js";
 import { createTestApp, TEST_NAMESPACE_KEY } from "../server/test-helpers.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
 import { RemoteDataProvider } from "./remote-provider.js";
@@ -34,6 +35,28 @@ function makeContribution(
   };
   const cid = computeCid(input);
   return { cid, ...input };
+}
+
+function makeWorkBlock(workBlockId: string, sessionId: string) {
+  return {
+    workBlockId,
+    sessionId,
+    goal: "Investigate remote provider timeline",
+    actor: { agentId: "agent-1" },
+    origin: WorkBlockOrigin.Agent,
+    status: WorkBlockStatus.Running,
+    startedAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    inputRefs: [],
+    outputRefs: [],
+    evidenceRefs: [],
+    approvalRefs: [],
+    contributionCids: [],
+    artifactHashes: [],
+    claimIds: [],
+    revision: 1,
+    createdAt: "2026-05-13T10:00:00.000Z",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +98,16 @@ async function createTestProvider(): Promise<{
     createdAt: new Date().toISOString(),
     heartbeatAt: new Date().toISOString(),
     leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+  });
+  if (ctx.timelineStore === undefined) throw new Error("Expected timeline store");
+  await ctx.timelineStore.putWorkBlock(makeWorkBlock("wb_remote_provider", "session-provider"));
+  await ctx.timelineStore.appendTimelineEvent({
+    eventId: "te_remote_provider",
+    sessionId: "session-provider",
+    type: TimelineEventType.WorkBlockStarted,
+    occurredAt: "2026-05-13T10:00:00.000Z",
+    targetRefs: [{ kind: "WorkBlock", id: "wb_remote_provider" }],
+    payload: {},
   });
 
   // Start an ephemeral server
@@ -126,6 +159,18 @@ describe("RemoteDataProvider specific", () => {
       "blake3:0000000000000000000000000000000000000000000000000000000000000000",
     );
     expect(detail).toBeUndefined();
+  });
+
+  test("exposes WorkBlocks and SessionTimeline from remote timeline routes", async () => {
+    const blocks = await provider.getWorkBlocks?.({ sessionId: "session-provider" });
+    const timeline = await provider.getTimeline?.({
+      sessionId: "session-provider",
+      includeWorkBlocks: true,
+    });
+
+    expect(blocks?.map((block) => block.workBlockId)).toEqual(["wb_remote_provider"]);
+    expect(timeline?.events.map((event) => event.eventId)).toEqual(["te_remote_provider"]);
+    expect(timeline?.workBlocks?.map((block) => block.workBlockId)).toEqual(["wb_remote_provider"]);
   });
 
   test("applies active session scope to detail, graph, artifact, and search reads", async () => {

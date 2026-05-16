@@ -71,6 +71,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
+      timelineStore: runtime.timelineStore,
       bountyStore: runtime.bountyStore,
       creditsService: runtime.creditsService,
       frontierRewardService: runtime.frontierRewardService,
@@ -88,8 +89,10 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+    expect(deps.timelineStore).toBe(runtime.timelineStore);
     expect(deps.creditsService).toBe(runtime.creditsService);
     expect(deps.frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeDefined();
     expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
   });
@@ -101,6 +104,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
+      timelineStore: runtime.timelineStore,
       bountyStore: runtime.bountyStore,
       creditsService: runtime.creditsService,
       cas: runtime.cas,
@@ -115,8 +119,10 @@ describe("MCP deps parity with LocalRuntime", () => {
 
     expect(deps.goalSessionStore).toBeDefined();
     expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+    expect(deps.timelineStore).toBe(runtime.timelineStore);
     expect(deps.creditsService).toBe(runtime.creditsService);
     expect(deps.frontierRewardService).toBeUndefined();
+    expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeUndefined();
     expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
   });
@@ -126,6 +132,7 @@ describe("MCP deps parity with LocalRuntime", () => {
     const deps: McpDeps = {
       contributionStore: runtime.contributionStore,
       claimStore: runtime.claimStore,
+      timelineStore: runtime.timelineStore,
       bountyStore: runtime.bountyStore,
       cas: runtime.cas,
       frontier: runtime.frontier,

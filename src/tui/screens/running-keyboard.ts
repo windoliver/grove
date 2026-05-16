@@ -68,6 +68,12 @@ export interface RunningKeyboardState {
   readonly cmdText: string;
   /** C2 (#302): retained filter query after Enter exits filter mode. Esc-from-normal clears it. */
   readonly filterQuery: string;
+  /**
+   * C6 (#304) round-2: when a confirmAndMutate modal is open, defer y/n
+   * permission shortcuts so a confirm/cancel keystroke does NOT also
+   * approve/deny a pending tmux permission prompt.
+   */
+  readonly confirmModalOpen: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +126,7 @@ export interface RunningKeyboardActions {
   readonly traceCycleAgent: () => void;
   // Navigation
   readonly openDetail: () => void;
-  readonly toggleAdvanced: () => void;
+  readonly enterInspect: () => void;
   readonly quit: () => void;
   // Permission
   readonly approvePermission: () => void;
@@ -288,9 +294,9 @@ export function routeRunningKey(
     return true;
   }
 
-  // Ctrl+A: toggle advanced mode
-  if (isCtrl && input === "a") {
-    actions.toggleAdvanced();
+  // Ctrl+G: enter inspect mode (Ctrl+I shares byte 0x09 with Tab — unusable in terminals)
+  if (isCtrl && input === "g") {
+    actions.enterInspect();
     return true;
   }
 
@@ -329,12 +335,15 @@ export function routeRunningKey(
     return true;
   }
 
-  // y/n: approve/deny permission prompts
-  if (input === "y" && actions.hasPermissions) {
+  // y/n: approve/deny permission prompts.
+  // C6 (#304) round-2: skip when the confirmAndMutate modal is open;
+  // the modal owns these keys and a permission approve/deny here would
+  // double-fire from a single keystroke.
+  if (input === "y" && actions.hasPermissions && !state.confirmModalOpen) {
     actions.approvePermission();
     return true;
   }
-  if (input === "n" && actions.hasPermissions) {
+  if (input === "n" && actions.hasPermissions && !state.confirmModalOpen) {
     actions.denyPermission();
     return true;
   }
@@ -412,11 +421,11 @@ export function routeRunningKey(
     return false;
   }
 
-  // Enter: open detail view for selected feed item
-  if (input === "return" && actions.feedLength > 0) {
-    actions.openDetail();
-    return true;
-  }
+  // Enter: reserved for a future contribution-detail route. Previously
+  // routed to openDetail which was wired to onEnterInspect — that gave
+  // Enter an accidental inspect-entry path, violating the documented
+  // "Ctrl+G only" contract (#191 round 3). Until a real detail view
+  // exists, Enter on a feed item is a no-op.
 
   // r: respond to ask_user question (scroll to it)
   if (input === "r" && actions.hasAskUser) {

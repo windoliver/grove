@@ -7,10 +7,11 @@
  *   Screen 3: LaunchPreview (auto-detect CLIs, Ctrl+Enter to launch)
  *   Screen 4: RunningView (contribution feed + agent status)
  *   Screen 5: CompleteView (session summary)
- *   Ctrl+A: toggle to App (advanced mode) / Ctrl+B back to RunningView
+ *   Ctrl+G: open inspect overlay (full panel workspace); Ctrl+G to return
  */
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
 import {
@@ -29,8 +30,15 @@ import { DagStateProvider } from "../hooks/dag-state-context.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
-import type { SessionRecord } from "../provider.js";
+import type {
+  SessionRecord,
+  TuiDataProvider,
+  TuiGoalProvider,
+  TuiSessionProvider,
+} from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
+import { useConfirmAndMutate } from "../safety/index.js";
+import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
@@ -55,7 +63,7 @@ export type Screen =
   | "spawning"
   | "running"
   | "complete"
-  | "advanced";
+  | "inspect";
 
 /** State tracked across screen transitions. */
 export interface ScreenState {
@@ -82,7 +90,7 @@ export interface ScreenState {
 
 /** Props for the ScreenManager component. */
 export interface ScreenManagerProps {
-  /** AppProps for the advanced boardroom mode. */
+  /** AppProps passed through to the inspect overlay. */
   readonly appProps: AppProps;
   /** Presets for Screen 1. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
@@ -94,6 +102,103 @@ export interface ScreenManagerProps {
   readonly initialState?: ScreenState | undefined;
   /** Scope the resumed session's feed/history to this session id. */
   readonly resumeSessionId?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Compensation helpers (C6 #304, T11)
+//
+// These wrap the dangerous archive/setGoal client methods for screen
+// teardown and spawn-time goal seeding. They're internal cleanup paths
+// with no operator confirmation, so they use `mintTokenForCompensation`
+// (deep import from `safety/internal/compensation.js`) — the conspicuous
+// import path is the social signal that this bypasses the normal
+// `useConfirmAndMutate` UI.
+//
+// Both helpers fetch a fresh RV inline so the CAS check at the server
+// gate passes; a 409 here means the entity changed between the read and
+// the write (e.g., another operator archived the same session). Best-
+// effort behaviour is acceptable for teardown — losing a race just
+// means the work was already done.
+// ---------------------------------------------------------------------------
+
+/**
+ * Bounded CAS retry for compensation archive (C6 #304 round-5). One-shot
+ * archives at completion/quit/back lose the race when the session row's
+ * resource_version advances between getSession and archiveSession; the
+ * server then 409s and the session stays active with no operator signal.
+ *
+ * Retry up to MAX_RETRIES times, re-reading RV between attempts. On
+ * final failure the error is logged via debugLog (no toast — these
+ * compensation paths are fire-and-forget by design and the operator may
+ * already be off the running screen) but propagates so callers can
+ * inspect via the .catch() chain at each callsite.
+ */
+const COMPENSATION_MAX_RETRIES = 3;
+
+async function archiveSessionForCompensation(
+  provider: TuiDataProvider & TuiSessionProvider,
+  sessionId: string,
+): Promise<void> {
+  let lastErr: unknown;
+  // C6 (#304) round-6: on 409 the server returns the current RV in
+  // `err.current.resourceVersion`. Carry that forward as the next
+  // attempt's ifMatch so we don't blindly retry with the same stale
+  // token if the provider's read path is degraded (returns undefined
+  // or throws). Falls back to getSession when no conflict has yet
+  // told us the truth.
+  let nextIfMatch: string | undefined;
+  for (let attempt = 0; attempt <= COMPENSATION_MAX_RETRIES; attempt++) {
+    let rv: string;
+    if (nextIfMatch !== undefined) {
+      rv = nextIfMatch;
+    } else {
+      const fresh = await provider.getSession(sessionId).catch(() => undefined);
+      rv = String(fresh?.resourceVersion ?? 0);
+    }
+    const token = mintTokenForCompensation("AgentSession", sessionId, rv);
+    try {
+      await provider.archiveSession(token);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // 409 = stale RV — re-read and retry. Other errors (network, 500)
+      // bail immediately; retry won't help.
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status !== 409) break;
+      const conflictRv = (err as { current?: { resourceVersion?: string } } | undefined)?.current
+        ?.resourceVersion;
+      // C6 (#304) round-7: only trust digit-only RV strings. The HTTP
+      // helper synthesizes "?" when the 409 body is unparsable; pinning
+      // the retry to that sentinel would defeat re-reading. For any
+      // non-numeric value, clear nextIfMatch so the next iteration
+      // falls back to getSession.
+      nextIfMatch =
+        typeof conflictRv === "string" && /^\d+$/.test(conflictRv) ? conflictRv : undefined;
+    }
+  }
+  debugLog(
+    "compensation",
+    `archiveSession(${sessionId}) failed after ${COMPENSATION_MAX_RETRIES + 1} attempts: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+  throw lastErr;
+}
+
+async function setGoalForCompensation(
+  provider: TuiDataProvider & TuiGoalProvider,
+  goal: string,
+  acceptance: readonly string[],
+): Promise<void> {
+  const existing = await provider.getGoal().catch(() => undefined);
+  // C6 (#304) round-2: use "0" as the create sentinel, not "". Server's
+  // dangerous() middleware rejects empty If-Match with 428 BEFORE the
+  // store's CAS-bypass-on-insert path runs. "0" is a valid header value
+  // that doesn't match any persisted RV (≥ 1) so the server returns 409
+  // if a row already exists; on insert the store ignores the value.
+  const rv = existing?.resourceVersion !== undefined ? String(existing.resourceVersion) : "0";
+  const token = mintTokenForCompensation("Goal", "goal", rv);
+  await provider.setGoal(token, goal, acceptance);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,10 +461,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         } catch {
           // Best-effort
         }
-        // Archive session on completion
+        // Archive session on completion (compensation — internal teardown,
+        // no operator confirmation; CAS still enforced server-side).
         setState((s) => {
           if (s.sessionId && isSessionProvider(provider)) {
-            void provider.archiveSession(s.sessionId).catch(() => {
+            void archiveSessionForCompensation(provider, s.sessionId).catch(() => {
               /* best-effort */
             });
           }
@@ -390,24 +496,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
     const pendingPermissions = usePermissionDetection(appProps.tmux);
 
-    // Back to main: archive session and return to preset select
-    const handleBackToMain = useCallback(() => {
+    // Back to main: navigation + teardown (post-archive). The modal
+    // confirmation + archive itself runs in `RunningPageWithBackConfirm`
+    // (a child of `<ConfirmAndMutateProvider>`). This callback only fires
+    // AFTER the operator has confirmed (or the modal short-circuited because
+    // there is no session to archive). It is intentionally idempotent:
+    // saveTraces is best-effort and the navigation reset is safe to repeat.
+    const handleNavigateBackToMain = useCallback(() => {
       spawnManager.stopLogPolling();
-      void (async () => {
-        await spawnManager.saveTraces().catch(() => {
-          /* best-effort */
-        });
-        if (state.sessionId && isSessionProvider(provider)) {
-          await provider.archiveSession(state.sessionId).catch(() => {
-            /* best-effort */
-          });
-        }
-      })();
+      void spawnManager.saveTraces().catch(() => {
+        /* best-effort */
+      });
       setState({
         screen: "preset-select",
       });
       pages.resetTo({ kind: "preset-select" });
-    }, [provider, state.sessionId, spawnManager, pages]);
+    }, [spawnManager, pages]);
 
     const handleQuit = useCallback(() => {
       spawnManager.stopLogPolling();
@@ -421,9 +525,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           /* best-effort */
         });
         debugLog("quit", "traces saved");
-        // Archive active session (persists to DB, agents stay alive in acpx)
+        // Archive active session (persists to DB, agents stay alive in acpx).
+        // Compensation path — quit-time teardown, no operator confirmation.
         if (state.sessionId && isSessionProvider(provider)) {
-          await provider.archiveSession(state.sessionId).catch(() => {
+          await archiveSessionForCompensation(provider, state.sessionId).catch(() => {
             /* best-effort */
           });
         }
@@ -494,9 +599,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         sessionStartRef.current = Date.now();
         const sessionStartedAt = new Date().toISOString();
 
-        // Set goal on provider if supported
+        // Set goal on provider if supported. Compensation path: this is
+        // an internal controller-driven write at spawn time (no operator
+        // dialog), so we read the current RV inline and mint a token
+        // directly. CAS still enforced server-side.
         if (isGoalProvider(provider)) {
-          void provider.setGoal(goal, []).catch(() => {
+          void setGoalForCompensation(provider, goal, []).catch(() => {
             // Goal setting is best-effort
           });
         }
@@ -776,10 +884,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       }
     }, [presets, handleQuit, pages]);
 
-    // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
-    const handleToggleAdvanced = useCallback(() => {
-      setState((s) => ({ ...s, screen: "advanced" }));
-      pages.push({ kind: "advanced" });
+    // Screen 4 -> inspect overlay (Ctrl+G, deliberate entry)
+    const handleEnterInspect = useCallback(() => {
+      setState((s) => ({ ...s, screen: "inspect" }));
+      pages.push({ kind: "inspect" });
     }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
@@ -869,9 +977,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [permissionBar],
     );
 
-    // Advanced -> Running back handler. setState keeps state.screen in sync;
-    // pages.pop() walks back off the advanced page that was pushed on entry.
-    const handleAdvancedBack = useCallback(() => {
+    // Inspect -> Running back handler. setState keeps state.screen in sync;
+    // pages.pop() walks back off the inspect page that was pushed on entry.
+    const handleExitInspect = useCallback(() => {
       setState((s) => ({ ...s, screen: "running" }));
       pages.pop();
     }, [pages]);
@@ -920,7 +1028,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       );
       const RunningPage = (): React.ReactNode =>
         wrapWithPermissions(
-          <RunningView
+          <RunningPageWithBackConfirm
             provider={provider}
             intervalMs={appProps.intervalMs}
             topology={topology}
@@ -956,20 +1064,20 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               return spawnManager.sendToAgent(role, message);
             }}
             activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
-            onToggleAdvanced={handleToggleAdvanced}
+            onEnterInspect={handleEnterInspect}
             onComplete={handleComplete}
             onQuit={handleQuit}
-            onBackToMain={handleBackToMain}
+            onNavigateBackToMain={handleNavigateBackToMain}
           />,
         );
-      const AdvancedPage = (): React.ReactNode =>
+      const InspectPage = (): React.ReactNode =>
         wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.secondary}>Ctrl+B:back to running view</text>
+              <text color={theme.secondary}>Ctrl+G:back to running view</text>
             </box>
             <box flexGrow={1}>
-              <AdvancedModeWrapper appProps={appProps} onBack={handleAdvancedBack} />
+              <InspectModeWrapper appProps={appProps} onBack={handleExitInspect} />
             </box>
           </box>,
         );
@@ -998,7 +1106,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         "launch-preview": LaunchPreviewPage,
         spawning: SpawningPage,
         running: RunningPage,
-        advanced: AdvancedPage,
+        inspect: InspectPage,
         complete: CompletePage,
         panel: RunningPage,
         "entity-detail": RunningPage,
@@ -1021,10 +1129,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleLaunchConfirm,
       handleLaunchBack,
       handleSpawnComplete,
-      handleToggleAdvanced,
+      handleEnterInspect,
       handleComplete,
-      handleBackToMain,
-      handleAdvancedBack,
+      handleNavigateBackToMain,
+      handleExitInspect,
       handleNewSession,
       provider,
       appProps,
@@ -1053,32 +1161,185 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 );
 
 // ---------------------------------------------------------------------------
-// Advanced mode wrapper — intercepts Tab to go back to simple view
+// RunningPageWithBackConfirm — wraps RunningView and routes the operator's
+// "back to main" intent through the C6 confirm-and-mutate modal (#304).
+//
+// `useConfirmAndMutate()` requires the caller to be a descendant of the
+// `<ConfirmAndMutateProvider>` mounted inside `<PagesRouter>`. ScreenManager
+// itself sits ABOVE the provider, so the modal trigger lives here in a
+// component rendered by PagesRouter's component map.
+//
+// Responsibilities:
+//   1. Build a synthetic AgentSession entity snapshot from the SessionRecord
+//      so the modal has a `kind`/`id`/`resourceVersion` to render and to
+//      mint a DangerousToken from. The entity store doesn't carry a
+//      grove-session record, so a synthetic snapshot is the simplest path
+//      — the CAS check is enforced server-side regardless.
+//   2. Open the modal via `confirmAndMutate({ entity, mutation })`.
+//      Operator presses 'y' → `provider.archiveSession(token)` runs with
+//      the snapshot's RV. 409 → modal updates snapshot RV from the response
+//      and re-prompts (up to 3 retries). Operator presses 'n' → returns
+//      cancelled → caller stays on the running screen.
+//   3. After the modal resolves with `ok` or `max-retries`, navigate back
+//      via the parent's `onNavigateBackToMain`.
+//
+// When there is no session id (e.g., topology-less local launch) or no
+// session provider, we skip the modal and navigate immediately — there is
+// nothing to confirm an archive of.
 // ---------------------------------------------------------------------------
 
-interface AdvancedModeWrapperProps {
+interface RunningPageWithBackConfirmProps
+  extends Omit<
+    import("./running-view.js").RunningViewProps,
+    "onBackToMain" | "sessionId" | "provider"
+  > {
+  readonly provider: TuiDataProvider;
+  readonly sessionId?: string | undefined;
+  /**
+   * Navigate back to the preset-select / main screen, AFTER the operator
+   * has confirmed the archive (or there was nothing to archive).
+   */
+  readonly onNavigateBackToMain: () => void;
+}
+
+const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBackConfirmProps> =
+  React.memo(function RunningPageWithBackConfirm(
+    props: RunningPageWithBackConfirmProps,
+  ): React.ReactNode {
+    const { provider, sessionId, onNavigateBackToMain, ...rest } = props;
+    const confirmAndMutate = useConfirmAndMutate();
+    // C6 (#304) round-3: in-flight guard so repeated B keypresses don't
+    // pre-empt the modal and emit "Archive failed" toasts for the
+    // pre-emption rejection (which the provider raises via reject()).
+    const inflightRef = useRef(false);
+
+    const handleBackToMain = useCallback(() => {
+      if (inflightRef.current) return;
+      inflightRef.current = true;
+      void (async () => {
+        try {
+          // No session to archive → just navigate. Covers topology-less
+          // launches and providers that don't expose session management.
+          if (!sessionId || !isSessionProvider(provider)) {
+            onNavigateBackToMain();
+            return;
+          }
+
+          const fresh = await provider.getSession(sessionId).catch(() => undefined);
+          const rv = String(fresh?.resourceVersion ?? 0);
+
+          // C6 (#304) round-3: AgentSession is the runtime agent-process
+          // watch kind, not the persisted Grove session row this archive
+          // touches — but DangerousToken<K extends string> doesn't
+          // require K to be a WatchKind, and the brand still enforces
+          // "you must produce a token to call archiveSession". The live-
+          // change banner is best-effort here (the Grove session isn't
+          // a WatchKind so EntityStore won't push updates), but server-
+          // side CAS still protects against concurrent writes.
+          const entity: import("../../core/entity.js").AgentSessionEntity = {
+            kind: "AgentSession",
+            namespace: "default",
+            id: sessionId,
+            spec: { role: "session" },
+            status: { phase: "running" },
+            conditions: [],
+            observedGeneration: 0,
+            resourceVersion: rv,
+            metadata: { generation: 1 },
+          };
+
+          try {
+            const result = await confirmAndMutate<"AgentSession", void>({
+              entity,
+              message: "Archive session before going back?",
+              dangerous: true,
+              mutation: (token) => provider.archiveSession(token),
+            });
+            if (result.ok) {
+              onNavigateBackToMain();
+              return;
+            }
+            if (result.reason === "max-retries") {
+              toast.error(
+                "Archive failed: session resourceVersion kept changing. Retry or quit explicitly.",
+                { duration: 5000 },
+              );
+            }
+            // result.reason === "cancelled" → operator chose to stay; no toast.
+          } catch (err) {
+            // C6 (#304) round-3: silently drop pre-emption rejections
+            // (a newer trigger() replaced this one). The provider's
+            // re-entry guard rejects with a specific message; matching
+            // on it keeps real errors loud while the synthetic one stays
+            // quiet. Other rejections (network, 5xx) still toast.
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes("pre-empted by a new trigger")) return;
+            toast.error(`Archive failed: ${msg}`, { duration: 5000 });
+          }
+        } finally {
+          inflightRef.current = false;
+        }
+      })();
+    }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
+
+    return (
+      <RunningView
+        {...rest}
+        provider={provider}
+        sessionId={sessionId}
+        onBackToMain={handleBackToMain}
+      />
+    );
+  });
+
+// ---------------------------------------------------------------------------
+// Inspect mode wrapper — intercepts Ctrl+G (and legacy Ctrl+B) to return to the session view
+// ---------------------------------------------------------------------------
+
+interface InspectModeWrapperProps {
   readonly appProps: AppProps;
   readonly onBack: () => void;
 }
 
 /**
- * Wraps the full App (boardroom) and intercepts Tab key to switch back
- * to the simple RunningView.
+ * Wraps the full App as an inspect overlay above the session view.
+ * Intercepts Ctrl+G to return to the session view. Esc is intentionally
+ * left for App's modal-dismissal cascade (palette/help/detail/zoom).
+ *
+ * State note: PagesRouter renders only the top-of-stack page, so
+ * RunningView is unmounted while inspect is open and remounted on
+ * return. RunningView's local React state (cursor, autoFollow, filter,
+ * prompt) resets on return; PagesStore-owned data survives. See
+ * docs/tui/information-architecture.md → Inspect Overlay → Exit.
  */
-const AdvancedModeWrapper: React.NamedExoticComponent<AdvancedModeWrapperProps> = React.memo(
-  function AdvancedModeWrapper({ appProps, onBack }: AdvancedModeWrapperProps): React.ReactNode {
-    // Intercept Ctrl+B (back) to return to simple view.
-    // Tab is used by App for panel cycling, so we use a dedicated back key.
+export const InspectModeWrapper: React.NamedExoticComponent<InspectModeWrapperProps> = React.memo(
+  function InspectModeWrapper({ appProps, onBack }: InspectModeWrapperProps): React.ReactNode {
+    // Intercept Ctrl+G to return to the session view. Tab is used by
+    // App for panel cycling, so we use dedicated back keys.
     useKeyboard(
       useCallback(
         (key) => {
+          // Esc is intentionally NOT bound here. App's routeKey already
+          // treats Esc as a modal-dismissal cascade (close palette/help,
+          // pop detail, reset zoom). If the wrapper also exited inspect
+          // on Esc, a single Esc keypress could blow past App's modal
+          // state and remount RunningView — losing the local state the
+          // IA doc explicitly says is reset on remount. (#191 round 8.)
+          // Use Ctrl+G to exit the overlay unambiguously.
+          if (key.ctrl && key.name === "g") {
+            onBack();
+            return;
+          }
           if (key.ctrl && key.name === "b") {
+            // Backwards-compat alias (#191). Footer no longer documents it.
             onBack();
           }
         },
         [onBack],
       ),
     );
-    return React.createElement(App, appProps);
+    // Pass screenContext="inspect" so the StatusBar shows the [INSPECT] chip
+    // whenever the inspect overlay is on screen (#191).
+    return React.createElement(App, { ...appProps, screenContext: "inspect" });
   },
 );

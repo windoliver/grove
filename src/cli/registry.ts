@@ -110,6 +110,16 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["agent", "expired", "json"],
   },
   {
+    name: "work-blocks",
+    description: "List WorkBlock records",
+    flags: ["session"],
+  },
+  {
+    name: "timeline",
+    description: "Print timeline events",
+    flags: ["session", "after-rv", "limit", "include-work-blocks"],
+  },
+  {
     name: "checkout",
     description: "Materialize contribution artifacts",
     flags: ["to", "frontier", "agent", "json"],

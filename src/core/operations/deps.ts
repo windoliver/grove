@@ -18,6 +18,7 @@ import type { HookRunner } from "../hooks.js";
 import type { OwnerRef } from "../lifecycle-metadata.js";
 import type { OutcomeStore } from "../outcome.js";
 import type { ClaimStore, ContributionStore } from "../store.js";
+import type { TimelineStore } from "../timeline-store.js";
 import type { TopologyRouter } from "../topology-router.js";
 import type { WorkspaceManager } from "../workspace.js";
 
@@ -66,6 +67,7 @@ export interface IdempotencyStore {
 export interface OperationDeps {
   readonly contributionStore?: ContributionStore | undefined;
   readonly claimStore?: ClaimStore | undefined;
+  readonly timelineStore?: TimelineStore | undefined;
   readonly cas?: ContentStore | undefined;
   readonly frontier?: FrontierCalculator | undefined;
   readonly contract?: GroveContract | undefined;

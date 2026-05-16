@@ -69,6 +69,7 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     cmdMode: "none",
     cmdText: "",
     filterQuery: "",
+    confirmModalOpen: false,
     ...overrides,
   };
 }
@@ -123,7 +124,7 @@ function mockActions(overrides?: {
     traceScrollToTop: () => record("traceScrollToTop"),
     traceCycleAgent: () => record("traceCycleAgent"),
     openDetail: () => record("openDetail"),
-    toggleAdvanced: () => record("toggleAdvanced"),
+    enterInspect: () => record("enterInspect"),
     quit: () => record("quit"),
     showQuitDialog: () => record("showQuitDialog"),
     approvePermission: () => record("approvePermission"),
@@ -350,16 +351,28 @@ describe("routeRunningKey — normal mode misc", () => {
     expect(log.calls).toContain("toggleVfs");
   });
 
-  test("Ctrl+A toggles advanced", () => {
+  test("Ctrl+G calls enterInspect", () => {
     const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("a", { ctrl: true }), defaultState(), actions);
-    expect(log.calls).toContain("toggleAdvanced");
+    routeRunningKey(keyEvent("g", { ctrl: true }), defaultState(), actions);
+    expect(log.calls).toContain("enterInspect");
   });
 
-  test("Enter opens detail when feed has items", () => {
+  test("Ctrl+A no longer calls enterInspect", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("a", { ctrl: true }), defaultState(), actions);
+    expect(log.calls).not.toContain("enterInspect");
+  });
+
+  test("Enter does NOT open inspect when feed has items (#191 round 3)", () => {
+    // Enter used to call openDetail which was wired to onEnterInspect,
+    // giving it an accidental inspect-entry path. Until a real
+    // contribution-detail route exists, Enter on a feed item is a no-op
+    // and must not enter inspect.
     const { actions, log } = mockActions({ feedLength: 5 });
-    routeRunningKey(keyEvent("return"), defaultState(), actions);
-    expect(log.calls).toContain("openDetail");
+    const handled = routeRunningKey(keyEvent("return"), defaultState(), actions);
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("enterInspect");
+    expect(log.calls).not.toContain("openDetail");
   });
 
   test("Enter does nothing when feed is empty", () => {
@@ -640,11 +653,11 @@ describe("routeRunningKey — prompt mode", () => {
     expect(log.calls).not.toContain("toggleFullscreen");
   });
 
-  test("Ctrl+A is swallowed in prompt mode", () => {
+  test("Ctrl+G is swallowed in prompt mode", () => {
     const { actions, log } = mockActions();
-    const handled = routeRunningKey(keyEvent("a", { ctrl: true }), promptState, actions);
+    const handled = routeRunningKey(keyEvent("g", { ctrl: true }), promptState, actions);
     expect(handled).toBe(true);
-    expect(log.calls).not.toContain("toggleAdvanced");
+    expect(log.calls).not.toContain("enterInspect");
   });
 });
 
@@ -818,10 +831,10 @@ describe("Trace panel mode", () => {
     expect(log.calls).toContain("toggleHelp");
   });
 
-  test("Ctrl+A still toggles advanced when Trace is expanded", () => {
+  test("Ctrl+G still enters inspect when Trace is expanded", () => {
     const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("a", { ctrl: true }), traceState(), actions);
-    expect(log.calls).toContain("toggleAdvanced");
+    routeRunningKey(keyEvent("g", { ctrl: true }), traceState(), actions);
+    expect(log.calls).toContain("enterInspect");
   });
 });
 

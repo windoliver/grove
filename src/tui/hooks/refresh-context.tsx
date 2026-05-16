@@ -91,7 +91,7 @@ export interface RefreshProviderHolderProps {
 /**
  * Holder variant for the interactive TUI flow. It keeps provider wrappers
  * mounted across async factory arrival so child state is not reset during
- * setup -> boardroom transitions.
+ * setup -> session transitions.
  */
 export function RefreshProviderHolder(props: RefreshProviderHolderProps): ReactNode {
   const { holder, children } = props;
@@ -119,7 +119,7 @@ export function RefreshProviderHolder(props: RefreshProviderHolderProps): ReactN
 
   // Keep the context provider mounted while the async factory is still null.
   // Changing from a fragment to a provider remounts children and resets the
-  // interactive TUI state during the setup -> boardroom transition.
+  // interactive TUI state during the setup -> session transition.
   return (
     <RefreshFnContext.Provider value={factory ? refresh : null}>
       <SignalContext.Provider value={{ signal }}>{children}</SignalContext.Provider>

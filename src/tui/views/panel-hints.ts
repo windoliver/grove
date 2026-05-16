@@ -13,7 +13,7 @@
  *
  * Today on `panel:dag`:
  * - Enter → routes through running-view's normal-mode keyboard to the
- *   feed-detail / advanced-mode toggle (NOT panel-aware Focus yet).
+ *   feed-detail / inspect-overlay toggle (NOT panel-aware Focus yet).
  * - Space / R / M / L → no panel:dag-specific handler; fall through to
  *   their global RunningView routes (mostly no-ops on this panel).
  *
@@ -29,7 +29,7 @@ import { defineHints, type KeyAction } from "../data/hint-map.js";
 //   ?   → running-keyboard normal-mode help toggle
 //   q   → running-keyboard normal-mode showQuitDialog
 // `[Enter]Detail` was removed: the current running-view Enter handler
-// routes through the feed-detail / advanced-mode path, not a panel-
+// routes through the feed-detail / inspect-overlay path, not a panel-
 // aware drill-in. Restore [Enter] hint when the panel-specific Enter
 // handler lands (Epic C entity-detail nav work).
 const GENERIC: readonly KeyAction[] = defineHints([

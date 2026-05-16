@@ -198,9 +198,9 @@ async function loadPresetList(): Promise<
 }
 
 /**
- * Build boardroom AppProps from a resolved backend.
+ * Build session AppProps from a resolved backend.
  *
- * Shared between the direct boardroom path and the post-init transition.
+ * Shared between the direct session path and the post-init transition.
  */
 async function buildAppProps(
   effectiveGrove: string | undefined,
@@ -396,7 +396,11 @@ async function buildAppProps(
       const ar = agentRuntime as { onSessionWrite?: (op: string, s: unknown) => void };
       if ("onSessionWrite" in ar || ar.onSessionWrite !== undefined) {
         const { createWatchHubRecorder } = await import("../local/watch-hub-recorder.js");
-        const recorder = createWatchHubRecorder({ hub: watchHub, namespace: WATCH_NAMESPACE });
+        const recorder = createWatchHubRecorder({
+          hub: watchHub,
+          namespace: WATCH_NAMESPACE,
+          timelineStore: cleanupRuntime.timelineStore,
+        });
         (
           agentRuntime as unknown as {
             onSessionWrite?: (
@@ -561,6 +565,10 @@ async function buildAppProps(
               } catch {
                 return [];
               }
+            case "WorkBlock":
+              return localCleanupRuntime.timelineStore.listWorkBlockEntities();
+            case "TimelineEvent":
+              return localCleanupRuntime.timelineStore.listAllTimelineEventEntities();
             default:
               return [];
           }
@@ -776,7 +784,7 @@ export async function handleTui(
   }
 
   try {
-    // --url flag: legacy direct boardroom mode (no interactive screens)
+    // --url flag: legacy direct session mode (no interactive screens)
     if (opts.url && !opts.nexus) {
       if (groveDir) {
         const { startServices, persistNexusUrlToConfig } = await import(

@@ -23,6 +23,10 @@ export interface KeyboardActions {
   readonly nav: NavigationActions;
   readonly onQuit: () => void;
   readonly onSpawnPalette: () => void;
+  /** Called whenever the command palette is dismissed (any path). Clears
+   *  adoptContext + palette state so leftover targets don't leak into the
+   *  next unrelated spawn. */
+  readonly onPaletteClose: () => void;
   readonly onVfsNavigate: () => void;
   readonly onArtifactPrev: () => void;
   readonly onArtifactNext: () => void;
@@ -61,8 +65,18 @@ export interface KeyboardActions {
   readonly rowCount: number;
   readonly pageSize: number;
   readonly paletteItemCount: number;
+  readonly onFrontierTabNext: () => void;
+  readonly onFrontierTabPrev: () => void;
+  readonly onFrontierAdopt: (cid: string, summary: string) => void;
+  /** Entries (cid + summary) for the currently visible frontier slice.
+   *  Resolved on each call so the value reflects the latest slice nav,
+   *  even if it happened in the same JS tick before React committed. */
+  readonly frontierEntries: () => ReadonlyArray<{ cid: string; summary: string }>;
   readonly compareMode: boolean;
-  readonly frontierCids: readonly string[];
+  /** Cids for the currently visible frontier slice. Function form so the
+   *  keyboard handler reads the latest ref-backed value (slice nav clears
+   *  the ref synchronously; state-based array would lag by a render). */
+  readonly frontierCids: () => readonly string[];
   readonly selectedSession: string | undefined;
   readonly hasTmux: boolean;
   /** Keybinding overrides from .grove/keybindings.json (item 19). */
@@ -162,9 +176,13 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
   }
 
-  // Command palette toggle (works in all modes except help)
+  // Command palette toggle (works in all modes except help). Both
+  // dismissal AND opening route through onPaletteClose / onSpawnPalette
+  // (which also clears adoptContext) to ensure a stale adopt target from
+  // a prior 'a'-on-Frontier press cannot leak into the next spawn.
   if (isCtrl && input === "p") {
     if (mode === InputMode.CommandPalette) {
+      actions.onPaletteClose();
       actions.panels.setMode(InputMode.Normal);
     } else {
       actions.onSpawnPalette();
@@ -177,6 +195,12 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Priority: (1) exit mode → (2) pop detail → (3) reset zoom
   if (input === "escape") {
     if (mode !== InputMode.Normal) {
+      // Leaving CommandPalette via Esc must clear adoptContext (set by the
+      // 'a' Frontier-row keypress) and reset palette state — otherwise the
+      // next unrelated palette open inherits a stale adopt target.
+      if (mode === InputMode.CommandPalette) {
+        actions.onPaletteClose();
+      }
       actions.panels.setMode(InputMode.Normal);
       return true;
     }
@@ -298,6 +322,31 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Frontier panel: slice nav + adopt. Uses '[' / ']' for prev/next slice
+  // (vim-style next-tab) so global Tab + 1-9 (panel cycle / panel focus)
+  // remain available — keyboard-only operators must always be able to leave
+  // the Frontier panel without resorting to the mouse.
+  if (focused === Panel.Frontier) {
+    if (input === "]") {
+      actions.onFrontierTabNext();
+      return true;
+    }
+    if (input === "[") {
+      actions.onFrontierTabPrev();
+      return true;
+    }
+    if (input === "a" && !actions.compareMode) {
+      const entries = actions.frontierEntries();
+      if (entries.length > 0 && actions.nav.state.cursor < entries.length) {
+        const entry = entries[actions.nav.state.cursor];
+        if (entry) {
+          actions.onFrontierAdopt(entry.cid, entry.summary);
+          return true;
+        }
+      }
+    }
+  }
+
   // Panel dispatch: driven by PANEL_REGISTRY (Issue 4A — eliminates DRY violation
   // and enables config-driven keybindings in the future).
   for (const def of PANEL_REGISTRY) {
@@ -311,7 +360,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
   }
 
-  // Tab/Shift+Tab: cycle focus
+  // Tab/Shift+Tab: cycle focus (global — only reached when Frontier is not focused)
   if (input === "tab") {
     if (key.shift) {
       actions.panels.cyclePrev();
@@ -442,10 +491,13 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onVfsNavigate();
       return true;
     }
-    if (actions.compareMode && focused === Panel.Frontier && actions.frontierCids.length > 0) {
-      const cid = actions.frontierCids[actions.nav.state.cursor];
-      if (cid) actions.onCompareSelect(cid);
-      return true;
+    if (actions.compareMode && focused === Panel.Frontier) {
+      const cids = actions.frontierCids();
+      if (cids.length > 0) {
+        const cid = cids[actions.nav.state.cursor];
+        if (cid) actions.onCompareSelect(cid);
+        return true;
+      }
     }
     const isClaimsPanel = focused === Panel.Claims;
     if (!actions.nav.isDetailView && !isClaimsPanel && actions.rowCount > 0) {

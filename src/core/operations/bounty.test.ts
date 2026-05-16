@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-
+import { type CasMutationResult, casOk } from "../cas.js";
 import type { InMemoryCreditsService } from "../in-memory-credits.js";
 import {
   type Claim,
@@ -45,7 +45,7 @@ class OwnerAwareClaimStore implements ClaimStore {
     this.claims.set(view.spec.id, claimViewToClaim(view));
   }
 
-  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+  async putClaimSpec(spec: ClaimSpecRecord): Promise<CasMutationResult<ClaimView>> {
     const existing = await this.getClaimView(spec.id);
     const now = new Date().toISOString();
     const createdAtMs = Date.parse(spec.createdAt);
@@ -80,7 +80,7 @@ class OwnerAwareClaimStore implements ClaimStore {
             status: existing.status,
           };
     this.putView(view);
-    return view;
+    return casOk(view);
   }
 
   async getClaimView(claimId: string): Promise<ClaimView | undefined> {
@@ -88,7 +88,10 @@ class OwnerAwareClaimStore implements ClaimStore {
     return claim === undefined ? undefined : this.viewFromClaim(claim);
   }
 
-  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+  async patchClaimStatus(
+    claimId: string,
+    patch: ClaimStatusPatch,
+  ): Promise<CasMutationResult<ClaimView>> {
     const view = await this.getClaimView(claimId);
     if (view === undefined) throw new Error(`Claim ${claimId} does not exist`);
     const updated: ClaimView = {
@@ -107,7 +110,7 @@ class OwnerAwareClaimStore implements ClaimStore {
       },
     };
     this.putView(updated);
-    return updated;
+    return casOk(updated);
   }
 
   async createClaim(claim: Claim): Promise<Claim> {

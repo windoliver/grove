@@ -8,12 +8,16 @@ import type {
   ContributionEntity,
   Entity,
   EntityMetadata,
+  TimelineEventEntity,
+  WorkBlockEntity,
 } from "./entity.js";
 import {
   agentSessionToEntity,
   claimToEntity,
   claimViewToEntity,
   contributionToEntity,
+  timelineEventToEntity,
+  workBlockToEntity,
 } from "./entity.js";
 import { Finalizer } from "./lifecycle-metadata.js";
 import type { Claim, ClaimView, Contribution } from "./models.js";
@@ -26,6 +30,8 @@ import {
   claimViewToClaim,
 } from "./models.js";
 import { makeClaim } from "./test-helpers.js";
+import type { TimelineEvent, WorkBlock } from "./timeline.js";
+import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "./timeline.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -616,6 +622,75 @@ describe("agentSessionToEntity", () => {
       expect(c.observedGeneration).toBe(0);
       expect(c.observedGeneration).toBe(e.observedGeneration);
     }
+  });
+});
+
+function makeWorkBlock(overrides: Partial<WorkBlock> = {}): WorkBlock {
+  return {
+    workBlockId: "wb-1",
+    sessionId: "session-1",
+    goal: "Implement timeline entity projection",
+    actor: { agentId: "agent-1", role: "coder", platform: "codex" },
+    origin: WorkBlockOrigin.Agent,
+    status: WorkBlockStatus.Running,
+    startedAt: "2026-05-13T10:01:00.000Z",
+    updatedAt: "2026-05-13T10:02:00.000Z",
+    inputRefs: [{ kind: "Issue", id: "issue-1" }],
+    outputRefs: [],
+    evidenceRefs: [],
+    approvalRefs: [],
+    contributionCids: [],
+    artifactHashes: [],
+    claimIds: ["claim-1"],
+    revision: 7,
+    createdAt: "2026-05-13T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("workBlockToEntity", () => {
+  test("projects a WorkBlock into an Entity envelope", () => {
+    const entity: WorkBlockEntity = workBlockToEntity(makeWorkBlock());
+
+    expect(entity.kind).toBe("WorkBlock");
+    expect(entity.id).toBe("wb-1");
+    expect(entity.resourceVersion).toBe("7");
+    expect(entity.status.phase).toBe("running");
+    expect(entity.conditions.find((condition) => condition.type === "Running")?.status).toBe(
+      "True",
+    );
+    expect(
+      entity.conditions.every(
+        (condition) => condition.lastTransitionTime === entity.status.updatedAt,
+      ),
+    ).toBe(true);
+  });
+});
+
+function makeTimelineEvent(overrides: Partial<TimelineEvent> = {}): TimelineEvent {
+  return {
+    eventId: "te-1",
+    resourceVersion: "42",
+    sessionId: "session-1",
+    type: TimelineEventType.WorkBlockStarted,
+    occurredAt: "2026-05-13T10:01:00.000Z",
+    recordedAt: "2026-05-13T10:01:01.000Z",
+    actor: { agentId: "agent-1", role: "coder", platform: "codex" },
+    workBlockId: "wb-1",
+    targetRefs: [{ kind: "WorkBlock", id: "wb-1" }],
+    payload: { status: WorkBlockStatus.Running },
+    ...overrides,
+  };
+}
+
+describe("timelineEventToEntity", () => {
+  test("projects a TimelineEvent into an Entity envelope", () => {
+    const entity: TimelineEventEntity = timelineEventToEntity(makeTimelineEvent());
+
+    expect(entity.kind).toBe("TimelineEvent");
+    expect(entity.id).toBe("te-1");
+    expect(entity.resourceVersion).toBe("42");
+    expect(entity.conditions[0]?.type).toBe("Recorded");
   });
 });
 

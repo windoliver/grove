@@ -19,6 +19,66 @@ import type {
   OperatorStats,
 } from "./provider.js";
 import { buildFrontierSummary } from "./provider-utils.js";
+import type { DangerousToken } from "./safety/index.js";
+
+// ---------------------------------------------------------------------------
+// HTTP conflict error
+// ---------------------------------------------------------------------------
+//
+// `HttpConflictError` is the structured form of a 409 response from a
+// `@Dangerous` route. The `ConfirmAndMutateProvider`'s retry loop reads
+// `status` + `current` from the thrown error to bump its snapshot RV and
+// re-open the modal (C6 #304, T11 critical item A).
+//
+// Why a class (not a plain object): `parseConflict` in
+// `safety/confirm-and-mutate.tsx` accepts any object with the right shape,
+// but a named class makes the contract greppable from the route handler
+// side and gives `instanceof` reachable for future error walls.
+// ---------------------------------------------------------------------------
+
+export class HttpConflictError extends Error {
+  readonly status = 409 as const;
+  readonly current: { readonly resourceVersion: string; readonly generation: number };
+
+  constructor(
+    message: string,
+    current: { readonly resourceVersion: string; readonly generation: number },
+  ) {
+    super(message);
+    this.name = "HttpConflictError";
+    this.current = current;
+  }
+}
+
+interface ConflictBody {
+  readonly error?: {
+    readonly code?: string;
+    readonly message?: string;
+    readonly current?: { readonly resourceVersion?: string; readonly generation?: number };
+  };
+}
+
+/**
+ * Parse a 409 response body into an `HttpConflictError`.
+ *
+ * Expected shape (per T6 routes): `{ error: { code, message, current: { resourceVersion, generation } } }`.
+ * Falls back to safe defaults if the body is unparseable so the provider's
+ * retry loop still fires (with retryCount-based termination).
+ */
+async function buildConflictError(res: Response): Promise<HttpConflictError> {
+  let body: ConflictBody | null = null;
+  try {
+    body = (await res.json()) as ConflictBody;
+  } catch {
+    body = null;
+  }
+  const current = body?.error?.current ?? {};
+  const resourceVersion =
+    typeof current.resourceVersion === "string" ? current.resourceVersion : "?";
+  const generation = typeof current.generation === "number" ? current.generation : 0;
+  const detail = body?.error?.message ?? "conflict";
+  return new HttpConflictError(`HTTP 409: ${detail}`, { resourceVersion, generation });
+}
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -257,6 +317,7 @@ interface ApiSessionResponse {
   readonly config?: import("../core/contract.js").GroveContract;
   readonly contributionCount?: number;
   readonly finalizers?: readonly import("../core/lifecycle-metadata.js").Finalizer[];
+  readonly resourceVersion?: number;
 }
 
 function mapApiSession(raw: ApiSessionResponse): SessionRecord {
@@ -275,6 +336,7 @@ function mapApiSession(raw: ApiSessionResponse): SessionRecord {
     topology: raw.topology,
     config: raw.config,
     contributionCount: raw.contributionCount ?? 0,
+    resourceVersion: raw.resourceVersion,
   };
 }
 
@@ -289,8 +351,16 @@ export async function fetchGoalHttp(
   return undefined;
 }
 
-/** Set a goal via a grove-server HTTP API. */
+/**
+ * Set a goal via a grove-server HTTP API.
+ *
+ * C6 (#304): `token` carries the goal's current `ifMatch` resourceVersion;
+ * the helper threads it through to the `@Dangerous` PUT route's If-Match
+ * header. The route returns 409 on stale RV — callers should refetch and
+ * re-mint the token via `confirmAndMutate` (T10).
+ */
 export async function setGoalHttp(
+  token: DangerousToken<"Goal">,
   baseUrl: string,
   goal: string,
   acceptance: readonly string[],
@@ -298,10 +368,15 @@ export async function setGoalHttp(
 ): Promise<GoalData> {
   const resp = await fetch(`${baseUrl}/api/session/goal`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...authHeaders },
+    headers: {
+      "Content-Type": "application/json",
+      "if-match": token.ifMatch,
+      ...authHeaders,
+    },
     body: JSON.stringify({ goal, acceptance }),
   });
   if (resp.ok) return (await resp.json()) as GoalData;
+  if (resp.status === 409) throw await buildConflictError(resp);
   throw new Error(`Failed to set goal: HTTP ${String(resp.status)}`);
 }
 
@@ -354,17 +429,25 @@ export async function getSessionHttp(
   return undefined;
 }
 
-/** Archive a session via a grove-server HTTP API. */
+/**
+ * Archive a session via a grove-server HTTP API.
+ *
+ * C6 (#304): `token.id` supplies the session id for the URL path and
+ * `token.ifMatch` is sent as the If-Match header. The `@Dangerous` PUT
+ * route returns 409 on stale RV — callers should refetch the session
+ * and re-mint the token via `confirmAndMutate` (T10).
+ */
 export async function archiveSessionHttp(
+  token: DangerousToken<"AgentSession">,
   baseUrl: string,
-  sessionId: string,
   authHeaders?: Record<string, string>,
 ): Promise<void> {
-  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
+  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(token.id)}/archive`, {
     method: "PUT",
-    headers: authHeaders,
+    headers: { "if-match": token.ifMatch, ...authHeaders },
   });
   if (resp.ok) return;
+  if (resp.status === 409) throw await buildConflictError(resp);
   throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
 }
 

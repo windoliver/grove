@@ -21,6 +21,7 @@ import type { GroveContract } from "../contract.js";
 import { EnforcingContributionStore } from "../enforcing-store.js";
 import { ContributionKind, ContributionMode } from "../models.js";
 import type { ContributionStore } from "../store.js";
+import { TimelineEventType } from "../timeline.js";
 import type { PlanTask } from "./context-schemas.js";
 import { _resetIdempotencyCacheForTests } from "./contribute.js";
 import type { OperationDeps } from "./deps.js";
@@ -288,6 +289,51 @@ describe("updatePlanOperation", () => {
     expect(stored?.relations).toHaveLength(1);
     expect(stored?.relations[0]?.relationType).toBe("derives_from");
     expect(stored?.relations[0]?.targetCid).toBe(v1.value.cid);
+  });
+
+  test("appends timeline events for new and changed plan tasks", async () => {
+    const v1 = await createPlanOperation(
+      {
+        title: "Incident plan",
+        tasks: [
+          { id: "triage", title: "Triage", status: "todo" },
+          { id: "notify", title: "Notify", status: "todo" },
+        ],
+        agent: { agentId: "planner" },
+      },
+      deps,
+    );
+    expect(v1.ok).toBe(true);
+    if (!v1.ok) return;
+
+    const v2 = await updatePlanOperation(
+      {
+        previousPlanCid: v1.value.cid,
+        tasks: [
+          { id: "triage", title: "Triage", status: "done" },
+          { id: "notify", title: "Notify", status: "todo" },
+          { id: "brief", title: "Brief support", status: "in_progress" },
+        ],
+        agent: { agentId: "planner" },
+      },
+      deps,
+    );
+    expect(v2.ok).toBe(true);
+    if (!v2.ok) return;
+
+    const events = await deps.timelineStore.listTimelineEvents();
+    const v2Events = events.filter((event) => event.eventId.includes(v2.value.cid));
+    expect(v2Events.map((event) => event.eventId)).toContain(
+      `te:plan:${v2.value.cid}:task:triage:done`,
+    );
+    expect(v2Events.map((event) => event.eventId)).toContain(
+      `te:plan:${v2.value.cid}:task:brief:in_progress`,
+    );
+    expect(v2Events.map((event) => event.eventId)).not.toContain(
+      `te:plan:${v2.value.cid}:task:notify:todo`,
+    );
+    expect(v2Events.map((event) => event.type)).toContain(TimelineEventType.PlanTaskStatusChanged);
+    expect(v2Events.map((event) => event.type)).toContain(TimelineEventType.PlanTaskCreated);
   });
 
   test("title falls through from previous plan when omitted", async () => {

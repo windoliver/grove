@@ -13,6 +13,8 @@
  *   grove claim         — Claim work
  *   grove release       — Release a claim
  *   grove claims        — List claims
+ *   grove work-blocks   — List WorkBlock records
+ *   grove timeline      — Print timeline events
  *   grove checkout      — Materialize contribution artifacts
  *   grove frontier      — Show current frontier
  *   grove search        — Search contributions
@@ -252,6 +254,28 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args, deps) => {
         const { runClaims } = await import("./commands/claims.js");
         await runClaims(args, deps);
+      },
+    },
+    {
+      name: "work-blocks",
+      description: "List WorkBlock records",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseWorkBlocksArgs, runWorkBlocks } = await import("./commands/work-blocks.js");
+        await withCliDeps(async (a, deps) => {
+          await runWorkBlocks(parseWorkBlocksArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
+      name: "timeline",
+      description: "Print timeline events",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseTimelineArgs, runTimeline } = await import("./commands/timeline.js");
+        await withCliDeps(async (a, deps) => {
+          await runTimeline(parseTimelineArgs([...a]), deps);
+        }, args);
       },
     },
     {
@@ -627,6 +651,8 @@ Work Coordination:
   grove claim <target>                 Claim work to prevent duplication
   grove release <claim-id>             Release a claim
   grove claims                         List active claims
+  grove work-blocks [--session <id>]   List WorkBlock records
+  grove timeline [--session <id>]      Print timeline events
   grove bounty create|list|claim       Manage bounties
   grove goal [set <text>]              View or set the current goal
   grove outcome set|get|list|stats     Manage outcome annotations

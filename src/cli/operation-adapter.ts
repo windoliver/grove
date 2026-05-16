@@ -17,6 +17,7 @@ export function toOperationDeps(deps: CliDeps): OperationDeps {
   return {
     contributionStore: deps.store,
     claimStore: deps.claimStore,
+    ...(deps.timelineStore !== undefined ? { timelineStore: deps.timelineStore } : {}),
     cas: deps.cas,
     frontier: deps.frontier,
     ...(deps.workspace !== undefined ? { workspace: deps.workspace } : {}),

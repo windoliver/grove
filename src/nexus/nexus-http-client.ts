@@ -386,6 +386,7 @@ export class NexusHttpClient implements NexusClient {
         path,
         ...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
         ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}),
+        ...(opts?.recursive !== undefined ? { recursive: opts.recursive } : {}),
       },
     });
     return {

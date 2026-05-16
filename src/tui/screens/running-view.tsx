@@ -9,7 +9,7 @@
  * Number keys 1-4 expand panels: 1=Feed, 2=Agents, 3=DAG, 4=Terminal
  * f: toggle fullscreen on expanded panel
  * Esc: collapse expanded panel → dismiss overlay → cancel quit
- * Ctrl+A: toggle to advanced boardroom
+ * Ctrl+G: open inspect overlay (Ctrl+I would collide with Tab — same byte)
  * Ctrl+F: Nexus folder browser overlay
  * q: confirm quit (double-tap)
  */
@@ -43,6 +43,7 @@ import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-st
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
+import { useConfirmAndMutateOpen } from "../safety/index.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { AgentTasksView } from "../views/agent-tasks.js";
@@ -127,7 +128,7 @@ export interface RunningViewProps {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
-  readonly onToggleAdvanced: () => void;
+  readonly onEnterInspect: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
   /** Return to the preset-select / main screen. */
@@ -197,7 +198,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     activeRoles,
     logBuffers,
     agentFailures,
-    onToggleAdvanced,
+    onEnterInspect,
     onComplete: _onComplete,
     onQuit,
     onBackToMain,
@@ -483,7 +484,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // per-poll interval was the only refresh path.
     //
     // ScreenManager renders RunningView OUTSIDE App's RefreshContext
-    // provider (advanced/boardroom mode is a different screen state),
+    // provider (the inspect overlay is a different screen state),
     // so useRefreshSignal does nothing here. Subscribe directly to the
     // EventBus so SSE pushes refresh the feed/dashboard immediately.
     useEffect(() => {
@@ -698,6 +699,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Keyboard routing ───
     const pendingAskUser = feed.find((c) => c.kind === "ask_user");
+    const confirmModalOpen = useConfirmAndMutateOpen();
     const keyboardState: RunningKeyboardState = useMemo(
       () => ({
         expandedPanel,
@@ -710,6 +712,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdMode: cmdState.mode,
         cmdText: cmdState.text,
         filterQuery,
+        confirmModalOpen,
       }),
       [
         expandedPanel,
@@ -722,6 +725,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.mode,
         cmdState.text,
         filterQuery,
+        confirmModalOpen,
       ],
     );
 
@@ -844,8 +848,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
           setTraceScrollOffset(0);
         },
-        openDetail: () => onToggleAdvanced(),
-        toggleAdvanced: () => onToggleAdvanced(),
+        // openDetail kept as an interface field for future detail-route work,
+        // but wired to a no-op so Enter cannot accidentally enter inspect.
+        openDetail: () => {},
+        enterInspect: () => onEnterInspect(),
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
@@ -968,7 +974,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         promptText,
         onSendToAgent,
         feed,
-        onToggleAdvanced,
+        onEnterInspect,
         onQuit,
         onBackToMain,
         monitor.pendingPermissions,
@@ -995,6 +1001,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useKeyboard(
       useCallback(
         (key) => {
+          // C6 (#304) round-5: when the confirmAndMutate modal is open,
+          // swallow ALL RunningView keys. The modal owns y/n/escape; any
+          // other key (q, Ctrl+A, panel shortcuts) operating on the
+          // running screen behind a confirmation modal is unsafe — it
+          // changes state the operator cannot see. opentui dispatches
+          // every key to every handler, so suppression must happen at
+          // each handler.
+          if (confirmModalOpen) return;
           // VFS overlay intercepts navigation keys
           if (showVfs) {
             if (key.name === "j" || key.name === "down") {
@@ -1045,10 +1059,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             cmdMode: cmdStateRef.current.mode,
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
+            confirmModalOpen,
           };
           routeRunningKey(key, liveState, keyboardActions);
         },
-        [showVfs, keyboardState, keyboardActions, pagesStore, confirmQuit, promptMode, showHelp],
+        [
+          showVfs,
+          keyboardState,
+          keyboardActions,
+          pagesStore,
+          confirmQuit,
+          promptMode,
+          showHelp,
+          confirmModalOpen,
+        ],
       ),
     );
 
@@ -1854,7 +1878,7 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>
-      <text color={theme.text}> Ctrl+A Advanced boardroom</text>
+      <text color={theme.text}> Ctrl+G Inspect overlay (Ctrl+G to return)</text>
       <text color={theme.text}> y/n Approve/deny permission</text>
       <text color={theme.text}> ? Toggle this help</text>
       <text color={theme.text}> Esc Collapse panel / close overlay</text>

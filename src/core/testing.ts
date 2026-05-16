@@ -6,8 +6,9 @@
  * a single place to update when the ContributionStore interface evolves.
  */
 
-import type { ContributionEntity } from "./entity.js";
-import { contributionToEntity } from "./entity.js";
+import type { ContributionEntity, TimelineEventEntity, WorkBlockEntity } from "./entity.js";
+import { contributionToEntity, timelineEventToEntity, workBlockToEntity } from "./entity.js";
+import { NotFoundError } from "./errors.js";
 import type { Contribution, ContributionKind, Relation, RelationType } from "./models.js";
 import type {
   ContributionQuery,
@@ -17,6 +18,17 @@ import type {
   ThreadNode,
   ThreadSummary,
 } from "./store.js";
+import type { TimelineEvent, WorkBlock } from "./timeline.js";
+import { timelineScope } from "./timeline.js";
+import { parseTimelineEvent, parseWorkBlock } from "./timeline-schemas.js";
+import type {
+  AllScopeTimelineEventQuery,
+  TimelineEventInput,
+  TimelineEventQuery,
+  TimelineStore,
+  WorkBlockPatch,
+  WorkBlockQuery,
+} from "./timeline-store.js";
 
 /**
  * In-memory ContributionStore for testing.
@@ -355,6 +367,142 @@ export class InMemoryContributionStore implements ContributionStore {
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
     return items.map((c) => contributionToEntity(c, "default"));
+  }
+
+  close(): void {
+    // No resources to release in the in-memory store.
+  }
+}
+
+/**
+ * In-memory TimelineStore for route and operation tests.
+ *
+ * Keeps the same per-scope monotonic resource-version behavior as the
+ * SQLite store, without persistence or concurrency guarantees.
+ */
+export class InMemoryTimelineStore implements TimelineStore {
+  readonly storeIdentity = "in-memory:timeline";
+
+  private readonly namespace: string;
+  private readonly blocks = new Map<string, WorkBlock>();
+  private readonly events = new Map<string, TimelineEvent>();
+  private readonly counters = new Map<string, number>();
+
+  constructor(namespace = "default") {
+    this.namespace = namespace;
+  }
+
+  async putWorkBlock(block: WorkBlock): Promise<WorkBlock> {
+    const parsed = parseWorkBlock(block);
+    this.blocks.set(parsed.workBlockId, parsed);
+    return parsed;
+  }
+
+  async patchWorkBlock(workBlockId: string, patch: WorkBlockPatch): Promise<WorkBlock> {
+    const existing = this.blocks.get(workBlockId);
+    if (existing === undefined) {
+      throw new NotFoundError({ resource: "WorkBlock", identifier: workBlockId });
+    }
+    const updated = parseWorkBlock({
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+      revision: existing.revision + 1,
+    });
+    this.blocks.set(workBlockId, updated);
+    return updated;
+  }
+
+  async getWorkBlock(workBlockId: string): Promise<WorkBlock | undefined> {
+    return this.blocks.get(workBlockId);
+  }
+
+  async listWorkBlocks(query?: WorkBlockQuery): Promise<readonly WorkBlock[]> {
+    const blocks = [...this.blocks.values()].filter((block) => {
+      if (query?.sessionId !== undefined && block.sessionId !== query.sessionId) return false;
+      if (query?.actorId !== undefined && block.actor.agentId !== query.actorId) return false;
+      if (query?.status !== undefined) {
+        const statuses = Array.isArray(query.status) ? query.status : [query.status];
+        if (!statuses.includes(block.status)) return false;
+      }
+      return true;
+    });
+    blocks.sort((a, b) => {
+      const byTime = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+      if (byTime !== 0) return byTime;
+      return a.workBlockId.localeCompare(b.workBlockId);
+    });
+    const offset = query?.offset ?? 0;
+    const limit = query?.limit ?? blocks.length;
+    return blocks.slice(offset, offset + limit);
+  }
+
+  async listWorkBlockEntities(query?: WorkBlockQuery): Promise<readonly WorkBlockEntity[]> {
+    const blocks = await this.listWorkBlocks(query);
+    return blocks.map((block) => workBlockToEntity(block, this.namespace));
+  }
+
+  async appendTimelineEvent(input: TimelineEventInput): Promise<TimelineEvent> {
+    const existing = this.events.get(input.eventId);
+    if (existing !== undefined) return existing;
+
+    const scope = timelineScope(input.sessionId);
+    const next = (this.counters.get(scope) ?? 0) + 1;
+    this.counters.set(scope, next);
+    const event = parseTimelineEvent({
+      ...input,
+      resourceVersion: String(next),
+      recordedAt: input.recordedAt ?? new Date().toISOString(),
+    });
+    this.events.set(event.eventId, event);
+    return event;
+  }
+
+  async getTimelineEvent(eventId: string): Promise<TimelineEvent | undefined> {
+    return this.events.get(eventId);
+  }
+
+  async listTimelineEvents(query?: TimelineEventQuery): Promise<readonly TimelineEvent[]> {
+    const scope = timelineScope(query?.sessionId);
+    const afterRv = query?.afterRv === undefined ? undefined : Number(query.afterRv);
+    const events = [...this.events.values()].filter((event) => {
+      if (timelineScope(event.sessionId) !== scope) return false;
+      if (afterRv !== undefined && Number(event.resourceVersion) <= afterRv) return false;
+      if (query?.workBlockId !== undefined && event.workBlockId !== query.workBlockId) return false;
+      return true;
+    });
+    events.sort((a, b) => Number(a.resourceVersion) - Number(b.resourceVersion));
+    return events.slice(0, query?.limit ?? events.length);
+  }
+
+  async listTimelineEventEntities(
+    query?: TimelineEventQuery,
+  ): Promise<readonly TimelineEventEntity[]> {
+    const events = await this.listTimelineEvents(query);
+    return events.map((event) => timelineEventToEntity(event, this.namespace));
+  }
+
+  async listAllTimelineEventEntities(
+    query?: AllScopeTimelineEventQuery,
+  ): Promise<readonly TimelineEventEntity[]> {
+    const afterRv = query?.afterRv === undefined ? undefined : Number(query.afterRv);
+    const events = [...this.events.values()].filter((event) => {
+      if (afterRv !== undefined && Number(event.resourceVersion) <= afterRv) return false;
+      if (query?.workBlockId !== undefined && event.workBlockId !== query.workBlockId) return false;
+      return true;
+    });
+    events.sort((a, b) => {
+      const byScope = timelineScope(a.sessionId).localeCompare(timelineScope(b.sessionId));
+      if (byScope !== 0) return byScope;
+      return Number(a.resourceVersion) - Number(b.resourceVersion);
+    });
+    return events
+      .slice(0, query?.limit ?? events.length)
+      .map((event) => timelineEventToEntity(event, this.namespace));
+  }
+
+  async currentTimelineResourceVersion(sessionId?: string): Promise<string> {
+    return String(this.counters.get(timelineScope(sessionId)) ?? 0);
   }
 
   close(): void {

@@ -229,10 +229,15 @@ function operatorAvailability(): readonly Record<string, unknown>[] {
     availability(
       "session_timeline",
       "partial",
-      ["sessions", "session_contributions", "agent-logs", "contribution timestamps"],
-      "Session timeline can be assembled from persisted session and contribution records plus agent logs when present.",
+      ["timeline_events", "timeline_cursors", "sessions", "agent-logs"],
+      "Session timeline diagnostics include persisted timeline events and cursors when the local SQLite database has timeline tables.",
     ),
-    availability("work_blocks", "unavailable", [], "Pending #375."),
+    availability(
+      "work_blocks",
+      "partial",
+      ["work_blocks", "timeline_events", "timeline_cursors"],
+      "WorkBlock diagnostics include persisted work-block rows and timeline event rows when the local SQLite database has timeline tables.",
+    ),
     availability(
       "run_health",
       "partial",

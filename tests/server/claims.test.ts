@@ -159,7 +159,7 @@ describe("split claim routes", () => {
   test("PUT /api/claims/:id writes spec only and returns merged view", async () => {
     const res = await ctx.app.request("/api/claims/split-put", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody()),
     });
 
@@ -173,7 +173,7 @@ describe("split claim routes", () => {
   test("PUT /api/claims/:id rejects status-owned fields", async () => {
     const res = await ctx.app.request("/api/claims/split-put-reject", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody({ phase: "completed" })),
     });
 
@@ -181,7 +181,7 @@ describe("split claim routes", () => {
 
     const attemptCountRes = await ctx.app.request("/api/claims/split-put-reject-attempt", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody({ attemptCount: 2 })),
     });
 
@@ -191,7 +191,7 @@ describe("split claim routes", () => {
   test("GET /api/claims/:id returns merged view", async () => {
     const putRes = await ctx.app.request("/api/claims/split-get", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody({ targetRef: "split-target" })),
     });
     expect(putRes.status).toBe(201);
@@ -210,11 +210,13 @@ describe("split claim routes", () => {
   test("PATCH /api/claims/:id/status requires controller token before body validation", async () => {
     const putRes = await ctx.app.request("/api/claims/split-status-auth", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody()),
     });
     expect(putRes.status).toBe(201);
 
+    // Controller-token check runs BEFORE the dangerous() guard, so absence
+    // of If-Match should not affect the 403 outcome here.
     const res = await ctx.app.request("/api/claims/split-status-auth/status", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
@@ -272,7 +274,7 @@ describe("split claim routes", () => {
   test("PATCH /api/claims/:id/status writes status only with controller token", async () => {
     const putRes = await ctx.app.request("/api/claims/split-status-patch", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(
         claimBody({
           targetRef: "split-preserve-target",
@@ -290,6 +292,7 @@ describe("split claim routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({
         phase: "completed",
@@ -319,7 +322,7 @@ describe("split claim routes", () => {
 
     const putRes = await ctx.app.request("/api/claims/split-watch", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(
         claimBody({
           targetRef: "split-watch-target",
@@ -341,6 +344,7 @@ describe("split claim routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({
         phase: "completed",
@@ -363,7 +367,7 @@ describe("split claim routes", () => {
   test("PATCH /api/claims/:id/status rejects spec-owned fields", async () => {
     const putRes = await ctx.app.request("/api/claims/split-status-reject", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS, "If-Match": "1" },
       body: JSON.stringify(claimBody()),
     });
     expect(putRes.status).toBe(201);
@@ -374,6 +378,7 @@ describe("split claim routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({ phase: "completed", targetRef: "different-target" }),
     });
@@ -386,6 +391,7 @@ describe("split claim routes", () => {
         "Content-Type": "application/json",
         ...TEST_AUTH_HEADERS,
         ...TEST_CONTROLLER_HEADERS,
+        "If-Match": "1",
       },
       body: JSON.stringify({
         phase: "completed",

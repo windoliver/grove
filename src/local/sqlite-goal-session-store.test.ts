@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expectOk } from "../core/cas.js";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import { LoopStopStatus } from "../core/loop-runner.js";
 import type { RuntimeSkillSessionStore, SessionStore } from "../core/session.js";
@@ -49,10 +50,8 @@ describe("Goals", () => {
   });
 
   it("setGoal() creates and returns a goal", async () => {
-    const result = await store.setGoal(
-      "Ship feature X",
-      ["Tests pass", "Docs updated"],
-      "operator",
+    const result = expectOk(
+      await store.setGoal("Ship feature X", ["Tests pass", "Docs updated"], "operator"),
     );
     expect(result.goal).toBe("Ship feature X");
     expect(result.acceptance).toEqual(["Tests pass", "Docs updated"]);
@@ -63,7 +62,9 @@ describe("Goals", () => {
 
   it("setGoal() upserts (second call updates)", async () => {
     await store.setGoal("Goal v1", ["Criterion A"], "user-1");
-    const updated = await store.setGoal("Goal v2", ["Criterion B", "Criterion C"], "user-2");
+    const updated = expectOk(
+      await store.setGoal("Goal v2", ["Criterion B", "Criterion C"], "user-2"),
+    );
 
     expect(updated.goal).toBe("Goal v2");
     expect(updated.acceptance).toEqual(["Criterion B", "Criterion C"]);
@@ -82,6 +83,51 @@ describe("Goals", () => {
     expect(goal).toBeDefined();
     expect(Array.isArray(goal!.acceptance)).toBe(true);
     expect(goal!.acceptance).toEqual(acceptance);
+  });
+
+  // ------------------------------------------------------------------
+  // CAS (#304, C6 T3b) — setGoal
+  // ------------------------------------------------------------------
+
+  describe("setGoal CAS (C6 #304)", () => {
+    it("stale ifMatch → rv-mismatch; existing goal unchanged", async () => {
+      const first = expectOk(await store.setGoal("Goal v1", ["A"], "user-1"));
+      const result = await store.setGoal("Goal v2", ["B"], "user-2", { ifMatch: "999" });
+      expect(result.kind).toBe("rv-mismatch");
+      if (result.kind === "rv-mismatch") {
+        expect(result.current.resourceVersion).not.toBe("999");
+        expect(result.current.resourceVersion).toBe(String(first.resourceVersion ?? 1));
+      }
+      const fetched = await store.getGoal();
+      expect(fetched?.goal).toBe("Goal v1");
+    });
+
+    it("fresh ifMatch → ok with bumped RV", async () => {
+      const first = expectOk(await store.setGoal("Goal v1", ["A"], "user-1"));
+      const initialRv = String(first.resourceVersion ?? 1);
+      const result = expectOk(
+        await store.setGoal("Goal v2", ["B", "C"], "user-2", { ifMatch: initialRv }),
+      );
+      expect(result.goal).toBe("Goal v2");
+      const newRv = result.resourceVersion ?? 0;
+      expect(newRv).toBeGreaterThan(Number(initialRv));
+    });
+
+    it("missing ifMatch → ok (back-compat)", async () => {
+      await store.setGoal("Goal v1", ["A"], "user-1");
+      const result = expectOk(await store.setGoal("Goal v2", ["B"], "user-2"));
+      expect(result.goal).toBe("Goal v2");
+    });
+
+    it("ifMatch supplied with no existing goal → ok (insert bypasses CAS)", async () => {
+      // No goal row exists yet — the ifMatch token cannot match anything, but
+      // the insert path is explicitly documented to bypass CAS.
+      const result = expectOk(
+        await store.setGoal("First goal", ["A"], "user-1", { ifMatch: "999" }),
+      );
+      expect(result.goal).toBe("First goal");
+      expect(result.resourceVersion).toBe(1);
+    });
   });
 });
 
@@ -732,7 +778,7 @@ describe("session deletion finalizers", () => {
     await stores.contributionStore.put(contribution);
     await store.addContributionToSession(session.id, contribution.cid);
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result.deleted).toBe(true);
     expect(result.forced).toBe(false);
@@ -751,7 +797,7 @@ describe("session deletion finalizers", () => {
     });
     const session = await blocking.createSession({ goal: "blocked" });
 
-    const result = await blocking.deleteSession(session.id);
+    const result = expectOk(await blocking.deleteSession(session.id));
 
     expect(result.deleted).toBe(false);
     expect(result.blockers).toEqual([
@@ -773,7 +819,7 @@ describe("session deletion finalizers", () => {
       .prepare("UPDATE sessions SET finalizers_json = ? WHERE session_id = ?")
       .run(JSON.stringify(["grove.io/close-runtime", "grove.io/future-cleanup"]), session.id);
 
-    const result = await blocking.deleteSession(session.id);
+    const result = expectOk(await blocking.deleteSession(session.id));
 
     expect(result.deleted).toBe(false);
     expect(result.blockers).toEqual([
@@ -807,7 +853,9 @@ describe("session deletion finalizers", () => {
       events.push({ op, claimId: writtenClaim.claimId });
     };
 
-    const result = await blocking.deleteSession(session.id, { force: true, actor: "test" });
+    const result = expectOk(
+      await blocking.deleteSession(session.id, { force: true, actor: "test" }),
+    );
 
     expect(result.deleted).toBe(true);
     expect(result.forced).toBe(true);
@@ -900,7 +948,7 @@ describe("session deletion finalizers", () => {
       events.push({ op, claimId: claim.claimId });
     };
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result.deleted).toBe(true);
     expect(events).toContainEqual({ op: "MODIFIED", claimId: active.claimId });
@@ -924,7 +972,7 @@ describe("session deletion finalizers", () => {
       .prepare("UPDATE sessions SET finalizers_json = '[]' WHERE session_id = ?")
       .run(session.id);
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result.deleted).toBe(true);
     expect(await store.getSession(session.id)).toBeUndefined();
@@ -977,7 +1025,7 @@ describe("session deletion finalizers", () => {
       END
     `);
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result.deleted).toBe(false);
     expect(result.blockers).toEqual([
@@ -1025,7 +1073,7 @@ describe("session deletion finalizers", () => {
       .prepare("UPDATE sessions SET finalizers_json = ? WHERE session_id = ?")
       .run(JSON.stringify(["grove.io/future-cleanup"]), session.id);
 
-    const result = await store.deleteSession(session.id);
+    const result = expectOk(await store.deleteSession(session.id));
 
     expect(result.deleted).toBe(false);
     expect(result.blockers).toEqual([
@@ -1034,7 +1082,7 @@ describe("session deletion finalizers", () => {
     const fetched = await store.getSession(session.id);
     expect(fetched?.finalizers).toEqual(["grove.io/future-cleanup"]);
 
-    const forced = await store.deleteSession(session.id, { force: true, actor: "test" });
+    const forced = expectOk(await store.deleteSession(session.id, { force: true, actor: "test" }));
 
     expect(forced.deleted).toBe(true);
     expect(await store.getSession(session.id)).toBeUndefined();
@@ -1058,11 +1106,11 @@ function adaptGoalSessionStore(
   return {
     createSession: (input) => gs.createSession(input),
     getSession: (id) => gs.getSession(id),
-    updateSession: (id, updates) => gs.updateSession(id, updates),
+    updateSession: (id, updates, opts) => gs.updateSession(id, updates, opts),
     listSessions: (query) => gs.listSessions(query),
     deleteSession: (id, options) => gs.deleteSession(id, options),
     listSessionDeleteBlockers: (id) => gs.listSessionDeleteBlockers(id),
-    archiveSession: (id) => gs.archiveSession(id),
+    archiveSession: (id, opts) => gs.archiveSession(id, opts),
     addContribution: (sid, cid) => gs.addContributionToSession(sid, cid),
     getContributions: (sid) => gs.getSessionContributions(sid),
     appendSessionRoleSkill: (sessionId, roleName, skillName) =>

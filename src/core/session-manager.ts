@@ -9,6 +9,7 @@
  *   next time: grove up              -> SessionManager.createSession(newGoal)
  */
 
+import { expectCasOk } from "./cas.js";
 import type { LoopStopStatus } from "./loop-runner.js";
 import type {
   CreateSessionInput,
@@ -77,7 +78,10 @@ export class SessionManager {
         `Invalid session state transition: ${session.status} → archived (allowed: ${allowed.join(", ") || "none"})`,
       );
     }
-    await this.store.archiveSession(id);
+    // C6 (#304): controller does not yet supply ifMatch; rv-mismatch here
+    // would indicate a programming error until T6 + T7 wire If-Match.
+    const result = await this.store.archiveSession(id);
+    expectCasOk(result, `SessionManager.archiveSession(${id})`);
   }
 
   /** Validate and perform a state transition. */
@@ -96,10 +100,11 @@ export class SessionManager {
         `Invalid session state transition: ${session.status} → ${newStatus} (allowed: ${allowed.join(", ") || "none"})`,
       );
     }
-    await this.store.updateSession(id, {
+    const result = await this.store.updateSession(id, {
       status: newStatus,
       ...extraFields,
     });
+    expectCasOk(result, `SessionManager.transitionState(${id} -> ${newStatus})`);
   }
 
   /** Get a session by ID. */

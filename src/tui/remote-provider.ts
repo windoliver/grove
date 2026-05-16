@@ -26,6 +26,8 @@ import {
   parseThreadSummaries,
 } from "../core/schemas.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
+import type { SessionTimeline, WorkBlock } from "../core/timeline.js";
+import { parseSessionTimeline, parseWorkBlocks } from "../core/timeline-schemas.js";
 import type {
   ActivityQuery,
   ArtifactMeta,
@@ -65,6 +67,7 @@ import {
   setGoalHttp,
 } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
+import type { DangerousToken } from "./safety/index.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
 export class RemoteDataProvider
@@ -384,6 +387,37 @@ export class RemoteDataProvider
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { threads: unknown };
     return parseThreadSummaries(body.threads);
+  }
+
+  async getWorkBlocks(query?: {
+    readonly sessionId?: string | undefined;
+  }): Promise<readonly WorkBlock[]> {
+    const params = new URLSearchParams();
+    if (query?.sessionId !== undefined) params.set("sessionId", query.sessionId);
+    const resp = await fetch(this.sessionScopedUrl("/api/work-blocks", params), {
+      headers: this.authHeaders,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    const body = (await resp.json()) as { readonly items?: unknown };
+    return parseWorkBlocks(body.items ?? []);
+  }
+
+  async getTimeline(query?: {
+    readonly sessionId?: string | undefined;
+    readonly afterRv?: string | undefined;
+    readonly limit?: number | undefined;
+    readonly includeWorkBlocks?: boolean | undefined;
+  }): Promise<SessionTimeline> {
+    const params = new URLSearchParams();
+    if (query?.sessionId !== undefined) params.set("sessionId", query.sessionId);
+    if (query?.afterRv !== undefined) params.set("afterRv", query.afterRv);
+    if (query?.limit !== undefined) params.set("limit", String(query.limit));
+    if (query?.includeWorkBlocks === true) params.set("includeWorkBlocks", "true");
+    const resp = await fetch(this.sessionScopedUrl("/api/timeline", params), {
+      headers: this.authHeaders,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return parseSessionTimeline(await resp.json());
   }
 
   // ---------------------------------------------------------------------------
@@ -717,10 +751,11 @@ export class RemoteDataProvider
   }
 
   async setGoal(
+    token: DangerousToken<"Goal">,
     goal: string,
     acceptance: readonly string[],
   ): Promise<import("./provider.js").GoalData> {
-    return setGoalHttp(this.baseUrl, goal, acceptance, this.authHeaders);
+    return setGoalHttp(token, this.baseUrl, goal, acceptance, this.authHeaders);
   }
 
   // ---------------------------------------------------------------------------
@@ -754,8 +789,8 @@ export class RemoteDataProvider
     return undefined;
   }
 
-  async archiveSession(sessionId: string): Promise<void> {
-    return archiveSessionHttp(this.baseUrl, sessionId, this.authHeaders);
+  async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {
+    return archiveSessionHttp(token, this.baseUrl, this.authHeaders);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {

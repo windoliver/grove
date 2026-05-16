@@ -101,6 +101,14 @@ export interface PanelManagerProps {
   readonly onCompareSelect?: ((cid: string) => void) | undefined;
   /** Reports the ordered CID list from the frontier view. */
   readonly onFrontierCidsChanged?: ((cids: readonly string[]) => void) | undefined;
+  /** Active frontier slice key (controlled by app state). */
+  readonly activeSliceKey?: string | undefined;
+  /** Reports the ordered list of frontier slice tab keys back to the parent. */
+  readonly onFrontierTabsChanged?: ((keys: readonly string[]) => void) | undefined;
+  /** Reports {cid, summary} for the active slice. */
+  readonly onFrontierEntriesChanged?:
+    | ((entries: ReadonlyArray<{ cid: string; summary: string }>) => void)
+    | undefined;
   /** Current zoom level. */
   readonly zoomLevel?: ZoomLevel | undefined;
   /** Active tmux sessions for split pane view. */
@@ -171,6 +179,9 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     compareCids,
     onCompareSelect,
     onFrontierCidsChanged,
+    activeSliceKey,
+    onFrontierTabsChanged,
+    onFrontierEntriesChanged,
     zoomLevel,
     activeSessions,
     terminalScrollOffset,
@@ -256,7 +267,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               active
               cursor={isFocused(Panel.Dag) ? nav.state.cursor : -1}
               onContributionsLoaded={onContributionsLoaded}
-              // Wire the advanced-mode `/foo` search query into the
+              // Wire the inspect-overlay `/foo` search query into the
               // highlight prop so DAG rows recolor (no filtering) as the
               // user types — matches running-view's behavior.
               highlightText={searchQuery}
@@ -290,6 +301,9 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               onCompareSelect={onCompareSelect}
               compareCids={compareCids}
               onFrontierCidsChanged={onFrontierCidsChanged}
+              activeSliceKey={activeSliceKey}
+              onFrontierTabsChanged={onFrontierTabsChanged}
+              onFrontierEntriesChanged={onFrontierEntriesChanged}
             />
           );
         case Panel.Claims:
