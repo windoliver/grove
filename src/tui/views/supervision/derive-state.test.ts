@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { ClaimStatus, ContributionKind, RelationType } from "../../../core/models.js";
 import { makeClaim, makeContribution } from "../../../core/test-helpers.js";
-import { classifyAgent, type ClassifyInput } from "./derive-state.js";
+import { type ClassifyInput, classifyAgent, summarize } from "./derive-state.js";
 import { DEFAULT_THRESHOLDS } from "./thresholds.js";
+import type { SupervisedAgent } from "./types.js";
 
 const NOW = Date.parse("2026-05-15T12:00:00Z");
 
@@ -105,13 +106,17 @@ describe("classifyAgent priority order", () => {
   test("thrashing keys on primary relation (relations[0]); secondary relations don't trigger", () => {
     // 6 contribs whose relations[0] targets DIFFER, but relations[1] shares.
     // Should NOT classify as thrashing — secondary relations are not the key.
-    const SAME_SECONDARY = "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const SAME_SECONDARY =
+      "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const contribs = Array.from({ length: 6 }, (_, i) =>
       makeContribution({
         summary: `c${i}`,
         createdAt: new Date(NOW - (i + 1) * 5_000).toISOString(),
         relations: [
-          { targetCid: `blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${i}`, relationType: RelationType.DerivesFrom },
+          {
+            targetCid: `blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${i}`,
+            relationType: RelationType.DerivesFrom,
+          },
           { targetCid: SAME_SECONDARY, relationType: RelationType.DerivesFrom },
         ],
       }),
@@ -166,9 +171,7 @@ describe("classifyAgent priority order", () => {
   });
 
   test("silent when no contribution > silentMs and lease valid", () => {
-    const contribs = [
-      makeContribution({ createdAt: new Date(NOW - 200_000).toISOString() }),
-    ];
+    const contribs = [makeContribution({ createdAt: new Date(NOW - 200_000).toISOString() })];
     const c = classifyAgent(base({ contributions: contribs }));
     expect(c.state).toBe("silent");
   });
@@ -204,9 +207,7 @@ describe("classifyAgent priority order", () => {
   test("running when active claim + recent contribution", () => {
     const c = classifyAgent(
       base({
-        contributions: [
-          makeContribution({ createdAt: new Date(NOW - 10_000).toISOString() }),
-        ],
+        contributions: [makeContribution({ createdAt: new Date(NOW - 10_000).toISOString() })],
       }),
     );
     expect(c.state).toBe("running");
@@ -249,9 +250,7 @@ describe("classifyAgent annotations", () => {
       base({
         contextPercent: 96,
         costUsdLastMin: 2.5,
-        contributions: [
-          makeContribution({ createdAt: new Date(NOW - 10_000).toISOString() }),
-        ],
+        contributions: [makeContribution({ createdAt: new Date(NOW - 10_000).toISOString() })],
       }),
     );
     expect(c.state).toBe("running");
@@ -276,11 +275,87 @@ describe("classifyAgent stateReason text", () => {
   test("silent reports duration", () => {
     const c = classifyAgent(
       base({
-        contributions: [
-          makeContribution({ createdAt: new Date(NOW - 180_000).toISOString() }),
-        ],
+        contributions: [makeContribution({ createdAt: new Date(NOW - 180_000).toISOString() })],
       }),
     );
     expect(c.stateReason).toMatch(/3m/);
+  });
+});
+
+function agent(
+  state: SupervisedAgent["state"],
+  extras: Partial<SupervisedAgent> = {},
+): SupervisedAgent {
+  return {
+    agentId: `a-${Math.random().toString(36).slice(2, 6)}`,
+    role: "coder",
+    platform: "claude",
+    state,
+    stateReason: state,
+    lastActionAt: 0,
+    costUsd: 0,
+    tokens: 0,
+    contribCount: 0,
+    costSpike: false,
+    contextHot: false,
+    ...extras,
+  };
+}
+
+describe("summarize", () => {
+  test("counts by state, total, approvals, cost", () => {
+    const agents = [
+      agent("running", { costUsd: 0.5 }),
+      agent("running", { costUsd: 0.3 }),
+      agent("blocked"),
+      agent("awaiting", {
+        pendingApproval: {
+          agentId: "x",
+          requestId: "r",
+          kind: "tmux-permission",
+          prompt: "",
+          fullBody: "",
+          requestedAt: 0,
+        },
+      }),
+      agent("idle"),
+    ];
+    const s = summarize(agents);
+    expect(s.total).toBe(5);
+    expect(s.byState.running).toBe(2);
+    expect(s.byState.blocked).toBe(1);
+    expect(s.byState.awaiting).toBe(1);
+    expect(s.byState.idle).toBe(1);
+    expect(s.approvalsPending).toBe(1);
+    expect(s.costUsd).toBeCloseTo(0.8, 5);
+  });
+
+  test("counts costSpikeCount and contextHotCount annotations", () => {
+    const agents = [
+      agent("running", { costSpike: true }),
+      agent("running", { contextHot: true, costSpike: true }),
+      agent("running"),
+    ];
+    const s = summarize(agents);
+    expect(s.costSpikeCount).toBe(2);
+    expect(s.contextHotCount).toBe(1);
+  });
+
+  test("empty input returns zeroed summary with all 8 states represented", () => {
+    const s = summarize([]);
+    expect(s.total).toBe(0);
+    expect(Object.keys(s.byState).sort()).toEqual([
+      "awaiting",
+      "blocked",
+      "done",
+      "idle",
+      "running",
+      "silent",
+      "stuck",
+      "thrashing",
+    ]);
+    for (const k of Object.keys(s.byState)) {
+      expect(s.byState[k as keyof typeof s.byState]).toBe(0);
+    }
   });
 });

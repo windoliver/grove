@@ -14,8 +14,8 @@
  */
 
 import { type Claim, ClaimStatus, type Contribution } from "../../../core/models.js";
-import type { PendingApproval, SupervisedAgent } from "./types.js";
 import type { SupervisionThresholds } from "./thresholds.js";
+import type { AgentState, FleetSummary, PendingApproval, SupervisedAgent } from "./types.js";
 
 export type HandoffServerState = "overdue" | "blocked" | "dead_lettered" | "pending";
 
@@ -115,8 +115,7 @@ export function classifyAgent(input: ClassifyInput): ClassifyResult {
     const ref = inWindow[0];
     const refTarget = ref?.relations[0]?.targetCid;
     const allSame =
-      refTarget !== undefined &&
-      inWindow.every((c) => c.relations[0]?.targetCid === refTarget);
+      refTarget !== undefined && inWindow.every((c) => c.relations[0]?.targetCid === refTarget);
     if (allSame) {
       return {
         state: "thrashing",
@@ -175,7 +174,10 @@ export function classifyAgent(input: ClassifyInput): ClassifyResult {
   }
 
   // 7 done
-  if (input.completedAt !== undefined && now - input.completedAt < thresholds.completedRetentionMs) {
+  if (
+    input.completedAt !== undefined &&
+    now - input.completedAt < thresholds.completedRetentionMs
+  ) {
     return {
       state: "done",
       stateReason: `done ${formatAge(now - input.completedAt)} ago`,
@@ -200,4 +202,38 @@ function formatAge(ms: number): string {
   if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
   return `${Math.floor(ms / 3_600_000)}h`;
+}
+
+const ZERO_BY_STATE: Readonly<Record<AgentState, number>> = Object.freeze({
+  running: 0,
+  silent: 0,
+  stuck: 0,
+  blocked: 0,
+  thrashing: 0,
+  awaiting: 0,
+  done: 0,
+  idle: 0,
+});
+
+export function summarize(agents: readonly SupervisedAgent[]): FleetSummary {
+  const byState: Record<AgentState, number> = { ...ZERO_BY_STATE };
+  let approvalsPending = 0;
+  let costUsd = 0;
+  let costSpikeCount = 0;
+  let contextHotCount = 0;
+  for (const a of agents) {
+    byState[a.state] += 1;
+    if (a.pendingApproval) approvalsPending += 1;
+    costUsd += a.costUsd;
+    if (a.costSpike) costSpikeCount += 1;
+    if (a.contextHot) contextHotCount += 1;
+  }
+  return {
+    total: agents.length,
+    byState,
+    approvalsPending,
+    costUsd,
+    costSpikeCount,
+    contextHotCount,
+  };
 }
