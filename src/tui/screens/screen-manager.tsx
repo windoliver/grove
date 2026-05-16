@@ -27,6 +27,7 @@ import { DagStateStore } from "../data/dag-state-store.js";
 import { type PageKind, PagesStore } from "../data/pages-store.js";
 import { debugLog } from "../debug-log.js";
 import { DagStateProvider } from "../hooks/dag-state-context.js";
+import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
@@ -43,6 +44,7 @@ import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
 import { SupervisionScreen } from "../views/supervision/supervision-screen.js";
+import { useSupervisionApprovals } from "../views/supervision/use-supervision-approvals.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
@@ -1162,6 +1164,50 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 );
 
 // ---------------------------------------------------------------------------
+// SupervisionPage — thin wrapper that sources real pendingApprovals from
+// useAgentMonitor and dispatches Enter/Escape to tmux on accept/reject.
+// Replaces the Task 13 no-op stubs in the GROVE_TUI_SUPERVISION=1 branch.
+// ---------------------------------------------------------------------------
+
+interface SupervisionPageProps {
+  readonly provider: TuiDataProvider;
+  readonly intervalMs: number;
+  readonly goal?: string;
+  readonly tmux?: import("../agents/tmux-manager.js").TmuxManager;
+  readonly eventBus?: import("../../core/event-bus.js").EventBus;
+  readonly topology?: import("../../core/topology.js").AgentTopology;
+  readonly groveDir?: string;
+}
+
+const SupervisionPage: React.NamedExoticComponent<SupervisionPageProps> = React.memo(
+  function SupervisionPage({
+    provider,
+    intervalMs,
+    goal,
+    tmux,
+    eventBus,
+    topology,
+    groveDir,
+  }: SupervisionPageProps): React.ReactNode {
+    const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
+    const { pendingApprovals, onAcceptApproval, onRejectApproval } = useSupervisionApprovals(
+      monitor.pendingPermissions,
+      tmux,
+    );
+    return (
+      <SupervisionScreen
+        provider={provider}
+        intervalMs={intervalMs}
+        goal={goal}
+        pendingApprovals={pendingApprovals}
+        onAcceptApproval={onAcceptApproval}
+        onRejectApproval={onRejectApproval}
+      />
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // RunningPageWithBackConfirm — wraps RunningView and routes the operator's
 // "back to main" intent through the C6 confirm-and-mutate modal (#304).
 //
@@ -1285,19 +1331,14 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
 
     if (process.env.GROVE_TUI_SUPERVISION === "1") {
       return (
-        <SupervisionScreen
+        <SupervisionPage
           provider={provider}
           intervalMs={rest.intervalMs}
           goal={rest.goal}
-          pendingApprovals={[]}
-          onAcceptApproval={
-            // no-op stub — full wiring lands in Task 15
-            async (_requestId: string) => Promise.resolve()
-          }
-          onRejectApproval={
-            // no-op stub — full wiring lands in Task 15
-            async (_requestId: string) => Promise.resolve()
-          }
+          tmux={rest.tmux}
+          eventBus={rest.eventBus}
+          topology={rest.topology}
+          groveDir={rest.groveDir}
         />
       );
     }
