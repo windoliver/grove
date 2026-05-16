@@ -32,7 +32,8 @@ export type SupervisionAction =
   | { kind: "set-drill-tab"; tab: DrillTab }
   | { kind: "exit-cmd-mode" }
   | { kind: "cmd-mode-char"; char: string }
-  | { kind: "cmd-mode-backspace" };
+  | { kind: "cmd-mode-backspace" }
+  | { kind: "back-to-main" };
 
 export interface SupervisionContext {
   readonly modalOpen: boolean;
@@ -86,6 +87,7 @@ export function routeKey(key: string, ctx: SupervisionContext): SupervisionActio
     case "o":
       return { kind: "open-drill" };
     case "A": return { kind: "open-next-approval" };
+    case "B": return { kind: "back-to-main" };
     case "/": return { kind: "enter-filter" };
     case "s": return { kind: "cycle-sort" };
     case "f": return { kind: "cycle-state-filter" };

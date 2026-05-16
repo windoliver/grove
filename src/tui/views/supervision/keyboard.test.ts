@@ -81,6 +81,9 @@ describe("routeKey", () => {
     test("c → copy-agent-id", () => {
       expect(routeKey("c", ctx())).toEqual<SupervisionAction>({ kind: "copy-agent-id" });
     });
+    test("B → back-to-main", () => {
+      expect(routeKey("B", ctx())).toEqual<SupervisionAction>({ kind: "back-to-main" });
+    });
   });
 
   describe("drill open", () => {

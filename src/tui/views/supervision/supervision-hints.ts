@@ -11,6 +11,7 @@ export const SUPERVISION_HINTS: readonly KeyAction[] = defineHints([
   { key: "/", label: "Filter" },
   { key: "s", label: "Sort" },
   { key: "f", label: "States" },
+  { key: "B", label: "Back" },
   { key: "?", label: "Help" },
   { key: "q", label: "Quit" },
 ]);

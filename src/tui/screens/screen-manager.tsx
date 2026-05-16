@@ -1141,6 +1141,7 @@ interface SupervisionPageProps {
   readonly eventBus?: import("../../core/event-bus.js").EventBus;
   readonly topology?: import("../../core/topology.js").AgentTopology;
   readonly groveDir?: string;
+  readonly onBack?: () => void;
 }
 
 const SupervisionPage: React.NamedExoticComponent<SupervisionPageProps> = React.memo(
@@ -1152,6 +1153,7 @@ const SupervisionPage: React.NamedExoticComponent<SupervisionPageProps> = React.
     eventBus,
     topology,
     groveDir,
+    onBack,
   }: SupervisionPageProps): React.ReactNode {
     const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
     const { pendingApprovals, onAcceptApproval, onRejectApproval } = useSupervisionApprovals(
@@ -1166,6 +1168,7 @@ const SupervisionPage: React.NamedExoticComponent<SupervisionPageProps> = React.
         pendingApprovals={pendingApprovals}
         onAcceptApproval={onAcceptApproval}
         onRejectApproval={onRejectApproval}
+        onBack={onBack}
       />
     );
   },
@@ -1305,7 +1308,6 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
 
-    void handleBackToMain; // archive-on-back wired; SupervisionScreen owns its own quit flow
     return (
       <SupervisionPage
         provider={provider}
@@ -1315,6 +1317,7 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
         eventBus={eventBus}
         topology={topology}
         groveDir={groveDir}
+        onBack={handleBackToMain}
       />
     );
   });

@@ -23,6 +23,7 @@ export interface SupervisionScreenProps {
   readonly pendingApprovals: readonly PendingApproval[];
   readonly onAcceptApproval: (requestId: string) => Promise<void>;
   readonly onRejectApproval: (requestId: string) => Promise<void>;
+  readonly onBack?: () => void;
 }
 
 const SEVERITY_RANK: Readonly<Record<SupervisedAgent["state"], number>> = {
@@ -203,9 +204,12 @@ export const SupervisionScreen: React.FC<SupervisionScreenProps> = (props) => {
         case "copy-agent-id":
           // Out-of-scope for v1 — host process will own clipboard.
           break;
+        case "back-to-main":
+          props.onBack?.();
+          break;
       }
     },
-    [visible, focusedAgent, approvalQueue],
+    [visible, focusedAgent, approvalQueue, props],
   );
 
   useKeyboard(
