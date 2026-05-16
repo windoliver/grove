@@ -1,15 +1,16 @@
 /**
- * Manual tmux-driven E2E for the typed ACP consumer (#314).
+ * Manual tmux-driven E2E for the typed ACP consumer (#314), updated for
+ * SupervisionScreen (#193).
  *
  * Launches the real Grove TUI in a tmux pane, initialises a review-loop
  * preset with real claude-code agents (coder + reviewer), sends a goal,
  * captures pane output at each phase, and asserts the typed ACP flow +
- * handoff completes.
+ * handoff completes — visible as state transitions on supervision cards.
  *
  * NOT wired into `bun test` — this boots actual claude-code processes
  * and requires an ANTHROPIC_API_KEY in env. Run as:
  *
- *   bun run tests/tui/typed-acp-tmux-e2e.ts
+ *   ANTHROPIC_API_KEY=... bun run tests/tui/typed-acp-tmux-e2e.ts
  *
  * Flags:
  *   --keep          Leave the tmux session + work dir behind for inspection
@@ -174,45 +175,44 @@ async function main() {
     return;
   }
 
-  // 6. Wait for TUI to show the setup screen.
+  // 6. Wait for TUI to show the setup / welcome screen.
   await waitForPane((p) => /Grove|Resume|Create|grove/i.test(p), "tui-setup", 60000);
   console.log("[phase 1] TUI setup screen visible");
 
-  // 7. Press Enter on the default "New session" option. On an existing
-  //    grove with a single preset, the flow short-circuits past
-  //    preset-select and lands on the running screen with agents
-  //    pre-spawned (coder + reviewer).
+  // 7. Walk the wizard: Enter (start new session) → optionally land on
+  //    goal-input → type goal → Enter → spawning → supervision.
   tmuxSendKeys(["Enter"]);
-  await sleep(3000);
+  await sleep(2000);
 
-  // 8. Wait directly for the running screen — agents spawn synchronously.
+  // 7a. If the goal-input screen is shown, type the goal there. The supervision
+  //     surface itself does NOT expose a `:` prompt — goals must be injected
+  //     during the wizard.
+  const afterEnter = capturePane();
+  if (/Goal|prompt|describe/i.test(afterEnter)) {
+    console.log("[phase 1b] goal-input screen — injecting goal");
+    tmuxSendKeys(["Create a hello.txt file with the text 'hi' and commit it."]);
+    await sleep(500);
+    tmuxSendKeys(["Enter"]);
+    await sleep(3000);
+  }
+
+  // 8. Wait for the SupervisionScreen (running surface). Matches the FLEET
+  //    banner, the new card prefix (`a-`), or any state badge.
   const running = await waitForPane(
-    (p) => /RUNNING|coder.*\[1\]|reviewer.*\[2\]|Contribution Feed/i.test(p),
-    "running",
-    60000,
+    (p) => /FLEET|a-[0-9a-f]+|RUN|BLK|SLNT|STCK|APPR/i.test(p),
+    "supervision",
+    90000,
   );
-  console.log("[phase 2] running screen + agents spawned");
-  console.log("──── running pane ────");
+  console.log("[phase 2] supervision screen visible — agents registered");
+  console.log("──── supervision pane ────");
   console.log(running);
-  console.log("──── end running pane ────");
+  console.log("──── end supervision pane ────");
 
-  // 9. Agents are spawned but idle. Send a prompt to the coder via `m`.
-  //    The prompt input mode requires hasSendToAgent && hasActiveRoles —
-  //    we rely on the default routing to fire the prompt at coder.
-  console.log("[phase 3] entering prompt mode (`:`)");
-  tmuxSendKeys([":"]);
-  await sleep(1500);
-
-  tmuxSendKeys(["Create a hello.txt file with the text 'hi' and commit it."]);
-  await sleep(500);
-  tmuxSendKeys(["Enter"]);
-  await sleep(5000);
-  console.log("──── running pane ────");
-  console.log(running);
-  console.log("──── end running pane ────");
-
-  // 14. Observe for up to 3 minutes — watch for ACP event indicators.
-  console.log("[phase 5] observing agent activity for up to 3 minutes...");
+  // 9. Observe for up to 3 minutes — watch the FLEET banner state counts
+  //    move (running → silent → blocked / approve) as agents work and hand
+  //    off. The drill-down would surface contribution text if Enter is
+  //    pressed; we keep the grid view to track the fleet-level signal.
+  console.log("[phase 3] observing fleet-level activity for up to 3 minutes...");
   const observeEnd = Math.min(Date.now() + 180_000, overallDeadline);
   let lastCapture = "";
   while (Date.now() < observeEnd) {
@@ -220,11 +220,13 @@ async function main() {
     lastCapture = capturePane();
     const headline = lastCapture.split("\n").slice(0, 5).join(" | ");
     console.log(
-      `[observe t+${Math.round((Date.now() - (observeEnd - 180_000)) / 1000)}s] ${headline.slice(0, 120)}`,
+      `[observe t+${Math.round((Date.now() - (observeEnd - 180_000)) / 1000)}s] ${headline.slice(0, 140)}`,
     );
-    // Look for contribution signal (coder called grove_submit_work → handoff created).
-    if (/handoff|contribution|review/i.test(lastCapture)) {
-      console.log("[phase 5] handoff/contribution signal detected");
+    // A handoff is visible when the reviewer card transitions from idle/silent
+    // into running, or when the cost-line ticks up — meaning the coder's
+    // contribution was projected and the reviewer started reading it.
+    if (/handoff|contribution|review|reviewer.*\bRUN\b|approve/i.test(lastCapture)) {
+      console.log("[phase 3] handoff / reviewer activity detected");
       break;
     }
   }
