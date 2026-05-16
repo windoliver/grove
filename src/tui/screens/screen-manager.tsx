@@ -28,7 +28,7 @@ import { type PageKind, PagesStore } from "../data/pages-store.js";
 import { debugLog } from "../debug-log.js";
 import { DagStateProvider } from "../hooks/dag-state-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
-import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
+import { useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
 import type {
@@ -49,7 +49,6 @@ import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
 import { PresetSelect } from "./preset-select.js";
-import { RunningView } from "./running-view.js";
 import type { AgentSpawnState } from "./spawn-progress.js";
 import { SpawnProgress } from "./spawn-progress.js";
 
@@ -367,8 +366,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Reconcile agent sessions when entering running view (reattach to acpx).
     // Always bump reconcileVersion after reconcile to force RunningView re-render
     // with updated activeRoles from SpawnManager.
-    const [reconcileVersion, setReconcileVersion] = useState(0);
-    const [agentFailureVersion, setAgentFailureVersion] = useState(0);
+    const [_reconcileVersion, setReconcileVersion] = useState(0);
+    const [_agentFailureVersion, setAgentFailureVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
@@ -487,7 +486,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const handleDone = useCallback(() => {
       void snapshotAndComplete("Session signaled done");
     }, [snapshotAndComplete]);
-    const observeDoneContribution = useDoneDetection(
+    const _observeDoneContribution = useDoneDetection(
       topology,
       state.screen,
       appProps.eventBus,
@@ -888,13 +887,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     }, [presets, handleQuit, pages]);
 
     // Screen 4 -> inspect overlay (Ctrl+G, deliberate entry)
-    const handleEnterInspect = useCallback(() => {
+    // Retained for future wiring from SupervisionScreen keyboard handler.
+    const _handleEnterInspect = useCallback(() => {
       setState((s) => ({ ...s, screen: "inspect" }));
       pages.push({ kind: "inspect" });
     }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
-    const handleComplete = useCallback(
+    // Retained for future wiring from SupervisionScreen done detection.
+    const _handleComplete = useCallback(
       (reason: string) => {
         void snapshotAndComplete(reason);
       },
@@ -1037,39 +1038,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             topology={topology}
             goal={state.goal}
             sessionId={state.sessionId}
-            sessionStartedAt={state.sessionStartedAt}
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
-            logBuffers={reconcileVersion >= 0 ? spawnManager.getLogBuffers() : undefined}
-            agentFailures={agentFailureVersion >= 0 ? spawnManager.getAgentFailures() : undefined}
-            onNewContribution={(c) => {
-              debugLog(
-                "contribution",
-                `NEW cid=${c.cid.slice(0, 12)} kind=${c.kind} role=${c.agent?.role} summary="${c.summary.slice(0, 50)}"`,
-              );
-              const isDone = isDoneContribution({ summary: c.summary, context: c.context });
-              if (isDone) {
-                observeDoneContribution(c);
-                return;
-              }
-              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
-              if (doneSignaledRef.current) return;
-              // Routing is handled by the SSE push bridge — don't re-deliver here.
-              if (state.sessionId && isSessionProvider(provider)) {
-                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
-                  /* best-effort */
-                });
-              }
-            }}
-            onSendToAgent={async (role, message) => {
-              if (!spawnManager) return false;
-              return spawnManager.sendToAgent(role, message);
-            }}
-            activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
-            onEnterInspect={handleEnterInspect}
-            onComplete={handleComplete}
-            onQuit={handleQuit}
             onNavigateBackToMain={handleNavigateBackToMain}
           />,
         );
@@ -1123,7 +1094,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       state.roleMapping,
       state.goal,
       state.sessionId,
-      state.sessionStartedAt,
       state.spawnStates,
       state.completeSnapshot,
       topology,
@@ -1132,17 +1102,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleLaunchConfirm,
       handleLaunchBack,
       handleSpawnComplete,
-      handleEnterInspect,
-      handleComplete,
       handleNavigateBackToMain,
       handleExitInspect,
       handleNewSession,
       provider,
       appProps,
-      spawnManager,
-      reconcileVersion,
-      agentFailureVersion,
-      observeDoneContribution,
       getDuration,
       wrapWithPermissions,
     ]);
@@ -1235,13 +1199,15 @@ const SupervisionPage: React.NamedExoticComponent<SupervisionPageProps> = React.
 // nothing to confirm an archive of.
 // ---------------------------------------------------------------------------
 
-interface RunningPageWithBackConfirmProps
-  extends Omit<
-    import("./running-view.js").RunningViewProps,
-    "onBackToMain" | "sessionId" | "provider"
-  > {
+interface RunningPageWithBackConfirmProps {
   readonly provider: TuiDataProvider;
+  readonly intervalMs: number;
+  readonly topology?: import("../../core/topology.js").AgentTopology | undefined;
+  readonly goal?: string | undefined;
   readonly sessionId?: string | undefined;
+  readonly tmux?: import("../agents/tmux-manager.js").TmuxManager | undefined;
+  readonly eventBus?: import("../../core/event-bus.js").EventBus | undefined;
+  readonly groveDir?: string | undefined;
   /**
    * Navigate back to the preset-select / main screen, AFTER the operator
    * has confirmed the archive (or there was nothing to archive).
@@ -1253,7 +1219,17 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
   React.memo(function RunningPageWithBackConfirm(
     props: RunningPageWithBackConfirmProps,
   ): React.ReactNode {
-    const { provider, sessionId, onNavigateBackToMain, ...rest } = props;
+    const {
+      provider,
+      sessionId,
+      onNavigateBackToMain,
+      intervalMs,
+      goal,
+      tmux,
+      eventBus,
+      topology,
+      groveDir,
+    } = props;
     const confirmAndMutate = useConfirmAndMutate();
     // C6 (#304) round-3: in-flight guard so repeated B keypresses don't
     // pre-empt the modal and emit "Archive failed" toasts for the
@@ -1329,25 +1305,16 @@ const RunningPageWithBackConfirm: React.NamedExoticComponent<RunningPageWithBack
       })();
     }, [provider, sessionId, confirmAndMutate, onNavigateBackToMain]);
 
-    if (process.env.GROVE_TUI_SUPERVISION === "1") {
-      return (
-        <SupervisionPage
-          provider={provider}
-          intervalMs={rest.intervalMs}
-          goal={rest.goal}
-          tmux={rest.tmux}
-          eventBus={rest.eventBus}
-          topology={rest.topology}
-          groveDir={rest.groveDir}
-        />
-      );
-    }
+    void handleBackToMain; // archive-on-back wired; SupervisionScreen owns its own quit flow
     return (
-      <RunningView
-        {...rest}
+      <SupervisionPage
         provider={provider}
-        sessionId={sessionId}
-        onBackToMain={handleBackToMain}
+        intervalMs={intervalMs}
+        goal={goal}
+        tmux={tmux}
+        eventBus={eventBus}
+        topology={topology}
+        groveDir={groveDir}
       />
     );
   });

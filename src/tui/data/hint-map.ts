@@ -16,7 +16,7 @@ import { INSPECT_HINTS } from "../views/inspect-hints.js";
 import { LAUNCH_PREVIEW_HINTS } from "../views/launch-preview-hints.js";
 import { PANEL_HINTS } from "../views/panel-hints.js";
 import { PRESET_SELECT_HINTS } from "../views/preset-select-hints.js";
-import { RUNNING_VIEW_HINTS } from "../views/running-view-hints.js";
+import { SUPERVISION_HINTS } from "../views/supervision/supervision-hints.js";
 import type { Page } from "./pages-store.js";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   // fall back to DEFAULT_HINTS here because [?]Help and [q]Quit are
   // also unwired on this screen.
   spawning: Object.freeze([]),
-  running: RUNNING_VIEW_HINTS,
+  running: SUPERVISION_HINTS,
   complete: COMPLETE_HINTS,
   inspect: INSPECT_HINTS,
 
