@@ -819,8 +819,7 @@ export class DefaultGossipService implements GossipService {
           // every sweep on already-local entries from the merged digest.
           ...(contributionStore
             ? {
-                isLocal: async (cid: string) =>
-                  (await contributionStore.get(cid)) !== undefined,
+                isLocal: async (cid: string) => (await contributionStore.get(cid)) !== undefined,
               }
             : {}),
           onResult: (result) => {
