@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { hash as blake3Hash } from "blake3";
 
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
-import type { Contribution } from "../../src/core/models.js";
+import { createContribution } from "../../src/core/manifest.js";
 import { InMemoryContributionStore } from "../../src/core/testing.js";
 import { WatchHub } from "../../src/core/watch-hub.js";
 import { HttpGossipTransport } from "../../src/gossip/http-transport.js";
@@ -140,23 +140,22 @@ describe("gossip federation e2e", () => {
     const artifactHash = blake3Of(bytes);
     await serverA.deps.cas.put(bytes);
 
-    const cid = `blake3:${"e".repeat(64)}`;
-    await serverA.deps.contributionStore.put({
-      cid,
+    const contribution = createContribution({
+      kind: "work",
+      mode: "evaluation",
       summary: "hello from A",
       artifacts: { payload: artifactHash },
       relations: [],
       tags: [],
-      kind: "work",
-      mode: "evaluation",
-      manifestVersion: 1,
       agent: {
         agentId: "agent-A",
         agentName: "agent-A",
         provider: "test",
       },
-      createdAt: new Date().toISOString(),
-    } as unknown as Contribution);
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const cid = contribution.cid;
+    await serverA.deps.contributionStore.put(contribution);
 
     // 2. Force a single gossip round on B so it pulls A's frontier digest
     //    over real HTTP. After the round, B's advertisement map should know

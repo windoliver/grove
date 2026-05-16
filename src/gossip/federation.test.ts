@@ -4,7 +4,24 @@ import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
 import type { FrontierDigestEntry, GossipTransport, PeerInfo } from "../core/gossip/types.js";
 import type { ContentStore } from "../core/cas.js";
 import type { ContributionStore } from "../core/store.js";
+import { createContribution } from "../core/manifest.js";
 import type { Contribution } from "../core/models.js";
+
+function makeContribution(opts: {
+  artifacts?: Record<string, string>;
+  summary?: string;
+}): Contribution {
+  return createContribution({
+    kind: "work",
+    mode: "evaluation",
+    summary: opts.summary ?? "fed-test",
+    artifacts: opts.artifacts ?? {},
+    relations: [],
+    tags: [],
+    agent: { agentId: "agent-test", agentName: "agent-test", platform: "test" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+}
 
 function makePeer(id: string): PeerInfo {
   return { peerId: id, address: `http://${id}:1`, age: 0, lastSeen: new Date().toISOString() };
@@ -52,18 +69,17 @@ class MemCas implements Pick<ContentStore, "put" | "exists" | "get"> {
 }
 
 describe("FederationFetcher.fetchRemoteContribution", () => {
-  const cid = "blake3:" + "1".repeat(64);
-
   it("returns already-local when the cid exists locally", async () => {
+    const sample = makeContribution({ summary: "already-here" });
     const store = new MemContributionStore();
-    store.map.set(cid, { cid } as Contribution);
+    store.map.set(sample.cid, sample);
     const fetcher = new FederationFetcher({
       contributionStore: store as unknown as ContributionStore,
       cas: new MemCas() as unknown as ContentStore,
       transport: new StubTransport(undefined),
       peersFor: () => [],
     });
-    const result = await fetcher.fetchRemoteContribution(cid);
+    const result = await fetcher.fetchRemoteContribution(sample.cid);
     expect(result.kind).toBe("already-local");
   });
 
@@ -74,18 +90,17 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
       transport: new StubTransport(undefined),
       peersFor: () => [],
     });
-    const result = await fetcher.fetchRemoteContribution(cid);
+    const result = await fetcher.fetchRemoteContribution(`blake3:${"1".repeat(64)}`);
     expect(result.kind).toBe("no-source");
   });
 
   it("fetches manifest + artifacts and verifies BLAKE3 before storing", async () => {
     const artifactBytes = new Uint8Array([1, 2, 3]);
     const artifactHash = blake3Of(artifactBytes);
-    const manifest: Contribution = {
-      cid,
+    const manifest = makeContribution({
       summary: "remote",
       artifacts: { "out.txt": artifactHash },
-    } as Contribution;
+    });
     const cas = new MemCas();
     const contribs = new MemContributionStore();
     const fetcher = new FederationFetcher({
@@ -94,39 +109,68 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
       transport: new StubTransport(manifest, new Map([[artifactHash, artifactBytes]])),
       peersFor: () => [makePeer("A")],
     });
-    const result = await fetcher.fetchRemoteContribution(cid);
+    const result = await fetcher.fetchRemoteContribution(manifest.cid);
     expect(result.kind).toBe("ok");
-    expect(contribs.map.has(cid)).toBe(true);
+    expect(contribs.map.has(manifest.cid)).toBe(true);
     expect(cas.map.has(artifactHash)).toBe(true);
+  });
+
+  it("rejects a manifest whose canonical CID does not match the advertised CID", async () => {
+    // The peer claims a CID but returns a manifest that hashes to something
+    // else — fromManifest({verify:true}) catches this before any artifact
+    // side effects.
+    const realManifest = makeContribution({ summary: "real" });
+    const fakeCid = `blake3:${"f".repeat(64)}`;
+    const fetcher = new FederationFetcher({
+      contributionStore: new MemContributionStore() as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(realManifest),
+      peersFor: () => [makePeer("A")],
+    });
+    const result = await fetcher.fetchRemoteContribution(fakeCid);
+    expect(result.kind).toBe("failed");
   });
 
   it("rejects an artifact whose bytes do not match the manifest hash", async () => {
     const bogus = new Uint8Array([9, 9, 9]);
-    const declared = "blake3:" + "0".repeat(64); // does not match bogus
-    const manifest: Contribution = {
-      cid,
+    // Build a valid manifest with a hash field that points at non-matching bytes.
+    const declared = `blake3:${"0".repeat(64)}`; // does not match `bogus`
+    const manifest = makeContribution({
       summary: "x",
       artifacts: { "out.txt": declared },
-    } as Contribution;
+    });
     const fetcher = new FederationFetcher({
       contributionStore: new MemContributionStore() as unknown as ContributionStore,
       cas: new MemCas() as unknown as ContentStore,
       transport: new StubTransport(manifest, new Map([[declared, bogus]])),
       peersFor: () => [makePeer("A")],
     });
-    const result = await fetcher.fetchRemoteContribution(cid);
+    const result = await fetcher.fetchRemoteContribution(manifest.cid);
     expect(result.kind).toBe("failed");
     if (result.kind === "failed") expect(result.reason).toMatch(/hash mismatch/i);
+  });
+
+  it("rejects manifests that declare more artifacts than the per-fetch cap", async () => {
+    const artifacts: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) {
+      artifacts[`a${i}`] = `blake3:${i.toString(16).padStart(64, "0")}`;
+    }
+    const manifest = makeContribution({ artifacts });
+    const fetcher = new FederationFetcher({
+      contributionStore: new MemContributionStore() as unknown as ContributionStore,
+      cas: new MemCas() as unknown as ContentStore,
+      transport: new StubTransport(manifest),
+      peersFor: () => [makePeer("A")],
+    });
+    const result = await fetcher.fetchRemoteContribution(manifest.cid);
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.reason).toMatch(/artifacts > cap/);
   });
 
   it("falls back to next peer when the first errors", async () => {
     const artifactBytes = new Uint8Array([7]);
     const artifactHash = blake3Of(artifactBytes);
-    const manifest: Contribution = {
-      cid,
-      summary: "x",
-      artifacts: { "a": artifactHash },
-    } as Contribution;
+    const manifest = makeContribution({ summary: "x", artifacts: { a: artifactHash } });
     let calls = 0;
     const flakyTransport: GossipTransport = {
       exchange: async () => ({}) as never,
@@ -145,7 +189,7 @@ describe("FederationFetcher.fetchRemoteContribution", () => {
       transport: flakyTransport,
       peersFor: () => [makePeer("A"), makePeer("B")],
     });
-    const result = await fetcher.fetchRemoteContribution(cid);
+    const result = await fetcher.fetchRemoteContribution(manifest.cid);
     expect(result.kind).toBe("ok");
     expect(calls).toBe(2);
   });

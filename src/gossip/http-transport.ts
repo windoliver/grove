@@ -61,44 +61,66 @@ export interface ValidatePeerUrlOptions {
 }
 
 /**
- * Return true if `ip` falls in a private or reserved IPv4 range.
+ * Return true if `ip` falls in a non-global / private / reserved IPv4 range.
  *
- * Ranges covered:
- *  - 0.0.0.0/8
- *  - 10.0.0.0/8
- *  - 127.0.0.0/8
- *  - 169.254.0.0/16
- *  - 172.16.0.0/12
- *  - 192.168.0.0/16
+ * Covers IANA-registered non-global ranges per RFC 6890 / RFC 5735:
+ *  - 0.0.0.0/8           "This network"
+ *  - 10.0.0.0/8          RFC 1918 private
+ *  - 100.64.0.0/10       Shared address space (CGNAT, RFC 6598)
+ *  - 127.0.0.0/8         Loopback
+ *  - 169.254.0.0/16      Link-local (incl. AWS / GCP metadata)
+ *  - 172.16.0.0/12       RFC 1918 private
+ *  - 192.0.0.0/24        IETF Protocol Assignments
+ *  - 192.0.2.0/24        TEST-NET-1
+ *  - 192.168.0.0/16      RFC 1918 private
+ *  - 198.18.0.0/15       Benchmarking
+ *  - 198.51.100.0/24     TEST-NET-2
+ *  - 203.0.113.0/24      TEST-NET-3
+ *  - 224.0.0.0/4         Multicast
+ *  - 240.0.0.0/4         Reserved for future use (covers 255.255.255.255)
  */
 function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split(".").map(Number);
   if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
     return false; // not a valid IPv4 — let caller decide
   }
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   if (a === 0) return true; // 0.0.0.0/8
   if (a === 10) return true; // 10.0.0.0/8
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
   if (a === 127) return true; // 127.0.0.0/8
   if (a === 169 && b === 254) return true; // 169.254.0.0/16
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24
+  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmark)
+  if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+  if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
+  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 (multicast)
+  if (a >= 240) return true; // 240.0.0.0/4 (reserved) — also covers 255.255.255.255
   return false;
 }
 
 /**
- * Return true if `ip` is a private or reserved IPv6 address.
+ * Return true if `ip` is a non-global / private / reserved IPv6 address.
  *
  * Covers:
+ *  - ::               (unspecified)
  *  - ::1              (loopback)
+ *  - 64:ff9b::/96     (well-known NAT64)
+ *  - 100::/64         (discard prefix)
+ *  - 2001:db8::/32    (documentation)
  *  - fc00::/7         (unique local addresses, i.e. fc00:: – fdff::)
  *  - fe80::/10        (link-local)
+ *  - ff00::/8         (multicast)
  *  - ::ffff:x.x.x.x  (IPv4-mapped IPv6 — delegates to isPrivateIPv4)
  */
 function isPrivateIPv6(raw: string): boolean {
   // Normalise: strip optional zone id (e.g. %eth0), lowercase
   const ip = raw.replace(/%.*$/, "").toLowerCase();
   if (ip === "::1") return true;
+  if (ip === "::") return true;
 
   // IPv4-mapped IPv6 addresses: ::ffff:a.b.c.d or ::ffff:HHHH:HHHH (hex form).
   // Runtimes may normalise the dotted-decimal form into two hex groups
@@ -129,6 +151,21 @@ function isPrivateIPv6(raw: string): boolean {
   if (val >= 0xfc00 && val <= 0xfdff) return true;
   // fe80::/10 → first 10 bits 0xfe80 → 0xfe80–0xfebf
   if (val >= 0xfe80 && val <= 0xfebf) return true;
+  // ff00::/8  → multicast
+  if ((val & 0xff00) === 0xff00) return true;
+  // 100::/64 — discard prefix (RFC 6666). First 16-bit group is 0x0100 and
+  // groups 2..4 must be zero; we approximate by requiring first group exact.
+  if (val === 0x0100 && ip.startsWith("100:0:0:0:")) return true;
+  // 2001:db8::/32 — documentation range.
+  if (val === 0x2001) {
+    const second = parseInt(ip.split(":")[1] ?? "", 16);
+    if (second === 0x0db8) return true;
+  }
+  // 64:ff9b::/96 — well-known NAT64 prefix.
+  if (val === 0x0064) {
+    const second = parseInt(ip.split(":")[1] ?? "", 16);
+    if (second === 0xff9b) return true;
+  }
 
   return false;
 }

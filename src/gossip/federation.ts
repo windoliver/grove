@@ -16,10 +16,19 @@ import type {
   GossipTransport,
   PeerInfo,
 } from "../core/gossip/types.js";
+import { fromManifest } from "../core/manifest.js";
 import type { Contribution } from "../core/models.js";
 import type { ContributionStore } from "../core/store.js";
 
 const HASH_PREFIX = "blake3:";
+
+/**
+ * Hard cap on artifacts per contribution. Bounds the work a malicious peer
+ * can ask us to do per fetch — without this, a peer could advertise a
+ * manifest declaring thousands of artifact hashes and force that many peer
+ * round-trips + CAS writes before the manifest is even durable.
+ */
+const MAX_ARTIFACTS_PER_CONTRIBUTION = 64;
 
 function blake3Of(bytes: Uint8Array): string {
   return `${HASH_PREFIX}${blake3Hash(bytes).toString("hex")}`;
@@ -51,13 +60,33 @@ export class FederationFetcher {
           errors.push(`${peer.peerId}: 404`);
           continue;
         }
-        const manifest = manifestRaw as Contribution;
+        // Validate manifest schema + recompute CID from the canonical
+        // serialization BEFORE any side effects. A peer that advertised cid
+        // could otherwise return a poisoned manifest whose JSON happens to
+        // include `"cid": "<advertised>"` but whose canonical hash differs;
+        // a string-equality check on the raw field is not enough.
+        let manifest: Contribution;
+        try {
+          manifest = fromManifest(manifestRaw, { verify: true });
+        } catch (err) {
+          errors.push(
+            `${peer.peerId}: invalid manifest (${err instanceof Error ? err.message : String(err)})`,
+          );
+          continue;
+        }
         if (manifest.cid !== cid) {
           errors.push(`${peer.peerId}: manifest cid mismatch`);
           continue;
         }
-        const artifacts: Record<string, string> = manifest.artifacts ?? {};
-        for (const [name, declaredHash] of Object.entries(artifacts)) {
+        const artifacts: Record<string, string> = { ...manifest.artifacts };
+        const artifactEntries = Object.entries(artifacts);
+        if (artifactEntries.length > MAX_ARTIFACTS_PER_CONTRIBUTION) {
+          errors.push(
+            `${peer.peerId}: manifest declares ${artifactEntries.length} artifacts > cap ${MAX_ARTIFACTS_PER_CONTRIBUTION}`,
+          );
+          continue;
+        }
+        for (const [name, declaredHash] of artifactEntries) {
           if (await this.opts.cas.exists(declaredHash)) continue;
           const bytes = await this.opts.transport.fetchArtifact(peer, declaredHash);
           if (!bytes) {

@@ -137,6 +137,14 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
           if (!FEDERATION_CAS_PATH.test(path) && !FEDERATION_CONTRIB_PATH.test(path)) {
             return false;
           }
+          // Reject any query string on exempt federation GETs. The peer
+          // transport never sends queries; honoring (e.g.) ?sessionId= on a
+          // signed request would broaden the auth window from "this content
+          // hash" to "this content hash in any session scope". Keep the
+          // signed surface bound to path-only.
+          const rawUrl = c.req.url;
+          const qIdx = rawUrl.indexOf("?");
+          if (qIdx !== -1 && rawUrl.length > qIdx + 1) return false;
           const secret = deps.gossipHmacSecret;
           if (!secret) return false;
           const timestamp = c.req.header(GOSSIP_GET_TIMESTAMP_HEADER);
