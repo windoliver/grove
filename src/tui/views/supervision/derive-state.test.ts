@@ -102,6 +102,24 @@ describe("classifyAgent priority order", () => {
     expect(c.state).not.toBe("thrashing");
   });
 
+  test("thrashing keys on primary relation (relations[0]); secondary relations don't trigger", () => {
+    // 6 contribs whose relations[0] targets DIFFER, but relations[1] shares.
+    // Should NOT classify as thrashing — secondary relations are not the key.
+    const SAME_SECONDARY = "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const contribs = Array.from({ length: 6 }, (_, i) =>
+      makeContribution({
+        summary: `c${i}`,
+        createdAt: new Date(NOW - (i + 1) * 5_000).toISOString(),
+        relations: [
+          { targetCid: `blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${i}`, relationType: RelationType.DerivesFrom },
+          { targetCid: SAME_SECONDARY, relationType: RelationType.DerivesFrom },
+        ],
+      }),
+    );
+    const c = classifyAgent(base({ contributions: contribs }));
+    expect(c.state).not.toBe("thrashing");
+  });
+
   test("stuck when same task > stuckMs and contribution-kind diversity = 1", () => {
     const contribs = Array.from({ length: 4 }, (_, i) =>
       makeContribution({
@@ -263,6 +281,6 @@ describe("classifyAgent stateReason text", () => {
         ],
       }),
     );
-    expect(c.stateReason).toMatch(/3m|180s/);
+    expect(c.stateReason).toMatch(/3m/);
   });
 });
