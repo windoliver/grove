@@ -433,6 +433,16 @@ export class DefaultGossipService implements GossipService {
       }
       // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
       const msgTimestampMs = new Date(message.timestamp).getTime();
+      // NaN bypass guard: an invalid timestamp string (e.g. "not-a-date")
+      // makes `getTime()` return NaN, and every NaN comparison (`age > max`,
+      // `msgTimestampMs <= lastSeen`) is false — meaning a signed message
+      // with a junk timestamp would silently bypass freshness + monotonic
+      // replay checks.
+      if (!Number.isFinite(msgTimestampMs)) {
+        throw new GossipAuthError(
+          `invalid timestamp '${message.timestamp}' from peer ${message.peerId}`,
+        );
+      }
       const age = Math.abs(this.now() - msgTimestampMs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         throw new GossipAuthError(`message too old (${age}ms) from peer ${message.peerId}`);
@@ -489,6 +499,12 @@ export class DefaultGossipService implements GossipService {
       // Reject replayed messages outside the 5-minute clock-skew window.
       const ts = request.sender.lastSeen;
       const senderTs = new Date(ts).getTime();
+      if (!Number.isFinite(senderTs)) {
+        console.warn(
+          `Gossip: rejecting shuffle from ${request.sender.peerId} — invalid timestamp '${ts}'`,
+        );
+        return { offered: [] };
+      }
       const age = Math.abs(this.now() - senderTs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         console.warn(
@@ -645,6 +661,7 @@ export class DefaultGossipService implements GossipService {
       age: 0,
       lastSeen,
     };
+    const currentView = new Set(this.sampler.getView().map((p) => p.peerId));
     for (const entry of frontier) {
       if (!survivingCids.has(entry.cid)) continue;
       let byPeer = this.advertisements.get(entry.cid);
@@ -652,11 +669,35 @@ export class DefaultGossipService implements GossipService {
         byPeer = new Map();
         this.advertisements.set(entry.cid, byPeer);
       }
-      // Per-CID advertiser cap: bound by sampler.maxViewSize indirectly via
-      // the inView check above, but add an explicit hard cap so a transient
-      // view churn cannot accumulate stale advertisers for a single CID.
-      if (!byPeer.has(peerId) && byPeer.size >= MAX_ADVERTISERS_PER_CID) {
+      // Refreshing an existing entry is always fine: we just bump lastSeen.
+      if (byPeer.has(peerId)) {
+        byPeer.set(peerId, peer);
         continue;
+      }
+      // Per-CID advertiser cap with stale-first eviction so a churn of dead
+      // peers can't permanently occupy the cap and freeze out live ones.
+      if (byPeer.size >= MAX_ADVERTISERS_PER_CID) {
+        // 1) Prefer evicting an advertiser no longer in the CYCLON view.
+        // 2) If everyone's in view, evict the oldest by lastSeen.
+        let victim: string | undefined;
+        for (const [pid] of byPeer) {
+          if (!currentView.has(pid)) {
+            victim = pid;
+            break;
+          }
+        }
+        if (!victim) {
+          let oldest = Number.POSITIVE_INFINITY;
+          for (const [pid, p] of byPeer) {
+            const t = Date.parse(p.lastSeen);
+            if (Number.isFinite(t) && t < oldest) {
+              oldest = t;
+              victim = pid;
+            }
+          }
+        }
+        if (!victim) continue; // shouldn't happen; refuse to write rather than corrupt
+        byPeer.delete(victim);
       }
       byPeer.set(peerId, peer);
     }
@@ -665,7 +706,15 @@ export class DefaultGossipService implements GossipService {
   peersAdvertising(cid: string): readonly PeerInfo[] {
     const byPeer = this.advertisements.get(cid);
     if (!byPeer) return [];
-    return [...byPeer.values()];
+    // Filter against the live CYCLON view so federation fetch only walks
+    // peers we still trust. Stale advertisers are kept in the map (they may
+    // recover on the next exchange) but are hidden from callers.
+    const currentView = new Set(this.sampler.getView().map((p) => p.peerId));
+    const live: PeerInfo[] = [];
+    for (const [pid, peer] of byPeer) {
+      if (currentView.has(pid)) live.push(peer);
+    }
+    return live;
   }
 
   async fetchRemoteContribution(cid: string): Promise<FetchContributionResult> {

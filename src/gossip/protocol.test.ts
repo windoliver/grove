@@ -351,6 +351,42 @@ describe("DefaultGossipService", () => {
       const found = peers.find((p) => p.peerId === "new-peer");
       expect(found).toBeDefined();
     });
+
+    it("rejects HMAC-valid messages with non-finite timestamps", async () => {
+      // Build a fresh service with HMAC configured so the timestamp path
+      // runs. A signed message carrying `timestamp: "not-a-date"` makes
+      // Date.parse return NaN; without the finite-check guard, every
+      // comparison against age/lastSeen evaluates false and the message
+      // would be accepted, bypassing replay defense.
+      const secret = "test-secret-for-nan-timestamp";
+      const hmacService = new DefaultGossipService({
+        config: {
+          peerId: "self-nan",
+          address: "http://localhost:1",
+          seedPeers: [],
+          hmacSecret: secret,
+        },
+        transport: new MockGossipTransport(),
+        frontier: new MockFrontierCalculator(),
+      });
+      const bad: GossipMessage = {
+        peerId: "evil-peer",
+        address: "http://evil:1",
+        frontier: [],
+        load: { queueDepth: 0 },
+        capabilities: {},
+        timestamp: "not-a-date",
+      };
+      const { signPayload } = await import("./protocol.js");
+      const signed = {
+        ...bad,
+        hmacSignature: signPayload(bad as unknown as Record<string, unknown>, secret),
+      };
+      await expect(
+        hmacService.handleExchange(signed as unknown as GossipMessage),
+      ).rejects.toThrow(/invalid timestamp/);
+      await hmacService.stop();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1159,6 +1195,28 @@ describe("DefaultGossipService", () => {
       const second = service.peersAdvertising(cid);
       expect(second).toHaveLength(1);
       expect(second[0]?.lastSeen).toBe(laterTs);
+    });
+
+    it("filters peersAdvertising() against the live CYCLON view", async () => {
+      // peer-A advertises, gets admitted, becomes failed. Its
+      // advertisement entry remains in the map (may recover), but
+      // peersAdvertising() should hide it from federation fetch until
+      // the peer is back in the view.
+      const cid = `blake3:${"e".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-fail", [
+          { metric: "m", value: 1, cid, direction: "maximize" },
+        ]),
+      });
+      expect(service.peersAdvertising(cid).map((p) => p.peerId)).toEqual(["peer-fail"]);
+
+      // Force the peer out of the view by direct sampler manipulation —
+      // simulates the natural flow where a Failed peer is removed.
+      // biome-ignore lint/suspicious/noExplicitAny: reach into private sampler for test setup
+      const sampler = (service as any).sampler as { removePeer: (pid: string) => void };
+      sampler.removePeer("peer-fail");
+
+      expect(service.peersAdvertising(cid)).toEqual([]);
     });
 
     it("caps advertisers per CID to MAX_ADVERTISERS_PER_CID", async () => {
