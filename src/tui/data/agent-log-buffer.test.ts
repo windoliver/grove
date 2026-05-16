@@ -313,8 +313,8 @@ describe("clear", () => {
 });
 
 describe("AgentLogBuffer flushMs", () => {
-  test("constructor accepts custom flushMs (50ms) and coalesces notifies", async () => {
-    const buf = new AgentLogBuffer("coder", "sess-flush", 10_000, 50);
+  test("constructor accepts custom flushMs and coalesces notifies", async () => {
+    const buf = new AgentLogBuffer("coder", "sess-flush", 10_000, 100);
     let notifies = 0;
     buf.subscribe(() => {
       notifies += 1;
@@ -325,11 +325,12 @@ describe("AgentLogBuffer flushMs", () => {
     }
     expect(notifies).toBe(0);
 
-    await new Promise((r) => setTimeout(r, 5));
-    await new Promise((r) => setTimeout(r, 20));
+    // Wait well under flushMs=100: notify should not have fired.
+    await new Promise((r) => setTimeout(r, 40));
     expect(notifies).toBe(0);
 
-    await new Promise((r) => setTimeout(r, 40));
+    // Wait past flushMs: notify fires exactly once for the burst.
+    await new Promise((r) => setTimeout(r, 120));
     expect(buf.size).toBe(100);
     expect(notifies).toBe(1);
 
@@ -338,6 +339,8 @@ describe("AgentLogBuffer flushMs", () => {
 
   test("defaults to 16ms when flushMs is not supplied", async () => {
     const buf = new AgentLogBuffer("coder", "sess-default");
+    expect(buf.flushMs).toBe(16);
+
     let notifies = 0;
     buf.subscribe(() => {
       notifies += 1;
@@ -346,5 +349,12 @@ describe("AgentLogBuffer flushMs", () => {
     await new Promise((r) => setTimeout(r, 40));
     expect(notifies).toBe(1);
     buf.dispose();
+  });
+
+  test("invalid flushMs (<=0, NaN, Infinity) falls back to default 16ms", () => {
+    expect(new AgentLogBuffer("a", "s", 100, 0).flushMs).toBe(16);
+    expect(new AgentLogBuffer("a", "s", 100, -5).flushMs).toBe(16);
+    expect(new AgentLogBuffer("a", "s", 100, Number.NaN).flushMs).toBe(16);
+    expect(new AgentLogBuffer("a", "s", 100, Number.POSITIVE_INFINITY).flushMs).toBe(16);
   });
 });

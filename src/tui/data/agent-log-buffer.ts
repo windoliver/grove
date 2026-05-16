@@ -2,9 +2,9 @@
  * Per-agent log buffer — composes RingBuffer + IncrementalLogReader.
  *
  * Owns the full trace history for one agent role in one session.
- * Subscribers are notified at most once per 16ms frame (batched flush)
- * to avoid flooding React with re-renders when multiple agents produce
- * output simultaneously.
+ * Subscribers are notified at most once per flushMs window (batched flush,
+ * default 16ms) to avoid flooding React with re-renders when multiple agents
+ * produce output simultaneously.
  *
  * Role and sessionId are stored on the buffer instance, not on each LogLine,
  * to save ~30% memory at 10K lines per agent.
@@ -87,7 +87,7 @@ export class AgentLogBuffer {
   ) {
     this.role = role;
     this.sessionId = sessionId;
-    this.flushMs = flushMs;
+    this.flushMs = Number.isFinite(flushMs) && flushMs > 0 ? flushMs : DEFAULT_FLUSH_INTERVAL_MS;
     this.buffer = new RingBuffer<LogLine>(capacity);
   }
 
@@ -198,7 +198,7 @@ export class AgentLogBuffer {
 
   // ─── Subscription ───
 
-  /** Subscribe to buffer changes. Listener is called at most once per 16ms. */
+  /** Subscribe to buffer changes. Listener is called at most once per flushMs (default 16ms). */
   subscribe(listener: LogBufferListener): void {
     this.listeners.add(listener);
   }
