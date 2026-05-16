@@ -1,4 +1,3 @@
-// src/tui/views/supervision/thresholds.test.ts
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_THRESHOLDS, loadThresholds } from "./thresholds.js";
 

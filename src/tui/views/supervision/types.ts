@@ -1,4 +1,3 @@
-// src/tui/views/supervision/types.ts
 /**
  * Type surface for the Supervision screen. See:
  *   docs/superpowers/specs/2026-05-15-tui-supervision-hero-design.md
@@ -52,6 +51,6 @@ export interface FleetSummary {
   readonly byState: Readonly<Record<AgentState, number>>;
   readonly approvalsPending: number;
   readonly costUsd: number;
-  readonly costHot: number;
-  readonly contextHot: number;
+  readonly costSpikeCount: number;
+  readonly contextHotCount: number;
 }

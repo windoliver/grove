@@ -1,4 +1,3 @@
-// src/tui/views/supervision/thresholds.ts
 /**
  * Configurable thresholds for SupervisionScreen heuristics.
  *
