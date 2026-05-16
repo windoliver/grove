@@ -54,6 +54,14 @@ import { FederationFetcher, runAntiEntropySweep } from "./federation.js";
 const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
+ * Hard cap on peers tracked per CID in the advertisement map. Beyond the
+ * implicit bound from CYCLON's partial-view size, this prevents transient
+ * view churn from accumulating stale advertisers. Keeps federation fetch
+ * fallback latency bounded regardless of network behavior.
+ */
+const MAX_ADVERTISERS_PER_CID = 16;
+
+/**
  * Thrown by handleExchange/handleShuffle when HMAC verification or freshness
  * checks fail. Callers (HTTP routes, daemon handlers) must catch this and
  * return 401/403 — never leak gossip state to an unauthenticated peer.
@@ -288,17 +296,46 @@ export class DefaultGossipService implements GossipService {
       }
       return n;
     };
+    /**
+     * Jitter is a multiplier in [0, 1): scheduleNextRound applies
+     *   delay * (1 - jitter + Math.random() * 2 * jitter)
+     * which stays positive only when jitter < 1. Anything else risks
+     * negative delays (immediate fire).
+     */
+    const validJitter = (n: number | undefined): number | undefined => {
+      if (n === undefined) return undefined;
+      if (!Number.isFinite(n) || n < 0 || n >= 1) {
+        throw new Error(
+          `DefaultGossipService: invalid jitter=${n}; must be a finite number in [0, 1)`,
+        );
+      }
+      return n;
+    };
     const intervalMs =
       validPositiveInt(opts.config.intervalMs, "intervalMs") ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    const suspicionTimeoutMs =
+      validPositiveInt(opts.config.suspicionTimeoutMs, "suspicionTimeoutMs") ??
+      DEFAULT_SUSPICION_TIMEOUT_MS;
+    const failureTimeoutMs =
+      validPositiveInt(opts.config.failureTimeoutMs, "failureTimeoutMs") ??
+      DEFAULT_FAILURE_TIMEOUT_MS;
+    if (failureTimeoutMs <= suspicionTimeoutMs) {
+      throw new Error(
+        `DefaultGossipService: failureTimeoutMs (${failureTimeoutMs}) must be > suspicionTimeoutMs (${suspicionTimeoutMs})`,
+      );
+    }
     this.config = {
       peerId: opts.config.peerId,
       address: opts.config.address,
       intervalMs,
-      fanOut: opts.config.fanOut ?? DEFAULT_GOSSIP_FAN_OUT,
-      jitter: opts.config.jitter ?? DEFAULT_GOSSIP_JITTER,
-      digestLimit: opts.config.digestLimit ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
-      suspicionTimeoutMs: opts.config.suspicionTimeoutMs ?? DEFAULT_SUSPICION_TIMEOUT_MS,
-      failureTimeoutMs: opts.config.failureTimeoutMs ?? DEFAULT_FAILURE_TIMEOUT_MS,
+      fanOut:
+        validPositiveInt(opts.config.fanOut, "fanOut") ?? DEFAULT_GOSSIP_FAN_OUT,
+      jitter: validJitter(opts.config.jitter) ?? DEFAULT_GOSSIP_JITTER,
+      digestLimit:
+        validPositiveInt(opts.config.digestLimit, "digestLimit") ??
+        DEFAULT_FRONTIER_DIGEST_LIMIT,
+      suspicionTimeoutMs,
+      failureTimeoutMs,
       hmacSecret: opts.config.hmacSecret,
       antiEntropyEnabled: ae?.enabled ?? false,
       antiEntropyIntervalMs:
@@ -416,16 +453,10 @@ export class DefaultGossipService implements GossipService {
     // Merge remote frontier entries
     this.mergeRemoteFrontier(message.frontier);
 
-    if (message.address) {
-      this.recordAdvertisements(
-        message.peerId,
-        message.address,
-        message.frontier,
-        message.timestamp,
-      );
-    }
-
-    // Add sender to our view only if they provided a routable address
+    // Admit the sender to the CYCLON view BEFORE recording advertisements:
+    // recordAdvertisements only trusts in-view peers, so the addPeer call
+    // must happen first or every advertisement from a fresh peer would be
+    // silently dropped.
     if (message.address) {
       const senderPeer: PeerInfo = {
         peerId: message.peerId,
@@ -434,6 +465,12 @@ export class DefaultGossipService implements GossipService {
         lastSeen: message.timestamp,
       };
       this.sampler.addPeer(senderPeer);
+      this.recordAdvertisements(
+        message.peerId,
+        message.address,
+        message.frontier,
+        message.timestamp,
+      );
     }
 
     // Return our current message
@@ -591,6 +628,17 @@ export class DefaultGossipService implements GossipService {
     const survivingCids = new Set<string>();
     for (const entry of this.remoteFrontier) survivingCids.add(entry.cid);
 
+    // Trust boundary: only record advertisements from peers that are
+    // currently in the CYCLON partial view (or are the bootstrap self
+    // entry, never recorded here because peerId !== self). A
+    // compromised HMAC peer cannot otherwise spam recordAdvertisements
+    // with fresh peerIds for a single CID to bloat advertisements and
+    // force federation fetch amplification — addPeer applies CYCLON's
+    // maxViewSize cap, which makes the advertisement set bounded by the
+    // view size.
+    const inView = this.sampler.getView().some((p) => p.peerId === peerId);
+    if (!inView) return;
+
     const peer: PeerInfo = {
       peerId,
       address,
@@ -603,6 +651,12 @@ export class DefaultGossipService implements GossipService {
       if (!byPeer) {
         byPeer = new Map();
         this.advertisements.set(entry.cid, byPeer);
+      }
+      // Per-CID advertiser cap: bound by sampler.maxViewSize indirectly via
+      // the inView check above, but add an explicit hard cap so a transient
+      // view churn cannot accumulate stale advertisers for a single CID.
+      if (!byPeer.has(peerId) && byPeer.size >= MAX_ADVERTISERS_PER_CID) {
+        continue;
       }
       byPeer.set(peerId, peer);
     }
@@ -807,6 +861,29 @@ export class DefaultGossipService implements GossipService {
     const exchanges = targets.map(async (peer) => {
       try {
         const response = await this.transport.exchange(peer, message);
+        // Apply the same freshness + monotonic replay checks we apply to
+        // incoming exchange requests. The transport verifies the HMAC
+        // signature, but a captured-and-replayed signed response would
+        // otherwise be merged unconditionally, keeping stale frontier
+        // entries and obsolete advertiser addresses alive. When the HMAC
+        // secret is not configured we skip these checks (test path).
+        if (this.config.hmacSecret) {
+          const tsMs = new Date(response.timestamp).getTime();
+          if (!Number.isFinite(tsMs)) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          if (Math.abs(this.now() - tsMs) > GOSSIP_MAX_MESSAGE_AGE_MS) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          const lastSeen = this.peerLastTimestamp.get(response.peerId);
+          if (lastSeen !== undefined && tsMs <= lastSeen) {
+            this.markUnresponsive(peer.peerId);
+            return;
+          }
+          this.peerLastTimestamp.set(response.peerId, tsMs);
+        }
         this.markAlive(peer.peerId);
         this.mergeRemoteFrontier(response.frontier);
         if (response.address) {

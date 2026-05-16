@@ -1160,5 +1160,28 @@ describe("DefaultGossipService", () => {
       expect(second).toHaveLength(1);
       expect(second[0]?.lastSeen).toBe(laterTs);
     });
+
+    it("caps advertisers per CID to MAX_ADVERTISERS_PER_CID", async () => {
+      // Simulate a hostile peer churn: many distinct peer IDs all advertise
+      // the same CID. The advertiser set must be bounded so federation
+      // fetch fallback never has to walk an unbounded list.
+      const cid = `blake3:${"f".repeat(64)}`;
+      // Pre-seed the view so each peerId passes the in-view admit check.
+      // (We use the same `service` constructed in beforeEach, which has
+      // CYCLON maxViewSize default. Driving 32 peer IDs through the view
+      // exceeds that cap; only the surviving in-view peers should be
+      // recorded, and the per-CID cap still applies on top.)
+      for (let i = 0; i < 32; i++) {
+        await service.handleExchange({
+          ...makeGossipMessage(`peer-${i}`, [
+            { metric: "m", value: 1, cid, direction: "maximize" },
+          ]),
+        });
+      }
+      const advertisers = service.peersAdvertising(cid);
+      // The implementation caps at 16 per CID and CYCLON further caps the
+      // partial view, so the count cannot exceed the smaller of the two.
+      expect(advertisers.length).toBeLessThanOrEqual(16);
+    });
   });
 });
