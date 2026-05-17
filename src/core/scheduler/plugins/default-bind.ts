@@ -1,6 +1,7 @@
 import type { AgentConfig, AgentRuntime } from "../../agent-runtime.js";
 import type { BindPlugin, BindResult, SchedulerContext } from "../framework.js";
 import type { RuntimeProfile } from "../profile.js";
+import { buildPromptWithUpstream, type UpstreamSection } from "../upstream-prompt.js";
 
 export interface DefaultBindPluginOptions {
   readonly runtime: Pick<AgentRuntime, "spawn">;
@@ -15,13 +16,23 @@ export class DefaultBindPlugin implements BindPlugin {
   }
 
   async bind(ctx: SchedulerContext, profile: RuntimeProfile): Promise<BindResult> {
+    const upstreamSections: UpstreamSection[] = [];
+    for (const depId of ctx.task.spec.dependsOn) {
+      const dep = await ctx.store.getAgentTask(depId);
+      const succeeded = dep?.status.conditions.find(
+        (c) => c.type === "Succeeded" && c.status === "True",
+      );
+      upstreamSections.push({ taskId: depId, summary: succeeded?.message ?? "" });
+    }
+    const wrappedPrompt = buildPromptWithUpstream(ctx.task.spec.prompt, upstreamSections);
+
     const model = profile.model ?? readBudgetString(ctx.task.spec.budget, "model");
     const config: AgentConfig = {
       role: ctx.task.spec.role,
       command: profile.runtimeCommand,
       cwd: ctx.task.spec.worktree,
       goal: ctx.task.spec.prompt,
-      prompt: ctx.task.spec.prompt,
+      prompt: wrappedPrompt,
       ...(profile.platform === undefined ? {} : { platform: profile.platform }),
       ...(model === undefined ? {} : { model }),
       env: {

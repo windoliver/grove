@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../../agent-runtime.js";
 import type { AgentTaskView } from "../../agent-task.js";
-import { AgentTaskPhase } from "../../agent-task.js";
+import { AgentTaskConditionType, AgentTaskPhase } from "../../agent-task.js";
 import type { AgentSessionEntity } from "../../entity.js";
 import type { SchedulerContext } from "../framework.js";
 import type { RuntimeProfile } from "../profile.js";
@@ -106,5 +106,116 @@ describe("DefaultBindPlugin", () => {
     const plugin = new DefaultBindPlugin({ runtime });
     const result = await plugin.bind(ctx(taskWith({})), profile);
     expect(result.session.id).toBe("s-1");
+  });
+});
+
+function makeSucceededView(id: string, doneSummary: string): AgentTaskView {
+  return {
+    spec: {
+      id,
+      worktree: "/tmp/w",
+      runtime: "codex",
+      role: "coder",
+      prompt: "x",
+      dependsOn: [],
+      generation: 1,
+      createdAt: "2026-05-16T00:00:00.000Z",
+    },
+    status: {
+      id,
+      phase: AgentTaskPhase.Succeeded,
+      contributions: [],
+      conditions: [
+        {
+          type: AgentTaskConditionType.Succeeded,
+          status: "True",
+          observedGeneration: 1,
+          lastTransitionTime: "2026-05-16T00:00:00.000Z",
+          reason: "done-signaled",
+          message: doneSummary,
+        },
+      ],
+      observedGeneration: 1,
+      lastTransitionAt: "2026-05-16T00:00:00.000Z",
+      revision: 2,
+    },
+  };
+}
+
+describe("DefaultBindPlugin — dependency prompt wrapping", () => {
+  test("dependsOn=[] leaves prompt unchanged", async () => {
+    const runtime = new FakeRuntime();
+    const plugin = new DefaultBindPlugin({ runtime });
+    const task = taskWith({ prompt: "base prompt", dependsOn: [] });
+    const ctxObj: SchedulerContext = {
+      task,
+      profiles: [],
+      store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+      now: () => 0,
+    };
+    await plugin.bind(ctxObj, profile);
+    expect(runtime.spawnCalls[0]?.config.prompt).toBe("base prompt");
+  });
+
+  test("dependsOn with Succeeded dependency wraps prompt", async () => {
+    const runtime = new FakeRuntime();
+    const plugin = new DefaultBindPlugin({ runtime });
+    const task = taskWith({ prompt: "review my changes", dependsOn: ["coder-1"] });
+    const ctxObj: SchedulerContext = {
+      task,
+      profiles: [],
+      store: {
+        listAgentTaskEntities: async () => [],
+        getAgentTask: async (id) =>
+          id === "coder-1" ? makeSucceededView("coder-1", "Implemented X") : undefined,
+      },
+      now: () => 0,
+    };
+    await plugin.bind(ctxObj, profile);
+    const prompt = runtime.spawnCalls[0]?.config.prompt ?? "";
+    expect(prompt).toContain("## Upstream output");
+    expect(prompt).toContain("### coder-1 (succeeded)");
+    expect(prompt).toContain("Implemented X");
+    expect(prompt).toContain("## Your task");
+    expect(prompt).toContain("review my changes");
+  });
+
+  test("dependsOn with multiple deps preserves declaration order", async () => {
+    const runtime = new FakeRuntime();
+    const plugin = new DefaultBindPlugin({ runtime });
+    const task = taskWith({ prompt: "base", dependsOn: ["a", "b"] });
+    const ctxObj: SchedulerContext = {
+      task,
+      profiles: [],
+      store: {
+        listAgentTaskEntities: async () => [],
+        getAgentTask: async (id) => makeSucceededView(id, `summary-${id}`),
+      },
+      now: () => 0,
+    };
+    await plugin.bind(ctxObj, profile);
+    const prompt = runtime.spawnCalls[0]?.config.prompt ?? "";
+    const aIdx = prompt.indexOf("### a (succeeded)");
+    const bIdx = prompt.indexOf("### b (succeeded)");
+    expect(aIdx).toBeGreaterThan(-1);
+    expect(bIdx).toBeGreaterThan(aIdx);
+  });
+
+  test("missing dependency view falls back to '(no summary)'", async () => {
+    const runtime = new FakeRuntime();
+    const plugin = new DefaultBindPlugin({ runtime });
+    const task = taskWith({ prompt: "x", dependsOn: ["ghost"] });
+    const ctxObj: SchedulerContext = {
+      task,
+      profiles: [],
+      store: {
+        listAgentTaskEntities: async () => [],
+        getAgentTask: async () => undefined,
+      },
+      now: () => 0,
+    };
+    await plugin.bind(ctxObj, profile);
+    const prompt = runtime.spawnCalls[0]?.config.prompt ?? "";
+    expect(prompt).toContain("(no summary)");
   });
 });
