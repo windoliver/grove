@@ -220,6 +220,92 @@ describe("DefaultBindPlugin — dependency prompt wrapping", () => {
   });
 });
 
+describe("DefaultBindPlugin — grove MCP injection", () => {
+  test("injects grove MCP server when GROVE_DIR set", async () => {
+    const originalGroveDir = process.env.GROVE_DIR;
+    process.env.GROVE_DIR = "/tmp/test-project/.grove";
+    try {
+      const runtime = new FakeRuntime();
+      const plugin = new DefaultBindPlugin({ runtime });
+      const task = taskWith({});
+      const ctxObj: SchedulerContext = {
+        task,
+        profiles: [],
+        store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+        now: () => 0,
+      };
+      await plugin.bind(ctxObj, profile);
+      const mcps = runtime.spawnCalls[0]?.config.mcpServers ?? [];
+      const grove = mcps.find((m) => m.name === "grove");
+      expect(grove).toBeDefined();
+      expect(grove?.command).toBe("bun");
+      expect(grove?.args?.[0]).toBe("run");
+      expect(grove?.env?.GROVE_DIR).toBe("/tmp/test-project/.grove");
+      expect(grove?.env?.GROVE_AGENT_ROLE).toBe(task.spec.role);
+      expect(grove?.env?.GROVE_AGENT_TASK_ID).toBe(task.spec.id);
+    } finally {
+      if (originalGroveDir === undefined) delete process.env.GROVE_DIR;
+      else process.env.GROVE_DIR = originalGroveDir;
+    }
+  });
+
+  test("forwards GROVE_SERVER_URL + GROVE_API_TOKEN into MCP env (for /done route)", async () => {
+    const originals = {
+      groveDir: process.env.GROVE_DIR,
+      url: process.env.GROVE_SERVER_URL,
+      token: process.env.GROVE_API_TOKEN,
+    };
+    process.env.GROVE_DIR = "/tmp/test-project/.grove";
+    process.env.GROVE_SERVER_URL = "http://localhost:4515";
+    process.env.GROVE_API_TOKEN = "tok-xyz";
+    try {
+      const runtime = new FakeRuntime();
+      const plugin = new DefaultBindPlugin({ runtime });
+      const task = taskWith({});
+      const ctxObj: SchedulerContext = {
+        task,
+        profiles: [],
+        store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+        now: () => 0,
+      };
+      await plugin.bind(ctxObj, profile);
+      const grove = (runtime.spawnCalls[0]?.config.mcpServers ?? []).find(
+        (m) => m.name === "grove",
+      );
+      expect(grove?.env?.GROVE_SERVER_URL).toBe("http://localhost:4515");
+      expect(grove?.env?.GROVE_API_TOKEN).toBe("tok-xyz");
+    } finally {
+      for (const [k, v] of Object.entries(originals)) {
+        const envKey =
+          k === "groveDir" ? "GROVE_DIR" : k === "url" ? "GROVE_SERVER_URL" : "GROVE_API_TOKEN";
+        if (v === undefined) delete process.env[envKey];
+        else process.env[envKey] = v;
+      }
+    }
+  });
+
+  test("omits grove MCP server when GROVE_DIR unset", async () => {
+    const original = process.env.GROVE_DIR;
+    delete process.env.GROVE_DIR;
+    try {
+      const runtime = new FakeRuntime();
+      const plugin = new DefaultBindPlugin({ runtime });
+      const task = taskWith({});
+      const ctxObj: SchedulerContext = {
+        task,
+        profiles: [],
+        store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+        now: () => 0,
+      };
+      await plugin.bind(ctxObj, profile);
+      const mcps = runtime.spawnCalls[0]?.config.mcpServers ?? [];
+      expect(mcps.find((m) => m.name === "grove")).toBeUndefined();
+    } finally {
+      if (original !== undefined) process.env.GROVE_DIR = original;
+    }
+  });
+});
+
 describe("DefaultBindPlugin — env passthrough for AgentTask done", () => {
   test("forwards GROVE_SERVER_URL and GROVE_API_TOKEN when set in process env", async () => {
     const originalUrl = process.env.GROVE_SERVER_URL;
