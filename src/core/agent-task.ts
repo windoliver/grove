@@ -23,6 +23,7 @@ export const AgentTaskConditionType = {
   Blocked: "Blocked",
   Unschedulable: "Unschedulable",
   PermitRequired: "PermitRequired",
+  DoneSignaled: "DoneSignaled",
 } as const;
 export type AgentTaskConditionType =
   (typeof AgentTaskConditionType)[keyof typeof AgentTaskConditionType];
