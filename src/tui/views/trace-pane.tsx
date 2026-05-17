@@ -2,9 +2,10 @@
  * TracePane — k9s-style split-pane agent trace viewer.
  *
  * Left column:  scrollable agent list with status indicators
- * Right column: selected agent's full scrollable trace (viewport sliced)
+ * Right column: selected agent's full scrollable trace, rendered via
+ *               the shared <LogViewport> component (which owns its own
+ *               buffer subscription + viewport slicing + header).
  *
- * Uses AgentLogBuffer ring buffers for O(viewport) rendering.
  * Auto-scroll follows new output; scrolling up pauses auto-scroll.
  * Historical lines (from resume) are rendered dimmed.
  *
@@ -17,8 +18,9 @@
  * j/k:select agent  J/K:scroll trace  f:full  Esc:close
  */
 
-import React, { useCallback, useEffect, useState } from "react";
-import type { AgentLogBuffer, LogLine } from "../data/agent-log-buffer.js";
+import React from "react";
+import { LogViewport } from "../components/log-viewport.js";
+import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { agentStatusIcon, theme } from "../theme.js";
 
 // ---------------------------------------------------------------------------
@@ -55,14 +57,6 @@ export interface TracePaneProps {
   readonly viewportLines?: number;
 }
 
-function formatTimestamp(ts: number): string {
-  const d = new Date(ts);
-  const h = String(d.getHours()).padStart(2, "0");
-  const m = String(d.getMinutes()).padStart(2, "0");
-  const s = String(d.getSeconds()).padStart(2, "0");
-  return `${h}:${m}:${s}`;
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -76,18 +70,8 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
   traceScrollOffset,
   viewportLines = DEFAULT_VIEWPORT_LINES,
 }: TracePaneProps): React.ReactNode {
-  // Subscribe to the selected agent's buffer for live updates
   const selectedRole = roles[selectedAgent];
   const selectedBuffer = selectedRole ? buffers.get(selectedRole) : undefined;
-
-  // Force re-render when buffer changes (via 16ms batched flush)
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!selectedBuffer) return;
-    const listener = () => setTick((t) => t + 1);
-    selectedBuffer.subscribe(listener);
-    return () => selectedBuffer.unsubscribe(listener);
-  }, [selectedBuffer]);
 
   // ─── Left column: agent list ───
   const agentList = roles.map((role, idx) => {
@@ -95,7 +79,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
     const status = agentStatuses.get(role) ?? "idle";
     const badge = agentStatusIcon(status, status === "running" ? spinnerFrame : undefined);
     const lineCount = buffers.get(role)?.size ?? 0;
-    const selector = isSelected ? "\u25b6" : " ";
+    const selector = isSelected ? "▶" : " ";
 
     return (
       <box
@@ -106,25 +90,12 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
         <text color={isSelected ? theme.focus : theme.secondary}>{selector} </text>
         <text color={badge.color}>{badge.icon} </text>
         <text color={isSelected ? theme.text : theme.secondary} bold={isSelected}>
-          {role.length > 12 ? `${role.slice(0, 11)}\u2026` : role.padEnd(12)}
+          {role.length > 12 ? `${role.slice(0, 11)}…` : role.padEnd(12)}
         </text>
         <text color={theme.secondary}> {lineCount > 0 ? String(lineCount) : ""}</text>
       </box>
     );
   });
-
-  // ─── Right column: trace output (viewport sliced) ───
-  const getViewportLines = useCallback((): LogLine[] => {
-    if (!selectedBuffer || selectedBuffer.isEmpty) return [];
-    const total = selectedBuffer.size;
-    const end = Math.max(0, total - traceScrollOffset);
-    const start = Math.max(0, end - viewportLines);
-    return selectedBuffer.slice(start, end);
-  }, [selectedBuffer, traceScrollOffset, viewportLines]);
-
-  const displayLines = getViewportLines();
-  const isAutoScroll = traceScrollOffset === 0;
-  const totalLines = selectedBuffer?.size ?? 0;
 
   // ─── Render ───
   if (roles.length === 0) {
@@ -153,33 +124,20 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
           {agentList}
         </box>
 
-        {/* Right: Trace output */}
+        {/* Right: trace output */}
         <box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={theme.focus}>
-          <box flexDirection="row" paddingX={1}>
-            <text color={theme.focus} bold>
-              {selectedRole ?? "—"} trace
-            </text>
-            <text color={theme.secondary}>
-              {" "}
-              {totalLines} lines
-              {isAutoScroll
-                ? " | auto-scroll: ON"
-                : ` | auto-scroll: OFF (${traceScrollOffset}\u2191)`}
-            </text>
-          </box>
-          {displayLines.length === 0 ? (
-            <box paddingX={1}>
-              <text color={theme.secondary}>(no output yet)</text>
-            </box>
+          {selectedBuffer ? (
+            <LogViewport
+              buffer={selectedBuffer}
+              paused={false}
+              filter=""
+              scrollOffset={traceScrollOffset}
+              viewportLines={viewportLines}
+              title={`${selectedRole ?? "—"} trace`}
+            />
           ) : (
-            <box flexDirection="column" paddingX={1}>
-              {displayLines.map((line, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: trace lines have no stable identity
-                <box key={i} flexDirection="row">
-                  <text color={theme.disabled}>{formatTimestamp(line.ts)} </text>
-                  <text>{line.line}</text>
-                </box>
-              ))}
+            <box paddingX={1}>
+              <text color={theme.secondary}>(no agent selected)</text>
             </box>
           )}
         </box>

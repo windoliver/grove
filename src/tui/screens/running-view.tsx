@@ -49,6 +49,7 @@ import { AgentListView } from "../views/agent-list.js";
 import { AgentTasksView } from "../views/agent-tasks.js";
 import { DagView } from "../views/dag.js";
 import { HandoffsView } from "../views/handoffs-view.js";
+import { LogView } from "../views/log-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
@@ -102,6 +103,15 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
   [RunningPanel.Tasks]: "tasks",
   [RunningPanel.Reviews]: "reviews",
 });
+
+// #310: LogView mount gate. Read process.env once at module load — env vars
+// don't change at runtime, so re-reading on every render is wasted work and
+// (more importantly) churns useMemo deps that include `useLogView`.
+// TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+// spawnManager.getSession(role).runtime), drop the env gate and detect
+// per-role: useLogView = session?.runtime === "acpx". Tracked as a
+// follow-up of issue #310.
+const useLogView = process.env.GROVE_LOGVIEW === "1";
 
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
@@ -222,6 +232,25 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       () => savedState?.traceSelectedAgent ?? 0,
     );
     const [traceScrollOffset, setTraceScrollOffset] = useState(0);
+
+    // ─── LogView state (#310): controlled by central keyboard dispatcher ───
+    // Mount gate lives at module scope (`useLogView`) so env reads don't
+    // churn useMemo deps each render.
+    const [logPaused, setLogPaused] = useState(false);
+    const [logFilter, setLogFilter] = useState("");
+    const [logFilterMode, setLogFilterModeRaw] = useState(false);
+    const [logScrollOffset, setLogScrollOffset] = useState(0);
+    // Mirror `logFilterMode` into a ref so the keyboard dispatcher sees the
+    // latest value within a same-tick burst (paste / scripted input) — same
+    // race rationale as `cmdStateRef` below. Without this, a burst like
+    // `/foo` after committing the prior filter could see stale
+    // `logFilterMode === false` between `setLogFilterMode(true)` and React's
+    // commit, sending printable chars to normal-mode handlers.
+    const logFilterModeRef = useRef<boolean>(false);
+    const setLogFilterMode = useCallback((next: boolean) => {
+      logFilterModeRef.current = next;
+      setLogFilterModeRaw(next);
+    }, []);
 
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
@@ -713,6 +742,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdText: cmdState.text,
         filterQuery,
         confirmModalOpen,
+        logFilterMode,
       }),
       [
         expandedPanel,
@@ -726,6 +756,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.text,
         filterQuery,
         confirmModalOpen,
+        logFilterMode,
       ],
     );
 
@@ -848,6 +879,23 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
           setTraceScrollOffset(0);
         },
+        // LogView actions (#310): mirror trace-pane controlled-component pattern.
+        logTogglePause: () => setLogPaused((p) => !p),
+        logScrollDown: () => setLogScrollOffset((n) => n + 1),
+        logScrollUp: () => setLogScrollOffset((n) => Math.max(0, n - 1)),
+        logScrollToBottom: () => setLogScrollOffset(0),
+        // LogViewport clamps with Math.max(0, end - viewportLines), so a huge
+        // offset maps to "top of buffer".
+        logScrollToTop: () => setLogScrollOffset(Number.MAX_SAFE_INTEGER),
+        logEnterFilterMode: () => setLogFilterMode(true),
+        logCommitFilter: () => setLogFilterMode(false), // keep logFilter
+        logCancelFilter: () => {
+          setLogFilterMode(false);
+          setLogFilter("");
+        },
+        logFilterAppend: (ch: string) => setLogFilter((f) => f + ch),
+        logFilterBackspace: () => setLogFilter((f) => f.slice(0, -1)),
+        logViewActive: useLogView,
         // openDetail kept as an interface field for future detail-route work,
         // but wired to a no-op so Enter cannot accidentally enter inspect.
         openDetail: () => {},
@@ -995,6 +1043,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         // latest value via React's reducer form.
         setCmdState,
         setFilterQuery,
+        // #310: ref-mirrored setter (stable identity per render via
+        // useCallback) — keeps logEnterFilterMode/logCommitFilter/
+        // logCancelFilter exhaustive without churning the memo each render.
+        setLogFilterMode,
+        // #310: `useLogView` lives at module scope (env-derived constant), so
+        // it isn't a dep — kept out of the array deliberately.
       ],
     );
 
@@ -1050,16 +1104,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             return;
           }
 
-          // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
-          // because keyboardState's useMemo only re-runs after React commits,
-          // and a burst of keys arriving in a single tick would otherwise see
-          // stale state. See cmdState refs above for the race rationale.
+          // Live snapshot of cmdMode/cmdText/filterQuery/logFilterMode from
+          // refs — needed because keyboardState's useMemo only re-runs after
+          // React commits, and a burst of keys arriving in a single tick
+          // would otherwise see stale state. See cmdState refs above for the
+          // race rationale; logFilterMode follows the same pattern (#310).
           const liveState: RunningKeyboardState = {
             ...keyboardState,
             cmdMode: cmdStateRef.current.mode,
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
             confirmModalOpen,
+            logFilterMode: logFilterModeRef.current,
           };
           routeRunningKey(key, liveState, keyboardActions);
         },
@@ -1072,6 +1128,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           showHelp,
           confirmModalOpen,
+          // #310: logFilterMode read via logFilterModeRef (synchronous) so a
+          // same-tick burst sees the latest mode. keyboardState already lists
+          // logFilterMode in its memo deps for rendering, so committed state
+          // changes still re-create the callback through that path.
         ],
       ),
     );
@@ -1198,6 +1258,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             logBuffers,
             traceSelectedAgent,
             traceScrollOffset,
+            logViewActive: useLogView,
+            logPaused,
+            logFilter,
+            logFilterMode,
+            logScrollOffset,
             sessionStartedAt,
             handoffs,
             activeRoles,
@@ -1279,6 +1344,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
+                logViewActive: useLogView,
+                logPaused,
+                logFilter,
+                logFilterMode,
+                logScrollOffset,
                 sessionStartedAt,
                 handoffs,
                 activeRoles,
@@ -1633,6 +1703,13 @@ interface PanelRenderContext {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
+  // #310: LogView controlled-component state. Optional so existing tests and
+  // non-ACPX call sites need no changes. Wired from running-view useState.
+  readonly logViewActive?: boolean;
+  readonly logPaused?: boolean;
+  readonly logFilter?: string;
+  readonly logFilterMode?: boolean;
+  readonly logScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
   readonly activeRoles?: readonly string[] | undefined;
@@ -1683,7 +1760,30 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         />
       );
 
-    case RunningPanel.Terminal:
+    case RunningPanel.Terminal: {
+      // #310: when ACPX/log-streaming is in use, render LogView instead of
+      // TerminalView. Gate is currently env-driven.
+      // TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+      // spawnManager.getSession(role).runtime), drop the env gate and detect
+      // per-role: useLogView = session?.runtime === "acpx". Tracked as a
+      // follow-up of issue #310.
+      if (ctx.logViewActive) {
+        // Temporary: pick the first available role's buffer. Future work:
+        // track the operator's selected agent and route to its buffer
+        // (mirrors traceSelectedAgent in TracePane).
+        const firstRole = ctx.topology?.roles?.[0]?.name;
+        const buffer = firstRole ? ctx.logBuffers?.get(firstRole) : undefined;
+        return (
+          <LogView
+            sessionId={buffer?.sessionId ?? firstRole ?? ""}
+            buffer={buffer}
+            paused={ctx.logPaused ?? false}
+            filter={ctx.logFilter ?? ""}
+            filterMode={ctx.logFilterMode ?? false}
+            scrollOffset={ctx.logScrollOffset ?? 0}
+          />
+        );
+      }
       return (
         <TerminalView
           tmux={ctx.tmux}
@@ -1692,6 +1792,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           mode={InputMode.Normal}
         />
       );
+    }
 
     case RunningPanel.Trace: {
       const roles = (ctx.topology?.roles ?? []).map((r) => r.name);
