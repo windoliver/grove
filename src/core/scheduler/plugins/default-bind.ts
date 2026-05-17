@@ -39,6 +39,12 @@ export class DefaultBindPlugin implements BindPlugin {
         GROVE_AGENT_TASK_ID: ctx.task.spec.id,
         GROVE_AGENT_TASK_GENERATION: String(ctx.task.spec.generation),
         GROVE_AGENT_TASK_RUNTIME: profile.runtimeCommand,
+        ...(process.env.GROVE_SERVER_URL === undefined
+          ? {}
+          : { GROVE_SERVER_URL: process.env.GROVE_SERVER_URL }),
+        ...(process.env.GROVE_API_TOKEN === undefined
+          ? {}
+          : { GROVE_API_TOKEN: process.env.GROVE_API_TOKEN }),
       },
     };
     const session = await this.runtime.spawn(ctx.task.spec.role, config);

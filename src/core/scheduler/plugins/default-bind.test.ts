@@ -219,3 +219,57 @@ describe("DefaultBindPlugin — dependency prompt wrapping", () => {
     expect(prompt).toContain("(no summary)");
   });
 });
+
+describe("DefaultBindPlugin — env passthrough for AgentTask done", () => {
+  test("forwards GROVE_SERVER_URL and GROVE_API_TOKEN when set in process env", async () => {
+    const originalUrl = process.env.GROVE_SERVER_URL;
+    const originalToken = process.env.GROVE_API_TOKEN;
+    process.env.GROVE_SERVER_URL = "http://localhost:4515";
+    process.env.GROVE_API_TOKEN = "test-token-123";
+    try {
+      const runtime = new FakeRuntime();
+      const plugin = new DefaultBindPlugin({ runtime });
+      const task = taskWith({});
+      const ctxObj: SchedulerContext = {
+        task,
+        profiles: [],
+        store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+        now: () => 0,
+      };
+      await plugin.bind(ctxObj, profile);
+      const env = runtime.spawnCalls[0]?.config.env ?? {};
+      expect(env.GROVE_SERVER_URL).toBe("http://localhost:4515");
+      expect(env.GROVE_API_TOKEN).toBe("test-token-123");
+    } finally {
+      if (originalUrl === undefined) delete process.env.GROVE_SERVER_URL;
+      else process.env.GROVE_SERVER_URL = originalUrl;
+      if (originalToken === undefined) delete process.env.GROVE_API_TOKEN;
+      else process.env.GROVE_API_TOKEN = originalToken;
+    }
+  });
+
+  test("omits GROVE_SERVER_URL / GROVE_API_TOKEN when unset in process env", async () => {
+    const originalUrl = process.env.GROVE_SERVER_URL;
+    const originalToken = process.env.GROVE_API_TOKEN;
+    delete process.env.GROVE_SERVER_URL;
+    delete process.env.GROVE_API_TOKEN;
+    try {
+      const runtime = new FakeRuntime();
+      const plugin = new DefaultBindPlugin({ runtime });
+      const task = taskWith({});
+      const ctxObj: SchedulerContext = {
+        task,
+        profiles: [],
+        store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+        now: () => 0,
+      };
+      await plugin.bind(ctxObj, profile);
+      const env = runtime.spawnCalls[0]?.config.env ?? {};
+      expect(env.GROVE_SERVER_URL).toBeUndefined();
+      expect(env.GROVE_API_TOKEN).toBeUndefined();
+    } finally {
+      if (originalUrl !== undefined) process.env.GROVE_SERVER_URL = originalUrl;
+      if (originalToken !== undefined) process.env.GROVE_API_TOKEN = originalToken;
+    }
+  });
+});
