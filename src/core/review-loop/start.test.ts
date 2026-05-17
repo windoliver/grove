@@ -34,7 +34,7 @@ describe("startReviewLoop", () => {
     expect(coderBody.role).toBe("coder");
     expect(coderBody.dependsOn).toEqual([]);
     expect(coderBody.worktree).toBe(result.worktree);
-    expect(coderBody.prompt).toBe("Implement feature X");
+    expect(coderBody.prompt).toContain("Implement feature X");
 
     const reviewerBody = JSON.parse(calls[1]!.body!);
     expect(reviewerBody.runtime).toBe("claude");
@@ -125,6 +125,46 @@ describe("startReviewLoop", () => {
       }),
     ).rejects.toThrow(/500/);
     expect(deleteCount).toBe(1);
+  });
+
+  test("coder prompt contains grove_done call instruction", async () => {
+    const bodies: Array<{ role: string; prompt: string }> = [];
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(init?.body as string);
+      bodies.push({ role: body.role, prompt: body.prompt });
+      return new Response("{}", { status: 201 });
+    };
+    await startReviewLoop({
+      goal: "Implement X",
+      groveUrl: "http://x",
+      token: "t",
+      groveDir: "/tmp",
+      fetchImpl: fakeFetch,
+      mkdirImpl: () => {},
+    });
+    const coderPrompt = bodies.find((b) => b.role === "coder")?.prompt ?? "";
+    expect(coderPrompt).toContain("Implement X");
+    expect(coderPrompt).toMatch(/grove_done/i);
+  });
+
+  test("reviewer prompt contains grove_done call instruction", async () => {
+    const bodies: Array<{ role: string; prompt: string }> = [];
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(init?.body as string);
+      bodies.push({ role: body.role, prompt: body.prompt });
+      return new Response("{}", { status: 201 });
+    };
+    await startReviewLoop({
+      goal: "Implement X",
+      groveUrl: "http://x",
+      token: "t",
+      groveDir: "/tmp",
+      fetchImpl: fakeFetch,
+      mkdirImpl: () => {},
+    });
+    const reviewerPrompt = bodies.find((b) => b.role === "reviewer")?.prompt ?? "";
+    expect(reviewerPrompt).toContain("Implement X");
+    expect(reviewerPrompt).toMatch(/grove_done/i);
   });
 
   test("non-2xx PUT for coder throws and skips reviewer", async () => {

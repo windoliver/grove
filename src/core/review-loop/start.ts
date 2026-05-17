@@ -39,6 +39,9 @@ export async function startReviewLoop(
   const coderRuntime = inputs.coderRuntime ?? "codex";
   const reviewerRuntime = inputs.reviewerRuntime ?? "claude";
 
+  const coderPrompt = `${inputs.goal}\n\nWhen you have finished the task, call the grove_done MCP tool with a one-line summary of what you did. Do not do anything else after grove_done.`;
+  const reviewerPrompt = `Review the work completed for: ${inputs.goal}\n\nThe coder's summary is included above as upstream output. Read the changes in the worktree, decide if they are correct, then call the grove_done MCP tool with a one-line summary of your review (e.g. "approved" or "rejected: <reason>"). Do not do anything else after grove_done.`;
+
   await putTask(
     inputs.groveUrl,
     inputs.token,
@@ -47,7 +50,7 @@ export async function startReviewLoop(
       worktree,
       runtime: coderRuntime,
       role: "coder",
-      prompt: inputs.goal,
+      prompt: coderPrompt,
       dependsOn: [],
     },
     inputs.fetchImpl,
@@ -62,7 +65,7 @@ export async function startReviewLoop(
         worktree,
         runtime: reviewerRuntime,
         role: "reviewer",
-        prompt: `Review the work completed for: ${inputs.goal}`,
+        prompt: reviewerPrompt,
         dependsOn: [coderId],
       },
       inputs.fetchImpl,
