@@ -435,7 +435,7 @@ async function main(): Promise<void> {
       "[note] TUI keybind verified in source (running-view.tsx calls same startReviewLoop lib)",
     );
     console.log(
-      "[note] done-signaling via REST POST /done (scheduler DefaultBind lacks grove MCP wiring)",
+      "[note] done-signaling via REST POST /done (lib-direct approach — real codex agents call grove_done via MCP, now wired in DefaultBind)",
     );
     process.exit(0);
   }
