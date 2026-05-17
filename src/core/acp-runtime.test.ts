@@ -7,6 +7,7 @@ import {
   AcpRuntime,
   buildAcpLaunchArgs,
   buildAcpLaunchEnv,
+  isBootstrapFailure,
   prepareIsolatedCodexHome,
 } from "./acp-runtime.js";
 import { DENY_ALL_RESOLVER } from "./permission-resolver.js";
@@ -265,6 +266,36 @@ describe("buildAcpLaunchArgs", () => {
         { GROVE_ALLOW_ALL_PERMISSIONS: "1" },
       ),
     ).toEqual(["claude-agent-acp.js"]);
+  });
+});
+
+describe("isBootstrapFailure", () => {
+  test("end_turn → false (successful turn completion)", () => {
+    expect(isBootstrapFailure("end_turn")).toBe(false);
+  });
+
+  test("cancelled → false (voluntary exit, e.g. after grove_done)", () => {
+    expect(isBootstrapFailure("cancelled")).toBe(false);
+  });
+
+  test("undefined → false (no stopReason present)", () => {
+    expect(isBootstrapFailure(undefined)).toBe(false);
+  });
+
+  test("error → true (real failure)", () => {
+    expect(isBootstrapFailure("error")).toBe(true);
+  });
+
+  test("refusal → true (real failure)", () => {
+    expect(isBootstrapFailure("refusal")).toBe(true);
+  });
+
+  test("max_tokens → true (real failure)", () => {
+    expect(isBootstrapFailure("max_tokens")).toBe(true);
+  });
+
+  test("max_turn_requests → true (real failure)", () => {
+    expect(isBootstrapFailure("max_turn_requests")).toBe(true);
   });
 });
 

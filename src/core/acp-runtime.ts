@@ -775,6 +775,10 @@ export class AcpRuntime implements AgentRuntime {
       void bootstrap.result
         .then((r) => {
           if (r.stopReason === "end_turn") return;
+          if (r.stopReason === "cancelled") {
+            // Agent voluntarily exited (e.g., after calling grove_done). Not a failure.
+            return;
+          }
           const msg = r.error?.message ?? r.stopReason;
           process.stderr.write(
             `[acp-runtime] bootstrap prompt failed for ${id} (stopReason=${r.stopReason}): ${msg}\n`,
@@ -1008,4 +1012,16 @@ export class AcpRuntime implements AgentRuntime {
       },
     };
   }
+}
+
+/**
+ * Returns true if the given ACP stopReason indicates a real bootstrap failure
+ * that should mark the session as crashed. Returns false for normal terminal
+ * reasons (end_turn = successful completion, cancelled = voluntary agent exit).
+ */
+export function isBootstrapFailure(stopReason: string | undefined): boolean {
+  if (stopReason === undefined) return false;
+  if (stopReason === "end_turn") return false;
+  if (stopReason === "cancelled") return false;
+  return true;
 }
