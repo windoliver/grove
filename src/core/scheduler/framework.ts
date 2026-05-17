@@ -6,7 +6,7 @@ import type { RuntimeProfile } from "./profile.js";
 export interface SchedulerContext {
   readonly task: AgentTaskView;
   readonly profiles: readonly RuntimeProfile[];
-  readonly store: Pick<AgentTaskStore, "listAgentTaskEntities">;
+  readonly store: Pick<AgentTaskStore, "listAgentTaskEntities" | "getAgentTask">;
   readonly now: () => number;
 }
 

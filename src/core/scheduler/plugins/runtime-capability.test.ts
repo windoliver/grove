@@ -9,7 +9,7 @@ function makeCtx(task: AgentTaskView, profiles: RuntimeProfile[] = []): Schedule
   return {
     task,
     profiles,
-    store: { listAgentTaskEntities: async () => [] },
+    store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
     now: () => 0,
   };
 }

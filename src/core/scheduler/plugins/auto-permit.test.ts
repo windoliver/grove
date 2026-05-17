@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { AgentTaskPhase } from "../../agent-task.js";
 import type { AgentTaskView } from "../../agent-task.js";
+import { AgentTaskPhase } from "../../agent-task.js";
 import { AutoPermit } from "./auto-permit.js";
 
 const task: AgentTaskView = {
@@ -28,7 +28,12 @@ const task: AgentTaskView = {
 describe("AutoPermit", () => {
   test("always grants", async () => {
     const permit = new AutoPermit();
-    const ctx = { task, profiles: [], store: { listAgentTaskEntities: async () => [] }, now: () => 0 };
+    const ctx = {
+      task,
+      profiles: [],
+      store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+      now: () => 0,
+    };
     const verdict = await permit.permit(ctx, {
       name: "p",
       platform: "claude-code",

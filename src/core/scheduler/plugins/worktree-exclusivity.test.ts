@@ -34,7 +34,7 @@ function ctxWith(task: AgentTaskView, others: readonly AgentTaskView[]): Schedul
   return {
     task,
     profiles: [],
-    store: { listAgentTaskEntities: async () => entities },
+    store: { listAgentTaskEntities: async () => entities, getAgentTask: async () => undefined },
     now: () => 0,
   };
 }

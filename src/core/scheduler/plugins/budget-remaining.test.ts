@@ -3,10 +3,15 @@ import type { AgentTaskView } from "../../agent-task.js";
 import { AgentTaskPhase } from "../../agent-task.js";
 import type { SchedulerContext } from "../framework.js";
 import type { RuntimeProfile } from "../profile.js";
-import { BudgetRemainingFilter, type BudgetLedger } from "./budget-remaining.js";
+import { type BudgetLedger, BudgetRemainingFilter } from "./budget-remaining.js";
 
 function makeCtx(task: AgentTaskView): SchedulerContext {
-  return { task, profiles: [], store: { listAgentTaskEntities: async () => [] }, now: () => 0 };
+  return {
+    task,
+    profiles: [],
+    store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+    now: () => 0,
+  };
 }
 
 function task(overrides: Partial<AgentTaskView["spec"]> = {}): AgentTaskView {
@@ -70,10 +75,7 @@ describe("BudgetRemainingFilter", () => {
 
   test("admits when profile budget is undefined regardless of task budget", async () => {
     const filter = new BudgetRemainingFilter();
-    const verdict = await filter.filter(
-      makeCtx(task({ budget: { maxCostUsd: 999 } })),
-      profile(),
-    );
+    const verdict = await filter.filter(makeCtx(task({ budget: { maxCostUsd: 999 } })), profile());
     expect(verdict).toEqual({ admit: true });
   });
 

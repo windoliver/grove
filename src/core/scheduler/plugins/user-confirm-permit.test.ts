@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { AgentTaskPhase } from "../../agent-task.js";
 import type { AgentTaskView } from "../../agent-task.js";
+import { AgentTaskPhase } from "../../agent-task.js";
 import type { SchedulerContext } from "../framework.js";
-import {
-  InMemoryPermitDecisionStore,
-  UserConfirmPermit,
-} from "./user-confirm-permit.js";
+import { InMemoryPermitDecisionStore, UserConfirmPermit } from "./user-confirm-permit.js";
 
 function ctx(task: AgentTaskView): SchedulerContext {
-  return { task, profiles: [], store: { listAgentTaskEntities: async () => [] }, now: () => 0 };
+  return {
+    task,
+    profiles: [],
+    store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+    now: () => 0,
+  };
 }
 
 const task: AgentTaskView = {

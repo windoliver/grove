@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../../agent-runtime.js";
-import { AgentTaskPhase } from "../../agent-task.js";
 import type { AgentTaskView } from "../../agent-task.js";
+import { AgentTaskPhase } from "../../agent-task.js";
 import type { AgentSessionEntity } from "../../entity.js";
 import type { SchedulerContext } from "../framework.js";
 import type { RuntimeProfile } from "../profile.js";
@@ -30,7 +30,12 @@ class FakeRuntime implements AgentRuntime {
 }
 
 function ctx(task: AgentTaskView): SchedulerContext {
-  return { task, profiles: [], store: { listAgentTaskEntities: async () => [] }, now: () => 0 };
+  return {
+    task,
+    profiles: [],
+    store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+    now: () => 0,
+  };
 }
 
 function taskWith(spec: Partial<AgentTaskView["spec"]>): AgentTaskView {
@@ -79,10 +84,10 @@ describe("DefaultBindPlugin", () => {
   test("falls back to task budget.model when profile.model undefined", async () => {
     const runtime = new FakeRuntime();
     const plugin = new DefaultBindPlugin({ runtime });
-    await plugin.bind(
-      ctx(taskWith({ budget: { model: "claude-haiku" } })),
-      { ...profile, model: undefined },
-    );
+    await plugin.bind(ctx(taskWith({ budget: { model: "claude-haiku" } })), {
+      ...profile,
+      model: undefined,
+    });
     expect(runtime.spawnCalls[0]?.config.model).toBe("claude-haiku");
   });
 

@@ -52,7 +52,12 @@ const task: AgentTaskView = {
 };
 
 const profiles = [
-  { name: "free-tier", platform: "claude-code", runtimeCommand: "claude", labels: { tier: "free" } },
+  {
+    name: "free-tier",
+    platform: "claude-code",
+    runtimeCommand: "claude",
+    labels: { tier: "free" },
+  },
   {
     name: "premium-tier",
     platform: "claude-code",
@@ -82,7 +87,7 @@ describe("acceptance: config-only reweight changes winner", () => {
       scores: loaded.scores,
       permits: loaded.permits,
       bindPlugin: loaded.bindPlugin,
-      store: { listAgentTaskEntities: async () => [] },
+      store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
       now: () => 0,
     });
 
@@ -112,7 +117,7 @@ describe("acceptance: config-only reweight changes winner", () => {
       scores: loaded.scores,
       permits: loaded.permits,
       bindPlugin: loaded.bindPlugin,
-      store: { listAgentTaskEntities: async () => [] },
+      store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
       now: () => 0,
     });
 

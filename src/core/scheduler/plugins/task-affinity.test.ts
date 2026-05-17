@@ -6,7 +6,12 @@ import type { RuntimeProfile } from "../profile.js";
 import { TaskAffinityScore } from "./task-affinity.js";
 
 function ctxWith(task: AgentTaskView): SchedulerContext {
-  return { task, profiles: [], store: { listAgentTaskEntities: async () => [] }, now: () => 0 };
+  return {
+    task,
+    profiles: [],
+    store: { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined },
+    now: () => 0,
+  };
 }
 
 function task(
@@ -78,8 +83,14 @@ describe("TaskAffinityScore", () => {
   });
 
   test("derives default affinity from task.spec.runtime when budget.affinity absent", async () => {
-    const match = await score.score(ctxWith(task({ runtime: "claude" })), profile({ runtime: "claude" }));
-    const miss = await score.score(ctxWith(task({ runtime: "claude" })), profile({ runtime: "codex" }));
+    const match = await score.score(
+      ctxWith(task({ runtime: "claude" })),
+      profile({ runtime: "claude" }),
+    );
+    const miss = await score.score(
+      ctxWith(task({ runtime: "claude" })),
+      profile({ runtime: "codex" }),
+    );
     expect(match).toBe(100);
     expect(miss).toBe(0);
   });

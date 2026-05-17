@@ -2,12 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentSession } from "../agent-runtime.js";
 import type { AgentTaskEntity, AgentTaskView } from "../agent-task.js";
 import { AgentTaskPhase } from "../agent-task.js";
-import type {
-  BindPlugin,
-  FilterPlugin,
-  PermitPlugin,
-  ScorePlugin,
-} from "./framework.js";
+import type { BindPlugin, FilterPlugin, PermitPlugin, ScorePlugin } from "./framework.js";
 import type { RuntimeProfile } from "./profile.js";
 import { Scheduler } from "./scheduler.js";
 
@@ -46,8 +41,11 @@ function profile(name: string, overrides: Partial<RuntimeProfile> = {}): Runtime
   };
 }
 
-function emptyStore(): { listAgentTaskEntities: () => Promise<readonly AgentTaskEntity[]> } {
-  return { listAgentTaskEntities: async () => [] };
+function emptyStore(): {
+  listAgentTaskEntities: () => Promise<readonly AgentTaskEntity[]>;
+  getAgentTask: () => Promise<undefined>;
+} {
+  return { listAgentTaskEntities: async () => [], getAgentTask: async () => undefined };
 }
 
 function alwaysReject(name: string, reason: string): FilterPlugin {
@@ -153,7 +151,12 @@ describe("Scheduler.schedule — scoring", () => {
   });
 });
 
-function constantScoreFor(nameA: string, valueA: number, nameB: string, valueB: number): ScorePlugin {
+function constantScoreFor(
+  nameA: string,
+  valueA: number,
+  nameB: string,
+  valueB: number,
+): ScorePlugin {
   return {
     name: `pair-${nameA}-${nameB}`,
     score: async (_ctx, profile) => {
