@@ -365,3 +365,73 @@ describe("PATCH /api/agent-tasks/:id/status — @Dangerous + If-Match plumbing (
     expect(view?.status.phase).toBe(AgentTaskPhase.Running);
   });
 });
+
+describe("POST /api/agent-tasks/:id/done", () => {
+  async function seedTask(store: TestAgentTaskStore, id: string): Promise<void> {
+    await store.putAgentTaskSpec({
+      id,
+      worktree: "wt-test",
+      runtime: "claude",
+      role: "agent",
+      prompt: "do the thing",
+      dependsOn: [],
+      generation: 0,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  test("writes DoneSignaled condition with summary", async () => {
+    const agentTaskStore = new TestAgentTaskStore();
+    await seedTask(agentTaskStore, "done-task-1");
+
+    const { app } = createTestApp({ agentTaskStore });
+    const res = await app.request("/api/agent-tasks/done-task-1/done", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ summary: "Completed all work successfully." }),
+    });
+
+    expect(res.status).toBe(200);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.taskId).toBe("done-task-1");
+    expect(body.condition).toBe("DoneSignaled");
+
+    const view = await agentTaskStore.getAgentTask("done-task-1");
+    const doneCondition = view?.status.conditions.find((c) => c.type === "DoneSignaled");
+    expect(doneCondition).toBeDefined();
+    expect(doneCondition?.status).toBe("True");
+    expect(doneCondition?.message).toBe("Completed all work successfully.");
+  });
+
+  test("returns 404 for unknown task", async () => {
+    const agentTaskStore = new TestAgentTaskStore();
+    const { app } = createTestApp({ agentTaskStore });
+    const res = await app.request("/api/agent-tasks/missing-task/done", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ summary: "done" }),
+    });
+
+    expect(res.status).toBe(404);
+    // biome-ignore lint/suspicious/noExplicitAny: test file
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("NOT_FOUND");
+  });
+
+  test("does NOT require X-Grove-Controller-Token (bearer-only)", async () => {
+    const agentTaskStore = new TestAgentTaskStore();
+    await seedTask(agentTaskStore, "done-task-bearer");
+
+    // Note: no TEST_CONTROLLER_HEADERS — bearer token only
+    const { app } = createTestApp({ agentTaskStore, controllerToken: TEST_CONTROLLER_TOKEN });
+    const res = await app.request("/api/agent-tasks/done-task-bearer/done", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ summary: "bearer only, no controller token" }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+});

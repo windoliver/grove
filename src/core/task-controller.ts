@@ -5,6 +5,7 @@ import {
   AgentTaskPhase,
   type AgentTaskView,
 } from "./agent-task.js";
+import { conditionEqual, upsertCondition } from "./condition-utils.js";
 import type { Condition } from "./entity.js";
 import type { SchedulingResult } from "./scheduler/framework.js";
 import type { Scheduler } from "./scheduler/scheduler.js";
@@ -660,43 +661,4 @@ function transition(
     reason,
     observedGeneration: task.spec.generation,
   };
-}
-
-function upsertCondition(
-  conditions: readonly Condition[],
-  desired: Condition,
-): readonly Condition[] {
-  const index = conditions.findIndex((condition) => condition.type === desired.type);
-  if (index === -1) {
-    return [...conditions, desired];
-  }
-
-  const existing = conditions[index];
-  if (existing === undefined) return conditions;
-  const next: Condition =
-    existing.status === desired.status &&
-    existing.reason === desired.reason &&
-    existing.message === desired.message
-      ? {
-          ...desired,
-          lastTransitionTime: existing.lastTransitionTime,
-        }
-      : desired;
-
-  if (conditionEqual(existing, next)) return conditions;
-
-  return conditions.map((condition, conditionIndex) =>
-    conditionIndex === index ? next : condition,
-  );
-}
-
-function conditionEqual(left: Condition, right: Condition): boolean {
-  return (
-    left.type === right.type &&
-    left.status === right.status &&
-    left.observedGeneration === right.observedGeneration &&
-    left.lastTransitionTime === right.lastTransitionTime &&
-    left.reason === right.reason &&
-    left.message === right.message
-  );
 }
