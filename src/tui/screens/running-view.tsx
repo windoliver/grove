@@ -23,6 +23,7 @@ import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Handoff } from "../../core/handoff.js";
 import type { Contribution } from "../../core/models.js";
+import { startReviewLoop } from "../../core/review-loop/start.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
 import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
@@ -49,6 +50,7 @@ import { AgentListView } from "../views/agent-list.js";
 import { AgentTasksView } from "../views/agent-tasks.js";
 import { DagView } from "../views/dag.js";
 import { HandoffsView } from "../views/handoffs-view.js";
+import { ReviewLoopPrompt } from "../views/review-loop-prompt.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
@@ -232,6 +234,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [vfsCursor, setVfsCursor] = useState(0);
     const [vfsNavTrigger, setVfsNavTrigger] = useState(0);
 
+    // ─── Review-loop prompt state ───
+    const [reviewLoopMode, setReviewLoopMode] = useState(false);
+    const [reviewLoopText, setReviewLoopText] = useState("");
+    const [reviewLoopError, setReviewLoopError] = useState<string | undefined>(undefined);
+    const [reviewLoopSubmitting, setReviewLoopSubmitting] = useState(false);
+
     // ─── Prompt state ───
     const [promptMode, setPromptMode] = useState(false);
     const [promptText, setPromptText] = useState("");
@@ -264,6 +272,45 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       setFlashError(msg);
       setTimeout(() => setFlashError((current) => (current === msg ? null : current)), ms);
     }, []);
+
+    // ─── Review-loop submit handler ───
+    const handleReviewLoopSubmit = useCallback(
+      (goal: string) => {
+        if (reviewLoopSubmitting) return;
+        const trimmed = goal.trim();
+        if (!trimmed) return;
+        // Extract groveUrl + token from provider (duck-type) or env.
+        const rp = provider as unknown as {
+          baseUrl?: string;
+          httpAuthHeaders?: Record<string, string>;
+        };
+        const groveUrl = rp.baseUrl ?? process.env.GROVE_SERVER_URL ?? "http://localhost:4515";
+        const authHeader = rp.httpAuthHeaders?.Authorization ?? "";
+        const token = authHeader.startsWith("Bearer ")
+          ? authHeader.slice(7)
+          : (process.env.GROVE_API_TOKEN ?? "");
+        const resolvedGroveDir = groveDir ?? process.cwd();
+        setReviewLoopSubmitting(true);
+        setReviewLoopError(undefined);
+        void startReviewLoop({
+          goal: trimmed,
+          groveUrl,
+          token,
+          groveDir: resolvedGroveDir,
+        })
+          .then((result) => {
+            setReviewLoopMode(false);
+            setReviewLoopText("");
+            setReviewLoopSubmitting(false);
+            flash(`Review loop started: ${result.coderId}`);
+          })
+          .catch((err: unknown) => {
+            setReviewLoopSubmitting(false);
+            setReviewLoopError(err instanceof Error ? err.message : "Failed to start review loop");
+          });
+      },
+      [provider, groveDir, flash, reviewLoopSubmitting],
+    );
 
     useEffect(() => {
       if (!groveDir) return;
@@ -1050,6 +1097,27 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             return;
           }
 
+          // ─── Review-loop prompt mode: swallows all keys ───
+          if (reviewLoopMode) {
+            if (key.name === "escape") {
+              setReviewLoopMode(false);
+              setReviewLoopText("");
+              setReviewLoopError(undefined);
+            } else if (key.name === "return") {
+              handleReviewLoopSubmit(reviewLoopText);
+            } else if (key.name === "backspace") {
+              setReviewLoopText((t) => t.slice(0, -1));
+              setReviewLoopError(undefined);
+            } else if (key.name === "space") {
+              setReviewLoopText((t) => `${t} `);
+              setReviewLoopError(undefined);
+            } else if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+              setReviewLoopText((t) => t + key.sequence);
+              setReviewLoopError(undefined);
+            }
+            return;
+          }
+
           // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
           // because keyboardState's useMemo only re-runs after React commits,
           // and a burst of keys arriving in a single tick would otherwise see
@@ -1061,6 +1129,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             filterQuery: filterQueryRef.current,
             confirmModalOpen,
           };
+          // ─── r: open review-loop prompt (when no ask_user pending) ───
+          if (
+            key.name === "r" &&
+            !liveState.promptMode &&
+            liveState.cmdMode === "none" &&
+            !liveState.showHelp &&
+            !liveState.showVfs &&
+            !keyboardActions.hasAskUser
+          ) {
+            setReviewLoopMode(true);
+            setReviewLoopText("");
+            setReviewLoopError(undefined);
+            return;
+          }
           routeRunningKey(key, liveState, keyboardActions);
         },
         [
@@ -1072,6 +1154,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           showHelp,
           confirmModalOpen,
+          reviewLoopMode,
+          reviewLoopText,
+          handleReviewLoopSubmit,
         ],
       ),
     );
@@ -1210,6 +1295,13 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               !showHelp &&
               !showVfs,
           })}
+          {reviewLoopMode && (
+            <ReviewLoopPrompt
+              text={reviewLoopText}
+              error={reviewLoopError}
+              submitting={reviewLoopSubmitting}
+            />
+          )}
           {renderStatusBar(
             expandedPanel,
             zoomLevel,
@@ -1306,6 +1398,13 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             gotoSuggestions,
             flashError,
           )}
+          {reviewLoopMode && (
+            <ReviewLoopPrompt
+              text={reviewLoopText}
+              error={reviewLoopError}
+              submitting={reviewLoopSubmitting}
+            />
+          )}
           {renderStatusBar(
             expandedPanel,
             zoomLevel,
@@ -1368,6 +1467,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           cmdState,
           gotoSuggestions,
           flashError,
+        )}
+
+        {/* Review-loop prompt (r key) */}
+        {reviewLoopMode && (
+          <ReviewLoopPrompt
+            text={reviewLoopText}
+            error={reviewLoopError}
+            submitting={reviewLoopSubmitting}
+          />
         )}
 
         {/* Help overlay */}
