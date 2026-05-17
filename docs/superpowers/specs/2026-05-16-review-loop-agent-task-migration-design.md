@@ -8,7 +8,7 @@ The core moves are:
 
 - A new `grove review-loop` CLI command that POSTs two chained `AgentTask` records (coder + reviewer with `dependsOn`) to a running grove-server.
 - A `Succeeded` transition in `TaskController` driven by a new `DoneSignaled` condition.
-- An MCP-side change to `grove_done` that PATCHes the bound task with `DoneSignaled=True` before writing the legacy contribution.
+- A new bearer-authed endpoint `POST /api/agent-tasks/:id/done` and an MCP-side change to `grove_done` that calls it before writing the legacy contribution. (Direct `PATCH /status` is controller-token-gated and out of reach for MCP — see Architecture for the server-mediated endpoint design.)
 - A small `DefaultBind` extension that prepends each dependency's `Succeeded` condition message to the new task's prompt, so the reviewer sees what the coder did.
 
 Result: a real codex→claude handoff runs filter → score → permit → bind for each agent, blocks on `dependsOn`, and exits cleanly when both reach `Succeeded`.
@@ -17,7 +17,7 @@ Result: a real codex→claude handoff runs filter → score → permit → bind 
 
 - Add an opt-in `grove review-loop start` CLI that creates two `AgentTask` records (coder, reviewer with `dependsOn=[coder-id]`).
 - Add a `Succeeded` transition path in `TaskController.reconcileRunning` driven by a `DoneSignaled=True` condition.
-- Wire `grove_done` MCP tool to PATCH the bound `AgentTask` status when `GROVE_AGENT_TASK_ID` is set in the agent process env.
+- Wire `grove_done` MCP tool to call a new server-mediated endpoint `POST /api/agent-tasks/:id/done` (bearer-authed) that writes the `DoneSignaled` condition server-side using the controller's own privilege. Triggered when `GROVE_AGENT_TASK_ID` is set in the agent process env.
 - Extend `DefaultBind` to prepend each dependency's `Succeeded` summary into the bound task's prompt.
 - Provide a tmux E2E that runs a real codex→claude review loop end-to-end against grove-server.
 - Preserve back-compat: `grove session start`, `SessionOrchestrator`, the contribution/handoff/bounty pipeline, and the legacy `grove_done` behavior are unchanged for agents not bound to an `AgentTask`.
@@ -43,7 +43,9 @@ Result: a real codex→claude handoff runs filter → score → permit → bind 
 
 `DefaultBind` (`src/core/scheduler/plugins/default-bind.ts`) reads `task.spec.prompt` verbatim into `AgentConfig.prompt` and injects `GROVE_AGENT_TASK_ID` + `GROVE_AGENT_TASK_GENERATION` into the agent's process env.
 
-`grove-server` already exposes `PUT /api/agent-tasks/:id` (create/update spec) and `PATCH /api/agent-tasks/:id/status` (controller-owned status writes guarded by `X-Grove-Controller-Token`). The MCP server does NOT have controller-token access, so `grove_done`'s PATCH from MCP goes through the bearer-token path used by other agent-task routes — verify route accepts MCP-bearer for `conditions` patches (existing tests in `agent-tasks.test.ts` may already cover this).
+`grove-server` exposes `PUT /api/agent-tasks/:id` (bearer-authed spec writes) and `PATCH /api/agent-tasks/:id/status` (controller-token gated — see `requireControllerToken` middleware in `src/server/routes/agent-tasks.ts:120`). The MCP server runs in a separate process that holds the bearer token only; it has no access to the controller token and intentionally must not — exposing the privileged status-patch path to MCP would let any agent forge phase transitions.
+
+To bridge this, the migration adds one bearer-authed route `POST /api/agent-tasks/:id/done` that accepts a small payload (`summary: string`) and internally writes the `DoneSignaled` condition + `observedGeneration` bump using the server's own privilege. The route's authorization rule: any bearer-token-authenticated caller may signal done for the task identified in the URL — agent identity is not cross-checked. This is acceptable here because (a) the bearer token is namespace-scoped (an agent in another namespace cannot reach this task) and (b) `DoneSignaled` only triggers a Succeeded transition; it cannot set phase=Running or other arbitrary states.
 
 ## Architecture
 
@@ -67,10 +69,11 @@ Result: a real codex→claude handoff runs filter → score → permit → bind 
 - `src/core/scheduler/plugins/default-bind.ts` — fetch dependency `Succeeded` conditions; wrap prompt.
 - `src/core/scheduler/plugins/default-bind.test.ts` — tests for dependency prompt wrapping.
 - `src/core/task-controller.test.ts` — tests for `Succeeded` transition + `dependsOn` unblocking chain.
-- `src/mcp/tools/done.ts` — PATCH bound AgentTask before writing contribution.
-- `src/mcp/tools/done.test.ts` — tests for PATCH branch.
+- `src/mcp/tools/done.ts` — POST to `/api/agent-tasks/:id/done` before writing contribution.
+- `src/mcp/tools/done.test.ts` — tests for done-endpoint branch.
 - `src/cli/main.ts` — register `review-loop` subcommand.
-- `src/server/routes/agent-tasks.test.ts` — explicit test that status PATCH with conditions+`DoneSignaled` works via bearer auth.
+- `src/server/routes/agent-tasks.ts` — add `POST /:id/done` route (bearer-authed, writes `DoneSignaled` condition).
+- `src/server/routes/agent-tasks.test.ts` — tests for the new `/done` endpoint.
 
 ### Coexistence (strangler-fig)
 
@@ -237,6 +240,11 @@ async bind(ctx: SchedulerContext, profile: RuntimeProfile): Promise<BindResult> 
       GROVE_AGENT_TASK_ID: ctx.task.spec.id,
       GROVE_AGENT_TASK_GENERATION: String(ctx.task.spec.generation),
       GROVE_AGENT_TASK_RUNTIME: profile.runtimeCommand,
+      // Required for grove_done's POST /api/agent-tasks/:id/done call. Pass-through from
+      // server env; absent if the controller wasn't launched with these set, in which case
+      // grove_done's POST will log a clear error and fall through to the contribution path.
+      ...(process.env.GROVE_SERVER_URL === undefined ? {} : { GROVE_SERVER_URL: process.env.GROVE_SERVER_URL }),
+      ...(process.env.GROVE_API_TOKEN === undefined ? {} : { GROVE_API_TOKEN: process.env.GROVE_API_TOKEN }),
     },
   };
   return { session: await this.runtime.spawn(ctx.task.spec.role, config) };
@@ -245,7 +253,66 @@ async bind(ctx: SchedulerContext, profile: RuntimeProfile): Promise<BindResult> 
 
 `buildPromptWithUpstream` is the pure module from `upstream-prompt.ts`.
 
-### `grove_done` MCP-side patch
+### Server-mediated `/done` endpoint
+
+New route in `src/server/routes/agent-tasks.ts`, registered alongside the existing routes (BEFORE the `requireControllerToken` middleware is applied so it stays bearer-only):
+
+```ts
+agentTasks.post(
+  "/:id/done",
+  zValidator("json", z.object({ summary: z.string().max(2000) }).strict()),
+  async (c) => {
+    const deps = c.get("deps");
+    const taskId = c.req.param("id");
+    const body = c.req.valid("json" as never) as { summary: string };
+    const store = deps.agentTaskStore;
+    if (store === undefined) throw new Error("AgentTask store middleware did not run");
+
+    const current = await store.getAgentTask(taskId);
+    if (current === undefined) {
+      return c.json({ error: { code: "NOT_FOUND", message: `task '${taskId}' not found` } }, 404);
+    }
+
+    const nowIso = new Date().toISOString();
+    const condition: Condition = {
+      type: AgentTaskConditionType.DoneSignaled,
+      status: "True",
+      observedGeneration: current.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "agent-grove-done",
+      message: body.summary,
+    };
+    const conditions = upsertCondition(current.status.conditions, condition);
+
+    const result = await store.patchAgentTaskStatus(taskId, {
+      conditions,
+      observedGeneration: current.spec.generation,
+    });
+    if (result.kind === "rv-mismatch") {
+      // One retry — refetch + reapply. Subsequent mismatch returns 409.
+      const refreshed = await store.getAgentTask(taskId);
+      if (refreshed === undefined) {
+        return c.json({ error: { code: "NOT_FOUND", message: "task disappeared" } }, 404);
+      }
+      const retried = await store.patchAgentTaskStatus(taskId, {
+        conditions: upsertCondition(refreshed.status.conditions, {
+          ...condition,
+          observedGeneration: refreshed.spec.generation,
+        }),
+        observedGeneration: refreshed.spec.generation,
+      });
+      if (retried.kind === "rv-mismatch") {
+        return c.json({ error: { code: "CONFLICT", message: "concurrent update" } }, 409);
+      }
+    }
+    return c.json({ ok: true, taskId, condition: "DoneSignaled" });
+  },
+);
+```
+
+Apply route registration BEFORE `agentTasks.use(requireControllerToken)` so the `/done` path stays bearer-only. Order matters in Hono — register the new POST route, then apply the controller-token middleware to status routes.
+
+### `grove_done` MCP-side call
 
 `src/mcp/agent-task-context.ts`:
 
@@ -273,10 +340,10 @@ export function readAgentTaskContext(
 const ctx = readAgentTaskContext(process.env);
 if (ctx !== undefined) {
   try {
-    await patchAgentTaskDoneSignaled(deps, ctx, args.summary);
+    await signalAgentTaskDone(deps, ctx, args.summary);
   } catch (err) {
     process.stderr.write(
-      `[grove-done] task=${ctx.taskId} patch failed (${(err as Error).message}); ` +
+      `[grove-done] task=${ctx.taskId} POST /done failed (${(err as Error).message}); ` +
         `contribution write proceeding\n`,
     );
   }
@@ -284,15 +351,37 @@ if (ctx !== undefined) {
 // existing contributeOperation call unchanged
 ```
 
-`patchAgentTaskDoneSignaled` is a new helper in `src/mcp/agent-task-patch.ts` (or co-located in `done.ts`):
+`signalAgentTaskDone` is a new helper in `src/mcp/agent-task-done.ts`:
 
-1. `GET /api/agent-tasks/<taskId>` → read current view.
-2. Compose patch body: `{ conditions: [...current, { type: "DoneSignaled", status: "True", observedGeneration, lastTransitionTime, reason: "agent-grove-done", message: summary }], observedGeneration }`. Use the existing `upsertCondition` semantics (server-side merges).
-3. `PATCH /api/agent-tasks/<taskId>/status` with `If-Match: <resourceVersion>`.
-4. On 409 → re-GET once, recompose, retry.
-5. On second 409 or other error → throw (caught by outer try/catch in done.ts, which logs and continues with contribution write).
+```ts
+export async function signalAgentTaskDone(
+  deps: McpDeps,
+  ctx: AgentTaskContext,
+  summary: string,
+): Promise<void> {
+  const baseUrl = process.env.GROVE_SERVER_URL ?? process.env.GROVE_NEXUS_URL;
+  if (baseUrl === undefined) {
+    throw new Error("GROVE_SERVER_URL / GROVE_NEXUS_URL not set; cannot signal AgentTask done");
+  }
+  const token = process.env.GROVE_API_TOKEN;
+  if (token === undefined) {
+    throw new Error("GROVE_API_TOKEN not set; cannot signal AgentTask done");
+  }
+  const res = await fetch(`${baseUrl}/api/agent-tasks/${encodeURIComponent(ctx.taskId)}/done`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ summary }),
+  });
+  if (!res.ok) {
+    throw new Error(`POST /done returned ${res.status}: ${await res.text()}`);
+  }
+}
+```
 
-Server URL discovered from `process.env.GROVE_NEXUS_URL` or `process.env.GROVE_SERVER_URL` (whichever the MCP server already uses for HTTP calls — verify existing pattern in `src/mcp/`). Bearer token from existing MCP HTTP helper.
+`GROVE_SERVER_URL` and `GROVE_API_TOKEN` are injected by `DefaultBind` (Section 4 will add them). Existing MCP env (`GROVE_NEXUS_URL`) is checked as a fallback to ease local testing where the same URL serves grove + nexus.
 
 ### `grove review-loop` CLI
 
@@ -346,8 +435,8 @@ E2E runs against real `codex` and `claude` binaries (verified installed). Prompt
 ## Risks and Open Questions
 
 - **Dependency in Failed state cascades to dependent stuck-forever.** `dependsOn` unblock requires `Succeeded`. A Failed coder leaves the reviewer in Pending forever. Not catastrophic (operator can DELETE the task), but worth a follow-up (cascade-cancel policy or auto-fail of dependents). Logged as risk; revisit in #285.
-- **MCP server's URL discovery for grove-server.** This spec assumes `process.env.GROVE_NEXUS_URL` or a similar var the MCP server already uses. Verify during implementation; if absent, add `GROVE_SERVER_URL` to the env injected by `DefaultBind`.
-- **Conditions-array PATCH semantics.** Server-side `patchAgentTaskStatus` likely treats `conditions` as a full replacement (per `AgentTaskStatusPatch.conditions`). The MCP helper must therefore include ALL existing conditions plus the new `DoneSignaled` — not just the diff. This is why step 1 GETs the current view first. If the route accepts a partial-merge JSON Patch in the future, this can simplify.
+- **`GROVE_SERVER_URL` + `GROVE_API_TOKEN` must be present in the grove-server process env.** `DefaultBind` passes them through to agents and on to MCP. If they are missing at server startup, `grove_done` cannot POST to `/done` and the task only reaches `Succeeded` via legacy paths (which don't exist for the AgentTask flow), so it ends as Failed when the session exits. The CLI `grove review-loop start` should pre-flight check these vars and fail-fast with a clear message before posting tasks.
+- **Conditions-array PATCH semantics.** `AgentTaskStatusPatch.conditions` is a full replacement, so the new `POST /done` route GETs the current view, merges via `upsertCondition`, and writes back. The 409 retry path re-GETs to handle interleaved controller writes.
 - **Race between `grove_done` PATCH and controller's `runtime.close`.** When the controller reconciles `Succeeded` it closes the session. If the agent process is still executing post-`grove_done`, close kills it mid-cleanup. Acceptable for review loops (agent has signaled done; nothing more to do) but worth noting. Future: add a `grace-period` field on `AgentTask` if needed.
 - **Worktree concurrency.** Both tasks share the worktree path. `WorktreeExclusivity` filter rejects two simultaneously-Running tasks on the same worktree, so the reviewer can only start after coder exits — that's exactly the desired sequencing. No conflict, but called out so reviewers understand why exclusivity matters here.
 - **`TaskBinder` interface vs scheduler-driven path.** PR #439 kept `TaskBinder` for back-compat. After this migration, both paths still coexist; #305's two-phase reservation work may remove `TaskBinder` as planned. No additional cleanup needed here.
