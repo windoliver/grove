@@ -55,6 +55,7 @@ interface ReconciliationResult {
   readonly patch: AgentTaskStatusPatch;
   readonly transition: AgentTaskStatusTransition;
   readonly sessionToCloseOnPatchFailure?: AgentSession | undefined;
+  readonly sessionToCloseOnSuccess?: AgentSession | undefined;
 }
 
 const DEFAULT_RESYNC_INTERVAL_MS = 30_000;
@@ -154,6 +155,9 @@ export class TaskController {
       throw error;
     }
     this.onTransition?.(result.transition);
+    if (result.sessionToCloseOnSuccess !== undefined) {
+      await this.closeAfterPatchFailure(result.sessionToCloseOnSuccess);
+    }
     return result.transition;
   }
 
@@ -430,6 +434,15 @@ export class TaskController {
       return failLostSession(task, this.nowIso());
     }
 
+    const doneCondition = task.status.conditions.find(
+      (c) => c.type === AgentTaskConditionType.DoneSignaled && c.status === "True",
+    );
+    if (doneCondition !== undefined) {
+      const sessions = await this.runtime.listSessions();
+      const session = sessions.find((s) => s.id === task.status.sessionId);
+      return succeedTask(task, doneCondition.message ?? "", this.nowIso(), session);
+    }
+
     const sessions = await this.runtime.listSessions();
     const session = sessions.find((candidate) => candidate.id === task.status.sessionId);
     if (session !== undefined && (session.status === "running" || session.status === "idle")) {
@@ -498,6 +511,42 @@ function runningLiveCatchUp(task: AgentTaskView, nowIso: string): Reconciliation
         patch,
         transition: transition(task, AgentTaskPhase.Running, "session-running"),
       };
+}
+
+function succeedTask(
+  task: AgentTaskView,
+  summary: string,
+  nowIso: string,
+  session: AgentSession | undefined,
+): ReconciliationResult {
+  const conditions = upsertCondition(
+    upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Running,
+      status: "False",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "done-signaled",
+      message: "",
+    }),
+    {
+      type: AgentTaskConditionType.Succeeded,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "done-signaled",
+      message: summary,
+    },
+  );
+  return {
+    patch: {
+      phase: AgentTaskPhase.Succeeded,
+      observedGeneration: task.spec.generation,
+      conditions,
+      lastTransitionAt: nowIso,
+    },
+    transition: transition(task, AgentTaskPhase.Succeeded, "done-signaled"),
+    ...(session === undefined ? {} : { sessionToCloseOnSuccess: session }),
+  };
 }
 
 function failLostSession(task: AgentTaskView, nowIso: string): ReconciliationResult {
