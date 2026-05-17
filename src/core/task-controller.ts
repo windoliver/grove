@@ -235,10 +235,40 @@ export class TaskController {
   }
 
   private async reconcilePending(task: AgentTaskView): Promise<ReconciliationResult | undefined> {
-    const blockedOn = await this.blockingDependencies(task);
+    const { blocked, failed } = await this.dependencyStates(task);
     const nowIso = this.nowIso();
 
-    if (blockedOn.length > 0) {
+    if (failed.length > 0) {
+      const conditions = upsertCondition(
+        upsertCondition(task.status.conditions, {
+          type: AgentTaskConditionType.Blocked,
+          status: "False",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "dependency-failed",
+          message: "",
+        }),
+        {
+          type: AgentTaskConditionType.Failed,
+          status: "True",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "dependency-failed",
+          message: `Dependency failed: ${failed.join(", ")}`,
+        },
+      );
+      return {
+        patch: {
+          phase: AgentTaskPhase.Failed,
+          observedGeneration: task.spec.generation,
+          conditions,
+          lastTransitionAt: nowIso,
+        },
+        transition: transition(task, AgentTaskPhase.Failed, "dependency-failed"),
+      };
+    }
+
+    if (blocked.length > 0) {
       const patch: AgentTaskStatusPatch = {
         phase: AgentTaskPhase.Pending,
         observedGeneration: task.spec.generation,
@@ -248,7 +278,7 @@ export class TaskController {
           observedGeneration: task.spec.generation,
           lastTransitionTime: nowIso,
           reason: "depends-on",
-          message: `Waiting for ${blockedOn.join(", ")}`,
+          message: `Waiting for ${blocked.join(", ")}`,
         }),
       };
       return statusPatchIsNoOp(task, patch)
@@ -453,15 +483,21 @@ export class TaskController {
     return failLostSession(task, this.nowIso());
   }
 
-  private async blockingDependencies(task: AgentTaskView): Promise<readonly string[]> {
+  private async dependencyStates(
+    task: AgentTaskView,
+  ): Promise<{ blocked: readonly string[]; failed: readonly string[] }> {
     const blocked: string[] = [];
+    const failed: string[] = [];
     for (const dependencyId of task.spec.dependsOn) {
       const dependency = await this.taskStore.getAgentTask(dependencyId);
-      if (dependency?.status.phase !== AgentTaskPhase.Succeeded) {
+      const phase = dependency?.status.phase;
+      if (phase === AgentTaskPhase.Failed) {
+        failed.push(dependencyId);
+      } else if (phase !== AgentTaskPhase.Succeeded) {
         blocked.push(dependencyId);
       }
     }
-    return blocked;
+    return { blocked, failed };
   }
 
   private nowIso(): string {

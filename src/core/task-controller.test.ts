@@ -9,6 +9,9 @@ import {
 } from "./agent-task.js";
 import { type CasMutationResult, type CasOpts, casOk } from "./cas.js";
 import type { Condition } from "./entity.js";
+import type { BindPlugin, FilterPlugin, PermitPlugin } from "./scheduler/framework.js";
+import type { RuntimeProfile } from "./scheduler/profile.js";
+import { Scheduler } from "./scheduler/scheduler.js";
 import type { AgentTaskStatusPatch } from "./store.js";
 import {
   DefaultTaskBinder,
@@ -18,9 +21,6 @@ import {
   type TaskControllerStore,
 } from "./task-controller.js";
 import { KeyedWorkQueue } from "./workqueue.js";
-import { Scheduler } from "./scheduler/scheduler.js";
-import type { BindPlugin, FilterPlugin, PermitPlugin } from "./scheduler/framework.js";
-import type { RuntimeProfile } from "./scheduler/profile.js";
 
 const FIXED_NOW_MS = Date.parse("2026-05-14T12:00:00.000Z");
 const FIXED_NOW_ISO = "2026-05-14T12:00:00.000Z";
@@ -928,6 +928,81 @@ describe("TaskController + Scheduler integration", () => {
     expect(binder.calls).toHaveLength(1);
     const patch = onlyPatch(store).patch;
     expect(patch.phase).toBe(AgentTaskPhase.Running);
+  });
+});
+
+describe("TaskController — cascade-fail on Failed dependency", () => {
+  test("Pending task with Failed dependency transitions to Failed", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({
+        id: "dep-1",
+        phase: AgentTaskPhase.Failed,
+        observedGeneration: 1,
+      }),
+    );
+    store.seed(
+      taskView({
+        id: "task-2",
+        phase: AgentTaskPhase.Pending,
+        dependsOn: ["dep-1"],
+        observedGeneration: 1,
+      }),
+    );
+    const controller = controllerFor(store);
+
+    await controller.reconcileTask("task-2");
+
+    const patch = store.patches.find((p) => p.taskId === "task-2")?.patch;
+    expect(patch?.phase).toBe(AgentTaskPhase.Failed);
+    expect(condition(patch?.conditions, "Failed")?.reason).toBe("dependency-failed");
+    expect(condition(patch?.conditions, "Failed")?.message).toContain("dep-1");
+  });
+
+  test("Pending task with Succeeded dependency advances normally", async () => {
+    const store = new FakeTaskStore();
+    store.seed(
+      taskView({
+        id: "dep-1",
+        phase: AgentTaskPhase.Succeeded,
+        observedGeneration: 1,
+      }),
+    );
+    store.seed(
+      taskView({
+        id: "task-2",
+        phase: AgentTaskPhase.Pending,
+        dependsOn: ["dep-1"],
+        observedGeneration: 1,
+      }),
+    );
+    const controller = controllerFor(store);
+
+    await controller.reconcileTask("task-2");
+
+    const patch = store.patches.find((p) => p.taskId === "task-2")?.patch;
+    expect(patch?.phase).toBe(AgentTaskPhase.PendingBind);
+  });
+
+  test("Pending task with mix of Failed + Pending deps fails (Failed wins)", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ id: "dep-a", phase: AgentTaskPhase.Failed, observedGeneration: 1 }));
+    store.seed(taskView({ id: "dep-b", phase: AgentTaskPhase.Pending, observedGeneration: 1 }));
+    store.seed(
+      taskView({
+        id: "task-x",
+        phase: AgentTaskPhase.Pending,
+        dependsOn: ["dep-a", "dep-b"],
+        observedGeneration: 1,
+      }),
+    );
+    const controller = controllerFor(store);
+
+    await controller.reconcileTask("task-x");
+
+    const patch = store.patches.find((p) => p.taskId === "task-x")?.patch;
+    expect(patch?.phase).toBe(AgentTaskPhase.Failed);
+    expect(condition(patch?.conditions, "Failed")?.message).toContain("dep-a");
   });
 });
 
