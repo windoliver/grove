@@ -18,6 +18,9 @@ import {
   type TaskControllerStore,
 } from "./task-controller.js";
 import { KeyedWorkQueue } from "./workqueue.js";
+import { Scheduler } from "./scheduler/scheduler.js";
+import type { BindPlugin, FilterPlugin, PermitPlugin } from "./scheduler/framework.js";
+import type { RuntimeProfile } from "./scheduler/profile.js";
 
 const FIXED_NOW_MS = Date.parse("2026-05-14T12:00:00.000Z");
 const FIXED_NOW_ISO = "2026-05-14T12:00:00.000Z";
@@ -767,3 +770,247 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }
+
+function profile(name = "primary"): RuntimeProfile {
+  return { name, platform: "claude-code", runtimeCommand: "claude" };
+}
+
+function alwaysAdmit(name = "admit"): FilterPlugin {
+  return { name, filter: async () => ({ admit: true }) };
+}
+
+function alwaysReject(reason: string): FilterPlugin {
+  return { name: "reject", filter: async () => ({ admit: false, reason }) };
+}
+
+function autoPermit(): PermitPlugin {
+  return { name: "auto", permit: async () => ({ status: "granted" }) };
+}
+
+function denyPermit(reason: string): PermitPlugin {
+  return { name: "deny", permit: async () => ({ status: "denied", reason }) };
+}
+
+function waitPermit(reason: string): PermitPlugin {
+  return { name: "wait", permit: async () => ({ status: "wait", reason }) };
+}
+
+function recordingBind(): BindPlugin & { calls: number } {
+  const plugin = {
+    name: "rec",
+    calls: 0,
+    async bind() {
+      plugin.calls += 1;
+      return { session: { id: "boundsess", role: "worker", status: "running" } as AgentSession };
+    },
+  };
+  return plugin;
+}
+
+describe("TaskController + Scheduler integration", () => {
+  test("bound decision transitions PendingBind → Running with sessionId", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const bindPlugin = recordingBind();
+    const scheduler = new Scheduler({
+      profiles: [profile()],
+      filters: [alwaysAdmit()],
+      scores: [],
+      permits: [autoPermit()],
+      bindPlugin,
+      store: { listAgentTaskEntities: store.listAgentTaskEntities },
+      now: () => FIXED_NOW_MS,
+    });
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      scheduler,
+      now: () => FIXED_NOW_MS,
+    });
+
+    await controller.reconcileTask("task-1");
+
+    expect(bindPlugin.calls).toBe(1);
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Running);
+    expect(patch.sessionId).toBe("boundsess");
+    expect(condition(patch.conditions, "Bound")?.status).toBe("True");
+    expect(condition(patch.conditions, "Running")?.status).toBe("True");
+  });
+
+  test("unschedulable result keeps PendingBind and sets Unschedulable condition", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const scheduler = new Scheduler({
+      profiles: [profile()],
+      filters: [alwaysReject("filter-x")],
+      scores: [],
+      permits: [autoPermit()],
+      bindPlugin: recordingBind(),
+      store: { listAgentTaskEntities: store.listAgentTaskEntities },
+      now: () => FIXED_NOW_MS,
+    });
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      scheduler,
+      now: () => FIXED_NOW_MS,
+    });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBeUndefined();
+    expect(condition(patch.conditions, "Unschedulable")?.status).toBe("True");
+    expect(condition(patch.conditions, "Unschedulable")?.message).toContain("filter-x");
+  });
+
+  test("wait result keeps PendingBind and sets PermitRequired condition", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const scheduler = new Scheduler({
+      profiles: [profile()],
+      filters: [alwaysAdmit()],
+      scores: [],
+      permits: [waitPermit("awaiting-user")],
+      bindPlugin: recordingBind(),
+      store: { listAgentTaskEntities: store.listAgentTaskEntities },
+      now: () => FIXED_NOW_MS,
+    });
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      scheduler,
+      now: () => FIXED_NOW_MS,
+    });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBeUndefined();
+    expect(condition(patch.conditions, "PermitRequired")?.reason).toBe("awaiting-user");
+  });
+
+  test("denied result transitions to Failed", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const scheduler = new Scheduler({
+      profiles: [profile()],
+      filters: [alwaysAdmit()],
+      scores: [],
+      permits: [denyPermit("not-allowed")],
+      bindPlugin: recordingBind(),
+      store: { listAgentTaskEntities: store.listAgentTaskEntities },
+      now: () => FIXED_NOW_MS,
+    });
+    const controller = new TaskController({
+      taskStore: store,
+      runtime: new FakeRuntime(),
+      scheduler,
+      now: () => FIXED_NOW_MS,
+    });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Failed);
+    expect(condition(patch.conditions, "Failed")?.reason).toBe("not-allowed");
+  });
+
+  test("controller without scheduler still uses direct binder path (back-compat)", async () => {
+    const store = new FakeTaskStore();
+    store.seed(taskView({ phase: AgentTaskPhase.PendingBind, observedGeneration: 1 }));
+    const binder = new FakeBinder();
+    const controller = controllerFor(store, { binder });
+
+    await controller.reconcileTask("task-1");
+
+    expect(binder.calls).toHaveLength(1);
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Running);
+  });
+});
+
+describe("TaskController — DoneSignaled → Succeeded", () => {
+  function viewWithCondition(
+    overrides: { sessionId?: string; doneSummary?: string } = {},
+  ): AgentTaskView {
+    return taskView({
+      phase: AgentTaskPhase.Running,
+      sessionId: overrides.sessionId ?? "session-running",
+      observedGeneration: 1,
+      conditions:
+        overrides.doneSummary === undefined
+          ? []
+          : [
+              makeCondition("DoneSignaled", {
+                status: "True",
+                reason: "agent-grove-done",
+                message: overrides.doneSummary,
+              }),
+            ],
+    });
+  }
+
+  test("Running task with DoneSignaled=True transitions to Succeeded", async () => {
+    const store = new FakeTaskStore();
+    store.seed(viewWithCondition({ doneSummary: "Approved by reviewer." }));
+    const runtime = new FakeRuntime();
+    runtime.sessions.set("session-running", {
+      id: "session-running",
+      role: "worker",
+      status: "running",
+    });
+    const controller = controllerFor(store, { runtime });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Succeeded);
+    expect(condition(patch.conditions, "Succeeded")?.status).toBe("True");
+    expect(condition(patch.conditions, "Succeeded")?.message).toBe("Approved by reviewer.");
+    expect(condition(patch.conditions, "Running")?.status).toBe("False");
+  });
+
+  test("DoneSignaled takes precedence over session-status-stopped", async () => {
+    const store = new FakeTaskStore();
+    store.seed(viewWithCondition({ doneSummary: "Done." }));
+    const runtime = new FakeRuntime(); // no live session
+    const controller = controllerFor(store, { runtime });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Succeeded);
+  });
+
+  test("Running task without DoneSignaled and lost session still fails (back-compat)", async () => {
+    const store = new FakeTaskStore();
+    store.seed(viewWithCondition({}));
+    const runtime = new FakeRuntime();
+    const controller = controllerFor(store, { runtime });
+
+    await controller.reconcileTask("task-1");
+
+    const patch = onlyPatch(store).patch;
+    expect(patch.phase).toBe(AgentTaskPhase.Failed);
+  });
+
+  test("Succeeded transition closes runtime session", async () => {
+    const store = new FakeTaskStore();
+    store.seed(viewWithCondition({ doneSummary: "ok" }));
+    const runtime = new FakeRuntime();
+    const session = {
+      id: "session-running",
+      role: "worker",
+      status: "running" as const,
+    };
+    runtime.sessions.set(session.id, session);
+    const controller = controllerFor(store, { runtime });
+
+    await controller.reconcileTask("task-1");
+
+    expect(runtime.closeCalls).toHaveLength(1);
+    expect(runtime.closeCalls[0]?.id).toBe(session.id);
+  });
+});

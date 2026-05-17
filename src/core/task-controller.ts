@@ -5,7 +5,10 @@ import {
   AgentTaskPhase,
   type AgentTaskView,
 } from "./agent-task.js";
+import { conditionEqual, upsertCondition } from "./condition-utils.js";
 import type { Condition } from "./entity.js";
+import type { SchedulingResult } from "./scheduler/framework.js";
+import type { Scheduler } from "./scheduler/scheduler.js";
 import type { AgentTaskStatusPatch, AgentTaskStore } from "./store.js";
 import { KeyedWorkQueue, QueueClosedError, type WorkItemResult } from "./workqueue.js";
 
@@ -46,12 +49,14 @@ export interface TaskControllerOptions {
   readonly now?: (() => number) | undefined;
   readonly onError?: ((error: unknown, taskId: string) => void) | undefined;
   readonly onTransition?: ((transition: AgentTaskStatusTransition) => void) | undefined;
+  readonly scheduler?: Scheduler | undefined;
 }
 
 interface ReconciliationResult {
   readonly patch: AgentTaskStatusPatch;
   readonly transition: AgentTaskStatusTransition;
   readonly sessionToCloseOnPatchFailure?: AgentSession | undefined;
+  readonly sessionToCloseOnSuccess?: AgentSession | undefined;
 }
 
 const DEFAULT_RESYNC_INTERVAL_MS = 30_000;
@@ -92,6 +97,7 @@ export class TaskController {
   private readonly taskStore: TaskControllerStore;
   private readonly runtime: TaskControllerRuntime;
   private readonly binder: TaskBinder;
+  private readonly scheduler: Scheduler | undefined;
   private readonly queue: KeyedWorkQueue;
   private readonly now: () => number;
   private readonly resyncIntervalMs: number;
@@ -107,6 +113,7 @@ export class TaskController {
     this.taskStore = options.taskStore;
     this.runtime = options.runtime;
     this.binder = options.binder ?? new DefaultTaskBinder(options.runtime);
+    this.scheduler = options.scheduler;
     this.now = options.now ?? Date.now;
     this.queue = options.queue ?? new KeyedWorkQueue({ now: this.now });
     this.resyncIntervalMs = options.resyncIntervalMs ?? DEFAULT_RESYNC_INTERVAL_MS;
@@ -149,6 +156,9 @@ export class TaskController {
       throw error;
     }
     this.onTransition?.(result.transition);
+    if (result.sessionToCloseOnSuccess !== undefined) {
+      await this.closeAfterPatchFailure(result.sessionToCloseOnSuccess);
+    }
     return result.transition;
   }
 
@@ -275,6 +285,17 @@ export class TaskController {
       return this.reconcileRunning(task);
     }
 
+    if (this.scheduler === undefined) {
+      return this.directBindPendingBind(task);
+    }
+
+    const decision = await this.scheduler.schedule(task);
+    return this.applySchedulingDecision(task, decision);
+  }
+
+  private async directBindPendingBind(
+    task: AgentTaskView,
+  ): Promise<ReconciliationResult | undefined> {
     const { session } = await this.binder.bind({ task });
     const nowIso = this.nowIso();
     const conditions = upsertCondition(
@@ -309,9 +330,118 @@ export class TaskController {
     };
   }
 
+  private applySchedulingDecision(
+    task: AgentTaskView,
+    decision: SchedulingResult,
+  ): ReconciliationResult | undefined {
+    const nowIso = this.nowIso();
+
+    if (decision.kind === "bound") {
+      const conditions = upsertCondition(
+        upsertCondition(task.status.conditions, {
+          type: AgentTaskConditionType.Bound,
+          status: "True",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "session-bound",
+          message: "",
+        }),
+        {
+          type: AgentTaskConditionType.Running,
+          status: "True",
+          observedGeneration: task.spec.generation,
+          lastTransitionTime: nowIso,
+          reason: "session-running",
+          message: "",
+        },
+      );
+      return {
+        patch: {
+          phase: AgentTaskPhase.Running,
+          sessionId: decision.session.id,
+          observedGeneration: task.spec.generation,
+          conditions,
+          lastTransitionAt: nowIso,
+        },
+        transition: transition(task, AgentTaskPhase.Running, "session-bound"),
+        sessionToCloseOnPatchFailure: decision.session,
+      };
+    }
+
+    if (decision.kind === "unschedulable") {
+      const reasons = decision.rejections
+        .flatMap((entry) =>
+          entry.rejections.map((r) => `${entry.profile.name}/${r.plugin}:${r.reason}`),
+        )
+        .slice(0, 3);
+      const message = reasons.length === 0 ? "no candidate profiles" : reasons.join("; ");
+      const conditions = upsertCondition(task.status.conditions, {
+        type: AgentTaskConditionType.Unschedulable,
+        status: "True",
+        observedGeneration: task.spec.generation,
+        lastTransitionTime: nowIso,
+        reason: "no-candidate",
+        message,
+      });
+      return {
+        patch: {
+          observedGeneration: task.spec.generation,
+          conditions,
+        },
+        transition: transition(task, AgentTaskPhase.PendingBind, "unschedulable"),
+      };
+    }
+
+    if (decision.kind === "wait") {
+      const conditions = upsertCondition(task.status.conditions, {
+        type: AgentTaskConditionType.PermitRequired,
+        status: "True",
+        observedGeneration: task.spec.generation,
+        lastTransitionTime: nowIso,
+        reason: decision.reason,
+        message: decision.message ?? `permit '${decision.plugin}' is waiting`,
+      });
+      return {
+        patch: {
+          observedGeneration: task.spec.generation,
+          conditions,
+        },
+        transition: transition(task, AgentTaskPhase.PendingBind, "permit-wait"),
+      };
+    }
+
+    // decision.kind === "denied"
+    const conditions = upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Failed,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: decision.reason,
+      message: decision.message ?? `permit '${decision.plugin}' denied`,
+    });
+    return {
+      patch: {
+        phase: AgentTaskPhase.Failed,
+        observedGeneration: task.spec.generation,
+        conditions,
+        lastTransitionAt: nowIso,
+      },
+      transition: transition(task, AgentTaskPhase.Failed, decision.reason),
+    };
+  }
+
   private async reconcileRunning(task: AgentTaskView): Promise<ReconciliationResult | undefined> {
     if (task.status.sessionId === undefined) {
       return failLostSession(task, this.nowIso());
+    }
+
+    const doneCondition = task.status.conditions.find(
+      (c) => c.type === AgentTaskConditionType.DoneSignaled && c.status === "True",
+    );
+    if (doneCondition !== undefined) {
+      const sessions = await this.runtime.listSessions();
+      const session = sessions.find((s) => s.id === task.status.sessionId);
+      return succeedTask(task, doneCondition.message ?? "", this.nowIso(), session);
     }
 
     const sessions = await this.runtime.listSessions();
@@ -382,6 +512,42 @@ function runningLiveCatchUp(task: AgentTaskView, nowIso: string): Reconciliation
         patch,
         transition: transition(task, AgentTaskPhase.Running, "session-running"),
       };
+}
+
+function succeedTask(
+  task: AgentTaskView,
+  summary: string,
+  nowIso: string,
+  session: AgentSession | undefined,
+): ReconciliationResult {
+  const conditions = upsertCondition(
+    upsertCondition(task.status.conditions, {
+      type: AgentTaskConditionType.Running,
+      status: "False",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "done-signaled",
+      message: "",
+    }),
+    {
+      type: AgentTaskConditionType.Succeeded,
+      status: "True",
+      observedGeneration: task.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "done-signaled",
+      message: summary,
+    },
+  );
+  return {
+    patch: {
+      phase: AgentTaskPhase.Succeeded,
+      observedGeneration: task.spec.generation,
+      conditions,
+      lastTransitionAt: nowIso,
+    },
+    transition: transition(task, AgentTaskPhase.Succeeded, "done-signaled"),
+    ...(session === undefined ? {} : { sessionToCloseOnSuccess: session }),
+  };
 }
 
 function failLostSession(task: AgentTaskView, nowIso: string): ReconciliationResult {
@@ -495,43 +661,4 @@ function transition(
     reason,
     observedGeneration: task.spec.generation,
   };
-}
-
-function upsertCondition(
-  conditions: readonly Condition[],
-  desired: Condition,
-): readonly Condition[] {
-  const index = conditions.findIndex((condition) => condition.type === desired.type);
-  if (index === -1) {
-    return [...conditions, desired];
-  }
-
-  const existing = conditions[index];
-  if (existing === undefined) return conditions;
-  const next: Condition =
-    existing.status === desired.status &&
-    existing.reason === desired.reason &&
-    existing.message === desired.message
-      ? {
-          ...desired,
-          lastTransitionTime: existing.lastTransitionTime,
-        }
-      : desired;
-
-  if (conditionEqual(existing, next)) return conditions;
-
-  return conditions.map((condition, conditionIndex) =>
-    conditionIndex === index ? next : condition,
-  );
-}
-
-function conditionEqual(left: Condition, right: Condition): boolean {
-  return (
-    left.type === right.type &&
-    left.status === right.status &&
-    left.observedGeneration === right.observedGeneration &&
-    left.lastTransitionTime === right.lastTransitionTime &&
-    left.reason === right.reason &&
-    left.message === right.message
-  );
 }

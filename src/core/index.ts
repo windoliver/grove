@@ -387,3 +387,4 @@ export type {
   WorkspaceViolation,
 } from "./workspace-validator.js";
 export { validateWorkspaceMutations } from "./workspace-validator.js";
+export * as scheduler from "./scheduler/index.js";

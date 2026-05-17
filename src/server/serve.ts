@@ -9,8 +9,10 @@
  * This is the only file excluded from test coverage — use createApp() for testing.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentTaskViewToEntity } from "../core/agent-task.js";
+import { type GroveConfig, parseGroveConfig } from "../core/config.js";
 import {
   claimToEntity,
   contributionToEntity,
@@ -48,6 +50,7 @@ import { wireAgentTaskStoreWrites } from "./agent-task-store-wiring.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
+import { buildSchedulerFromConfig } from "./scheduler-wiring.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
 import { createServerAgentRuntime, taskControllerEnabled } from "./task-controller-wiring.js";
@@ -57,6 +60,11 @@ import { createWsHandler } from "./ws-handler.js";
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);
 const HOST = process.env.HOST; // optional — defaults to localhost via Bun
+// Defaults for env that downstream agents inherit. DefaultBind forwards both to
+// MCP so grove_done can POST /api/agent-tasks/:id/done.
+if (process.env.GROVE_SERVER_URL === undefined) {
+  process.env.GROVE_SERVER_URL = `http://${HOST ?? "localhost"}:${PORT}`;
+}
 // Nexus env vars — when GROVE_NEXUS_URL is set, contribution/claim/bounty/
 // outcome/CAS reads and writes go through Nexus stores so this process sees
 // the same data MCP agents produce. See the store-construction block below.
@@ -160,6 +168,12 @@ if (!zoneId) {
 }
 
 const rawRegistry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
+if (process.env.GROVE_API_TOKEN === undefined) {
+  const firstToken = [...rawRegistry.keys()][0];
+  if (firstToken !== undefined) {
+    process.env.GROVE_API_TOKEN = firstToken;
+  }
+}
 // Scope registry to this server's own namespace only — reject keys for other worktrees.
 // This server is one-namespace-per-process: all stores are process-global and
 // scoped to zoneId. Keys for other namespaces would allow cross-namespace access.
@@ -689,9 +703,29 @@ function startServer() {
 const server = startServer();
 
 if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) {
+  const sharedRuntime = await getSharedAgentRuntime();
+  let groveConfig: GroveConfig | undefined;
+  const groveJsonPath = join(GROVE_DIR, "grove.json");
+  if (existsSync(groveJsonPath)) {
+    try {
+      groveConfig = parseGroveConfig(readFileSync(groveJsonPath, "utf-8"));
+    } catch (err) {
+      console.error(`grove-server: failed to parse ${groveJsonPath}: ${(err as Error).message}`);
+    }
+  }
+  const scheduler =
+    groveConfig === undefined
+      ? undefined
+      : buildSchedulerFromConfig({
+          config: groveConfig,
+          runtime: sharedRuntime,
+          store: runtime.agentTaskStore,
+        });
+
   taskController = new TaskController({
     taskStore: runtime.agentTaskStore,
-    runtime: await getSharedAgentRuntime(),
+    runtime: sharedRuntime,
+    ...(scheduler === undefined ? {} : { scheduler }),
     onError(error, taskId) {
       const detail = error instanceof Error ? error.message : String(error);
       process.stderr.write(`[task-controller] ${taskId}: ${detail}\n`);
@@ -699,7 +733,11 @@ if (taskControllerEnabled(process.env) && runtime.agentTaskStore !== undefined) 
   });
   await taskController.resync();
   taskController.start();
-  console.log("task-controller enabled");
+  console.log(
+    scheduler === undefined
+      ? "task-controller enabled"
+      : `task-controller enabled (scheduler: ${groveConfig?.scheduler?.profiles?.length ?? 0} profiles, ${groveConfig?.scheduler?.pipeline?.filters?.length ?? 0} filters)`,
+  );
 }
 
 // Start gossip after server is listening

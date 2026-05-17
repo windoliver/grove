@@ -18,6 +18,8 @@ import type { JsonValue } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import { contributeOperation } from "../../core/operations/index.js";
 import { bindAgentIdentity } from "../agent-binding.js";
+import { readAgentTaskContext } from "../agent-task-context.js";
+import { signalAgentTaskDone } from "../agent-task-done.js";
 import type { McpDeps } from "../deps.js";
 import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
@@ -43,6 +45,20 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
       inputSchema: doneInputSchema,
     },
     async (args) => {
+      const taskCtx = readAgentTaskContext(process.env);
+      if (taskCtx !== undefined) {
+        try {
+          await signalAgentTaskDone(taskCtx, args.summary, {
+            baseUrl: process.env.GROVE_SERVER_URL,
+            token: process.env.GROVE_API_TOKEN,
+          });
+        } catch (err) {
+          process.stderr.write(
+            `[grove-done] task=${taskCtx.taskId} POST /done failed (${err instanceof Error ? err.message : String(err)}); contribution write proceeding\n`,
+          );
+        }
+      }
+
       const result = await contributeOperation(
         {
           kind: "discussion",

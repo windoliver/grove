@@ -12,7 +12,13 @@ import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentTaskSpecRecord } from "../../core/agent-task.js";
-import { AgentTaskPhase, agentTaskViewToEntity } from "../../core/agent-task.js";
+import {
+  AgentTaskConditionType,
+  AgentTaskPhase,
+  agentTaskViewToEntity,
+} from "../../core/agent-task.js";
+import { upsertCondition } from "../../core/condition-utils.js";
+import type { Condition } from "../../core/entity.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentTaskStatusPatch } from "../../core/store.js";
 import { hasAgentTaskWriteCallback } from "../agent-task-store-wiring.js";
@@ -259,6 +265,72 @@ agentTasks.get("/:id", async (c) => {
   }
   return c.json(view);
 });
+
+/**
+ * POST /api/agent-tasks/:id/done — Bearer-authed agent completion signal.
+ *
+ * Writes a `DoneSignaled` condition to the task's status. Requires only the
+ * bearer token (no controller token) so that MCP processes running inside
+ * agent worktrees can call it without server-side secrets.
+ *
+ * The route retries once on an optimistic-concurrency mismatch and returns
+ * 409 only if a second concurrent write races it.
+ */
+agentTasks.post(
+  "/:id/done",
+  zValidator("json", z.object({ summary: z.string().max(2000) }).strict()),
+  async (c) => {
+    const deps = c.get("deps");
+    const taskId = c.req.param("id");
+    const body = c.req.valid("json" as never) as { summary: string };
+    const store = deps.agentTaskStore;
+    if (store === undefined) throw new Error("AgentTask store middleware did not run");
+
+    const current = await store.getAgentTask(taskId);
+    if (current === undefined) {
+      return c.json({ error: { code: "NOT_FOUND", message: `task '${taskId}' not found` } }, 404);
+    }
+
+    const nowIso = new Date().toISOString();
+    const condition: Condition = {
+      type: AgentTaskConditionType.DoneSignaled,
+      status: "True",
+      observedGeneration: current.spec.generation,
+      lastTransitionTime: nowIso,
+      reason: "agent-grove-done",
+      message: body.summary,
+    };
+    const nextConditions = upsertCondition(current.status.conditions, condition);
+
+    const patch: AgentTaskStatusPatch = {
+      conditions: nextConditions as AgentTaskStatusPatch["conditions"],
+      observedGeneration: current.spec.generation,
+    };
+    const result = await store.patchAgentTaskStatus(taskId, patch);
+    if (result.kind === "rv-mismatch") {
+      // Retry once with the latest snapshot.
+      const refreshed = await store.getAgentTask(taskId);
+      if (refreshed === undefined) {
+        return c.json({ error: { code: "NOT_FOUND", message: "task disappeared" } }, 404);
+      }
+      const retryCondition: Condition = {
+        ...condition,
+        observedGeneration: refreshed.spec.generation,
+      };
+      const retried = await store.patchAgentTaskStatus(taskId, {
+        conditions: upsertCondition(
+          refreshed.status.conditions,
+          retryCondition,
+        ) as AgentTaskStatusPatch["conditions"],
+        observedGeneration: refreshed.spec.generation,
+      });
+      if (retried.kind === "rv-mismatch") {
+        return c.json({ error: { code: "CONFLICT", message: "concurrent update" } }, 409);
+      }
+    }
+    return c.json({ ok: true, taskId, condition: "DoneSignaled" });
+  },
+);
 
 /**
  * PATCH /api/agent-tasks/:id/status — Controller-owned task status patch.
