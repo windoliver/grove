@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentTaskEntity, TimelineEventEntity } from "../../core/entity.js";
+import type { AgentTaskEntity } from "../../core/agent-task.js";
+import type { TimelineEventEntity } from "../../core/entity.js";
 import type { Informer } from "../../core/informer.js";
 import { PulseAggregator } from "./pulse-aggregator.js";
 

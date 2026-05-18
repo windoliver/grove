@@ -9,10 +9,10 @@ import { Gauge } from "./gauge.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function renderFrame(element: React.ReactElement): Promise<string> {
+async function renderFrame(element: React.ReactNode): Promise<string> {
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
-    renderer = TestRenderer.create(element);
+    renderer = TestRenderer.create(element as React.ReactElement);
   });
   const flat = JSON.stringify(renderer.toJSON());
   renderer.unmount();

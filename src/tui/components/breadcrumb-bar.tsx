@@ -36,6 +36,7 @@ const PAGE_LABELS: Record<PageKind, string> = {
   inspect: "Inspect",
   panel: "Panel",
   "entity-detail": "Detail",
+  pulse: "Pulse",
 };
 
 const PANEL_LABELS: Record<string, string> = {

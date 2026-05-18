@@ -13,7 +13,7 @@
  * demand from the AgentTask informer cache — no rate math.
  */
 
-import type { AgentTaskEntity } from "../../core/entity.js";
+import type { AgentTaskEntity } from "../../core/agent-task.js";
 import type { Informer } from "../../core/informer.js";
 
 // ---------------------------------------------------------------------------
