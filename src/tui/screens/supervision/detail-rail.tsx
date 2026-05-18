@@ -15,6 +15,7 @@ export interface DetailRailProps {
   readonly tail: readonly string[];
 }
 
+// duplicated in fleet-rail.tsx; extract to a shared util on the 3rd consumer
 const mins = (ms: number): string => {
   const m = Math.floor(ms / 60_000);
   if (m < 60) return `${m}m`;

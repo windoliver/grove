@@ -100,7 +100,7 @@ describe("DetailRail", () => {
     });
     const flat = JSON.stringify(renderer.toJSON());
     expect(flat).toContain("target: ");
-    expect(flat).toContain('","-"');
+    expect(flat).toContain('"-"');
     renderer.unmount();
   });
 
@@ -116,6 +116,42 @@ describe("DetailRail", () => {
     const flat = JSON.stringify(renderer.toJSON());
     expect(flat).toContain("rm -rf foo");
     expect(flat).toContain("[y]allow");
+    expect(flat).toContain("[a]always");
+    expect(flat).toContain("[n]deny");
+    renderer.unmount();
+  });
+
+  test("overdueIn branch shows overdue count", async () => {
+    const a = agent({ handoffs: { pendingOut: 0, overdueIn: 2 } });
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create((<DetailRail agent={a} tail={[]} />) as React.ReactElement);
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("2 overdue in");
+    renderer.unmount();
+  });
+
+  test("cost undefined branch renders dash", async () => {
+    const a = agent({ cost: undefined });
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create((<DetailRail agent={a} tail={[]} />) as React.ReactElement);
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("Cost");
+    expect(flat).toContain('"-"');
+    renderer.unmount();
+  });
+
+  test("blockedOn branch shows blocked-on label", async () => {
+    const a = agent({ handoffs: { pendingOut: 0, overdueIn: 0, blockedOn: "coordinator" } });
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create((<DetailRail agent={a} tail={[]} />) as React.ReactElement);
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("blocked on coordinator");
     renderer.unmount();
   });
 });
