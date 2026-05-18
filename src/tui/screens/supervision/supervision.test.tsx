@@ -122,4 +122,58 @@ describe("Supervision", () => {
     expect(received).toContain("x");
     renderer.unmount();
   });
+
+  test("auto-select-on-approval: approval agent becomes selected in DetailRail", async () => {
+    const runningAgents = [agent("x"), agent("y")];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (<Supervision agents={runningAgents} tail={[]} />) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      renderer.update(
+        (
+          <Supervision
+            agents={[
+              agent("x"),
+              agent("y", { health: { kind: "approval", cmd: "rm" } as AgentHealth }),
+            ]}
+            tail={[]}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("APPROVAL PENDING");
+    renderer.unmount();
+  });
+
+  test("controlled cursor prop: cursor={1} selects second agent in DetailRail", async () => {
+    const agents = [agent("x", { agentName: "agent-x" }), agent("y", { agentName: "agent-y" })];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (<Supervision agents={agents} tail={[]} cursor={1} />) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("agent-y");
+    renderer.unmount();
+  });
+
+  test("pin precedence: pinnedAgentId='y' wins over cursor={0}", async () => {
+    const agents = [agent("x", { agentName: "agent-x" }), agent("y", { agentName: "agent-y" })];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <Supervision agents={agents} tail={[]} cursor={0} pinnedAgentId="y" />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("agent-y");
+    renderer.unmount();
+  });
 });

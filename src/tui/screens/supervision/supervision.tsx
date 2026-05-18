@@ -20,7 +20,10 @@ export interface SupervisionProps {
   readonly tail: readonly string[];
   /** Controlled cursor (index into agents). Uncontrolled when absent. */
   readonly cursor?: number;
-  /** Controlled pinned agent id. Uncontrolled when absent. */
+  /**
+   * Controlled pinned agent id. Uncontrolled when absent.
+   * When both `cursor` and `pinnedAgentId` are provided, `pinnedAgentId` wins for selection.
+   */
   readonly pinnedAgentId?: string;
   /** Fired whenever the resolved selected agentId changes. */
   readonly onSelect?: (agentId: string | undefined) => void;
@@ -63,6 +66,7 @@ export const Supervision = React.memo(function Supervision({
 
   // ── Auto-select on approval (uncontrolled only, guarded by pin) ──────────
   const lastApprovalRef = useRef<string | undefined>(undefined);
+  const prevSelectedIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (isControlled) return; // let the controller handle this
@@ -80,18 +84,19 @@ export const Supervision = React.memo(function Supervision({
 
   // ── onSelect effect ──────────────────────────────────────────────────────
   const selectedId = selectedAgent?.agentId;
+  // guarded so an inline onSelect from the parent doesn't fire every render
   useEffect(() => {
+    if (selectedId === prevSelectedIdRef.current) return;
+    prevSelectedIdRef.current = selectedId;
     onSelect?.(selectedId);
   }, [selectedId, onSelect]);
 
   // ── Resolve cursor index for FleetRail highlight ─────────────────────────
   const resolvedCursor = useMemo((): number => {
-    if (activePinned) {
-      const idx = agents.findIndex((a) => a.agentId === activePinned);
-      return idx !== -1 ? idx : activeCursor;
-    }
-    return activeCursor;
-  }, [agents, activePinned, activeCursor]);
+    if (!selectedAgent) return activeCursor;
+    const idx = agents.indexOf(selectedAgent);
+    return idx !== -1 ? idx : activeCursor;
+  }, [agents, selectedAgent, activeCursor]);
 
   // ── Layout ───────────────────────────────────────────────────────────────
   return (
