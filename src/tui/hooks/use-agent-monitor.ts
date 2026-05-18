@@ -174,9 +174,14 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   const [agentOutputs, setAgentOutputs] = useState<ReadonlyMap<string, readonly string[]>>(
     new Map(),
   );
-  const [agentOutputTimestamps, setAgentOutputTimestamps] = useState<ReadonlyMap<string, string>>(
-    new Map(),
-  );
+  const [agentOutputTimestamps, setAgentOutputTimestampsRaw] = useState<
+    ReadonlyMap<string, string>
+  >(new Map());
+  const agentOutputTimestampsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const setAgentOutputTimestamps = useCallback((next: ReadonlyMap<string, string>) => {
+    agentOutputTimestampsRef.current = next;
+    setAgentOutputTimestampsRaw(next);
+  }, []);
   const [pendingPermissions, setPendingPermissions] = useState<readonly PermissionPrompt[]>([]);
   const [ipcMessages, setIpcMessages] = useState<readonly IpcMessage[]>([]);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
@@ -260,7 +265,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
       if (mountedRef.current && outputs.size > 0) {
         const now = new Date().toISOString();
         setAgentOutputs((prior) => {
-          const merged = mergeOutputs(prior, agentOutputTimestamps, outputs, now);
+          const merged = mergeOutputs(prior, agentOutputTimestampsRef.current, outputs, now);
           setAgentOutputTimestamps(merged.timestamps);
           return merged.outputs;
         });
@@ -268,7 +273,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
     } catch {
       // Non-fatal
     }
-  }, [groveDir, maxOutputLines, agentOutputTimestamps]);
+  }, [groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
   useEffect(() => {
     void logPoll();
@@ -292,7 +297,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
       if (mountedRef.current) {
         const now = new Date().toISOString();
         setAgentOutputs((prior) => {
-          const merged = mergeOutputs(prior, agentOutputTimestamps, outputs, now);
+          const merged = mergeOutputs(prior, agentOutputTimestampsRef.current, outputs, now);
           setAgentOutputTimestamps(merged.timestamps);
           return merged.outputs;
         });
@@ -300,7 +305,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
     } catch {
       // Non-fatal
     }
-  }, [tmux, groveDir, maxOutputLines, agentOutputTimestamps]);
+  }, [tmux, groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
   useInterval(() => void tmuxPoll(), POLL_INTERVAL_MS, Boolean(tmux) && !groveDir);
 
