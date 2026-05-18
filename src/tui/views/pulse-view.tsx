@@ -10,7 +10,8 @@
  * subscribes for the duration it's mounted.
  */
 
-import React, { useSyncExternalStore } from "react";
+import { useKeyboard } from "@opentui/react";
+import React, { useCallback, useSyncExternalStore } from "react";
 import { Gauge } from "../components/gauge.js";
 import { Sparkline } from "../components/sparkline.js";
 import type { PulseAggregator } from "../data/pulse-aggregator.js";
@@ -19,11 +20,49 @@ import { theme } from "../theme.js";
 export interface PulseViewProps {
   readonly aggregator: PulseAggregator;
   readonly active: boolean;
+  /** Pop the Pulse page off the stack (Esc / Ctrl+G). Wired by screen-manager
+   *  to `pages.pop()`. PagesRouter never pops on bare Esc — back is the
+   *  inner screen's responsibility (see pages-router.tsx header). Without
+   *  this the page is a navigation dead-end. */
+  readonly onBack: () => void;
+}
+
+/** Minimal key shape consumed from @opentui's keyboard event. */
+interface BackKey {
+  readonly name?: string | undefined;
+  readonly ctrl?: boolean | undefined;
+}
+
+/**
+ * Pure predicate: does this key request leaving the Pulse page?
+ *
+ * Esc — intuitive back; safe here because PulseView is a leaf page
+ * (RunningView is unmounted, no App modal cascade competes for Esc,
+ * unlike InspectModeWrapper which wraps App and must avoid Esc).
+ * Ctrl+G — mirrors the inspect-overlay back convention.
+ *
+ * Exported pure so it is unit-testable without an @opentui keyboard
+ * harness (same philosophy as running-keyboard's routeRunningKey).
+ */
+export function isPulseBackKey(key: BackKey): boolean {
+  return key.name === "escape" || (key.ctrl === true && key.name === "g");
 }
 
 export const PulseView: React.NamedExoticComponent<PulseViewProps> = React.memo(function PulseView({
   aggregator,
+  onBack,
 }: PulseViewProps): React.ReactNode {
+  useKeyboard(
+    useCallback(
+      (key) => {
+        if (isPulseBackKey(key)) {
+          onBack();
+        }
+      },
+      [onBack],
+    ),
+  );
+
   const snapshot = useSyncExternalStore(
     (fn) => aggregator.subscribe(fn),
     () => aggregator.getSnapshot(),
@@ -58,6 +97,10 @@ export const PulseView: React.NamedExoticComponent<PulseViewProps> = React.memo(
       <box flexDirection="row">
         <text>{"reviews    ".padEnd(11, " ")}</text>
         <Sparkline values={series.reviewIterations} color={theme.warning} />
+      </box>
+
+      <box marginTop={1}>
+        <text color={theme.secondary}>Esc / Ctrl+G: back</text>
       </box>
     </box>
   );

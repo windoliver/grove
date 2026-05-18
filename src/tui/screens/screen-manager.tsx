@@ -926,6 +926,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const handleOpenPulse = useCallback(() => {
       pages.push({ kind: "pulse" });
     }, [pages]);
+    // Pop the Pulse page back to the running view (Esc / Ctrl+G inside
+    // PulseView). PagesRouter never pops on bare Esc — see its header.
+    const handlePulseBack = useCallback(() => {
+      pages.pop();
+    }, [pages]);
 
     // Screen 4 -> Screen 5: session complete
     const handleComplete = useCallback(
@@ -1134,7 +1139,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       const PulsePage = (): React.ReactNode =>
         wrapWithPermissions(
           pulseAggregator ? (
-            <PulseView aggregator={pulseAggregator} active={state.screen === "running"} />
+            <PulseView
+              aggregator={pulseAggregator}
+              active={state.screen === "running"}
+              onBack={handlePulseBack}
+            />
           ) : (
             <box />
           ),
@@ -1178,6 +1187,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleSpawnComplete,
       handleEnterInspect,
       handleOpenPulse,
+      handlePulseBack,
       pulseAggregator,
       state.screen,
       handleComplete,

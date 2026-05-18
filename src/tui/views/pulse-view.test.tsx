@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import type { GaugeSnapshot, PulseSnapshot, SeriesSnapshot } from "../data/pulse-aggregator.js";
-import { PulseView } from "./pulse-view.js";
+import { isPulseBackKey, PulseView } from "./pulse-view.js";
+
+const noop = (): void => {};
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -42,7 +44,9 @@ describe("PulseView", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (<PulseView aggregator={agg as unknown as never} active={true} />) as React.ReactElement,
+        (
+          <PulseView aggregator={agg as unknown as never} active={true} onBack={noop} />
+        ) as React.ReactElement,
       );
     });
     const flat = JSON.stringify(renderer.toJSON());
@@ -60,7 +64,9 @@ describe("PulseView", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
-        (<PulseView aggregator={agg as unknown as never} active={true} />) as React.ReactElement,
+        (
+          <PulseView aggregator={agg as unknown as never} active={true} onBack={noop} />
+        ) as React.ReactElement,
       );
     });
     const initial = JSON.stringify(renderer.toJSON());
@@ -73,5 +79,40 @@ describe("PulseView", () => {
     expect(updated).toContain("   7");
     expect(updated).toContain("   2");
     renderer.unmount();
+  });
+
+  test("renders the back hint", async () => {
+    const agg = new FakeAggregator();
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <PulseView aggregator={agg as unknown as never} active={true} onBack={noop} />
+        ) as React.ReactElement,
+      );
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain("Esc / Ctrl+G: back");
+    renderer.unmount();
+  });
+});
+
+describe("isPulseBackKey", () => {
+  test("Esc requests back", () => {
+    expect(isPulseBackKey({ name: "escape" })).toBe(true);
+  });
+
+  test("Ctrl+G requests back", () => {
+    expect(isPulseBackKey({ name: "g", ctrl: true })).toBe(true);
+  });
+
+  test("plain 'g' (no ctrl) does NOT request back", () => {
+    expect(isPulseBackKey({ name: "g" })).toBe(false);
+    expect(isPulseBackKey({ name: "g", ctrl: false })).toBe(false);
+  });
+
+  test("unrelated keys do not request back", () => {
+    expect(isPulseBackKey({ name: "p" })).toBe(false);
+    expect(isPulseBackKey({ name: "j" })).toBe(false);
+    expect(isPulseBackKey({})).toBe(false);
   });
 });
