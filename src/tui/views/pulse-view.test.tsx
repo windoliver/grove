@@ -4,7 +4,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import type { GaugeSnapshot, PulseSnapshot, SeriesSnapshot } from "../data/pulse-aggregator.js";
 import { isPulseBackKey, PulseView } from "./pulse-view.js";
 
-const noop = (): void => {};
+const noop = (): void => undefined;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
