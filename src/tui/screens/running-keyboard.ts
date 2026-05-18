@@ -134,6 +134,7 @@ export interface RunningKeyboardActions {
   // Navigation
   readonly openDetail: () => void;
   readonly enterInspect: () => void;
+  readonly openPulse: () => void;
   readonly quit: () => void;
   // Permission
   readonly approvePermission: () => void;
@@ -379,6 +380,22 @@ export function routeRunningKey(
   // Ctrl+G: enter inspect mode (Ctrl+I shares byte 0x09 with Tab — unusable in terminals)
   if (isCtrl && input === "g") {
     actions.enterInspect();
+    return true;
+  }
+
+  // p: open the Pulse page (#308). Gated like sibling single-key nav: the
+  // cmd/prompt/help short-circuits above already return before this point;
+  // the explicit guards keep it inert if the gating model changes and also
+  // suppress it while the VFS overlay is up (VFS is not a blanket
+  // short-circuit in normal mode).
+  if (
+    input === "p" &&
+    !state.promptMode &&
+    state.cmdMode === "none" &&
+    !state.showHelp &&
+    !state.showVfs
+  ) {
+    actions.openPulse();
     return true;
   }
 
