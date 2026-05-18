@@ -1179,11 +1179,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               { selectedHealth: selectedFleetAgent?.health },
               {
                 moveCursor: (delta) => {
-                  setSupervisionCursor((c) => {
-                    const next = Math.max(0, Math.min(fleet.length - 1, c + delta));
-                    setSelectedSupervisionAgent(fleet[next]?.agentId);
-                    return next;
-                  });
+                  const next = Math.max(0, Math.min(fleet.length - 1, supervisionCursor + delta));
+                  setSupervisionCursor(next);
+                  setSelectedSupervisionAgent(fleet[next]?.agentId);
                 },
                 pinSelection: () => setSelectedSupervisionAgent(selectedFleetAgent?.agentId),
                 jumpTop: () => {
@@ -1212,10 +1210,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 reroute: () => flash("Reroute lands with #163"),
                 kill: () => flash("Kill action lands with claim-revoke provider API"),
                 openMessage: () => {
-                  if (selectedFleetRole) {
-                    setPromptMode(true);
-                    setPromptTarget((activeRoles ?? []).indexOf(selectedFleetRole));
-                  }
+                  if (!selectedFleetRole) return;
+                  const idx = (activeRoles ?? []).indexOf(selectedFleetRole);
+                  if (idx < 0) return;
+                  setPromptMode(true);
+                  setPromptTarget(idx);
                 },
               },
             );
@@ -1234,13 +1233,19 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           confirmModalOpen,
           // #193: supervision keyboard owner deps. expandedPanel/fleet/
           // selectedFleetAgent/selectedFleetRole change the consumed keys'
-          // behavior; tmux/activeRoles/flash are stable refs/callbacks but
-          // listed for closure correctness. useSupervision is a module-scope
-          // env constant (not a dep), same as useLogView above.
+          // behavior; supervisionCursor is read directly by moveCursor (flat
+          // setState, not the prior functional-update form). selectedFleetRole
+          // is still referenced directly inside openMessage, so it stays
+          // listed to satisfy biome's useExhaustiveDependencies (matching this
+          // file's list-everything discipline above). tmux/activeRoles/flash
+          // are stable refs/callbacks but listed for closure correctness.
+          // useSupervision is a module-scope env constant (not a dep), same as
+          // useLogView above.
           expandedPanel,
           fleet,
           selectedFleetAgent,
           selectedFleetRole,
+          supervisionCursor,
           tmux,
           activeRoles,
           flash,
@@ -1525,9 +1530,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             agents={fleet}
             tail={selectedFleetTail}
             cursor={supervisionCursor}
-            // exactOptionalPropertyTypes: only pass pinnedAgentId when set
-            {...(selectedSupervisionAgent !== undefined
-              ? { pinnedAgentId: selectedSupervisionAgent }
+            // Single selection authority: drive the pin from the already
+            // RESOLVED agent (selectedFleetAgent), not raw
+            // selectedSupervisionAgent. If we passed the raw pin and it left
+            // the fleet, running-view's memo falls back to fleet[cursor] while
+            // Supervision still re-resolves the stale pin, fires onSelect, and
+            // converge-by-setState churns every fleet refresh. Deriving from
+            // the resolved memo means Supervision's find() always hits and can
+            // never disagree with running-view's fallback.
+            // exactOptionalPropertyTypes: only pass pinnedAgentId when set.
+            {...(selectedFleetAgent?.agentId !== undefined
+              ? { pinnedAgentId: selectedFleetAgent.agentId }
               : {})}
             onSelect={handleSupervisionSelect}
           />
