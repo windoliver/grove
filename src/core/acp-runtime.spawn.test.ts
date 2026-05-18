@@ -202,6 +202,59 @@ describe("AcpRuntime.send", () => {
     await rt.close(session);
   });
 
+  test("marks the session idle after a prompt result", async () => {
+    const promptStarted = deferred();
+    const finishPrompt = deferred<{ stopReason: "end_turn" }>();
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt() {
+        promptStarted.resolve();
+        return await finishPrompt.promise;
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    const turn = await rt.send(session, "slow task");
+    await promptStarted.promise;
+
+    expect((await rt.listSessions())[0]?.status).toBe("running");
+
+    finishPrompt.resolve({ stopReason: "end_turn" });
+    await turn.result;
+
+    expect((await rt.listSessions())[0]?.status).toBe("idle");
+    await rt.close(session);
+  });
+
+  test("marks the session crashed after a prompt error", async () => {
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt() {
+        throw new RequestError(-32603, "Internal error", {
+          message: "adapter connection closed",
+        });
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    const turn = await rt.send(session, "hello");
+    const result = await turn.result;
+    const current = (await rt.listSessions())[0];
+
+    expect(result.stopReason).toBe("error");
+    expect(current?.status).toBe("crashed");
+    expect(current?.statusMessage).toBe("adapter connection closed");
+    await rt.close(session);
+  });
+
   test("agent sessionUpdate notifications stream into the turn's messages", async () => {
     const { launchOverride } = makeInProcessAgent({
       async onPrompt({ sessionId, agentSide }) {
