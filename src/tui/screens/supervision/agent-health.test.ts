@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { deriveAgentHealth, HEALTH_THRESHOLDS, type HealthInput } from "./agent-health.js";
+import {
+  type AgentHealth,
+  deriveAgentHealth,
+  HEALTH_THRESHOLDS,
+  type HealthInput,
+  healthPriority,
+} from "./agent-health.js";
 
 const NOW = new Date("2026-05-18T12:00:00Z").getTime();
 const minutesAgo = (m: number): string => new Date(NOW - m * 60_000).toISOString();
@@ -121,5 +127,23 @@ describe("deriveAgentHealth", () => {
       HEALTH_THRESHOLDS,
     );
     expect(out.kind).not.toBe("silent");
+  });
+
+  test("healthPriority orders error < approval < blocked < stuck < thrashing < silent < running < idle < expired", () => {
+    const kinds = [
+      "error",
+      "approval",
+      "blocked",
+      "stuck",
+      "thrashing",
+      "silent",
+      "running",
+      "idle",
+      "expired",
+    ] as const;
+    const weights = kinds.map((kind) => healthPriority({ kind } as AgentHealth));
+    for (let i = 0; i < weights.length - 1; i++) {
+      expect(weights[i]).toBeLessThan(weights[i + 1]);
+    }
   });
 });

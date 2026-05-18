@@ -43,6 +43,8 @@ export type AgentHealth =
   | { kind: "expired" };
 
 export interface HealthInput {
+  /** Carried for caller correlation (fleet join / logging); not used by
+   *  deriveAgentHealth itself. */
   readonly role: string;
   readonly leaseExpiresAt: string;
   readonly heartbeatAt: string;
@@ -91,6 +93,7 @@ export function deriveAgentHealth(i: HealthInput, nowMs: number, t: HealthThresh
   if (
     i.attemptCount >= t.thrashRetries &&
     i.lastRetryAt !== undefined &&
+    // <= : lastRetryAt must be *within* the window, not older than it
     nowMs - new Date(i.lastRetryAt).getTime() <= t.thrashWindowMs
   ) {
     return { kind: "thrashing", retries: i.attemptCount };
