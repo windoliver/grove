@@ -214,20 +214,17 @@ function usePulseAggregator(): PulseAggregator | null {
   const taskInformer = useInformerOptional("AgentTask");
   const sessionInformer = useInformerOptional("AgentSession");
   const timelineInformer = useInformerOptional("TimelineEvent");
-  const aggRef = useRef<PulseAggregator | null>(null);
-  // Lazy-construct on first read; persists across navigation; disposed
-  // on unmount of the screen manager (i.e. session end).
-  if (aggRef.current === null) {
-    aggRef.current = new PulseAggregator(taskInformer, sessionInformer, timelineInformer);
-  }
-  useEffect(
-    () => () => {
-      aggRef.current?.dispose();
-      aggRef.current = null;
-    },
-    [],
-  );
-  return aggRef.current;
+  const [aggregator, setAggregator] = useState<PulseAggregator | null>(null);
+
+  useEffect(() => {
+    const agg = new PulseAggregator(taskInformer, sessionInformer, timelineInformer);
+    setAggregator(agg);
+    return () => {
+      agg.dispose();
+    };
+  }, [taskInformer, sessionInformer, timelineInformer]);
+
+  return aggregator;
 }
 
 // ---------------------------------------------------------------------------
