@@ -90,6 +90,20 @@ describe("DetailRail", () => {
     renderer.unmount();
   });
 
+  test("base agent with no targetRef shows 'target: -'", async () => {
+    const a = agent({
+      claim: { spec: {} } as FleetAgent["claim"],
+    });
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create((<DetailRail agent={a} tail={[]} />) as React.ReactElement);
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("target: ");
+    expect(flat).toContain('","-"');
+    renderer.unmount();
+  });
+
   test("approval agent shows command and [y]allow prompt", async () => {
     const a = agent({
       health: { kind: "approval", cmd: "rm -rf foo" } as AgentHealth,

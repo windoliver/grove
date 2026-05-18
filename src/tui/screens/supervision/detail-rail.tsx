@@ -89,7 +89,7 @@ export const DetailRail = React.memo(function DetailRail({
           Task
         </text>
         <text>{agent.currentTask ?? "(no task)"}</text>
-        <text color={theme.secondary}>target: {agent.claim.spec.targetRef}</text>
+        <text color={theme.secondary}>target: {agent.claim.spec.targetRef ?? "-"}</text>
       </box>
 
       <box flexDirection="column" marginBottom={1}>
