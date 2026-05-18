@@ -205,10 +205,12 @@ async function setGoalForCompensation(
 }
 
 /**
- * Lazily constructs a single {@link PulseAggregator} bound to the live
- * AgentTask/AgentSession/TimelineEvent informers. The instance persists
- * across page navigation (it lives in a ref, not state) and is disposed
- * when the screen manager unmounts (i.e. session end).
+ * Constructs a single {@link PulseAggregator} bound to the live
+ * AgentTask/TimelineEvent informers. Built in an effect (the constructor
+ * starts a setInterval + informer subscriptions, so it must not run
+ * during render); persists across page navigation since ScreenManager
+ * is not unmounted on push/pop, and is disposed when ScreenManager
+ * unmounts (i.e. session end).
  */
 function usePulseAggregator(): PulseAggregator | null {
   const taskInformer = useInformerOptional("AgentTask");
