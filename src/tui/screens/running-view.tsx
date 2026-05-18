@@ -74,6 +74,7 @@ import {
   routeRunningKey,
   toggleFullscreen as toggleFullscreenTransition,
 } from "./running-keyboard.js";
+import { permissionBoxVisible } from "./supervision/permission-box-visibility.js";
 import { Supervision } from "./supervision/supervision.js";
 import { supervisionInputActive } from "./supervision/supervision-input-guard.js";
 import { routeSupervisionKey } from "./supervision/supervision-keyboard.js";
@@ -1496,6 +1497,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             cmdState,
             gotoSuggestions,
             flashError,
+            useSupervision,
           )}
           {renderStatusBar(
             expandedPanel,
@@ -1584,6 +1586,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           cmdState,
           gotoSuggestions,
           flashError,
+          useSupervision,
         )}
 
         {/* Help overlay */}
@@ -2013,11 +2016,12 @@ function renderBottomChrome(
   cmdState: CmdModeState,
   gotoSuggestions: readonly string[],
   flashError: string | null,
+  supervisionOn: boolean,
 ): React.ReactNode {
   return (
     <>
       {/* Permission prompts from agents */}
-      {monitor.pendingPermissions.length > 0 ? (
+      {permissionBoxVisible(supervisionOn, monitor.pendingPermissions.length) ? (
         <box
           flexDirection="column"
           marginX={2}
