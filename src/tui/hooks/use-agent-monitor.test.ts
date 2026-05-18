@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   isLogLineKept,
+  mergeOutputs,
   parseLogContent,
   parsePermissionPrompt,
   roleFromLogFilename,
@@ -228,5 +229,35 @@ describe("parseLogContent", () => {
     const content = "\x1b]0;my-terminal\x07Actual output\n";
     const lines = parseLogContent(content, 8);
     expect(lines).toEqual(["Actual output"]);
+  });
+});
+
+// ===========================================================================
+// mergeOutputs
+// ===========================================================================
+
+describe("mergeOutputs", () => {
+  test("returns next outputs and a parallel timestamp map keyed by role", () => {
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { outputs, timestamps } = mergeOutputs(
+      new Map([["coder", ["old"]]]),
+      new Map(),
+      new Map([["coder", ["old", "new"]]]),
+      now,
+    );
+    expect(outputs.get("coder")).toEqual(["old", "new"]);
+    expect(timestamps.get("coder")).toBe(now);
+  });
+
+  test("preserves prior timestamps for roles whose outputs did not change", () => {
+    const prior = new Date("2026-05-18T11:00:00Z").toISOString();
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { timestamps } = mergeOutputs(
+      new Map([["coder", ["x"]]]),
+      new Map([["coder", prior]]),
+      new Map([["coder", ["x"]]]),
+      now,
+    );
+    expect(timestamps.get("coder")).toBe(prior);
   });
 });
