@@ -98,6 +98,10 @@ export const PulseView: React.NamedExoticComponent<PulseViewProps> = React.memo(
         <text>{"reviews    ".padEnd(11, " ")}</text>
         <Sparkline values={series.reviewIterations} color={theme.warning} />
       </box>
+      <box flexDirection="row">
+        <text>{"contribs   ".padEnd(11, " ")}</text>
+        <Sparkline values={series.contribRate} color={theme.review} />
+      </box>
 
       <box marginTop={1}>
         <text color={theme.secondary}>Esc / Ctrl+G: back</text>

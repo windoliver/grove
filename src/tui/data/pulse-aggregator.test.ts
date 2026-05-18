@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTaskEntity } from "../../core/agent-task.js";
-import type { TimelineEventEntity } from "../../core/entity.js";
+import type { ContributionEntity, TimelineEventEntity } from "../../core/entity.js";
 import type { Informer } from "../../core/informer.js";
 import { PulseAggregator } from "./pulse-aggregator.js";
 
@@ -61,9 +61,24 @@ function mkEvent(id: string): TimelineEventEntity {
   } as TimelineEventEntity;
 }
 
+function mkContrib(id: string): ContributionEntity {
+  return {
+    kind: "Contribution",
+    namespace: "default",
+    id,
+    spec: {} as ContributionEntity["spec"],
+    status: {} as ContributionEntity["status"],
+    conditions: [],
+    observedGeneration: 0,
+    resourceVersion: "0",
+    metadata: { generation: 1 },
+  } as ContributionEntity;
+}
+
 interface Harness {
   tasks: FakeInformer<AgentTaskEntity>;
   events: FakeInformer<TimelineEventEntity>;
+  contribs: FakeInformer<ContributionEntity>;
   agg: PulseAggregator;
   tick: () => void;
 }
@@ -71,10 +86,12 @@ interface Harness {
 function makeHarness(): Harness {
   const tasks = new FakeInformer<AgentTaskEntity>();
   const events = new FakeInformer<TimelineEventEntity>();
+  const contribs = new FakeInformer<ContributionEntity>();
   let tickFn: (() => void) | null = null;
   const agg = new PulseAggregator(
     tasks as unknown as Informer<"AgentTask">,
     events as unknown as Informer<"TimelineEvent">,
+    contribs as unknown as Informer<"Contribution">,
     {
       tickMs: 1000,
       bucketCount: 60,
@@ -90,6 +107,7 @@ function makeHarness(): Harness {
   return {
     tasks,
     events,
+    contribs,
     agg,
     tick: () => {
       if (tickFn) tickFn();
@@ -122,6 +140,26 @@ describe("PulseAggregator — write path (lossless)", () => {
     h.tick();
     const last = h.agg.getSnapshot().series.eventRate;
     expect(last[last.length - 1]).toBe(1);
+  });
+
+  test("Contribution ADDED bumps contrib bucket; non-ADDED ops are ignored", () => {
+    const h = makeHarness();
+    h.contribs.emit("ADDED", mkContrib("c1"));
+    h.contribs.emit("ADDED", mkContrib("c2"));
+    h.contribs.emit("MODIFIED", mkContrib("c1"));
+    h.contribs.emit("DELETED", mkContrib("c2"));
+    h.tick();
+    const last = h.agg.getSnapshot().series.contribRate;
+    expect(last[last.length - 1]).toBe(2);
+  });
+
+  test("1000 synchronous Contribution ADDED events are lossless (one bucket)", () => {
+    const h = makeHarness();
+    for (let i = 0; i < 1000; i++) h.contribs.emit("ADDED", mkContrib(`c${i}`));
+    expect(h.agg.getSnapshot().series.contribRate.every((v) => v === 0)).toBe(true);
+    h.tick();
+    const last = h.agg.getSnapshot().series.contribRate;
+    expect(last[last.length - 1]).toBe(1000);
   });
 
   test("AgentTask transition into AwaitingReview bumps review bucket; re-entry bumps again", () => {

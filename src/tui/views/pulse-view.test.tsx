@@ -33,6 +33,7 @@ function makeSnapshot(gauges: GaugeSnapshot, series?: Partial<SeriesSnapshot>): 
       spawnRate: series?.spawnRate ?? zero,
       eventRate: series?.eventRate ?? zero,
       reviewIterations: series?.reviewIterations ?? zero,
+      contribRate: series?.contribRate ?? zero,
     },
     tickedAt: 1,
   };
@@ -56,6 +57,7 @@ describe("PulseView", () => {
     expect(flat).toContain("spawn");
     expect(flat).toContain("events");
     expect(flat).toContain("reviews");
+    expect(flat).toContain("contribs");
     renderer.unmount();
   });
 

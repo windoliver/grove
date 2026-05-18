@@ -1,13 +1,16 @@
 /**
  * PulseAggregator — pure data class powering the Pulse view (#308).
  *
- * Owns three 60-bucket ring buffers (spawn rate, event rate, review
- * iterations) and a 1Hz tick. Subscribes to AgentTask and TimelineEvent
- * informers; every event synchronously bumps the current bucket counter
- * (lossless data path). A setInterval rotates the rings and notifies
- * subscribers (coalesced render cadence). Spawn rate counts AgentTask
- * ADDED — the remote-watchable unit of agent work (AgentSession is not
- * server-watched in remote mode).
+ * Owns four 60-bucket ring buffers (spawn / event / review / contrib
+ * rate) and a 1Hz tick. Subscribes to AgentTask, TimelineEvent, and
+ * Contribution informers; every event synchronously bumps the current
+ * bucket counter (lossless data path). A setInterval rotates the rings
+ * and notifies subscribers (coalesced render cadence). Spawn rate counts
+ * AgentTask ADDED — the remote-watchable unit of agent work (AgentSession
+ * is not server-watched in remote mode). Contrib rate counts Contribution
+ * ADDED — the one signal every preset emits (review-loop spawns agents
+ * directly, not via the task-controller, so AgentTask/TimelineEvent are
+ * empty there; contributions always flow).
  *
  * Gauge counts (running / waiting-approval / failed) are projected on
  * demand from the AgentTask informer cache — no rate math.
@@ -30,6 +33,11 @@ export interface SeriesSnapshot {
   readonly spawnRate: readonly number[];
   readonly eventRate: readonly number[];
   readonly reviewIterations: readonly number[];
+  /** Contribution ADDED rate. The one signal every preset emits (review-loop
+   *  spawns agents directly, not via the task-controller, so AgentTask /
+   *  TimelineEvent stay empty there — but contributions always flow and are
+   *  in REMOTE_KINDS). Keeps Pulse meaningful outside task-controller flows. */
+  readonly contribRate: readonly number[];
 }
 
 export interface PulseSnapshot {
@@ -68,10 +76,12 @@ export class PulseAggregator {
   private spawnRing: number[];
   private eventRing: number[];
   private reviewRing: number[];
+  private contribRing: number[];
 
   private spawnBucket = 0;
   private eventBucket = 0;
   private reviewBucket = 0;
+  private contribBucket = 0;
 
   private readonly subscribers = new Set<() => void>();
   private readonly unsubs: Array<() => void> = [];
@@ -88,6 +98,7 @@ export class PulseAggregator {
   constructor(
     taskInformer: Informer<"AgentTask">,
     timelineInformer: Informer<"TimelineEvent">,
+    contribInformer: Informer<"Contribution">,
     options?: PulseAggregatorOptions,
   ) {
     this.taskInformer = taskInformer;
@@ -101,12 +112,19 @@ export class PulseAggregator {
     this.spawnRing = new Array(this.bucketCount).fill(0);
     this.eventRing = new Array(this.bucketCount).fill(0);
     this.reviewRing = new Array(this.bucketCount).fill(0);
+    this.contribRing = new Array(this.bucketCount).fill(0);
     this._tickedAt = this.now();
 
     this.unsubs.push(
       timelineInformer.addEventHandler((op, _entity) => {
         if (this.disposed) return;
         if (op === "ADDED") this.eventBucket += 1;
+      }),
+    );
+    this.unsubs.push(
+      contribInformer.addEventHandler((op, _entity) => {
+        if (this.disposed) return;
+        if (op === "ADDED") this.contribBucket += 1;
       }),
     );
     this.unsubs.push(
@@ -157,6 +175,7 @@ export class PulseAggregator {
       spawnRate: this.spawnRing.slice(),
       eventRate: this.eventRing.slice(),
       reviewIterations: this.reviewRing.slice(),
+      contribRate: this.contribRing.slice(),
     };
     const snapshot: PulseSnapshot = {
       gauges: this.projectGauges(),
@@ -192,9 +211,11 @@ export class PulseAggregator {
     this.spawnRing = pushRing(this.spawnRing, this.spawnBucket, this.bucketCount);
     this.eventRing = pushRing(this.eventRing, this.eventBucket, this.bucketCount);
     this.reviewRing = pushRing(this.reviewRing, this.reviewBucket, this.bucketCount);
+    this.contribRing = pushRing(this.contribRing, this.contribBucket, this.bucketCount);
     this.spawnBucket = 0;
     this.eventBucket = 0;
     this.reviewBucket = 0;
+    this.contribBucket = 0;
     this._tickedAt = this.now();
     this.snapshotCache = null;
     this.snapshotTickedAt = -1;
