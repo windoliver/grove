@@ -7,7 +7,7 @@
 
 import React from "react";
 import { EmptyState } from "../../components/empty-state.js";
-import { agentStatusIcon, theme } from "../../theme.js";
+import { theme } from "../../theme.js";
 import type { AgentHealth } from "./agent-health.js";
 import type { FleetAgent } from "./use-fleet-model.js";
 
@@ -17,6 +17,8 @@ export interface FleetRailProps {
   readonly selectedAgentId: string | undefined;
 }
 
+// `expired` is intentionally excluded — it is the lowest-priority terminal state
+// (mirrors healthPriority ordering in agent-health.ts where expired sorts last) and is not an actionable problem.
 const PROBLEM_KINDS = new Set<AgentHealth["kind"]>([
   "error",
   "approval",
@@ -74,7 +76,7 @@ export const FleetRail = React.memo(function FleetRail({
   }
 
   const problemCount = agents.filter((a) => PROBLEM_KINDS.has(a.health.kind)).length;
-  const header = `Fleet (${agents.length}${problemCount > 0 ? ` · ${problemCount} problem` : ""})`;
+  const header = `Fleet (${agents.length}${problemCount > 0 ? ` · ${problemCount} problem${problemCount === 1 ? "" : "s"}` : ""})`;
 
   return (
     <box flexDirection="column">
@@ -84,9 +86,6 @@ export const FleetRail = React.memo(function FleetRail({
       {agents.map((a, i) => {
         const isCursor = i === cursor;
         const isSelected = a.agentId === selectedAgentId;
-        const { icon } = agentStatusIcon(
-          a.health.kind === "running" ? "running" : a.health.kind === "idle" ? "idle" : "error",
-        );
         const lbl = healthLabel(a.health);
         const prefix = isCursor ? "►" : " ";
         const action = a.lastAction ?? a.currentTask ?? "";
@@ -97,7 +96,7 @@ export const FleetRail = React.memo(function FleetRail({
             backgroundColor={isSelected ? theme.focus : undefined}
           >
             <text>{`${prefix} `}</text>
-            <text color={lbl.color}>{`${icon} ${lbl.label.padEnd(14)}`}</text>
+            <text color={lbl.color}>{`${trunc(lbl.label, 14).padEnd(14)}`}</text>
             <text color={theme.secondary}>{` ${a.role.padEnd(10)} `}</text>
             <text>{trunc(a.agentName, 14).padEnd(14)}</text>
             <text color={theme.secondary}>{` ${trunc(action, 40)}`}</text>

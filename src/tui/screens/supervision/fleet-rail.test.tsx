@@ -119,7 +119,7 @@ describe("FleetRail", () => {
     renderer.unmount();
   });
 
-  test("header with 2 agents where 1 is a problem shows count and 1 problem", async () => {
+  test("header with 2 agents where 1 is a problem shows count and 1 problem (singular)", async () => {
     const agents = [
       agent({ agentId: "b1", agentName: "b1", health: { kind: "running" } }),
       agent({ agentId: "b2", agentName: "b2", health: { kind: "stuck", sinceMs: 540_000 } }),
@@ -135,6 +135,65 @@ describe("FleetRail", () => {
     const flat = JSON.stringify(renderer.toJSON());
     expect(flat).toContain("2");
     expect(flat).toContain("1 problem");
+    renderer.unmount();
+  });
+
+  test("header with 3 agents where 2 are problems shows 2 problems (plural)", async () => {
+    const agents = [
+      agent({ agentId: "c1", agentName: "c1", health: { kind: "running" } }),
+      agent({ agentId: "c2", agentName: "c2", health: { kind: "stuck", sinceMs: 540_000 } }),
+      agent({ agentId: "c3", agentName: "c3", health: { kind: "error", reason: "crash" } }),
+    ];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <FleetRail agents={agents} cursor={0} selectedAgentId={undefined} />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("3");
+    expect(flat).toContain("2 problems");
+    renderer.unmount();
+  });
+
+  test("error health agent renders with ERROR label", async () => {
+    const agents = [
+      agent({ agentId: "e1", agentName: "e1", health: { kind: "error", reason: "boom" } }),
+    ];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <FleetRail agents={agents} cursor={0} selectedAgentId={undefined} />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).toContain("ERROR");
+    renderer.unmount();
+  });
+
+  test("expired health agent renders its row and is excluded from problem count", async () => {
+    const agents = [
+      agent({ agentId: "x1", agentName: "x1", health: { kind: "running" } }),
+      agent({ agentId: "x2", agentName: "x2", health: { kind: "expired" } }),
+    ];
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <FleetRail agents={agents} cursor={0} selectedAgentId={undefined} />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    // expired row should appear
+    expect(flat).toContain("x2");
+    // header should show "Fleet (2)" with no problem suffix
+    expect(flat).toContain("Fleet (2)");
+    expect(flat).not.toContain("problem");
     renderer.unmount();
   });
 });
