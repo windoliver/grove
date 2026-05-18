@@ -2,10 +2,12 @@
  * PulseAggregator — pure data class powering the Pulse view (#308).
  *
  * Owns three 60-bucket ring buffers (spawn rate, event rate, review
- * iterations) and a 1Hz tick. Subscribes to AgentSession, AgentTask, and
- * TimelineEvent informers; every event synchronously bumps the current
- * bucket counter (lossless data path). A setInterval rotates the rings
- * and notifies subscribers (coalesced render cadence).
+ * iterations) and a 1Hz tick. Subscribes to AgentTask and TimelineEvent
+ * informers; every event synchronously bumps the current bucket counter
+ * (lossless data path). A setInterval rotates the rings and notifies
+ * subscribers (coalesced render cadence). Spawn rate counts AgentTask
+ * ADDED — the remote-watchable unit of agent work (AgentSession is not
+ * server-watched in remote mode).
  *
  * Gauge counts (running / waiting-approval / failed) are projected on
  * demand from the AgentTask informer cache — no rate math.
@@ -85,7 +87,6 @@ export class PulseAggregator {
 
   constructor(
     taskInformer: Informer<"AgentTask">,
-    sessionInformer: Informer<"AgentSession">,
     timelineInformer: Informer<"TimelineEvent">,
     options?: PulseAggregatorOptions,
   ) {
@@ -103,12 +104,6 @@ export class PulseAggregator {
     this._tickedAt = this.now();
 
     this.unsubs.push(
-      sessionInformer.addEventHandler((op, _entity) => {
-        if (this.disposed) return;
-        if (op === "ADDED") this.spawnBucket += 1;
-      }),
-    );
-    this.unsubs.push(
       timelineInformer.addEventHandler((op, _entity) => {
         if (this.disposed) return;
         if (op === "ADDED") this.eventBucket += 1;
@@ -121,6 +116,7 @@ export class PulseAggregator {
           this.lastPhase.delete(entity.id);
           return;
         }
+        if (op === "ADDED") this.spawnBucket += 1;
         const phase = entity.status.phase;
         const prev = this.lastPhase.get(entity.id);
         if (phase === AWAITING_REVIEW && prev !== AWAITING_REVIEW) {

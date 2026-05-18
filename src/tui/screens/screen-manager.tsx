@@ -212,17 +212,16 @@ async function setGoalForCompensation(
  */
 function usePulseAggregator(): PulseAggregator | null {
   const taskInformer = useInformerOptional("AgentTask");
-  const sessionInformer = useInformerOptional("AgentSession");
   const timelineInformer = useInformerOptional("TimelineEvent");
   const [aggregator, setAggregator] = useState<PulseAggregator | null>(null);
 
   useEffect(() => {
-    const agg = new PulseAggregator(taskInformer, sessionInformer, timelineInformer);
+    const agg = new PulseAggregator(taskInformer, timelineInformer);
     setAggregator(agg);
     return () => {
       agg.dispose();
     };
-  }, [taskInformer, sessionInformer, timelineInformer]);
+  }, [taskInformer, timelineInformer]);
 
   return aggregator;
 }

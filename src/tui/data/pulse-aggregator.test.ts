@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  AgentSessionEntity,
-  AgentTaskEntity,
-  TimelineEventEntity,
-} from "../../core/entity.js";
+import type { AgentTaskEntity, TimelineEventEntity } from "../../core/entity.js";
 import type { Informer } from "../../core/informer.js";
 import { PulseAggregator } from "./pulse-aggregator.js";
 
@@ -31,23 +27,6 @@ class FakeInformer<E extends { id: string }> {
   list(): readonly E[] {
     return Array.from(this.entities.values());
   }
-}
-
-function mkSession(
-  id: string,
-  phase: "running" | "idle" | "stopped" | "crashed" = "running",
-): AgentSessionEntity {
-  return {
-    kind: "AgentSession",
-    namespace: "default",
-    id,
-    spec: { role: "coder" },
-    status: { phase },
-    conditions: [],
-    observedGeneration: 0,
-    resourceVersion: "0",
-    metadata: { generation: 1 },
-  } as AgentSessionEntity;
 }
 
 function mkTask(
@@ -82,7 +61,6 @@ function mkEvent(id: string): TimelineEventEntity {
 }
 
 interface Harness {
-  sessions: FakeInformer<AgentSessionEntity>;
   tasks: FakeInformer<AgentTaskEntity>;
   events: FakeInformer<TimelineEventEntity>;
   agg: PulseAggregator;
@@ -90,13 +68,11 @@ interface Harness {
 }
 
 function makeHarness(): Harness {
-  const sessions = new FakeInformer<AgentSessionEntity>();
   const tasks = new FakeInformer<AgentTaskEntity>();
   const events = new FakeInformer<TimelineEventEntity>();
   let tickFn: (() => void) | null = null;
   const agg = new PulseAggregator(
     tasks as unknown as Informer<"AgentTask">,
-    sessions as unknown as Informer<"AgentSession">,
     events as unknown as Informer<"TimelineEvent">,
     {
       tickMs: 1000,
@@ -111,7 +87,6 @@ function makeHarness(): Harness {
     },
   );
   return {
-    sessions,
     tasks,
     events,
     agg,
@@ -126,10 +101,10 @@ function makeHarness(): Harness {
 // ---------------------------------------------------------------------------
 
 describe("PulseAggregator — write path (lossless)", () => {
-  test("1000 synchronous AgentSession ADDED events all land in the current spawn bucket", () => {
+  test("1000 synchronous AgentTask ADDED events all land in the current spawn bucket", () => {
     const h = makeHarness();
     for (let i = 0; i < 1000; i++) {
-      h.sessions.emit("ADDED", mkSession(`s${i}`));
+      h.tasks.emit("ADDED", mkTask(`t${i}`, "Running"));
     }
     // Pre-tick: ring still all-zero, current bucket counter holds 1000.
     expect(h.agg.getSnapshot().series.spawnRate.every((v) => v === 0)).toBe(true);
@@ -179,7 +154,7 @@ describe("PulseAggregator — write path (lossless)", () => {
 describe("PulseAggregator — tick rotation", () => {
   test("each tick pushes the current bucket and zeroes it", () => {
     const h = makeHarness();
-    h.sessions.emit("ADDED", mkSession("s1"));
+    h.tasks.emit("ADDED", mkTask("t1", "Running"));
     h.tick();
     // After tick, current bucket is zero; another tick should push 0.
     h.tick();
@@ -192,7 +167,7 @@ describe("PulseAggregator — tick rotation", () => {
   test("after bucketCount ticks the oldest sample falls off", () => {
     const h = makeHarness();
     // Tick once with a marker value of 1.
-    h.sessions.emit("ADDED", mkSession("marker"));
+    h.tasks.emit("ADDED", mkTask("marker", "Running"));
     h.tick();
     // Then 60 zero-ticks. The marker should be gone.
     for (let i = 0; i < 60; i++) h.tick();
@@ -240,7 +215,7 @@ describe("PulseAggregator — subscribe + dispose", () => {
     });
     h.agg.dispose();
     h.tick(); // tickFn was set null on dispose → no-op
-    h.sessions.emit("ADDED", mkSession("late"));
+    h.tasks.emit("ADDED", mkTask("late", "Running"));
     expect(count).toBe(0);
     const last = h.agg.getSnapshot().series.spawnRate;
     expect(last[last.length - 1]).toBe(0);
