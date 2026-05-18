@@ -25,8 +25,10 @@ import { App } from "../app.js";
 import { PagesRouter, type PagesRouterComponentMap } from "../components/pages-router.js";
 import { DagStateStore } from "../data/dag-state-store.js";
 import { type PageKind, PagesStore } from "../data/pages-store.js";
+import { PulseAggregator } from "../data/pulse-aggregator.js";
 import { debugLog } from "../debug-log.js";
 import { DagStateProvider } from "../hooks/dag-state-context.js";
+import { useInformerOptional } from "../hooks/informer-context.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
@@ -42,6 +44,7 @@ import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
+import { PulseView } from "../views/pulse-view.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
@@ -201,6 +204,32 @@ async function setGoalForCompensation(
   await provider.setGoal(token, goal, acceptance);
 }
 
+/**
+ * Lazily constructs a single {@link PulseAggregator} bound to the live
+ * AgentTask/AgentSession/TimelineEvent informers. The instance persists
+ * across page navigation (it lives in a ref, not state) and is disposed
+ * when the screen manager unmounts (i.e. session end).
+ */
+function usePulseAggregator(): PulseAggregator | null {
+  const taskInformer = useInformerOptional("AgentTask");
+  const sessionInformer = useInformerOptional("AgentSession");
+  const timelineInformer = useInformerOptional("TimelineEvent");
+  const aggRef = useRef<PulseAggregator | null>(null);
+  // Lazy-construct on first read; persists across navigation; disposed
+  // on unmount of the screen manager (i.e. session end).
+  if (aggRef.current === null) {
+    aggRef.current = new PulseAggregator(taskInformer, sessionInformer, timelineInformer);
+  }
+  useEffect(
+    () => () => {
+      aggRef.current?.dispose();
+      aggRef.current = null;
+    },
+    [],
+  );
+  return aggRef.current;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -303,6 +332,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // mount so expansion / focus / highlight survive DagView unmount when
     // the user navigates between panels.
     const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
+
+    // PulseAggregator — Pulse dashboard data source (#308). Singleton across
+    // page navigation; disposed when the screen manager unmounts.
+    const pulseAggregator = usePulseAggregator();
 
     // Apply session scope on mount for resumed sessions (startOnRunning path).
     // Must fire before the first contribution poll in the reconcile effect below —
@@ -890,6 +923,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       pages.push({ kind: "inspect" });
     }, [pages]);
 
+    // Running view -> Pulse dashboard overlay (#308). Hotkey wiring lands
+    // in Task 6; this exposes the navigation callback.
+    const handleOpenPulse = useCallback(() => {
+      pages.push({ kind: "pulse" });
+    }, [pages]);
+
     // Screen 4 -> Screen 5: session complete
     const handleComplete = useCallback(
       (reason: string) => {
@@ -1065,6 +1104,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }}
             activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
             onEnterInspect={handleEnterInspect}
+            onOpenPulse={handleOpenPulse}
             onComplete={handleComplete}
             onQuit={handleQuit}
             onNavigateBackToMain={handleNavigateBackToMain}
@@ -1093,6 +1133,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           onQuit={handleQuit}
         />
       );
+      const PulsePage = (): React.ReactNode =>
+        wrapWithPermissions(
+          pulseAggregator ? (
+            <PulseView aggregator={pulseAggregator} active={state.screen === "running"} />
+          ) : (
+            <box />
+          ),
+        );
       // panel and entity-detail share the same RunningPage component reference
       // (not wrapper functions) so React's reconciler sees the same type across
       // running/panel/entity-detail stack pushes and preserves the mounted
@@ -1108,6 +1156,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         running: RunningPage,
         inspect: InspectPage,
         complete: CompletePage,
+        pulse: PulsePage,
         panel: RunningPage,
         "entity-detail": RunningPage,
       };
@@ -1130,6 +1179,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleLaunchBack,
       handleSpawnComplete,
       handleEnterInspect,
+      handleOpenPulse,
+      pulseAggregator,
+      state.screen,
       handleComplete,
       handleNavigateBackToMain,
       handleExitInspect,
