@@ -13,7 +13,6 @@ export interface SupervisionKey {
 }
 
 export interface SupervisionKeyboardState {
-  readonly fleetSize: number;
   readonly selectedHealth: AgentHealth | undefined;
 }
 
