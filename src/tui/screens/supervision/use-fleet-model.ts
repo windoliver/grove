@@ -11,7 +11,7 @@ import { agentIdFromSession } from "../../agents/tmux-manager.js";
 import type { AgentMonitorState, PermissionPrompt } from "../../hooks/use-agent-monitor.js";
 import { useEventDrivenData } from "../../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../../provider.js";
-import { isHandoffProvider } from "../../provider.js";
+import { isCostProvider, isHandoffProvider } from "../../provider.js";
 import {
   type AgentHealth,
   deriveAgentHealth,
@@ -83,7 +83,9 @@ export function buildFleet(s: FleetSources): readonly FleetAgent[] {
   for (const claim of s.claims) {
     const role = claim.spec.agent.role ?? "worker";
     const agentId = claim.spec.agent.agentId;
+    // costs/sessions keyed by agentId
     const session = tmuxByAgent.get(agentId);
+    // outputs, timestamps, failures, permissions keyed by role
     const outputs = s.agentOutputs.get(role) ?? [];
     const lastAction = outputs.length > 0 ? outputs[outputs.length - 1] : undefined;
     const lastOutputAt = s.agentOutputTimestamps.get(role);
@@ -189,18 +191,8 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
   );
 
   const costsFetcher = useCallback(async (): Promise<ReadonlyMap<string, FleetCost>> => {
-    const cp = args.provider as unknown as {
-      getSessionCosts?: () => Promise<{
-        byAgent: readonly {
-          agentId: string;
-          costUsd: number;
-          tokens: number;
-          contextPercent?: number;
-        }[];
-      }>;
-    };
-    if (!cp.getSessionCosts) return new Map();
-    const out = await cp.getSessionCosts();
+    if (!isCostProvider(args.provider)) return new Map();
+    const out = await args.provider.getSessionCosts();
     const m = new Map<string, FleetCost>();
     for (const a of out.byAgent) {
       m.set(a.agentId, {
@@ -229,8 +221,7 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
     args.active && isHandoffProvider(args.provider),
   );
 
-  const failures = args.agentFailures ?? new Map<string, string>();
-
+  // nowMs captured at memo-eval time; health re-derives whenever any source changes
   return useMemo(
     () =>
       buildFleet({
@@ -241,7 +232,7 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
         agentOutputTimestamps: args.monitor.agentOutputTimestamps,
         pendingPermissions: args.monitor.pendingPermissions,
         handoffs: handoffs ?? [],
-        agentFailures: failures,
+        agentFailures: args.agentFailures ?? new Map(),
         filterText: args.filterText,
         nowMs: Date.now(),
       }),
@@ -253,7 +244,7 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
       args.monitor.agentOutputTimestamps,
       args.monitor.pendingPermissions,
       handoffs,
-      failures,
+      args.agentFailures,
       args.filterText,
     ],
   );
