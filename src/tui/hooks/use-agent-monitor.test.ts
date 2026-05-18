@@ -260,4 +260,29 @@ describe("mergeOutputs", () => {
     );
     expect(timestamps.get("coder")).toBe(prior);
   });
+
+  test("assigns now to a brand-new role with no prior output or timestamp", () => {
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { outputs, timestamps } = mergeOutputs(
+      new Map(),
+      new Map(),
+      new Map([["planner", ["first line"]]]),
+      now,
+    );
+    expect(outputs.get("planner")).toEqual(["first line"]);
+    expect(timestamps.get("planner")).toBe(now);
+  });
+
+  test("drops timestamp entries for roles absent from next outputs", () => {
+    const prior = new Date("2026-05-18T11:00:00Z").toISOString();
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { timestamps } = mergeOutputs(
+      new Map([["gone", ["x"]]]),
+      new Map([["gone", prior]]),
+      new Map([["coder", ["y"]]]),
+      now,
+    );
+    expect(timestamps.has("gone")).toBe(false);
+    expect(timestamps.get("coder")).toBe(now);
+  });
 });

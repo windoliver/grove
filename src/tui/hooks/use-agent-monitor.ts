@@ -153,12 +153,12 @@ export function mergeOutputs(
   readonly outputs: ReadonlyMap<string, readonly string[]>;
   readonly timestamps: ReadonlyMap<string, string>;
 } {
-  const timestamps = new Map<string, string>(priorTimestamps);
+  const timestamps = new Map<string, string>();
   for (const [role, lines] of nextOutputs) {
     const prior = priorOutputs.get(role);
     const changed =
       !prior || prior.length !== lines.length || prior.some((line, i) => line !== lines[i]);
-    if (changed) timestamps.set(role, now);
+    timestamps.set(role, changed ? now : (priorTimestamps.get(role) ?? now));
   }
   return { outputs: nextOutputs, timestamps };
 }
