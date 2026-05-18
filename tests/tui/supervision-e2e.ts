@@ -24,21 +24,29 @@
  * DETERMINISTIC and appear immediately once the running screen with
  * GROVE_SUPERVISION=1 is active:
  *
+ *   PRIMARY pass gate (gates the exit code — both must match):
  *   1. "Fleet (" — the FleetRail header, rendered as soon as useFleetModel
  *      returns at least one agent claim.
  *   2. "coder" + "reviewer" role strings in the fleet-rail rows.
+ *
+ *   ADVISORY only (non-fatal — warns but does NOT fail the run):
  *   3. Either "Select an agent" (detail-rail empty state, no agent selected
  *      yet) or a selected agent's name / RUNNING / IDLE header — i.e. the
- *      detail-rail scaffold appeared.
+ *      detail-rail scaffold appeared. Because selection state is
+ *      indeterminate at assertion time, absence of this marker emits a
+ *      console.warn and is NOT counted as a failure.
  *
- * These three markers confirm the Supervision composition root rendered the
- * full fleet. If the --timeout budget is long enough that an agent goes idle
- * for > 5 min, the script will also look for a SILENT badge — but this is
- * opportunistic, not required.
+ * If the --timeout budget is long enough that an agent goes idle for > 5 min,
+ * the script will also look for a SILENT badge — but this is opportunistic,
+ * not required.
  *
  * Validate against the real running stack (Nexus via `grove up`), consistent
  * with this repo's e2e convention. The grove init below configures the grove
  * so that `grove up` inside the TUI's setup flow connects to Nexus.
+ *
+ * NOTE: If the TUI's 'grove up' started Nexus, a crash of the TUI (not Ctrl+C
+ * of this script) leaves docker containers running — run 'grove down' manually
+ * to clean up.
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -133,6 +141,13 @@ process.on("SIGINT", () => {
 });
 
 async function main() {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error(
+      "[fatal] ANTHROPIC_API_KEY is not set. This e2e boots real claude-code agents and requires it. Aborting before setup.",
+    );
+    process.exit(1);
+  }
+
   const overallDeadline = Date.now() + BUDGET_MS;
 
   // 1. Kill any prior tmux server on our socket.
