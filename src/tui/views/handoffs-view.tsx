@@ -100,6 +100,9 @@ export interface HandoffsViewProps {
   readonly sessionStartedAt?: string | undefined;
   /** Pre-fetched handoffs from parent. When provided, skips the internal fetch. */
   readonly handoffs?: readonly Handoff[] | undefined;
+  /** Optional: scope to handoffs touching this agent's role. Omitted =
+   *  no narrowing (#193). */
+  readonly filterAgentId?: string | undefined;
 }
 
 /** Handoffs panel component. */
@@ -112,6 +115,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     toRoleFilter,
     sessionStartedAt,
     handoffs: prefetched,
+    filterAgentId,
   }: HandoffsViewProps): React.ReactNode {
     // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
@@ -152,10 +156,14 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     }
 
     const handoffs = data ?? [];
-    const pending = handoffs.filter((h) => h.status === HandoffStatus.PendingPickup).length;
-    const overdueCount = handoffs.filter(isOverdue).length;
+    const scoped =
+      filterAgentId === undefined
+        ? handoffs
+        : handoffs.filter((h) => h.fromRole === filterAgentId || h.toRole === filterAgentId);
+    const pending = scoped.filter((h) => h.status === HandoffStatus.PendingPickup).length;
+    const overdueCount = scoped.filter(isOverdue).length;
 
-    const rows = handoffs.map((h) => ({
+    const rows = scoped.map((h) => ({
       from: h.fromRole,
       to: h.toRole,
       status: STATUS_LABELS[h.status] ?? h.status,
@@ -170,13 +178,13 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
         <box marginBottom={1} flexDirection="row">
           <text>Handoffs</text>
           <text opacity={0.5}>
-            {handoffs.length > 0
-              ? `  ${handoffs.length} total, ${pending} pending`
+            {scoped.length > 0
+              ? `  ${scoped.length} total, ${pending} pending`
               : "  (no handoffs yet)"}
           </text>
           {overdueCount > 0 && <text color={theme.error}>{`  ${overdueCount} overdue`}</text>}
         </box>
-        {handoffs.length === 0 ? (
+        {scoped.length === 0 ? (
           <text opacity={0.4}>
             No handoffs yet. Handoffs appear when contributions are routed between roles.
           </text>
