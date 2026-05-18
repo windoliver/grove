@@ -2139,12 +2139,12 @@ function renderHelpOverlay(): React.ReactNode {
         Supervision (GROVE_SUPERVISION=1)
       </text>
       <text color={theme.text}> j/k Move fleet cursor · g/G top/bottom</text>
-      <text color={theme.text}> Enter Pin selection</text>
+      <text color={theme.text}> Enter Pin hovered agent as selected</text>
       <text color={theme.text}> y/n/a Approve / deny / always-allow</text>
-      <text color={theme.text}> t Open Terminal (scoped to selected)</text>
-      <text color={theme.text}> d Open DAG (scoped to selected)</text>
-      <text color={theme.text}> r Reroute blocked handoff</text>
-      <text color={theme.text}> K Kill / revoke claim</text>
+      <text color={theme.text}> t Open Terminal panel</text>
+      <text color={theme.text}> d Open DAG panel</text>
+      <text color={theme.text}> r Reroute blocked handoff (placeholder)</text>
+      <text color={theme.text}> K Kill / revoke claim (placeholder)</text>
       <text color={theme.text}> m Message the selected agent</text>
       <text color={theme.secondary}> Esc to close</text>
     </box>
