@@ -151,6 +151,15 @@ async function waitForChildExit(
   });
 }
 
+function withSessionStatus(
+  session: AgentSession,
+  status: AgentSession["status"],
+  statusMessage?: string,
+): AgentSession {
+  const { statusMessage: _oldStatusMessage, ...rest } = session;
+  return statusMessage === undefined ? { ...rest, status } : { ...rest, status, statusMessage };
+}
+
 /**
  * Top-level scalar keys we copy from the user's `~/.codex/config.toml` into the
  * isolated CODEX_HOME. Restrict to safe, well-known keys: model preferences
@@ -814,6 +823,13 @@ export class AcpRuntime implements AgentRuntime {
       resolveResult = r;
     });
     const finishTurn = (result: Result): void => {
+      const statusMessage = result.stopReason === "error" ? result.error?.message : undefined;
+      entry.session = withSessionStatus(
+        entry.session,
+        result.stopReason === "error" ? "crashed" : "idle",
+        statusMessage,
+      );
+      this.fireSessionWrite("MODIFIED", entry.session);
       resolveResult(result);
       this.emitAcpEvent({
         kind: "result",
@@ -853,6 +869,8 @@ export class AcpRuntime implements AgentRuntime {
         });
         return;
       }
+      entry.session = withSessionStatus(entry.session, "running");
+      this.fireSessionWrite("MODIFIED", entry.session);
       entry.currentTurn = turn;
       try {
         const ok = await entry.connection.prompt({

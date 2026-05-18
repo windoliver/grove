@@ -538,7 +538,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               flexGrow={getRowFlex(rowGroup, focusedRowGroup, zoom, rowGroup === 0 ? 2 : 1)}
             >
               {visibleInRow.map((def) => (
-                <PanelChrome key={def.panel} panel={def.panel} focused={isFocused(def.panel)}>
+                <PanelChrome key={def.id} panel={def.panel} focused={isFocused(def.panel)}>
                   {renderPanel(def.panel)}
                 </PanelChrome>
               ))}
