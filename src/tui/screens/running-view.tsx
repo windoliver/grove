@@ -74,6 +74,10 @@ import {
   routeRunningKey,
   toggleFullscreen as toggleFullscreenTransition,
 } from "./running-keyboard.js";
+import { Supervision } from "./supervision/supervision.js";
+import { supervisionInputActive } from "./supervision/supervision-input-guard.js";
+import { routeSupervisionKey } from "./supervision/supervision-keyboard.js";
+import { useFleetModel } from "./supervision/use-fleet-model.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -112,6 +116,11 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
 // per-role: useLogView = session?.runtime === "acpx". Tracked as a
 // follow-up of issue #310.
 const useLogView = process.env.GROVE_LOGVIEW === "1";
+
+// #193: supervision body gate. STRICTLY ADDITIVE — unset → byte-for-byte
+// identical RunningView. Read once at module load (env vars are static at
+// runtime) so it never churns useMemo/useCallback deps.
+const useSupervision = process.env.GROVE_SUPERVISION === "1";
 
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
@@ -533,6 +542,38 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }, [eventBus, topology, provider, dashboardPoll.refresh, contributionsPoll.refresh]);
 
     const dashboard = dashboardPoll.data ?? undefined;
+
+    // ─── Supervision fleet model (#193, gated by GROVE_SUPERVISION) ───
+    // `active` is only true when the supervision body is the visible body
+    // (flag on AND no panel expanded) so the fetchers stay idle otherwise.
+    const fleet = useFleetModel({
+      provider,
+      monitor,
+      agentFailures,
+      tmux,
+      filterText: filterQuery,
+      active: useSupervision && expandedPanel === null,
+    });
+    const [selectedSupervisionAgent, setSelectedSupervisionAgent] = useState<string | undefined>(
+      undefined,
+    );
+    const [supervisionCursor, setSupervisionCursor] = useState(0);
+    const selectedFleetAgent = useMemo(
+      () =>
+        fleet.find((a) => a.agentId === selectedSupervisionAgent) ??
+        fleet[supervisionCursor] ??
+        fleet[0],
+      [fleet, selectedSupervisionAgent, supervisionCursor],
+    );
+    const selectedFleetRole = selectedFleetAgent?.role;
+    const selectedFleetTail = useMemo<readonly string[]>(
+      () => (selectedFleetRole ? (monitor.agentOutputs.get(selectedFleetRole) ?? []) : []),
+      [selectedFleetRole, monitor.agentOutputs],
+    );
+    const handleSupervisionSelect = useCallback(
+      (id: string | undefined) => setSelectedSupervisionAgent(id),
+      [],
+    );
     const contributions = useMemo<readonly Contribution[] | undefined>(() => {
       if (!contribInformerReady) return contributionsPoll.data ?? undefined;
       // Time-based session scope. The watch protocol does not yet filter
@@ -1117,6 +1158,69 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             confirmModalOpen,
             logFilterMode: logFilterModeRef.current,
           };
+          // #193: supervision body owns the keyboard when the flag is on and
+          // it is the visible body with no modal / overlay / input mode
+          // active. Guard predicate is the exported `supervisionInputActive`
+          // (unit-tested) so the risky condition is covered without mounting
+          // RunningView. Falls through to routeRunningKey if not consumed.
+          if (
+            supervisionInputActive({
+              useSupervision,
+              expandedPanelNull: expandedPanel === null,
+              cmdMode: cmdStateRef.current.mode,
+              promptMode,
+              showHelp,
+              showVfs,
+              filterQuery: filterQueryRef.current,
+            })
+          ) {
+            const handled = routeSupervisionKey(
+              { name: key.name },
+              { selectedHealth: selectedFleetAgent?.health },
+              {
+                moveCursor: (delta) => {
+                  setSupervisionCursor((c) => {
+                    const next = Math.max(0, Math.min(fleet.length - 1, c + delta));
+                    setSelectedSupervisionAgent(fleet[next]?.agentId);
+                    return next;
+                  });
+                },
+                pinSelection: () => setSelectedSupervisionAgent(selectedFleetAgent?.agentId),
+                jumpTop: () => {
+                  setSupervisionCursor(0);
+                  setSelectedSupervisionAgent(fleet[0]?.agentId);
+                },
+                jumpBottom: () => {
+                  const last = Math.max(0, fleet.length - 1);
+                  setSupervisionCursor(last);
+                  setSelectedSupervisionAgent(fleet[last]?.agentId);
+                },
+                approve: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "y");
+                },
+                deny: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "n");
+                },
+                always: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "a");
+                },
+                openTail: () => keyboardActions.expandPanel(RunningPanel.Terminal),
+                openDag: () => keyboardActions.expandPanel(RunningPanel.Dag),
+                reroute: () => flash("Reroute lands with #163"),
+                kill: () => flash("Kill action lands with claim-revoke provider API"),
+                openMessage: () => {
+                  if (selectedFleetRole) {
+                    setPromptMode(true);
+                    setPromptTarget((activeRoles ?? []).indexOf(selectedFleetRole));
+                  }
+                },
+              },
+            );
+            if (handled) return;
+          }
           routeRunningKey(key, liveState, keyboardActions);
         },
         [
@@ -1128,6 +1232,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           showHelp,
           confirmModalOpen,
+          // #193: supervision keyboard owner deps. expandedPanel/fleet/
+          // selectedFleetAgent/selectedFleetRole change the consumed keys'
+          // behavior; tmux/activeRoles/flash are stable refs/callbacks but
+          // listed for closure correctness. useSupervision is a module-scope
+          // env constant (not a dep), same as useLogView above.
+          expandedPanel,
+          fleet,
+          selectedFleetAgent,
+          selectedFleetRole,
+          tmux,
+          activeRoles,
+          flash,
           // #310: logFilterMode read via logFilterModeRef (synchronous) so a
           // same-tick burst sees the latest mode. keyboardState already lists
           // logFilterMode in its memo deps for rendering, so committed state
@@ -1402,27 +1518,44 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           showUnderline={true}
         />
 
-        {/* Agent status with live output */}
-        {renderAgentSection(
-          topology,
-          dashboard,
-          monitor,
-          agentFailures,
-          sessionStartedAt,
-          feed.length,
-        )}
+        {/* Default body: agent status + feed. #193: GROVE_SUPERVISION swaps
+            in the fleet/detail rail. Flag unset → byte-for-byte identical. */}
+        {useSupervision ? (
+          <Supervision
+            agents={fleet}
+            tail={selectedFleetTail}
+            cursor={supervisionCursor}
+            // exactOptionalPropertyTypes: only pass pinnedAgentId when set
+            {...(selectedSupervisionAgent !== undefined
+              ? { pinnedAgentId: selectedSupervisionAgent }
+              : {})}
+            onSelect={handleSupervisionSelect}
+          />
+        ) : (
+          <>
+            {/* Agent status with live output */}
+            {renderAgentSection(
+              topology,
+              dashboard,
+              monitor,
+              agentFailures,
+              sessionStartedAt,
+              feed.length,
+            )}
 
-        {/* Main feed area */}
-        {renderFeedSection(
-          feed,
-          cursor,
-          goal,
-          pendingAskUser,
-          frontier,
-          autoFollow,
-          newSinceFreeze,
-          activeRoles,
-          agentFailures,
+            {/* Main feed area */}
+            {renderFeedSection(
+              feed,
+              cursor,
+              goal,
+              pendingAskUser,
+              frontier,
+              autoFollow,
+              newSinceFreeze,
+              activeRoles,
+              agentFailures,
+            )}
+          </>
         )}
 
         {/* Bottom chrome: permissions, IPC, quit confirm, progress, prompt */}
