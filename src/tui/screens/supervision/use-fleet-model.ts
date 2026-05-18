@@ -113,7 +113,7 @@ export function buildFleet(s: FleetSources): readonly FleetAgent[] {
         pendingApproval,
         blockedOn,
         blockedSinceMs,
-        agentFailure: s.agentFailures.get(agentId),
+        agentFailure: s.agentFailures.get(role),
       },
       s.nowMs,
       HEALTH_THRESHOLDS,

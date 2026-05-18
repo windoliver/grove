@@ -54,11 +54,12 @@ describe("buildFleet", () => {
   test("sorts problem agents before running agents", () => {
     const fleet = buildFleet({
       ...baseSources,
-      claims: [claim("a-run", "coder"), claim("b-fail", "coder")],
-      agentFailures: new Map([["b-fail", "ACP auth failed"]]),
+      claims: [claim("a-run", "coder"), claim("b-fail", "planner")],
+      agentFailures: new Map([["planner", "ACP auth failed"]]),
     });
     expect(fleet[0]?.agentId).toBe("b-fail");
     expect(fleet[0]?.health.kind).toBe("error");
+    expect(fleet[1]?.health.kind).not.toBe("error");
   });
 
   test("session field undefined when no tmux session matches", () => {
