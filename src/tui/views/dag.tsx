@@ -129,10 +129,8 @@ export interface DagProps {
    *  into a text field does not silently toggle the focused DAG row.
    *  Default `false`. */
   readonly keysEnabled?: boolean;
-  /** Optional: when set, the DAG biases focus toward this agent. Plumbed
-   *  for supervision drill-down (#193); narrowing behavior is a follow-up.
-   *  Default (unfiltered) behavior is preserved when omitted. */
-  readonly filterAgentId?: string | undefined;
+  /** Optional: when set, biases focus toward this role. Plumbed for supervision drill-down (#193); narrowing behavior is a follow-up. Default (unfiltered) behavior preserved when omitted. */
+  readonly filterRole?: string | undefined;
 }
 
 /** Xray-style DAG view (issue #311 C5). */

@@ -100,9 +100,8 @@ export interface HandoffsViewProps {
   readonly sessionStartedAt?: string | undefined;
   /** Pre-fetched handoffs from parent. When provided, skips the internal fetch. */
   readonly handoffs?: readonly Handoff[] | undefined;
-  /** Optional: scope to handoffs touching this agent's role. Omitted =
-   *  no narrowing (#193). */
-  readonly filterAgentId?: string | undefined;
+  /** Optional: scope to handoffs touching this role. Omitted = no narrowing (#193). */
+  readonly filterRole?: string | undefined;
 }
 
 /** Handoffs panel component. */
@@ -115,7 +114,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     toRoleFilter,
     sessionStartedAt,
     handoffs: prefetched,
-    filterAgentId,
+    filterRole,
   }: HandoffsViewProps): React.ReactNode {
     // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
@@ -157,9 +156,9 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
 
     const handoffs = data ?? [];
     const scoped =
-      filterAgentId === undefined
+      filterRole === undefined
         ? handoffs
-        : handoffs.filter((h) => h.fromRole === filterAgentId || h.toRole === filterAgentId);
+        : handoffs.filter((h) => h.fromRole === filterRole || h.toRole === filterRole);
     const pending = scoped.filter((h) => h.status === HandoffStatus.PendingPickup).length;
     const overdueCount = scoped.filter(isOverdue).length;
 

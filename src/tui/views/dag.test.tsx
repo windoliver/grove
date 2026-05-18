@@ -252,7 +252,7 @@ describe("DagView (xray)", () => {
     renderer.unmount();
   });
 
-  test("accepts filterAgentId prop without crashing or changing default render", async () => {
+  test("accepts filterRole prop without crashing or changing default render", async () => {
     const root = makeContribution({ summary: "root contribution" });
     const child = makeContribution({
       summary: "child contribution",
@@ -269,7 +269,7 @@ describe("DagView (xray)", () => {
               provider={makeStubProvider([root, child]) as never}
               active
               cursor={-1}
-              filterAgentId="agent-x"
+              filterRole="agent-x"
             />
           </DagStateProvider>
         ) as React.ReactElement,

@@ -55,7 +55,7 @@ describe("HandoffsView", () => {
     expect(text).toContain("met");
   });
 
-  test("filterAgentId scopes rows to touching agent; omitting prop shows all", () => {
+  test("filterRole scopes rows to touching role; omitting prop shows all", () => {
     const provider = {
       getHandoffs: async () => [],
       markHandoffDelivered: async () => undefined,
@@ -80,7 +80,7 @@ describe("HandoffsView", () => {
       createdAt: "2026-05-07T19:01:00.000Z",
     };
 
-    // --- With filterAgentId="coder": only coder-touching handoff appears ---
+    // --- With filterRole="coder": only coder-touching handoff appears ---
     let filteredRenderer: TestRenderer.ReactTestRenderer | undefined;
     act(() => {
       filteredRenderer = TestRenderer.create(
@@ -89,7 +89,7 @@ describe("HandoffsView", () => {
           active: true,
           cursor: 0,
           handoffs: [coderHandoff, plannerHandoff],
-          filterAgentId: "coder",
+          filterRole: "coder",
         }),
       );
     });
@@ -99,7 +99,7 @@ describe("HandoffsView", () => {
     expect(filteredText).not.toContain("planner");
     filteredRenderer.unmount();
 
-    // --- Without filterAgentId: both handoffs appear ---
+    // --- Without filterRole: both handoffs appear ---
     let allRenderer: TestRenderer.ReactTestRenderer | undefined;
     act(() => {
       allRenderer = TestRenderer.create(
