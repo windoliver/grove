@@ -59,7 +59,7 @@ function healthLabel(h: AgentHealth): { label: string; color: string } {
   }
 }
 
-export const FleetRail = React.memo(function FleetRail({
+export const FleetRail: React.NamedExoticComponent<FleetRailProps> = React.memo(function FleetRail({
   agents,
   cursor,
   selectedAgentId,

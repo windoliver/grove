@@ -143,7 +143,12 @@ describe("deriveAgentHealth", () => {
     ] as const;
     const weights = kinds.map((kind) => healthPriority({ kind } as AgentHealth));
     for (let i = 0; i < weights.length - 1; i++) {
-      expect(weights[i]).toBeLessThan(weights[i + 1]);
+      const current = weights[i];
+      const next = weights[i + 1];
+      if (current === undefined || next === undefined) {
+        throw new Error(`weights gap at index ${i}`);
+      }
+      expect(current).toBeLessThan(next);
     }
   });
 });
