@@ -215,8 +215,21 @@ async function setGoalForCompensation(
  * `sessionKey` is included in the effect deps so the aggregator is
  * disposed+recreated at session boundaries. Informer identity alone is
  * stable across "New Session" within the same ScreenManager, so without
- * this the rings/buckets/lastPhase would carry stale prior-session
- * activity into the next session's Pulse view.
+ * this the locally-accumulated rate rings/buckets/lastPhase would carry
+ * stale prior-session history into the next session's Pulse view. The
+ * reset zeroes that local accumulation — which is the part that would
+ * otherwise be wrong, since rings only grow forward from live events.
+ *
+ * SCOPE (deliberate, per #308 spec non-goal "per-namespace filtering on
+ * gauges"): the watch protocol does not forward `sessionId` (see
+ * informer-context.tsx — server-side `/api/watch` sessionId filtering is
+ * a future PR), so the informers are namespace-wide. Pulse gauges
+ * (`taskInformer.list()`) and rates therefore reflect ALL activity in
+ * the namespace, not just the active session. The sessionKey reset
+ * bounds the rate *history* to the current session; it does NOT make
+ * the data session-exclusive. Concurrent sessions in one namespace will
+ * bleed into the counts until /api/watch gains sessionId support. This
+ * is an accepted, pre-existing platform limitation, not a Pulse bug.
  */
 function usePulseAggregator(sessionKey: string): PulseAggregator | null {
   const taskInformer = useInformerOptional("AgentTask");

@@ -4,8 +4,16 @@
  * runs AFTER per-id queue coalescing and can be wiped by overflow
  * clear(). PulseAggregator subscribes via `addRawEventHandler` (raw,
  * pre-coalesce, overflow-immune). These tests use a real Informer with
- * a synthetic stream — the FakeInformer in the sibling suite delivers
- * every event and would mask this.
+ * a synthetic stream; FakeInformer in the sibling suite delivers every
+ * event and would mask the coalescing path.
+ *
+ * CRITICAL test discipline (round-2 review): events MUST be emitted
+ * synchronously with NO `await` between them and the assertion taken
+ * BEFORE yielding to the microtask queue. `Informer.enqueue` returns
+ * void for deltas and schedules `drain()` via `queueMicrotask`; any
+ * `await` between emits would let the coalescing/overflow drain run, so
+ * an awaited burst would NOT exercise the pre-coalesce path and a
+ * regression to the coalesced handler could pass undetected.
  *
  * Root cause found by adversarial review 2026-05-18.
  */
@@ -14,12 +22,18 @@ import { describe, expect, test } from "bun:test";
 import type { AgentTaskEntity } from "../../core/agent-task.js";
 import { Informer } from "../../core/informer.js";
 import type { WatchClientEvent } from "../../core/watch-client.js";
+import type { WatchKind } from "../../core/watch-events.js";
 import type { WatchStream } from "../../core/watch-stream.js";
 import { PulseAggregator } from "./pulse-aggregator.js";
 
+/**
+ * Synthetic stream whose `emit` invokes the informer's onEvent
+ * synchronously. `run()` sets onEvent before its first await, so onEvent
+ * is wired by the time `void informer.run()` returns.
+ */
 function makeFakeStream(): {
   stream: WatchStream;
-  emit: (e: WatchClientEvent) => void | Promise<void>;
+  emit: (e: WatchClientEvent) => void;
 } {
   let onEvent: ((e: WatchClientEvent) => void | Promise<void>) | null = null;
   const stream: WatchStream = {
@@ -35,7 +49,8 @@ function makeFakeStream(): {
     stream,
     emit: (e) => {
       if (!onEvent) throw new Error("stream not running");
-      return onEvent(e);
+      // Deltas return void synchronously; do NOT await (would drain).
+      void onEvent(e);
     },
   };
 }
@@ -64,9 +79,29 @@ function taskEvent(
   };
 }
 
-/** Stub informer for the kinds this test doesn't drive. */
-function stubInformer<K extends "TimelineEvent" | "Contribution">(): Informer<K> {
-  const noop = (): (() => void) => () => undefined;
+function contribEvent(id: string, rv: number): WatchClientEvent {
+  return {
+    op: "ADDED",
+    rv: BigInt(rv),
+    kind: "Contribution",
+    entity: {
+      kind: "Contribution",
+      namespace: "default",
+      id,
+      spec: {},
+      status: {},
+      conditions: [],
+      observedGeneration: 0,
+      resourceVersion: String(rv),
+      metadata: { generation: 1 },
+    } as unknown as WatchClientEvent["entity"],
+  };
+}
+
+/** Stub informer for the kinds a given test does not drive. */
+function stubInformer<K extends WatchKind>(): Informer<K> {
+  const unsub = (): void => undefined;
+  const noop = (): (() => void) => unsub;
   return {
     addEventHandler: noop,
     addRawEventHandler: noop,
@@ -77,79 +112,106 @@ function stubInformer<K extends "TimelineEvent" | "Contribution">(): Informer<K>
   } as unknown as Informer<K>;
 }
 
+function makeAgg(
+  taskInformer: Informer<"AgentTask">,
+  timelineInformer: Informer<"TimelineEvent">,
+  contribInformer: Informer<"Contribution">,
+): { agg: PulseAggregator; tick: () => void } {
+  let tickFn: () => void = () => undefined;
+  const agg = new PulseAggregator(taskInformer, timelineInformer, contribInformer, {
+    setInterval: (fn) => {
+      tickFn = fn;
+      return 1;
+    },
+    clearInterval: () => {
+      tickFn = () => undefined;
+    },
+  });
+  return { agg, tick: () => tickFn() };
+}
+
 describe("PulseAggregator vs real Informer coalescing", () => {
-  test("same-id Running→AwaitingReview burst is NOT collapsed (reviewIterations lossless)", async () => {
+  test("same-id Running→AwaitingReview burst pre-drain is NOT collapsed (reviewIterations lossless)", () => {
     const { stream, emit } = makeFakeStream();
     const taskInformer = new Informer(stream, "AgentTask");
     const ac = new AbortController();
     void taskInformer.run(ac.signal);
-
-    let tickFn: () => void = () => undefined;
-    const agg = new PulseAggregator(
+    const { agg, tick } = makeAgg(
       taskInformer,
       stubInformer<"TimelineEvent">(),
       stubInformer<"Contribution">(),
-      {
-        setInterval: (fn) => {
-          tickFn = fn;
-          return 1;
-        },
-        clearInterval: () => {
-          tickFn = () => undefined;
-        },
-      },
     );
 
-    // Synchronous same-id burst BEFORE any drain microtask. The Informer's
-    // Map<id,event> queue collapses these to the final state; the normal
-    // addEventHandler path would observe at most one AwaitingReview entry.
-    await emit(taskEvent("ADDED", "t1", 1, "Running"));
-    await emit(taskEvent("MODIFIED", "t1", 2, "AwaitingReview"));
-    await emit(taskEvent("MODIFIED", "t1", 3, "Running"));
-    await emit(taskEvent("MODIFIED", "t1", 4, "AwaitingReview"));
+    // Synchronous burst, NO await — all four land in the Map<id,event>
+    // queue (collapsing to final state) before any drain microtask. The
+    // coalesced handler path would observe at most one AwaitingReview.
+    emit(taskEvent("ADDED", "t1", 1, "Running"));
+    emit(taskEvent("MODIFIED", "t1", 2, "AwaitingReview"));
+    emit(taskEvent("MODIFIED", "t1", 3, "Running"));
+    emit(taskEvent("MODIFIED", "t1", 4, "AwaitingReview"));
 
-    tickFn();
+    // Assert BEFORE yielding — proves the raw path captured both entries
+    // independently of (and prior to) any coalescing drain.
+    tick();
     const series = agg.getSnapshot().series;
-    // Two distinct entries into AwaitingReview → raw path counts both.
     expect(series.reviewIterations[series.reviewIterations.length - 1]).toBe(2);
 
     agg.dispose();
     ac.abort();
   });
 
-  test("overflow clear() does not lose contrib counts (raw path immune)", async () => {
+  test("overflow clear() does not lose Contribution counts (raw path immune)", () => {
     const { stream, emit } = makeFakeStream();
-    // Tiny queue so we trip overflow fast.
-    const taskInformer = new Informer(stream, "AgentTask", { queueLimit: 4 });
+    // queueLimit=4 so the next distinct id past 4 trips overflow clear();
+    // 50 distinct ADDED in one stack frame overflow repeatedly.
+    const contribInformer = new Informer(stream, "Contribution", { queueLimit: 4 });
+    const ac = new AbortController();
+    void contribInformer.run(ac.signal);
+    const { agg, tick } = makeAgg(
+      stubInformer<"AgentTask">(),
+      stubInformer<"TimelineEvent">(),
+      contribInformer,
+    );
+
+    for (let i = 0; i < 50; i++) emit(contribEvent(`c${i}`, i + 1));
+
+    tick();
+    const series = agg.getSnapshot().series;
+    expect(series.contribRate[series.contribRate.length - 1]).toBe(50);
+
+    agg.dispose();
+    ac.abort();
+  });
+
+  test("control: the coalesced handler path undercounts the same burst", async () => {
+    // Proves the raw path is load-bearing, not redundant: a plain
+    // addEventHandler on the identical burst sees only the post-drain
+    // collapsed state.
+    const { stream, emit } = makeFakeStream();
+    const taskInformer = new Informer(stream, "AgentTask");
     const ac = new AbortController();
     void taskInformer.run(ac.signal);
 
-    let tickFn: () => void = () => undefined;
-    const agg = new PulseAggregator(
-      taskInformer,
-      stubInformer<"TimelineEvent">(),
-      stubInformer<"Contribution">(),
-      {
-        setInterval: (fn) => {
-          tickFn = fn;
-          return 1;
-        },
-        clearInterval: () => {
-          tickFn = () => undefined;
-        },
-      },
-    );
+    let coalescedAwaitingReview = 0;
+    let prev: string | undefined;
+    taskInformer.addEventHandler((op, entity) => {
+      if (op === "DELETED") return;
+      const phase = (entity as unknown as AgentTaskEntity).status.phase;
+      if (phase === "AwaitingReview" && prev !== "AwaitingReview") coalescedAwaitingReview += 1;
+      prev = phase;
+    });
 
-    // 50 distinct ADDED with no drain between them → the queue overflows
-    // and clear()s repeatedly. Raw handlers fire per enqueue regardless.
-    for (let i = 0; i < 50; i++) {
-      await emit(taskEvent("ADDED", `t${i}`, i + 1, "Running"));
-    }
-    tickFn();
-    const series = agg.getSnapshot().series;
-    expect(series.spawnRate[series.spawnRate.length - 1]).toBe(50);
+    emit(taskEvent("ADDED", "t1", 1, "Running"));
+    emit(taskEvent("MODIFIED", "t1", 2, "AwaitingReview"));
+    emit(taskEvent("MODIFIED", "t1", 3, "Running"));
+    emit(taskEvent("MODIFIED", "t1", 4, "AwaitingReview"));
 
-    agg.dispose();
+    // Let the drain microtask run; the queue has collapsed t1 to its
+    // final state, so the coalesced path sees at most one transition.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(coalescedAwaitingReview).toBeLessThan(2);
+
     ac.abort();
   });
 });

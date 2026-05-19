@@ -202,14 +202,30 @@ export class Informer<K extends WatchKind = WatchKind> {
     // Raw, pre-coalesce, overflow-immune tap. Fires for every delta before
     // the Map<id,event> queue collapses same-id bursts and before overflow
     // clear(). Lossless metrics (PulseAggregator) subscribe here.
+    //
+    // Isolation parity with the coalesced dispatch path:
+    // - snapshot the handler list so an unsubscribe during fanout can't
+    //   skip a sibling handler;
+    // - deep-freeze the entity before delivery (the coalesced path freezes
+    //   it before storing; doing it here is idempotent and prevents a raw
+    //   subscriber from mutating an object that later enters the cache);
+    // - swallow a rejected Promise from a (contract-violating, since raw
+    //   handlers must be synchronous) thenable-returning handler so it
+    //   can't escape as an unhandled rejection.
     if (this.rawHandlers.length > 0) {
-      for (const h of this.rawHandlers) {
+      const frozen = freeze(e.entity as EntityForKind<K>);
+      const meta = e.emittedAt === undefined ? undefined : { emittedAt: e.emittedAt };
+      for (const h of [...this.rawHandlers]) {
         try {
-          h(
-            e.op as InformerOp,
-            e.entity as EntityForKind<K>,
-            e.emittedAt === undefined ? undefined : { emittedAt: e.emittedAt },
-          );
+          const ret = h(e.op as InformerOp, frozen, meta);
+          if (ret && typeof (ret as Promise<void>).then === "function") {
+            (ret as Promise<void>).catch((err) => {
+              console.error(
+                `Informer[${this.kind}]: raw handler promise rejected (raw handlers must be synchronous):`,
+                err,
+              );
+            });
+          }
         } catch (err) {
           console.error(`Informer[${this.kind}]: raw handler threw, continuing ingest:`, err);
         }
