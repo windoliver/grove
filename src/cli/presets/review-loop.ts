@@ -48,10 +48,10 @@ export const reviewLoopPreset: PresetConfig = {
           "1. Wait for a push notification with the coder's CID and Workspace path\n" +
           "2. Read the actual source files at that path (e.g., cat /path/to/coder-workspace/app.js)\n" +
           "3. Review for bugs, correctness, security, edge cases, code quality\n" +
-          "4. Submit your review:\n" +
-          '   grove_submit_review({ targetCid: "<CID from notification>", summary: "your review", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })\n' +
-          "5. If changes needed, your review is sent to the coder automatically\n" +
-          '6. When code meets standards, call grove_done({ summary: "Approved", agent: { role: "reviewer" } })\n' +
+          '4. Submit your review: grove_submit_review({ targetCid: "<CID from notification>", summary: "your review", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })\n' +
+          "5. Then, in the SAME response — do NOT end your turn after step 4 — decide the outcome:\n" +
+          '   - APPROVED (code meets standards): you MUST immediately call grove_done({ summary: "Approved", agent: { role: "reviewer" } }). You are the only role that can end the session; if you approve but skip grove_done the session hangs forever.\n' +
+          "   - CHANGES NEEDED: do NOT call grove_done. Your review is delivered to the coder automatically; they will revise and resubmit for another review cycle.\n" +
           "You MUST read the actual files at the Workspace path — do NOT review based on summary alone.",
       },
     ],
