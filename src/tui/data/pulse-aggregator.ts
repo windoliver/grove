@@ -89,7 +89,9 @@ export class PulseAggregator {
 
   private readonly subscribers = new Set<() => void>();
   private readonly unsubs: Array<() => void> = [];
-  private readonly lastPhase = new Map<string, AgentTaskEntity["status"]["phase"]>();
+  // String, not the phase union: the raw tap delivers status.phase as a
+  // plain primitive string projection (RawInformerEvent.statusPhase).
+  private readonly lastPhase = new Map<string, string>();
   private intervalHandle: unknown = null;
   private disposed = false;
   private _tickedAt: number;
@@ -140,31 +142,31 @@ export class PulseAggregator {
     );
 
     this.unsubs.push(
-      timelineInformer.addRawEventHandler((op, _entity) => {
+      timelineInformer.addRawEventHandler((e) => {
         if (this.disposed) return;
-        if (op === "ADDED") this.eventBucket += 1;
+        if (e.op === "ADDED") this.eventBucket += 1;
       }),
     );
     this.unsubs.push(
-      contribInformer.addRawEventHandler((op, _entity) => {
+      contribInformer.addRawEventHandler((e) => {
         if (this.disposed) return;
-        if (op === "ADDED") this.contribBucket += 1;
+        if (e.op === "ADDED") this.contribBucket += 1;
       }),
     );
     this.unsubs.push(
-      taskInformer.addRawEventHandler((op, entity) => {
+      taskInformer.addRawEventHandler((e) => {
         if (this.disposed) return;
-        if (op === "DELETED") {
-          this.lastPhase.delete(entity.id);
+        if (e.op === "DELETED") {
+          this.lastPhase.delete(e.id);
           return;
         }
-        if (op === "ADDED") this.spawnBucket += 1;
-        const phase = entity.status.phase;
-        const prev = this.lastPhase.get(entity.id);
+        if (e.op === "ADDED") this.spawnBucket += 1;
+        const phase = e.statusPhase;
+        const prev = this.lastPhase.get(e.id);
         if (phase === AWAITING_REVIEW && prev !== AWAITING_REVIEW) {
           this.reviewBucket += 1;
         }
-        this.lastPhase.set(entity.id, phase);
+        if (phase !== undefined) this.lastPhase.set(e.id, phase);
       }),
     );
 

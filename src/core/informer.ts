@@ -47,6 +47,25 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
 
 export type SyncHandlerFn = () => void;
 
+/**
+ * Reduced, immutable projection delivered to RAW event handlers. It
+ * deliberately does NOT carry the entity reference: the raw tap fires
+ * before the coalesced path freezes/stores the entity, so handing out
+ * the live object would let a subscriber corrupt the cache. All fields
+ * are primitives copied off the event, so this is cheap (one small
+ * alloc, no recursive freeze) and safe by construction. `statusPhase`
+ * is the AgentTask `status.phase` when present (undefined for kinds
+ * without it) — the only nested field any raw consumer needs.
+ */
+export interface RawInformerEvent {
+  readonly op: InformerOp;
+  readonly id: string;
+  readonly statusPhase?: string | undefined;
+  readonly emittedAt?: string | undefined;
+}
+
+export type RawEventHandlerFn = (e: RawInformerEvent) => void;
+
 export interface InformerOptions {
   /** Max distinct entity ids buffered between drain cycles. Default 1000. */
   readonly queueLimit?: number;
@@ -65,7 +84,7 @@ export class Informer<K extends WatchKind = WatchKind> {
   private readonly onOverflow: ((kind: WatchKind) => void) | null;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
-  private readonly rawHandlers: Array<EventHandlerFn<K>> = [];
+  private readonly rawHandlers: Array<RawEventHandlerFn> = [];
   private readonly syncHandlers: Array<SyncHandlerFn> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
@@ -107,15 +126,15 @@ export class Informer<K extends WatchKind = WatchKind> {
    * the final state in the `Map<id,event>` queue and overflow may have
    * dropped the batch entirely.
    *
-   * Contract: raw handlers MUST be cheap, synchronous, and MUST NOT
-   * mutate the delivered entity (it is passed un-frozen for hot-path
-   * cost reasons and the same reference later enters the cache via the
-   * coalesced path). Throws are isolated so one handler can't break
-   * ingest; a returned rejected Promise is swallowed (handlers must be
-   * synchronous); but a slow or mutating handler is a caller bug that
-   * will backpressure or corrupt the watch stream.
+   * Handlers receive a {@link RawInformerEvent} — a small immutable
+   * primitive projection, NOT the entity — so a raw subscriber cannot
+   * mutate the object that later enters the cache, and there is no
+   * recursive deep-freeze on the ingest hot path. Contract: raw
+   * handlers MUST be cheap and synchronous (void return); a thrown
+   * error is isolated so one handler can't break ingest, but a slow
+   * handler will backpressure the watch stream.
    */
-  addRawEventHandler(fn: EventHandlerFn<K>): () => void {
+  addRawEventHandler(fn: RawEventHandlerFn): () => void {
     this.rawHandlers.push(fn);
     return () => {
       const idx = this.rawHandlers.indexOf(fn);
@@ -207,33 +226,23 @@ export class Informer<K extends WatchKind = WatchKind> {
     // the Map<id,event> queue collapses same-id bursts and before overflow
     // clear(). Lossless metrics (PulseAggregator) subscribe here.
     //
-    // CONTRACT: raw handlers MUST be synchronous, cheap, and MUST NOT
-    // mutate the entity. The entity is delivered un-frozen by design —
-    // deep-freezing every raw delta on the ingest hot path adds unbounded
-    // recursive traversal (Contributions carry large nested context /
-    // scores / relations) and would backpressure the very stream the
-    // lossless counters depend on. The coalesced path still freezes the
-    // entity before it enters the cache, so a well-behaved (read-only)
-    // raw handler is safe; a misbehaving one is a caller bug, not an
-    // ingest-integrity risk.
-    //
-    // Cheap isolation still applied: snapshot the handler list so an
-    // unsubscribe mid-fanout can't skip a sibling, and swallow a rejected
-    // Promise from a contract-violating async handler.
+    // Handlers get a small immutable primitive projection (op/id/
+    // statusPhase/emittedAt) — never the entity. This is safe by
+    // construction (a raw subscriber cannot reach the object that later
+    // enters the cache) AND cheap (one tiny alloc, no recursive freeze
+    // on the ingest hot path). Snapshot the handler list so an
+    // unsubscribe mid-fanout can't skip a sibling; isolate throws.
     if (this.rawHandlers.length > 0) {
-      const meta = e.emittedAt === undefined ? undefined : { emittedAt: e.emittedAt };
-      const entity = e.entity as EntityForKind<K>;
+      const ent = e.entity as { status?: { phase?: string } } | null;
+      const raw: RawInformerEvent = {
+        op: e.op as InformerOp,
+        id,
+        statusPhase: ent?.status?.phase,
+        emittedAt: e.emittedAt,
+      };
       for (const h of [...this.rawHandlers]) {
         try {
-          const ret = h(e.op as InformerOp, entity, meta);
-          if (ret && typeof (ret as Promise<void>).then === "function") {
-            (ret as Promise<void>).catch((err) => {
-              console.error(
-                `Informer[${this.kind}]: raw handler promise rejected (raw handlers must be synchronous):`,
-                err,
-              );
-            });
-          }
+          h(raw);
         } catch (err) {
           console.error(`Informer[${this.kind}]: raw handler threw, continuing ingest:`, err);
         }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTaskEntity } from "../../core/agent-task.js";
 import type { ContributionEntity, TimelineEventEntity } from "../../core/entity.js";
-import type { Informer } from "../../core/informer.js";
+import type { Informer, RawInformerEvent } from "../../core/informer.js";
 import { PulseAggregator } from "./pulse-aggregator.js";
 
 // ---------------------------------------------------------------------------
@@ -20,20 +20,45 @@ class FakeInformer<E extends { id: string }> {
       if (i >= 0) this.handlers.splice(i, 1);
     };
   }
-  // PulseAggregator subscribes via the raw, pre-coalesce channel. This
-  // fake delivers every emit() losslessly, so raw === normal here. The
-  // real-Informer coalescing path is covered by the dedicated regression
-  // test below (informer-coalescing).
-  addRawEventHandler(fn: EventHandler<E>): () => void {
-    return this.addEventHandler(fn);
+  // PulseAggregator subscribes via the raw, pre-coalesce channel, which
+  // delivers a small RawInformerEvent projection (never the entity).
+  // This fake delivers every emit() losslessly. Real-Informer
+  // coalescing/overflow is covered by informer-coalescing.test.ts.
+  private readonly rawHandlers: Array<(e: RawInformerEvent) => void> = [];
+  addRawEventHandler(fn: (e: RawInformerEvent) => void): () => void {
+    this.rawHandlers.push(fn);
+    return () => {
+      const i = this.rawHandlers.indexOf(fn);
+      if (i >= 0) this.rawHandlers.splice(i, 1);
+    };
   }
   private readonly syncHandlers: Array<() => void> = [];
-  addSyncHandler(fn: () => void): () => void {
+  private synced = false;
+  /** Number of times a registered sync handler fired immediately at
+   *  registration because the informer was already synced AND the
+   *  caller requested fireIfSynced. Lets tests assert PulseAggregator
+   *  passed fireIfSynced=false. */
+  immediateSyncFires = 0;
+  /** Models Informer.addSyncHandler(fn, fireIfSynced=true). */
+  addSyncHandler(fn: () => void, fireIfSynced = true): () => void {
     this.syncHandlers.push(fn);
+    if (fireIfSynced && this.synced) {
+      this.immediateSyncFires += 1;
+      fn();
+    }
     return () => {
       const i = this.syncHandlers.indexOf(fn);
       if (i >= 0) this.syncHandlers.splice(i, 1);
     };
+  }
+  /** Test helper: number of currently-registered sync handlers (proves
+   *  dispose actually unsubscribed, not just disposed-guarded). */
+  syncHandlerCount(): number {
+    return this.syncHandlers.length;
+  }
+  /** Test helper: mark the informer as synced (post first RELIST_END). */
+  markSynced(): void {
+    this.synced = true;
   }
   /** Test helper: simulate a RELIST_END (sync) fan-out. */
   fireSync(): void {
@@ -53,6 +78,12 @@ class FakeInformer<E extends { id: string }> {
   emit(op: "ADDED" | "MODIFIED" | "DELETED", entity: E): void {
     if (op === "DELETED") this.entities.delete(entity.id);
     else this.entities.set(entity.id, entity);
+    const raw: RawInformerEvent = {
+      op,
+      id: entity.id,
+      statusPhase: (entity as { status?: { phase?: string } }).status?.phase,
+    };
+    for (const h of [...this.rawHandlers]) h(raw);
     for (const h of [...this.handlers]) h(op, entity);
   }
   list(): readonly E[] {
@@ -372,5 +403,32 @@ describe("PulseAggregator — lastPhase seeding (round-3 regression)", () => {
     expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(1);
 
     agg.dispose();
+  });
+
+  test("relist reseed is registered with fireIfSynced=false (no immediate fire when already synced)", () => {
+    const tasks = new FakeInformer<AgentTaskEntity>();
+    tasks.emit("ADDED", mkTask("s1", "Running"));
+    tasks.markSynced(); // informer already past first RELIST_END
+
+    const { agg } = build(tasks);
+
+    // PulseAggregator reseeds explicitly in the ctor and must register
+    // the relist handler with fireIfSynced=false — so registering it
+    // here must NOT trigger an immediate redundant reseed fan-out.
+    expect(tasks.immediateSyncFires).toBe(0);
+    expect(tasks.syncHandlerCount()).toBe(1);
+
+    agg.dispose();
+  });
+
+  test("dispose() actually unsubscribes the relist sync handler", () => {
+    const tasks = new FakeInformer<AgentTaskEntity>();
+    const { agg } = build(tasks);
+    expect(tasks.syncHandlerCount()).toBe(1);
+
+    agg.dispose();
+    // Proves real unsubscription, not just the disposed-guard: a later
+    // RELIST_END must not reach a removed handler.
+    expect(tasks.syncHandlerCount()).toBe(0);
   });
 });
