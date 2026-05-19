@@ -8,7 +8,10 @@ import { useCallback, useMemo } from "react";
 import { type ClaimEntity, claimToEntity } from "../../../core/entity.js";
 import { type Handoff, HandoffStatus } from "../../../core/handoff.js";
 import { agentIdFromSession } from "../../agents/tmux-manager.js";
+import { isActive } from "../../components/columns/claim-columns.js";
+import { useProviderScoped } from "../../hooks/informer-context.js";
 import type { AgentMonitorState, PermissionPrompt } from "../../hooks/use-agent-monitor.js";
+import { useEntityData } from "../../hooks/use-entity-data.js";
 import { useEventDrivenData } from "../../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../../provider.js";
 import { isCostProvider, isHandoffProvider } from "../../provider.js";
@@ -167,17 +170,23 @@ export interface UseFleetModelArgs {
 
 const NAMESPACE = "default";
 
+/** Stable empty reference for the scoped short-circuit (no churn). */
+const EMPTY_FLEET: readonly FleetAgent[] = [];
+
 export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
-  const claimsFetcher = useCallback(async (): Promise<readonly ClaimEntity[]> => {
+  // Claims come from the informer-backed EntityStore in nexus mode
+  // (useEntityData → useEntities), with the polled getClaims path as the
+  // local-mode fallback. Reading only the fallback (#193) left the
+  // FleetRail empty in nexus mode even while agents actively claimed.
+  const claimsFallback = useCallback(async (): Promise<readonly ClaimEntity[]> => {
     const flat = await args.provider.getClaims({ status: "active" });
     return flat.map((c) => claimToEntity(c, () => Date.now(), NAMESPACE));
   }, [args.provider]);
-  const { data: claims } = useEventDrivenData<readonly ClaimEntity[]>(
-    claimsFetcher,
-    undefined,
-    undefined,
-    args.active,
-  );
+  const { data: claims } = useEntityData<"Claim">(args.provider, "Claim", {
+    active: args.active,
+    predicate: isActive,
+    fallbackFetcher: claimsFallback,
+  });
 
   const tmuxFetcher = useCallback(async (): Promise<readonly string[]> => {
     if (!args.tmux) return [];
@@ -221,8 +230,15 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
     args.active && isHandoffProvider(args.provider),
   );
 
+  // Scoped sessions: `useEntityWatchEnabled` returns false in scoped mode
+  // and `provider.getClaims` is namespace-global (no session filter), so
+  // the fallback would leak claims from OTHER sessions. Render empty until
+  // session-scoped claim filtering lands. Mirrors AgentListView. Called
+  // unconditionally with the other hooks to keep React hook order stable.
+  const isScoped = useProviderScoped(args.provider);
+
   // nowMs captured at memo-eval time; health re-derives whenever any source changes
-  return useMemo(
+  const fleet = useMemo(
     () =>
       buildFleet({
         claims: claims ?? [],
@@ -248,4 +264,6 @@ export function useFleetModel(args: UseFleetModelArgs): readonly FleetAgent[] {
       args.filterText,
     ],
   );
+
+  return isScoped ? EMPTY_FLEET : fleet;
 }
