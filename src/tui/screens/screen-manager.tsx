@@ -207,8 +207,8 @@ async function setGoalForCompensation(
 /**
  * Constructs a single {@link PulseAggregator} bound to the live
  * AgentTask/TimelineEvent/Contribution informers. Built in an effect
- * (the constructor starts a setInterval + informer subscriptions, so it
- * must not run during render); persists across page navigation since
+ * (the constructor starts a periodic tick + informer subscriptions, so
+ * it must not run during render); persists across page navigation since
  * ScreenManager is not unmounted on push/pop, and is disposed when
  * ScreenManager unmounts (i.e. session end).
  *

@@ -8,8 +8,11 @@
  * the Informer's Map<id,event> queue has collapsed same-id bursts to
  * final state and after overflow clear(), which would undercount
  * reviewIterations and the ADDED rates.) Every raw event synchronously
- * bumps the current bucket counter (truly lossless data path). A setInterval rotates the rings
- * and notifies subscribers (coalesced render cadence). Spawn rate counts
+ * bumps the current bucket counter (truly lossless data path). A 1Hz
+ * periodic tick (via the approved `startInterval` seam — `src/tui` may
+ * not contain a raw timer literal per the A8 acceptance grep) rotates
+ * the rings and notifies subscribers (coalesced render cadence). Spawn
+ * rate counts
  * AgentTask ADDED — the remote-watchable unit of agent work (AgentSession
  * is not server-watched in remote mode). Contrib rate counts Contribution
  * ADDED — the one signal every preset emits (review-loop spawns agents
@@ -22,6 +25,7 @@
 
 import type { AgentTaskEntity } from "../../core/agent-task.js";
 import type { Informer } from "../../core/informer.js";
+import { startInterval } from "../../local/use-interval.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -54,8 +58,13 @@ export interface PulseAggregatorOptions {
   readonly tickMs?: number;
   readonly bucketCount?: number;
   readonly now?: () => number;
-  readonly setInterval?: (fn: () => void, ms: number) => unknown;
-  readonly clearInterval?: (handle: unknown) => void;
+  /**
+   * Periodic-tick seam. Returns a stop function (same shape as
+   * `startInterval` from `src/local/use-interval`). Tests inject a fake
+   * that captures the callback. Named to avoid the banned raw timer
+   * literal in `src/tui` (A8 acceptance grep).
+   */
+  readonly scheduleTick?: (cb: () => void, ms: number) => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +84,7 @@ export class PulseAggregator {
   private readonly taskInformer: Informer<"AgentTask">;
   private readonly bucketCount: number;
   private readonly now: () => number;
-  private readonly clearIntervalFn: (handle: unknown) => void;
+  private stopTick: (() => void) | null = null;
 
   private spawnRing: number[];
   private eventRing: number[];
@@ -92,7 +101,6 @@ export class PulseAggregator {
   // String, not the phase union: the raw tap delivers status.phase as a
   // plain primitive string projection (RawInformerEvent.statusPhase).
   private readonly lastPhase = new Map<string, string>();
-  private intervalHandle: unknown = null;
   private disposed = false;
   private _tickedAt: number;
 
@@ -110,9 +118,7 @@ export class PulseAggregator {
     this.taskInformer = taskInformer;
     this.bucketCount = options?.bucketCount ?? DEFAULT_BUCKET_COUNT;
     this.now = options?.now ?? Date.now;
-    const setIntervalFn = options?.setInterval ?? globalThis.setInterval;
-    this.clearIntervalFn =
-      options?.clearInterval ?? (globalThis.clearInterval as (h: unknown) => void);
+    const scheduleTick = options?.scheduleTick ?? startInterval;
     const tickMs = options?.tickMs ?? DEFAULT_TICK_MS;
 
     this.spawnRing = new Array(this.bucketCount).fill(0);
@@ -170,7 +176,7 @@ export class PulseAggregator {
       }),
     );
 
-    this.intervalHandle = setIntervalFn(() => this.tick(), tickMs);
+    this.stopTick = scheduleTick(() => this.tick(), tickMs);
   }
 
   subscribe(fn: () => void): () => void {
@@ -216,9 +222,9 @@ export class PulseAggregator {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (this.intervalHandle !== null) {
-      this.clearIntervalFn(this.intervalHandle);
-      this.intervalHandle = null;
+    if (this.stopTick !== null) {
+      this.stopTick();
+      this.stopTick = null;
     }
     for (const off of this.unsubs) {
       try {

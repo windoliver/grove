@@ -156,12 +156,11 @@ function makeHarness(): Harness {
     {
       tickMs: 1000,
       bucketCount: 60,
-      setInterval: (fn) => {
-        tickFn = fn;
-        return 1;
-      },
-      clearInterval: () => {
-        tickFn = null;
+      scheduleTick: (cb) => {
+        tickFn = cb;
+        return () => {
+          tickFn = null;
+        };
       },
     },
   );
@@ -333,12 +332,11 @@ describe("PulseAggregator — lastPhase seeding (round-3 regression)", () => {
       new FakeInformer<TimelineEventEntity>() as unknown as Informer<"TimelineEvent">,
       new FakeInformer<ContributionEntity>() as unknown as Informer<"Contribution">,
       {
-        setInterval: (fn) => {
-          tickFn = fn;
-          return 1;
-        },
-        clearInterval: () => {
-          tickFn = () => undefined;
+        scheduleTick: (cb) => {
+          tickFn = cb;
+          return () => {
+            tickFn = () => undefined;
+          };
         },
       },
     );

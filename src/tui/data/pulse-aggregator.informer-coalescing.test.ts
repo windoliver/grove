@@ -119,12 +119,11 @@ function makeAgg(
 ): { agg: PulseAggregator; tick: () => void } {
   let tickFn: () => void = () => undefined;
   const agg = new PulseAggregator(taskInformer, timelineInformer, contribInformer, {
-    setInterval: (fn) => {
-      tickFn = fn;
-      return 1;
-    },
-    clearInterval: () => {
-      tickFn = () => undefined;
+    scheduleTick: (cb) => {
+      tickFn = cb;
+      return () => {
+        tickFn = () => undefined;
+      };
     },
   });
   return { agg, tick: () => tickFn() };
