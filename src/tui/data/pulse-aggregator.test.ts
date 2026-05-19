@@ -267,3 +267,50 @@ describe("PulseAggregator — subscribe + dispose", () => {
     expect(last[last.length - 1]).toBe(0);
   });
 });
+
+describe("PulseAggregator — lastPhase seeding (round-3 regression)", () => {
+  function build(tasks: FakeInformer<AgentTaskEntity>): {
+    agg: PulseAggregator;
+    tick: () => void;
+  } {
+    let tickFn: () => void = () => undefined;
+    const agg = new PulseAggregator(
+      tasks as unknown as Informer<"AgentTask">,
+      new FakeInformer<TimelineEventEntity>() as unknown as Informer<"TimelineEvent">,
+      new FakeInformer<ContributionEntity>() as unknown as Informer<"Contribution">,
+      {
+        setInterval: (fn) => {
+          tickFn = fn;
+          return 1;
+        },
+        clearInterval: () => {
+          tickFn = () => undefined;
+        },
+      },
+    );
+    return { agg, tick: () => tickFn() };
+  }
+
+  test("a task already in AwaitingReview at construction is NOT miscounted on a same-phase MODIFIED", () => {
+    const tasks = new FakeInformer<AgentTaskEntity>();
+    // Pre-existing AwaitingReview task in the namespace BEFORE the
+    // aggregator is constructed (no handlers yet — only populates list()).
+    tasks.emit("ADDED", mkTask("pre", "AwaitingReview"));
+
+    const { agg, tick } = build(tasks);
+
+    // A later same-phase MODIFIED must NOT count as a fresh review
+    // iteration — lastPhase was seeded from list() at construction.
+    tasks.emit("MODIFIED", mkTask("pre", "AwaitingReview"));
+    tick();
+    expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(0);
+
+    // A genuine transition still counts.
+    tasks.emit("MODIFIED", mkTask("pre", "Running"));
+    tasks.emit("MODIFIED", mkTask("pre", "AwaitingReview"));
+    tick();
+    expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(1);
+
+    agg.dispose();
+  });
+});

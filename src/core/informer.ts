@@ -107,9 +107,13 @@ export class Informer<K extends WatchKind = WatchKind> {
    * the final state in the `Map<id,event>` queue and overflow may have
    * dropped the batch entirely.
    *
-   * Contract: raw handlers MUST be cheap and synchronous (they run on the
-   * stream hot path). Throws are isolated so one handler can't break
-   * ingest, but a slow handler will backpressure the watch stream.
+   * Contract: raw handlers MUST be cheap, synchronous, and MUST NOT
+   * mutate the delivered entity (it is passed un-frozen for hot-path
+   * cost reasons and the same reference later enters the cache via the
+   * coalesced path). Throws are isolated so one handler can't break
+   * ingest; a returned rejected Promise is swallowed (handlers must be
+   * synchronous); but a slow or mutating handler is a caller bug that
+   * will backpressure or corrupt the watch stream.
    */
   addRawEventHandler(fn: EventHandlerFn<K>): () => void {
     this.rawHandlers.push(fn);
@@ -203,21 +207,25 @@ export class Informer<K extends WatchKind = WatchKind> {
     // the Map<id,event> queue collapses same-id bursts and before overflow
     // clear(). Lossless metrics (PulseAggregator) subscribe here.
     //
-    // Isolation parity with the coalesced dispatch path:
-    // - snapshot the handler list so an unsubscribe during fanout can't
-    //   skip a sibling handler;
-    // - deep-freeze the entity before delivery (the coalesced path freezes
-    //   it before storing; doing it here is idempotent and prevents a raw
-    //   subscriber from mutating an object that later enters the cache);
-    // - swallow a rejected Promise from a (contract-violating, since raw
-    //   handlers must be synchronous) thenable-returning handler so it
-    //   can't escape as an unhandled rejection.
+    // CONTRACT: raw handlers MUST be synchronous, cheap, and MUST NOT
+    // mutate the entity. The entity is delivered un-frozen by design —
+    // deep-freezing every raw delta on the ingest hot path adds unbounded
+    // recursive traversal (Contributions carry large nested context /
+    // scores / relations) and would backpressure the very stream the
+    // lossless counters depend on. The coalesced path still freezes the
+    // entity before it enters the cache, so a well-behaved (read-only)
+    // raw handler is safe; a misbehaving one is a caller bug, not an
+    // ingest-integrity risk.
+    //
+    // Cheap isolation still applied: snapshot the handler list so an
+    // unsubscribe mid-fanout can't skip a sibling, and swallow a rejected
+    // Promise from a contract-violating async handler.
     if (this.rawHandlers.length > 0) {
-      const frozen = freeze(e.entity as EntityForKind<K>);
       const meta = e.emittedAt === undefined ? undefined : { emittedAt: e.emittedAt };
+      const entity = e.entity as EntityForKind<K>;
       for (const h of [...this.rawHandlers]) {
         try {
-          const ret = h(e.op as InformerOp, frozen, meta);
+          const ret = h(e.op as InformerOp, entity, meta);
           if (ret && typeof (ret as Promise<void>).then === "function") {
             (ret as Promise<void>).catch((err) => {
               console.error(

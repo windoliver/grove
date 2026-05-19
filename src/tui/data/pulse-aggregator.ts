@@ -119,6 +119,15 @@ export class PulseAggregator {
     this.contribRing = new Array(this.bucketCount).fill(0);
     this._tickedAt = this.now();
 
+    // Seed lastPhase from the current AgentTask cache BEFORE subscribing.
+    // Otherwise a task already in `AwaitingReview` at construct/reset time
+    // (the scope is namespace-wide and the view recreates the aggregator
+    // per session) would, on its next same-phase MODIFIED, see
+    // prev===undefined and be miscounted as a fresh review iteration.
+    for (const t of taskInformer.list()) {
+      this.lastPhase.set(t.id, t.status.phase);
+    }
+
     this.unsubs.push(
       timelineInformer.addRawEventHandler((op, _entity) => {
         if (this.disposed) return;
