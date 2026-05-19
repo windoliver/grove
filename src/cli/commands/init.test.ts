@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import { isValidProjectId } from "../../core/project-id.js";
 import { loadRegistry } from "../../core/project-registry.js";
 import type { InitOptions } from "./init.js";
-import { executeInit, parseInitArgs } from "./init.js";
+import { ensureGitignore, executeInit, parseInitArgs } from "./init.js";
 
 const INIT_INTEGRATION_TIMEOUT_MS = 30_000;
 
@@ -374,5 +374,47 @@ describe("parseInitArgs — unify flags", () => {
 
   initTest("both --unify and --no-unify is an error", () => {
     expect(() => parseInitArgs(["--unify", "--no-unify"])).toThrow(/mutually exclusive/);
+  });
+});
+
+describe("ensureGitignore", () => {
+  test("creates .gitignore with both entries when absent", async () => {
+    const dir = await createTempDir();
+    try {
+      await ensureGitignore(dir);
+      const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(gi).toContain(".grove/");
+      expect(gi).toContain("nexus-data/");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("appends only missing entries, preserves existing content", async () => {
+    const dir = await createTempDir();
+    try {
+      await writeFile(join(dir, ".gitignore"), "node_modules\n.grove/\n", "utf8");
+      await ensureGitignore(dir);
+      const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(gi).toContain("node_modules");
+      // .grove/ already present — not duplicated
+      expect(gi.match(/^\.grove\/$/gm)?.length).toBe(1);
+      expect(gi).toContain("nexus-data/");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("is idempotent — second run is a no-op", async () => {
+    const dir = await createTempDir();
+    try {
+      await ensureGitignore(dir);
+      const first = readFileSync(join(dir, ".gitignore"), "utf8");
+      await ensureGitignore(dir);
+      const second = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(second).toBe(first);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

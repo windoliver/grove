@@ -47,6 +47,25 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
 
 export type SyncHandlerFn = () => void;
 
+/**
+ * Reduced, immutable projection delivered to RAW event handlers. It
+ * deliberately does NOT carry the entity reference: the raw tap fires
+ * before the coalesced path freezes/stores the entity, so handing out
+ * the live object would let a subscriber corrupt the cache. All fields
+ * are primitives copied off the event, so this is cheap (one small
+ * alloc, no recursive freeze) and safe by construction. `statusPhase`
+ * is the AgentTask `status.phase` when present (undefined for kinds
+ * without it) — the only nested field any raw consumer needs.
+ */
+export interface RawInformerEvent {
+  readonly op: InformerOp;
+  readonly id: string;
+  readonly statusPhase?: string | undefined;
+  readonly emittedAt?: string | undefined;
+}
+
+export type RawEventHandlerFn = (e: RawInformerEvent) => void;
+
 export interface InformerOptions {
   /** Max distinct entity ids buffered between drain cycles. Default 1000. */
   readonly queueLimit?: number;
@@ -65,6 +84,7 @@ export class Informer<K extends WatchKind = WatchKind> {
   private readonly onOverflow: ((kind: WatchKind) => void) | null;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
+  private readonly rawHandlers: Array<RawEventHandlerFn> = [];
   private readonly syncHandlers: Array<SyncHandlerFn> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
@@ -93,6 +113,32 @@ export class Informer<K extends WatchKind = WatchKind> {
     return () => {
       const idx = this.handlers.indexOf(fn);
       if (idx >= 0) this.handlers.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Register a RAW event handler — fires synchronously in `enqueue()` for
+   * EVERY delta event (ADDED/MODIFIED/DELETED), BEFORE the per-id queue
+   * coalescing and BEFORE overflow `clear()`. Use this (not
+   * `addEventHandler`) for lossless rate/transition metrics: the normal
+   * handler path runs after `drain()`, by which point a same-id burst
+   * (e.g. Running→AwaitingReview→Running→AwaitingReview) has collapsed to
+   * the final state in the `Map<id,event>` queue and overflow may have
+   * dropped the batch entirely.
+   *
+   * Handlers receive a {@link RawInformerEvent} — a small immutable
+   * primitive projection, NOT the entity — so a raw subscriber cannot
+   * mutate the object that later enters the cache, and there is no
+   * recursive deep-freeze on the ingest hot path. Contract: raw
+   * handlers MUST be cheap and synchronous (void return); a thrown
+   * error is isolated so one handler can't break ingest, but a slow
+   * handler will backpressure the watch stream.
+   */
+  addRawEventHandler(fn: RawEventHandlerFn): () => void {
+    this.rawHandlers.push(fn);
+    return () => {
+      const idx = this.rawHandlers.indexOf(fn);
+      if (idx >= 0) this.rawHandlers.splice(idx, 1);
     };
   }
 
@@ -176,6 +222,38 @@ export class Informer<K extends WatchKind = WatchKind> {
     if (isControlEvent(e.op)) return this.enqueueControl(e);
     const id = e.entity?.id;
     if (id === undefined) return;
+    // Raw, pre-coalesce, overflow-immune tap. Fires for every delta before
+    // the Map<id,event> queue collapses same-id bursts and before overflow
+    // clear(). Lossless metrics (PulseAggregator) subscribe here.
+    //
+    // Handlers get a small immutable primitive projection (op/id/
+    // statusPhase/emittedAt) — never the entity. This is safe by
+    // construction (a raw subscriber cannot reach the object that later
+    // enters the cache) AND cheap (one tiny alloc, no recursive freeze
+    // on the ingest hot path). Snapshot the handler list so an
+    // unsubscribe mid-fanout can't skip a sibling; isolate throws.
+    if (this.rawHandlers.length > 0) {
+      const ent = e.entity as { status?: { phase?: string } } | null;
+      // Runtime-freeze the shared projection: TS `readonly` is erased at
+      // runtime, and the same object is handed to every handler in the
+      // fanout — without this, a misbehaving handler could rewrite a
+      // field and make a later handler miscount by registration order.
+      // O(1): a flat 4-primitive object, not the recursive entity freeze
+      // rejected earlier for hot-path cost.
+      const raw: RawInformerEvent = Object.freeze({
+        op: e.op as InformerOp,
+        id,
+        statusPhase: ent?.status?.phase,
+        emittedAt: e.emittedAt,
+      });
+      for (const h of [...this.rawHandlers]) {
+        try {
+          h(raw);
+        } catch (err) {
+          console.error(`Informer[${this.kind}]: raw handler threw, continuing ingest:`, err);
+        }
+      }
+    }
     if (this.queue.has(id)) {
       this.queue.set(id, e);
       return;

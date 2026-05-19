@@ -137,6 +137,7 @@ function mockActions(overrides?: {
     logFilterBackspace: () => record("logFilterBackspace"),
     openDetail: () => record("openDetail"),
     enterInspect: () => record("enterInspect"),
+    openPulse: () => record("openPulse"),
     quit: () => record("quit"),
     showQuitDialog: () => record("showQuitDialog"),
     approvePermission: () => record("approvePermission"),
@@ -411,6 +412,26 @@ describe("routeRunningKey — normal mode misc", () => {
     const { actions } = mockActions();
     const handled = routeRunningKey(keyEvent("z"), defaultState(), actions);
     expect(handled).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Pulse hotkey (#308)
+// ===========================================================================
+
+describe("Pulse hotkey (#308)", () => {
+  test("'p' in normal mode invokes openPulse and is handled", () => {
+    const { actions, log } = mockActions();
+    const handled = routeRunningKey(keyEvent("p"), defaultState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("openPulse");
+  });
+
+  test("'p' is NOT routed to openPulse when prompt mode is active", () => {
+    const { actions, log } = mockActions();
+    const state = defaultState({ promptMode: true });
+    routeRunningKey(keyEvent("p"), state, actions);
+    expect(log.calls).not.toContain("openPulse");
   });
 });
 

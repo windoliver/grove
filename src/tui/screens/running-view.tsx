@@ -139,6 +139,8 @@ export interface RunningViewProps {
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   readonly onEnterInspect: () => void;
+  /** Open the Pulse dashboard page (#308). */
+  readonly onOpenPulse?: (() => void) | undefined;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
   /** Return to the preset-select / main screen. */
@@ -209,6 +211,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     logBuffers,
     agentFailures,
     onEnterInspect,
+    onOpenPulse,
     onComplete: _onComplete,
     onQuit,
     onBackToMain,
@@ -900,6 +903,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         // but wired to a no-op so Enter cannot accidentally enter inspect.
         openDetail: () => {},
         enterInspect: () => onEnterInspect(),
+        openPulse: () => onOpenPulse?.(),
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
@@ -1023,6 +1027,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         onSendToAgent,
         feed,
         onEnterInspect,
+        onOpenPulse,
         onQuit,
         onBackToMain,
         monitor.pendingPermissions,

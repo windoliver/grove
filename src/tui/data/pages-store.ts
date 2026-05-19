@@ -22,7 +22,8 @@ export type PageKind =
   | "complete"
   | "inspect"
   | "panel"
-  | "entity-detail";
+  | "entity-detail"
+  | "pulse";
 
 export interface Page {
   readonly kind: PageKind;

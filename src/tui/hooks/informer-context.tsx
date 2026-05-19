@@ -122,6 +122,7 @@ function createNullInformer<K extends WatchKind>(): Informer<K> {
   const noop = (): (() => void) => unsubNoop;
   return {
     addEventHandler: noop,
+    addRawEventHandler: noop,
     addSyncHandler: noop,
     hasSynced: () => false,
     getById: () => undefined,
