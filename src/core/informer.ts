@@ -234,12 +234,18 @@ export class Informer<K extends WatchKind = WatchKind> {
     // unsubscribe mid-fanout can't skip a sibling; isolate throws.
     if (this.rawHandlers.length > 0) {
       const ent = e.entity as { status?: { phase?: string } } | null;
-      const raw: RawInformerEvent = {
+      // Runtime-freeze the shared projection: TS `readonly` is erased at
+      // runtime, and the same object is handed to every handler in the
+      // fanout — without this, a misbehaving handler could rewrite a
+      // field and make a later handler miscount by registration order.
+      // O(1): a flat 4-primitive object, not the recursive entity freeze
+      // rejected earlier for hot-path cost.
+      const raw: RawInformerEvent = Object.freeze({
         op: e.op as InformerOp,
         id,
         statusPhase: ent?.status?.phase,
         emittedAt: e.emittedAt,
-      };
+      });
       for (const h of [...this.rawHandlers]) {
         try {
           h(raw);

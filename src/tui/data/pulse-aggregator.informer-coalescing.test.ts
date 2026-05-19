@@ -214,4 +214,42 @@ describe("PulseAggregator vs real Informer coalescing", () => {
 
     ac.abort();
   });
+
+  test("raw projection is runtime-frozen: a mutating handler cannot corrupt later handlers", () => {
+    const { stream, emit } = makeFakeStream();
+    const taskInformer = new Informer(stream, "AgentTask");
+    const ac = new AbortController();
+    void taskInformer.run(ac.signal);
+
+    let firstWasFrozen = false;
+    // Handler 1 (registered first) tries to corrupt the shared event.
+    taskInformer.addRawEventHandler((e) => {
+      firstWasFrozen = Object.isFrozen(e);
+      try {
+        (e as { op: string }).op = "DELETED";
+        (e as { id: string }).id = "hacked";
+        (e as { statusPhase?: string }).statusPhase = "Failed";
+      } catch {
+        // strict-mode write to a frozen object throws — also fine.
+      }
+    });
+    // Handler 2 must still observe the original, unmutated fields.
+    let seenOp: string | undefined;
+    let seenId: string | undefined;
+    let seenPhase: string | undefined;
+    taskInformer.addRawEventHandler((e) => {
+      seenOp = e.op;
+      seenId = e.id;
+      seenPhase = e.statusPhase;
+    });
+
+    emit(taskEvent("ADDED", "real-1", 1, "Running"));
+
+    expect(firstWasFrozen).toBe(true);
+    expect(seenOp).toBe("ADDED");
+    expect(seenId).toBe("real-1");
+    expect(seenPhase).toBe("Running");
+
+    ac.abort();
+  });
 });
