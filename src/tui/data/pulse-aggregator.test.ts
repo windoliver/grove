@@ -20,6 +20,13 @@ class FakeInformer<E extends { id: string }> {
       if (i >= 0) this.handlers.splice(i, 1);
     };
   }
+  // PulseAggregator subscribes via the raw, pre-coalesce channel. This
+  // fake delivers every emit() losslessly, so raw === normal here. The
+  // real-Informer coalescing path is covered by the dedicated regression
+  // test below (informer-coalescing).
+  addRawEventHandler(fn: EventHandler<E>): () => void {
+    return this.addEventHandler(fn);
+  }
   emit(op: "ADDED" | "MODIFIED" | "DELETED", entity: E): void {
     if (op === "DELETED") this.entities.delete(entity.id);
     else this.entities.set(entity.id, entity);

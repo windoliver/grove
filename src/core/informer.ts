@@ -65,6 +65,7 @@ export class Informer<K extends WatchKind = WatchKind> {
   private readonly onOverflow: ((kind: WatchKind) => void) | null;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
+  private readonly rawHandlers: Array<EventHandlerFn<K>> = [];
   private readonly syncHandlers: Array<SyncHandlerFn> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
@@ -93,6 +94,28 @@ export class Informer<K extends WatchKind = WatchKind> {
     return () => {
       const idx = this.handlers.indexOf(fn);
       if (idx >= 0) this.handlers.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Register a RAW event handler — fires synchronously in `enqueue()` for
+   * EVERY delta event (ADDED/MODIFIED/DELETED), BEFORE the per-id queue
+   * coalescing and BEFORE overflow `clear()`. Use this (not
+   * `addEventHandler`) for lossless rate/transition metrics: the normal
+   * handler path runs after `drain()`, by which point a same-id burst
+   * (e.g. Running→AwaitingReview→Running→AwaitingReview) has collapsed to
+   * the final state in the `Map<id,event>` queue and overflow may have
+   * dropped the batch entirely.
+   *
+   * Contract: raw handlers MUST be cheap and synchronous (they run on the
+   * stream hot path). Throws are isolated so one handler can't break
+   * ingest, but a slow handler will backpressure the watch stream.
+   */
+  addRawEventHandler(fn: EventHandlerFn<K>): () => void {
+    this.rawHandlers.push(fn);
+    return () => {
+      const idx = this.rawHandlers.indexOf(fn);
+      if (idx >= 0) this.rawHandlers.splice(idx, 1);
     };
   }
 
@@ -176,6 +199,22 @@ export class Informer<K extends WatchKind = WatchKind> {
     if (isControlEvent(e.op)) return this.enqueueControl(e);
     const id = e.entity?.id;
     if (id === undefined) return;
+    // Raw, pre-coalesce, overflow-immune tap. Fires for every delta before
+    // the Map<id,event> queue collapses same-id bursts and before overflow
+    // clear(). Lossless metrics (PulseAggregator) subscribe here.
+    if (this.rawHandlers.length > 0) {
+      for (const h of this.rawHandlers) {
+        try {
+          h(
+            e.op as InformerOp,
+            e.entity as EntityForKind<K>,
+            e.emittedAt === undefined ? undefined : { emittedAt: e.emittedAt },
+          );
+        } catch (err) {
+          console.error(`Informer[${this.kind}]: raw handler threw, continuing ingest:`, err);
+        }
+      }
+    }
     if (this.queue.has(id)) {
       this.queue.set(id, e);
       return;

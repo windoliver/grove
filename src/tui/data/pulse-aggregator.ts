@@ -3,8 +3,12 @@
  *
  * Owns four 60-bucket ring buffers (spawn / event / review / contrib
  * rate) and a 1Hz tick. Subscribes to AgentTask, TimelineEvent, and
- * Contribution informers; every event synchronously bumps the current
- * bucket counter (lossless data path). A setInterval rotates the rings
+ * Contribution informers via `addRawEventHandler` — the raw,
+ * pre-coalesce, overflow-immune channel. (`addEventHandler` fires after
+ * the Informer's Map<id,event> queue has collapsed same-id bursts to
+ * final state and after overflow clear(), which would undercount
+ * reviewIterations and the ADDED rates.) Every raw event synchronously
+ * bumps the current bucket counter (truly lossless data path). A setInterval rotates the rings
  * and notifies subscribers (coalesced render cadence). Spawn rate counts
  * AgentTask ADDED — the remote-watchable unit of agent work (AgentSession
  * is not server-watched in remote mode). Contrib rate counts Contribution
@@ -116,19 +120,19 @@ export class PulseAggregator {
     this._tickedAt = this.now();
 
     this.unsubs.push(
-      timelineInformer.addEventHandler((op, _entity) => {
+      timelineInformer.addRawEventHandler((op, _entity) => {
         if (this.disposed) return;
         if (op === "ADDED") this.eventBucket += 1;
       }),
     );
     this.unsubs.push(
-      contribInformer.addEventHandler((op, _entity) => {
+      contribInformer.addRawEventHandler((op, _entity) => {
         if (this.disposed) return;
         if (op === "ADDED") this.contribBucket += 1;
       }),
     );
     this.unsubs.push(
-      taskInformer.addEventHandler((op, entity) => {
+      taskInformer.addRawEventHandler((op, entity) => {
         if (this.disposed) return;
         if (op === "DELETED") {
           this.lastPhase.delete(entity.id);

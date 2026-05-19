@@ -206,25 +206,32 @@ async function setGoalForCompensation(
 
 /**
  * Constructs a single {@link PulseAggregator} bound to the live
- * AgentTask/TimelineEvent informers. Built in an effect (the constructor
- * starts a setInterval + informer subscriptions, so it must not run
- * during render); persists across page navigation since ScreenManager
- * is not unmounted on push/pop, and is disposed when ScreenManager
- * unmounts (i.e. session end).
+ * AgentTask/TimelineEvent/Contribution informers. Built in an effect
+ * (the constructor starts a setInterval + informer subscriptions, so it
+ * must not run during render); persists across page navigation since
+ * ScreenManager is not unmounted on push/pop, and is disposed when
+ * ScreenManager unmounts (i.e. session end).
+ *
+ * `sessionKey` is included in the effect deps so the aggregator is
+ * disposed+recreated at session boundaries. Informer identity alone is
+ * stable across "New Session" within the same ScreenManager, so without
+ * this the rings/buckets/lastPhase would carry stale prior-session
+ * activity into the next session's Pulse view.
  */
-function usePulseAggregator(): PulseAggregator | null {
+function usePulseAggregator(sessionKey: string): PulseAggregator | null {
   const taskInformer = useInformerOptional("AgentTask");
   const timelineInformer = useInformerOptional("TimelineEvent");
   const contribInformer = useInformerOptional("Contribution");
   const [aggregator, setAggregator] = useState<PulseAggregator | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionKey is an intentional re-init trigger — not read in the body, but a change means a new session, so the aggregator must be disposed+recreated to clear stale rate history.
   useEffect(() => {
     const agg = new PulseAggregator(taskInformer, timelineInformer, contribInformer);
     setAggregator(agg);
     return () => {
       agg.dispose();
     };
-  }, [taskInformer, timelineInformer, contribInformer]);
+  }, [taskInformer, timelineInformer, contribInformer, sessionKey]);
 
   return aggregator;
 }
@@ -333,8 +340,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
 
     // PulseAggregator — Pulse dashboard data source (#308). Singleton across
-    // page navigation; disposed when the screen manager unmounts.
-    const pulseAggregator = usePulseAggregator();
+    // page navigation; disposed+recreated at session boundaries so a new
+    // session never shows the prior session's stale rate history.
+    const pulseAggregator = usePulseAggregator(
+      state.sessionId ?? state.sessionStartedAt ?? "no-session",
+    );
 
     // Apply session scope on mount for resumed sessions (startOnRunning path).
     // Must fire before the first contribution poll in the reconcile effect below —
