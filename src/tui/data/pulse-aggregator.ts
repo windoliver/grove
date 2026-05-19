@@ -119,14 +119,25 @@ export class PulseAggregator {
     this.contribRing = new Array(this.bucketCount).fill(0);
     this._tickedAt = this.now();
 
-    // Seed lastPhase from the current AgentTask cache BEFORE subscribing.
-    // Otherwise a task already in `AwaitingReview` at construct/reset time
-    // (the scope is namespace-wide and the view recreates the aggregator
-    // per session) would, on its next same-phase MODIFIED, see
-    // prev===undefined and be miscounted as a fresh review iteration.
-    for (const t of taskInformer.list()) {
-      this.lastPhase.set(t.id, t.status.phase);
-    }
+    // Reconcile lastPhase from the AgentTask cache now AND on every
+    // relist. Construction-only seeding is insufficient: the raw tap
+    // sees deltas only — control RELIST_* events skip raw handlers and
+    // relist-derived adds/mods/dels are committed wholesale to the
+    // cache via the coalesced path. After a reconnect / overflow
+    // recovery, taskInformer.list() changes while lastPhase would
+    // otherwise stay frozen → a task already in AwaitingReview gets
+    // miscounted on its next same-phase MODIFIED, deleted tasks leave
+    // stale entries. A relist is "here is current truth", not real
+    // activity, so reseed must NOT touch the rate buckets.
+    this.reseedLastPhase(taskInformer);
+    this.unsubs.push(
+      // fireIfSynced=false: we just reseeded explicitly; only react to
+      // FUTURE RELIST_END (reconnect / overflow recovery).
+      taskInformer.addSyncHandler(() => {
+        if (this.disposed) return;
+        this.reseedLastPhase(taskInformer);
+      }, false),
+    );
 
     this.unsubs.push(
       timelineInformer.addRawEventHandler((op, _entity) => {
@@ -238,6 +249,20 @@ export class PulseAggregator {
       } catch (err) {
         console.error("PulseAggregator: subscriber threw, continuing fanout:", err);
       }
+    }
+  }
+
+  /**
+   * Rebuild `lastPhase` from the current AgentTask cache. Used at
+   * construction and on every RELIST_END. Pure reconciliation — it
+   * replaces the map wholesale (dropping stale ids for tasks removed
+   * during the relist) and deliberately does NOT touch any rate bucket:
+   * a relist reports current truth, not new activity.
+   */
+  private reseedLastPhase(taskInformer: Informer<"AgentTask">): void {
+    this.lastPhase.clear();
+    for (const t of taskInformer.list()) {
+      this.lastPhase.set(t.id, t.status.phase);
     }
   }
 

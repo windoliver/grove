@@ -27,6 +27,29 @@ class FakeInformer<E extends { id: string }> {
   addRawEventHandler(fn: EventHandler<E>): () => void {
     return this.addEventHandler(fn);
   }
+  private readonly syncHandlers: Array<() => void> = [];
+  addSyncHandler(fn: () => void): () => void {
+    this.syncHandlers.push(fn);
+    return () => {
+      const i = this.syncHandlers.indexOf(fn);
+      if (i >= 0) this.syncHandlers.splice(i, 1);
+    };
+  }
+  /** Test helper: simulate a RELIST_END (sync) fan-out. */
+  fireSync(): void {
+    for (const h of [...this.syncHandlers]) h();
+  }
+  /** Test helper: add/replace an entity in the cache WITHOUT firing
+   *  handlers (models a task introduced by a relist commitReplace, which
+   *  the raw tap never observes). */
+  seedCache(entity: E): void {
+    this.entities.set(entity.id, entity);
+  }
+  /** Test helper: drop an entity from the cache without firing handlers
+   *  (models a task removed by a relist that the raw tap never sees). */
+  dropFromCache(id: string): void {
+    this.entities.delete(id);
+  }
   emit(op: "ADDED" | "MODIFIED" | "DELETED", entity: E): void {
     if (op === "DELETED") this.entities.delete(entity.id);
     else this.entities.set(entity.id, entity);
@@ -308,6 +331,43 @@ describe("PulseAggregator — lastPhase seeding (round-3 regression)", () => {
     // A genuine transition still counts.
     tasks.emit("MODIFIED", mkTask("pre", "Running"));
     tasks.emit("MODIFIED", mkTask("pre", "AwaitingReview"));
+    tick();
+    expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(1);
+
+    agg.dispose();
+  });
+
+  test("RELIST reconciliation: a relist-introduced AwaitingReview task is not miscounted", () => {
+    const tasks = new FakeInformer<AgentTaskEntity>();
+    const { agg, tick } = build(tasks); // constructed with empty cache
+
+    // Reconnect/overflow recovery: a relist commitReplace puts an
+    // AwaitingReview task into the cache. The raw tap never sees it
+    // (control RELIST_* + commitReplace bypass raw handlers).
+    tasks.seedCache(mkTask("r1", "AwaitingReview"));
+    tasks.fireSync(); // RELIST_END → PulseAggregator reseeds lastPhase
+
+    // Next same-phase MODIFIED must NOT be a false review iteration.
+    tasks.emit("MODIFIED", mkTask("r1", "AwaitingReview"));
+    tick();
+    expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(0);
+
+    agg.dispose();
+  });
+
+  test("RELIST reconciliation: a task deleted during relist leaves no stale lastPhase entry", () => {
+    const tasks = new FakeInformer<AgentTaskEntity>();
+    tasks.emit("ADDED", mkTask("g1", "Running"));
+    const { agg, tick } = build(tasks);
+
+    // Relist drops g1 (the raw tap never sees a DELETED for it).
+    tasks.dropFromCache("g1");
+    tasks.fireSync(); // reseed → lastPhase no longer has g1
+
+    // g1 reappears later (new task, same id) already in AwaitingReview:
+    // with a stale entry this would be suppressed; correctly it counts
+    // once as a genuine first entry.
+    tasks.emit("ADDED", mkTask("g1", "AwaitingReview"));
     tick();
     expect(agg.getSnapshot().series.reviewIterations.at(-1)).toBe(1);
 
