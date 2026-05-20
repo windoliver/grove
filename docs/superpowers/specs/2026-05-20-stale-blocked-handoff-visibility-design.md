@@ -203,7 +203,7 @@ The first implementation should add explicit server endpoints only for actions t
 
 - `POST /api/handoffs/:id/reroute` with `{ "toRole": "reviewer-2" }`
 
-`cancel` transitions an unresolved handoff to `cancelled`. `manual-resolve` transitions an unresolved, expired, or dead-lettered handoff to `manually_resolved`. `reroute` creates a replacement handoff to the selected role and transitions the original to `cancelled` with a reason of `rerouted`.
+`cancel` transitions an unresolved, expired, or dead-lettered handoff to `cancelled`. `manual-resolve` transitions an unresolved, expired, or dead-lettered handoff to `manually_resolved`. `resend` creates a replacement handoff for the same role and transitions the original to `cancelled` with a replacement reference. `reroute` creates a replacement handoff to the selected role and transitions the original to `cancelled` with a replacement reference.
 
 ## Durable State Changes
 
@@ -221,6 +221,8 @@ Valid transitions:
 - `pending_pickup -> cancelled`
 - `delivered -> cancelled`
 - `processed -> cancelled`
+- `expired -> cancelled`
+- `dead_lettered -> cancelled`
 - `pending_pickup -> manually_resolved`
 - `delivered -> manually_resolved`
 - `processed -> manually_resolved`
