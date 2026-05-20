@@ -200,6 +200,20 @@ export {
   VALID_TRANSITIONS,
   validateTransition as validateHandoffTransition,
 } from "./handoff.js";
+export type {
+  HandoffHealthSignal,
+  HandoffOperatorCounts,
+  HandoffOperatorOptions,
+  HandoffOperatorProjection,
+} from "./handoff-operator-state.js";
+export {
+  countHandoffOperatorStates,
+  deriveHandoffOperatorProjection,
+  HandoffOperatorAction,
+  HandoffOperatorState,
+  healthSignalsFromAgentFailures,
+  healthSignalsFromAgentTasks,
+} from "./handoff-operator-state.js";
 export {
   type HookEntry,
   HookEntrySchema,
