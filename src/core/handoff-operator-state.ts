@@ -116,24 +116,9 @@ export function healthSignalsFromAgentTasks(
 ): readonly HandoffHealthSignal[] {
   const signals: HandoffHealthSignal[] = [];
 
-  for (const task of tasks) {
-    if (task.status.phase === AgentTaskPhase.Failed) {
-      signals.push({
-        role: task.spec.role,
-        healthy: false,
-        reason: "agent task failed",
-      });
-      continue;
-    }
-
-    const unhealthyCondition = task.status.conditions.find(isUnhealthyTaskCondition);
-    if (unhealthyCondition === undefined) continue;
-
-    signals.push({
-      role: task.spec.role,
-      healthy: false,
-      reason: conditionReason(unhealthyCondition.reason, unhealthyCondition.type),
-    });
+  for (const task of latestAgentTasksByRole(tasks)) {
+    const signal = healthSignalFromAgentTask(task);
+    if (signal !== undefined) signals.push(signal);
   }
 
   return signals;
@@ -206,6 +191,56 @@ function unhealthySignalFor(
   healthSignals?: readonly HandoffHealthSignal[] | undefined,
 ): HandoffHealthSignal | undefined {
   return healthSignals?.find((signal) => signal.role === handoff.toRole && !signal.healthy);
+}
+
+function latestAgentTasksByRole(tasks: readonly AgentTaskView[]): readonly AgentTaskView[] {
+  const latestByRole = new Map<string, AgentTaskView>();
+
+  for (const task of tasks) {
+    const previous = latestByRole.get(task.spec.role);
+    if (previous === undefined || compareAgentTaskRecency(task, previous) > 0) {
+      latestByRole.set(task.spec.role, task);
+    }
+  }
+
+  return [...latestByRole.values()];
+}
+
+function compareAgentTaskRecency(a: AgentTaskView, b: AgentTaskView): number {
+  const timestampDelta = agentTaskTimestampMs(a) - agentTaskTimestampMs(b);
+  if (timestampDelta !== 0) return timestampDelta;
+
+  const revisionDelta = a.status.revision - b.status.revision;
+  if (revisionDelta !== 0) return revisionDelta;
+
+  return a.spec.id.localeCompare(b.spec.id);
+}
+
+function agentTaskTimestampMs(task: AgentTaskView): number {
+  const statusTime = Date.parse(task.status.lastTransitionAt);
+  if (Number.isFinite(statusTime)) return statusTime;
+
+  const createdTime = Date.parse(task.spec.createdAt);
+  return Number.isFinite(createdTime) ? createdTime : 0;
+}
+
+function healthSignalFromAgentTask(task: AgentTaskView): HandoffHealthSignal | undefined {
+  if (task.status.phase === AgentTaskPhase.Failed) {
+    return {
+      role: task.spec.role,
+      healthy: false,
+      reason: "agent task failed",
+    };
+  }
+
+  const unhealthyCondition = task.status.conditions.find(isUnhealthyTaskCondition);
+  if (unhealthyCondition === undefined) return undefined;
+
+  return {
+    role: task.spec.role,
+    healthy: false,
+    reason: conditionReason(unhealthyCondition.reason, unhealthyCondition.type),
+  };
 }
 
 function nowMs(options?: HandoffOperatorOptions): number {

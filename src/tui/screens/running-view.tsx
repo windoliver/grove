@@ -189,6 +189,7 @@ export interface HandoffPanelSnapshot {
 
 export interface HandoffPanelSnapshotOptions {
   readonly provider: TuiDataProvider;
+  readonly sessionId?: string | undefined;
   readonly sessionStartedAt?: string | undefined;
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
 }
@@ -209,12 +210,16 @@ export async function loadHandoffPanelSnapshot(
   ]);
   const cutoff =
     options.sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const scopedTasks =
+    options.sessionId === undefined
+      ? tasks
+      : tasks.filter((task) => task.status.sessionId === options.sessionId);
 
   return {
     handoffs: all.filter((h) => h.createdAt >= cutoff),
     healthSignals: [
       ...healthSignalsFromAgentFailures(options.agentFailures),
-      ...healthSignalsFromAgentTasks(tasks),
+      ...healthSignalsFromAgentTasks(scopedTasks),
     ],
   };
 }
@@ -637,7 +642,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      void loadHandoffPanelSnapshot({ provider, sessionStartedAt, agentFailures })
+      void loadHandoffPanelSnapshot({ provider, sessionId, sessionStartedAt, agentFailures })
         .then((snapshot) => {
           debugLog("handoffs", `afterFilter=${snapshot.handoffs.length}`);
           setHandoffs(snapshot.handoffs);
@@ -646,7 +651,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         .catch((err: unknown) => {
           debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
         });
-    }, [provider, sessionStartedAt, agentFailures]);
+    }, [provider, sessionId, sessionStartedAt, agentFailures]);
 
     useEffect(() => {
       refreshHandoffs();

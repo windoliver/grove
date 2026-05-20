@@ -16,6 +16,7 @@ import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js"
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
 import type { DeliveredInboxMessage } from "../../src/core/operations/inbox-delegation.js";
+import type { AgentTaskStore } from "../../src/core/store.js";
 import { createApp } from "../../src/server/app.js";
 import { createTestContext, TEST_AUTH_HEADERS, TEST_KEY, TEST_NAMESPACE } from "./helpers.js";
 
@@ -261,6 +262,52 @@ describe("boardroom routes", () => {
       expect(body.handoffs.items[0]?.state).toBe(HandoffOperatorState.Pending);
     } finally {
       sessionHandoffStore.close();
+      await ctx.cleanup();
+    }
+  });
+
+  test("GET /api/boardroom/summary keeps handoffs visible when task health read fails", async () => {
+    const ctx = await createTestContext();
+    const handoffStore = new InMemoryHandoffStore();
+    try {
+      await handoffStore.create({
+        handoffId: "handoff-pending",
+        sourceCid: "blake3:pending",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      const throwingAgentTaskStore: AgentTaskStore = {
+        storeIdentity: ctx.agentTaskStore.storeIdentity,
+        putAgentTaskSpec: (spec, opts) => ctx.agentTaskStore.putAgentTaskSpec(spec, opts),
+        getAgentTask: (taskId) => ctx.agentTaskStore.getAgentTask(taskId),
+        listAgentTasks: async () => {
+          throw new Error("agent task store unavailable");
+        },
+        patchAgentTaskStatus: (taskId, patch, opts) =>
+          ctx.agentTaskStore.patchAgentTaskStatus(taskId, patch, opts),
+        listAgentTaskEntities: (query) => ctx.agentTaskStore.listAgentTaskEntities(query),
+        close: () => undefined,
+      };
+      const app = createApp(
+        { ...ctx.deps, handoffStore, agentTaskStore: throwingAgentTaskStore },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          pending: number;
+          blocked: number;
+        };
+      };
+
+      expect(body.handoffs.pending).toBe(1);
+      expect(body.handoffs.blocked).toBe(0);
+    } finally {
+      handoffStore.close();
       await ctx.cleanup();
     }
   });

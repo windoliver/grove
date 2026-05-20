@@ -26,6 +26,7 @@ import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
 import { sendMessageWithDelivery } from "../../core/operations/inbox-delegation.js";
+import type { AgentTaskStore } from "../../core/store.js";
 import type { ServerDeps, ServerEnv } from "../deps.js";
 import { toOperationDeps } from "../operation-adapter.js";
 import { contributionStoreForSession } from "./shared.js";
@@ -126,7 +127,7 @@ async function buildHandoffSummary(
   await handoffStore.expireStale();
   const [handoffs, agentTasks] = await Promise.all([
     handoffStore.list({ status: ACTIONABLE_HANDOFF_STATUSES }),
-    deps.agentTaskStore?.listAgentTasks() ?? Promise.resolve([]),
+    listAgentTasksForHandoffHealth(deps.agentTaskStore),
   ]);
   const healthSignalTasks =
     sessionId === undefined
@@ -142,6 +143,17 @@ async function buildHandoffSummary(
     ...counts,
     items: projections.slice(0, 20),
   };
+}
+
+async function listAgentTasksForHandoffHealth(
+  agentTaskStore: AgentTaskStore | undefined,
+): Promise<readonly import("../../core/agent-task.js").AgentTaskView[]> {
+  if (agentTaskStore === undefined) return [];
+  try {
+    return await agentTaskStore.listAgentTasks();
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------

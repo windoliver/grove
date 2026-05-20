@@ -245,6 +245,55 @@ describe("health signal helpers", () => {
     ]);
   });
 
+  test("latest task per role determines current health", () => {
+    const oldFailed = agentTask({
+      spec: {
+        ...agentTask().spec,
+        id: "task-reviewer-old",
+        role: "reviewer",
+        createdAt: "2026-05-20T09:00:00.000Z",
+      },
+      status: {
+        ...agentTask().status,
+        id: "task-reviewer-old",
+        phase: AgentTaskPhase.Failed,
+        lastTransitionAt: "2026-05-20T09:30:00.000Z",
+      },
+    });
+    const newRunning = agentTask({
+      spec: {
+        ...agentTask().spec,
+        id: "task-reviewer-new",
+        role: "reviewer",
+        createdAt: "2026-05-20T10:00:00.000Z",
+      },
+      status: {
+        ...agentTask().status,
+        id: "task-reviewer-new",
+        phase: AgentTaskPhase.Running,
+        lastTransitionAt: "2026-05-20T10:01:00.000Z",
+      },
+    });
+    const newestFailed = agentTask({
+      spec: {
+        ...agentTask().spec,
+        id: "task-tester-new",
+        role: "tester",
+        createdAt: "2026-05-20T10:00:00.000Z",
+      },
+      status: {
+        ...agentTask().status,
+        id: "task-tester-new",
+        phase: AgentTaskPhase.Failed,
+        lastTransitionAt: "2026-05-20T10:01:00.000Z",
+      },
+    });
+
+    expect(healthSignalsFromAgentTasks([oldFailed, newRunning, newestFailed])).toEqual([
+      { role: "tester", healthy: false, reason: "agent task failed" },
+    ]);
+  });
+
   test("failure maps become unhealthy role signals", () => {
     const signals = healthSignalsFromAgentFailures(
       new Map([
