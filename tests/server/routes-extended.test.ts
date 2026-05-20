@@ -351,6 +351,105 @@ describe("routes — /api/handoffs", () => {
     );
   });
 
+  test("POST /:id/cancel marks unresolved handoff cancelled", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "operator stopped waiting" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { status: string; terminalReason?: string };
+    expect(data.status).toBe(HandoffStatus.Cancelled);
+    expect(data.terminalReason).toBe("operator stopped waiting");
+  });
+
+  test("POST /:id/manual-resolve marks dead-lettered handoff manually resolved", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/manual-resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "handled in terminal" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { status: string; terminalReason?: string };
+    expect(data.status).toBe(HandoffStatus.ManuallyResolved);
+    expect(data.terminalReason).toBe("handled in terminal");
+  });
+
+  test("POST /:id/resend creates replacement handoff and cancels original", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      original: {
+        handoffId: string;
+        status: string;
+        replacementHandoffId?: string;
+        terminalReason?: string;
+      };
+      replacement: { handoffId: string; toRole: string; status: string };
+    };
+    expect(data.original.status).toBe(HandoffStatus.Cancelled);
+    expect(data.original.terminalReason).toBe("retry delivery");
+    expect(data.original.replacementHandoffId).toBe(data.replacement.handoffId);
+    expect(data.replacement.toRole).toBe(handoff.toRole);
+    expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
+  });
+
+  test("POST /:id/reroute creates replacement handoff for selected role", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/reroute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ toRole: "qa", reason: "reviewer unavailable" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      original: { status: string; replacementHandoffId?: string };
+      replacement: { handoffId: string; toRole: string; status: string };
+    };
+    expect(data.original.status).toBe(HandoffStatus.Cancelled);
+    expect(data.original.replacementHandoffId).toBe(data.replacement.handoffId);
+    expect(data.replacement.toRole).toBe("qa");
+    expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
+  });
+
   test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,
