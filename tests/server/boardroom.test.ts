@@ -112,6 +112,56 @@ describe("boardroom routes", () => {
     }
   });
 
+  test("GET /api/boardroom/summary counts actionable handoffs beyond old terminal rows", async () => {
+    const ctx = await createTestContext();
+    const handoffStore = new InMemoryHandoffStore();
+    try {
+      for (let index = 0; index < 201; index += 1) {
+        const cancelled = await handoffStore.create({
+          handoffId: `handoff-cancelled-${index}`,
+          sourceCid: `blake3:cancelled-${index}`,
+          fromRole: "coder",
+          toRole: "reviewer",
+          requiresReply: true,
+        });
+        await handoffStore.markCancelled(cancelled.handoffId);
+      }
+      await handoffStore.create({
+        handoffId: "handoff-pending-after-cap",
+        sourceCid: "blake3:pending-after-cap",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      const deadLettered = await handoffStore.create({
+        handoffId: "handoff-dead-lettered-after-cap",
+        sourceCid: "blake3:dead-lettered-after-cap",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      await handoffStore.markDeadLettered(deadLettered.handoffId);
+
+      const app = createApp({ ...ctx.deps, handoffStore }, new Map([[TEST_KEY, TEST_NAMESPACE]]));
+
+      const resp = await app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          pending: number;
+          deadLettered: number;
+        };
+      };
+
+      expect(body.handoffs.pending).toBe(1);
+      expect(body.handoffs.deadLettered).toBe(1);
+    } finally {
+      handoffStore.close();
+      await ctx.cleanup();
+    }
+  });
+
   test("GET /api/boardroom/summary marks handoff blocked by failed agent task", async () => {
     const ctx = await createTestContext();
     const handoffStore = new InMemoryHandoffStore();
@@ -154,6 +204,63 @@ describe("boardroom routes", () => {
       expect(body.handoffs.items[0]?.reason).toBe("agent task failed");
     } finally {
       handoffStore.close();
+      await ctx.cleanup();
+    }
+  });
+
+  test("GET /api/boardroom/summary ignores failed agent tasks from other sessions", async () => {
+    const ctx = await createTestContext();
+    const sessionHandoffStore = new InMemoryHandoffStore();
+    try {
+      await sessionHandoffStore.create({
+        handoffId: "handoff-session-a",
+        sourceCid: "blake3:session-a",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      await ctx.agentTaskStore.putAgentTaskSpec({
+        id: "task-reviewer-session-b",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "reviewer",
+        prompt: "Review another session",
+        dependsOn: [],
+        generation: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await ctx.agentTaskStore.patchAgentTaskStatus("task-reviewer-session-b", {
+        phase: AgentTaskPhase.Failed,
+        sessionId: "session-b",
+      });
+
+      const app = createApp(
+        {
+          ...ctx.deps,
+          handoffStoreForSession: (sessionId) =>
+            sessionId === "session-a" ? sessionHandoffStore : undefined,
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/summary?sessionId=session-a", {
+        headers: TEST_AUTH_HEADERS,
+      });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          pending: number;
+          blocked: number;
+          items: readonly HandoffOperatorProjection[];
+        };
+      };
+
+      expect(body.handoffs.pending).toBe(1);
+      expect(body.handoffs.blocked).toBe(0);
+      expect(body.handoffs.items[0]?.state).toBe(HandoffOperatorState.Pending);
+    } finally {
+      sessionHandoffStore.close();
       await ctx.cleanup();
     }
   });

@@ -15,7 +15,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { contributionToEntity } from "../../core/entity.js";
-import type { HandoffStore } from "../../core/handoff.js";
+import { HandoffStatus, type HandoffStore } from "../../core/handoff.js";
 import {
   countHandoffOperatorStates,
   deriveHandoffOperatorProjection,
@@ -52,6 +52,14 @@ const messageBodySchema = z.object({
   /** Optional session ID — attaches the message contribution to the session. */
   sessionId: z.string().optional(),
 });
+
+const ACTIONABLE_HANDOFF_STATUSES: readonly HandoffStatus[] = [
+  HandoffStatus.PendingPickup,
+  HandoffStatus.Delivered,
+  HandoffStatus.Processed,
+  HandoffStatus.Expired,
+  HandoffStatus.DeadLettered,
+];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,10 +125,14 @@ async function buildHandoffSummary(
 
   await handoffStore.expireStale();
   const [handoffs, agentTasks] = await Promise.all([
-    handoffStore.list({ limit: 200 }),
+    handoffStore.list({ status: ACTIONABLE_HANDOFF_STATUSES }),
     deps.agentTaskStore?.listAgentTasks() ?? Promise.resolve([]),
   ]);
-  const healthSignals = healthSignalsFromAgentTasks(agentTasks);
+  const healthSignalTasks =
+    sessionId === undefined
+      ? agentTasks
+      : agentTasks.filter((task) => task.status.sessionId === sessionId);
+  const healthSignals = healthSignalsFromAgentTasks(healthSignalTasks);
   const projections = handoffs.map((handoff) =>
     deriveHandoffOperatorProjection(handoff, { healthSignals }),
   );
