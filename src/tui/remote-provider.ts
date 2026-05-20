@@ -10,6 +10,7 @@ import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery } from "../core/bounty-store.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import type { PeerInfo } from "../core/gossip/types.js";
+import type { Handoff, HandoffQuery } from "../core/handoff.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import {
@@ -52,6 +53,7 @@ import type {
   TuiGitHubProvider,
   TuiGoalProvider,
   TuiGossipProvider,
+  TuiHandoffProvider,
   TuiMessagingProvider,
   TuiOutcomeProvider,
   TuiSessionProvider,
@@ -82,7 +84,8 @@ export class RemoteDataProvider
     TuiBountyProvider,
     TuiGossipProvider,
     TuiGoalProvider,
-    TuiSessionProvider
+    TuiSessionProvider,
+    TuiHandoffProvider
 {
   readonly capabilities: ProviderCapabilities = {
     outcomes: true,
@@ -184,6 +187,30 @@ export class RemoteDataProvider
       url.searchParams.set("sessionId", this.activeSessionId);
     }
     return url.toString();
+  }
+
+  private handoffActionUrl(
+    handoffId: string,
+    action: string,
+    sessionId?: string | undefined,
+  ): string {
+    const params = new URLSearchParams();
+    const effective = sessionId ?? this.activeSessionId;
+    if (effective) params.set("sessionId", effective);
+    const qs = params.toString();
+    return `${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/${action}${qs ? `?${qs}` : ""}`;
+  }
+
+  private async postHandoffAction(
+    url: string,
+    body: Readonly<Record<string, unknown>> = {},
+  ): Promise<void> {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.authHeaders },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
   }
 
   async getDashboard(): Promise<DashboardData> {
@@ -843,19 +870,59 @@ export class RemoteDataProvider
     // flipping between the preceding getHandoffs() and this POST (rare, but
     // would otherwise strand the handoff in pending_pickup when the POST
     // lands in the new session's scoped store that doesn't know this id).
-    const params = new URLSearchParams();
-    const effective = sessionId ?? this.activeSessionId;
-    if (effective) params.set("sessionId", effective);
-    const qs = params.toString();
-    await fetch(
-      `${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered${qs ? `?${qs}` : ""}`,
-      { method: "POST", headers: this.authHeaders },
-    );
+    await fetch(this.handoffActionUrl(handoffId, "delivered", sessionId), {
+      method: "POST",
+      headers: this.authHeaders,
+    });
   }
 
-  async getHandoffs(
-    query?: import("../core/handoff.js").HandoffQuery,
-  ): Promise<readonly import("../core/handoff.js").Handoff[]> {
+  async cancelHandoff(handoffId: string, reason?: string, sessionId?: string): Promise<void> {
+    await this.postHandoffAction(this.handoffActionUrl(handoffId, "cancel", sessionId), {
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+
+  async manualResolveHandoff(
+    handoffId: string,
+    reason?: string,
+    sessionId?: string,
+  ): Promise<void> {
+    await this.postHandoffAction(this.handoffActionUrl(handoffId, "manual-resolve", sessionId), {
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+
+  async resendHandoff(
+    handoffId: string,
+    options?: {
+      readonly reason?: string | undefined;
+      readonly replyDueAt?: string | undefined;
+      readonly sessionId?: string | undefined;
+    },
+  ): Promise<void> {
+    await this.postHandoffAction(this.handoffActionUrl(handoffId, "resend", options?.sessionId), {
+      ...(options?.reason !== undefined ? { reason: options.reason } : {}),
+      ...(options?.replyDueAt !== undefined ? { replyDueAt: options.replyDueAt } : {}),
+    });
+  }
+
+  async rerouteHandoff(
+    handoffId: string,
+    options: {
+      readonly toRole: string;
+      readonly reason?: string | undefined;
+      readonly replyDueAt?: string | undefined;
+      readonly sessionId?: string | undefined;
+    },
+  ): Promise<void> {
+    await this.postHandoffAction(this.handoffActionUrl(handoffId, "reroute", options.sessionId), {
+      toRole: options.toRole,
+      ...(options.reason !== undefined ? { reason: options.reason } : {}),
+      ...(options.replyDueAt !== undefined ? { replyDueAt: options.replyDueAt } : {}),
+    });
+  }
+
+  async getHandoffs(query?: HandoffQuery): Promise<readonly Handoff[]> {
     const params = new URLSearchParams();
     if (query?.toRole) params.set("toRole", query.toRole);
     if (query?.fromRole) params.set("fromRole", query.fromRole);
@@ -869,7 +936,7 @@ export class RemoteDataProvider
       headers: this.authHeaders,
     });
     if (!resp.ok) return [];
-    const data = (await resp.json()) as { handoffs?: import("../core/handoff.js").Handoff[] };
+    const data = (await resp.json()) as { handoffs?: Handoff[] };
     return data.handoffs ?? [];
   }
 

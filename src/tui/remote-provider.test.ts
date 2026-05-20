@@ -11,6 +11,7 @@ import type { ContributionInput } from "../core/models.js";
 import { TimelineEventType, WorkBlockOrigin, WorkBlockStatus } from "../core/timeline.js";
 import { createTestApp, TEST_NAMESPACE_KEY } from "../server/test-helpers.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
+import type { TuiHandoffProvider } from "./provider.js";
 import { RemoteDataProvider } from "./remote-provider.js";
 
 // ---------------------------------------------------------------------------
@@ -227,5 +228,94 @@ describe("RemoteDataProvider specific", () => {
 
     expect(requestedPaths.length).toBeGreaterThan(0);
     expect(requestedPaths.every((path) => path.includes("sessionId=session-1"))).toBe(true);
+  });
+
+  test("posts handoff operator actions with JSON body, auth, and session scope", async () => {
+    interface CapturedRequest {
+      readonly method: string;
+      readonly path: string;
+      readonly authorization: string | null;
+      readonly contentType: string | null;
+      readonly body: unknown;
+    }
+
+    const requests: CapturedRequest[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        const url = new URL(req.url);
+        requests.push({
+          method: req.method,
+          path: `${url.pathname}${url.search}`,
+          authorization: req.headers.get("authorization"),
+          contentType: req.headers.get("content-type"),
+          body: await req.json(),
+        });
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    try {
+      const scopedProvider = new RemoteDataProvider(`http://localhost:${server.port}`, {
+        apiKey: "secret-token",
+      });
+      scopedProvider.setSessionScope("active-session");
+      const handoffs = scopedProvider as unknown as TuiHandoffProvider;
+
+      await handoffs.cancelHandoff("handoff/1", "wrong target", "explicit-session");
+      await handoffs.manualResolveHandoff("handoff 2", "handled manually");
+      await handoffs.resendHandoff("handoff:3", {
+        reason: "retry delivery",
+        replyDueAt: "2026-05-20T10:00:00.000Z",
+        sessionId: "resend-session",
+      });
+      await handoffs.rerouteHandoff("handoff?4", {
+        toRole: "reviewer",
+        reason: "needs review",
+        replyDueAt: "2026-05-20T11:00:00.000Z",
+      });
+    } finally {
+      server.stop(true);
+    }
+
+    expect(requests).toEqual([
+      {
+        method: "POST",
+        path: "/api/handoffs/handoff%2F1/cancel?sessionId=explicit-session",
+        authorization: "Bearer secret-token",
+        contentType: "application/json",
+        body: { reason: "wrong target" },
+      },
+      {
+        method: "POST",
+        path: "/api/handoffs/handoff%202/manual-resolve?sessionId=active-session",
+        authorization: "Bearer secret-token",
+        contentType: "application/json",
+        body: { reason: "handled manually" },
+      },
+      {
+        method: "POST",
+        path: "/api/handoffs/handoff%3A3/resend?sessionId=resend-session",
+        authorization: "Bearer secret-token",
+        contentType: "application/json",
+        body: {
+          reason: "retry delivery",
+          replyDueAt: "2026-05-20T10:00:00.000Z",
+        },
+      },
+      {
+        method: "POST",
+        path: "/api/handoffs/handoff%3F4/reroute?sessionId=active-session",
+        authorization: "Bearer secret-token",
+        contentType: "application/json",
+        body: {
+          toRole: "reviewer",
+          reason: "needs review",
+          replyDueAt: "2026-05-20T11:00:00.000Z",
+        },
+      },
+    ]);
   });
 });

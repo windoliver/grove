@@ -385,6 +385,25 @@ export interface TuiHandoffProvider {
    * call can't strand the handoff in pending_pickup.
    */
   markHandoffDelivered(handoffId: string, sessionId?: string): Promise<void>;
+  cancelHandoff(handoffId: string, reason?: string, sessionId?: string): Promise<void>;
+  manualResolveHandoff(handoffId: string, reason?: string, sessionId?: string): Promise<void>;
+  resendHandoff(
+    handoffId: string,
+    options?: {
+      readonly reason?: string;
+      readonly replyDueAt?: string;
+      readonly sessionId?: string;
+    },
+  ): Promise<void>;
+  rerouteHandoff(
+    handoffId: string,
+    options: {
+      readonly toRole: string;
+      readonly reason?: string;
+      readonly replyDueAt?: string;
+      readonly sessionId?: string;
+    },
+  ): Promise<void>;
 }
 
 /** Type guard: does the provider support handoff queries? */
