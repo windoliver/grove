@@ -22,6 +22,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Handoff } from "../../core/handoff.js";
+import {
+  type HandoffHealthSignal,
+  healthSignalsFromAgentFailures,
+  healthSignalsFromAgentTasks,
+} from "../../core/handoff-operator-state.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
@@ -573,6 +578,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     ]);
 
     const [handoffs, setHandoffs] = useState<readonly Handoff[]>([]);
+    const [handoffHealthSignals, setHandoffHealthSignals] = useState<
+      readonly HandoffHealthSignal[]
+    >([]);
     const refreshHandoffs = useCallback((): void => {
       const hasMethod = isHandoffProvider(provider);
       debugLog(
@@ -580,9 +588,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      void provider
-        .getHandoffs({ limit: 200 })
-        .then((all) => {
+      void Promise.all([
+        provider.getHandoffs({ limit: 200 }),
+        provider.getAgentTasks ? provider.getAgentTasks() : Promise.resolve([]),
+      ])
+        .then(([all, tasks]) => {
           const cutoff =
             sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
           const filtered = all.filter((h) => h.createdAt >= cutoff);
@@ -591,11 +601,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
           );
           setHandoffs(filtered);
+          setHandoffHealthSignals([
+            ...healthSignalsFromAgentFailures(agentFailures),
+            ...healthSignalsFromAgentTasks(tasks),
+          ]);
         })
         .catch((err: unknown) => {
           debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
         });
-    }, [provider, sessionStartedAt]);
+    }, [provider, sessionStartedAt, agentFailures]);
 
     useEffect(() => {
       refreshHandoffs();
@@ -850,7 +864,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         },
         // openDetail kept as an interface field for future detail-route work,
         // but wired to a no-op so Enter cannot accidentally enter inspect.
-        openDetail: () => {},
+        openDetail: () => {
+          // no-op
+        },
         enterInspect: () => onEnterInspect(),
         quit: () => onQuit(),
         showQuitDialog: () => {
@@ -1200,6 +1216,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             traceScrollOffset,
             sessionStartedAt,
             handoffs,
+            handoffHealthSignals,
             activeRoles,
             agentFailures,
             filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
@@ -1281,6 +1298,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 traceScrollOffset,
                 sessionStartedAt,
                 handoffs,
+                handoffHealthSignals,
                 activeRoles,
                 agentFailures,
                 filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
@@ -1635,6 +1653,7 @@ interface PanelRenderContext {
   readonly traceScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
+  readonly handoffHealthSignals?: readonly HandoffHealthSignal[] | undefined;
   readonly activeRoles?: readonly string[] | undefined;
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
@@ -1722,6 +1741,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           cursor={0}
           sessionStartedAt={ctx.sessionStartedAt}
           handoffs={ctx.handoffs}
+          healthSignals={ctx.handoffHealthSignals}
         />
       );
 

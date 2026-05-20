@@ -9,5 +9,8 @@ describe("RunningView handoff refresh wiring", () => {
     expect(source).toContain("const refreshHandoffs = useCallback");
     expect(source).toContain("feedCidKey");
     expect(source).toContain("[feedCidKey, refreshHandoffs]");
+    expect(source).toContain("healthSignalsFromAgentFailures");
+    expect(source).toContain("healthSignalsFromAgentTasks");
+    expect(source).toContain("handoffHealthSignals");
   });
 });
