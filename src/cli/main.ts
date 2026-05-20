@@ -29,6 +29,7 @@
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
 import type { SessionStore } from "../core/session.js";
 import { UsageError } from "./errors.js";
+import { setColorEnabled, shouldEnableColor } from "./utils/color.js";
 import { suggestCommand } from "./utils/string.js";
 
 // ---------------------------------------------------------------------------
@@ -524,6 +525,7 @@ Usage:
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  setColorEnabled(shouldEnableColor(process.env, rawArgs));
 
   // Extract global --grove option before subcommand
   let groveOverride: string | undefined;
@@ -543,7 +545,7 @@ async function main(): Promise<void> {
         throw new UsageError("--grove requires a non-empty path value");
       }
       groveOverride = value;
-    } else {
+    } else if (token !== "--no-color") {
       args.push(token);
     }
   }

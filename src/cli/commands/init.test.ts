@@ -57,6 +57,18 @@ function makeOptions(overrides?: Partial<InitOptions>): InitOptions {
   };
 }
 
+async function captureConsoleLog(fn: () => Promise<void>): Promise<string[]> {
+  const logged: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return logged;
+}
+
 // ---------------------------------------------------------------------------
 // parseInitArgs
 // ---------------------------------------------------------------------------
@@ -147,6 +159,18 @@ describe("parseInitArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("executeInit", () => {
+  initTest("prints grove up next-command hint", async () => {
+    const dir = await createTempDir();
+    try {
+      const logged = await captureConsoleLog(async () => {
+        await executeInit(makeOptions({ name: "test-grove", cwd: dir }));
+      });
+      expect(logged.join("\n")).toContain("hint: Run `grove up` to start services");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   initTest("creates .grove directory structure", async () => {
     const dir = await createTempDir();
     try {

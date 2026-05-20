@@ -14,6 +14,7 @@ import type { AgentOverrides } from "../agent.js";
 import { resolveAgent } from "../agent.js";
 import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
 import { getPreset, listPresetNames } from "../presets/index.js";
+import { formatNextCommandHint } from "../utils/color.js";
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -480,18 +481,12 @@ export async function executeInit(
         break;
     }
     if (preset) {
-      const services: string[] = [];
-      if (preset.services?.server) services.push("HTTP server");
-      if (preset.services?.mcp) services.push("MCP server");
-      const serviceList = services.length > 0 ? ` (${services.join(", ")})` : "";
-      console.log(`\nNext: run 'grove up' to start all services${serviceList}.`);
       console.log(
         `\nThe '${preset.name}' topology in GROVE.md is the default. Override per-session with:`,
       );
       console.log(`  grove session start --preset <name> --goal "..."`);
-    } else {
-      console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
     }
+    console.log(`\n${formatNextCommandHint("Run `grove up` to start services")}`);
   } catch (err) {
     const { rollbackProjectIdentity } = await import("../utils/ensure-project-id.js");
     await rollbackProjectIdentity(grovePath, ensureResult, hooks?.registryPath);

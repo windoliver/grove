@@ -21,6 +21,7 @@ import {
   initSqliteDb,
   SqliteContributionStore,
 } from "../local/sqlite-store.js";
+import { stripAnsi } from "../shared/format.js";
 
 const CLI_PATH = join(import.meta.dir, "main.ts");
 const CLI_INTEGRATION_TIMEOUT_MS = 30_000;
@@ -142,6 +143,21 @@ describe("CLI commands (with grove)", () => {
     await setupGrove();
     const { stdout, exitCode } = await runCli(["log"], tmpDir);
     expect(exitCode).toBe(0);
+    expect(stdout).toContain("Initial schema");
+  });
+
+  cliTest("NO_COLOR=1 grove log emits no ANSI escape codes", async () => {
+    await setupGrove();
+    const { stdout, exitCode } = await runCli(["log"], tmpDir, { NO_COLOR: "1" });
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe(stripAnsi(stdout));
+  });
+
+  cliTest("--no-color is accepted as a global flag", async () => {
+    await setupGrove();
+    const { stdout, exitCode } = await runCli(["log", "--no-color"], tmpDir);
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe(stripAnsi(stdout));
     expect(stdout).toContain("Initial schema");
   });
 
