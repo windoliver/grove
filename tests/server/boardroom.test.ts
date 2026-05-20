@@ -7,6 +7,12 @@
 
 import { describe, expect, test } from "bun:test";
 
+import { AgentTaskPhase } from "../../src/core/agent-task.js";
+import {
+  type HandoffOperatorProjection,
+  HandoffOperatorState,
+} from "../../src/core/handoff-operator-state.js";
+import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js";
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
 import type { DeliveredInboxMessage } from "../../src/core/operations/inbox-delegation.js";
@@ -31,13 +37,123 @@ describe("boardroom routes", () => {
         recentMessages: unknown[];
         costSummary: { totalCostUsd: number; totalTokens: number; byAgent: unknown[] };
         activeClaimCount: number;
+        handoffs: {
+          pending: number;
+          overdue: number;
+          blocked: number;
+          deadLettered: number;
+          items: unknown[];
+        };
       };
 
       expect(body.pendingQuestions).toEqual([]);
       expect(body.recentMessages).toEqual([]);
       expect(body.costSummary.totalCostUsd).toBe(0);
       expect(body.activeClaimCount).toBe(0);
+      expect(body.handoffs).toEqual({
+        pending: 0,
+        overdue: 0,
+        blocked: 0,
+        deadLettered: 0,
+        items: [],
+      });
     } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("GET /api/boardroom/summary includes handoff operator counts", async () => {
+    const ctx = await createTestContext();
+    const handoffStore = new InMemoryHandoffStore();
+    try {
+      await handoffStore.create({
+        handoffId: "handoff-pending",
+        sourceCid: "blake3:pending",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      await handoffStore.create({
+        handoffId: "handoff-overdue",
+        sourceCid: "blake3:overdue",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+        replyDueAt: "2026-01-01T00:00:00.000Z",
+      });
+      const deadLettered = await handoffStore.create({
+        handoffId: "handoff-dead-lettered",
+        sourceCid: "blake3:dead-lettered",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      await handoffStore.markDeadLettered(deadLettered.handoffId);
+
+      const app = createApp({ ...ctx.deps, handoffStore }, new Map([[TEST_KEY, TEST_NAMESPACE]]));
+
+      const resp = await app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          pending: number;
+          overdue: number;
+          deadLettered: number;
+        };
+      };
+
+      expect(body.handoffs.pending).toBe(1);
+      expect(body.handoffs.overdue).toBe(1);
+      expect(body.handoffs.deadLettered).toBe(1);
+    } finally {
+      handoffStore.close();
+      await ctx.cleanup();
+    }
+  });
+
+  test("GET /api/boardroom/summary marks handoff blocked by failed agent task", async () => {
+    const ctx = await createTestContext();
+    const handoffStore = new InMemoryHandoffStore();
+    try {
+      await handoffStore.create({
+        handoffId: "handoff-blocked",
+        sourceCid: "blake3:blocked",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      await ctx.agentTaskStore.putAgentTaskSpec({
+        id: "task-reviewer",
+        worktree: "/tmp/worktree",
+        runtime: "codex",
+        role: "reviewer",
+        prompt: "Review the handoff",
+        dependsOn: [],
+        generation: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await ctx.agentTaskStore.patchAgentTaskStatus("task-reviewer", {
+        phase: AgentTaskPhase.Failed,
+      });
+
+      const app = createApp({ ...ctx.deps, handoffStore }, new Map([[TEST_KEY, TEST_NAMESPACE]]));
+
+      const resp = await app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          blocked: number;
+          items: readonly HandoffOperatorProjection[];
+        };
+      };
+
+      expect(body.handoffs.blocked).toBe(1);
+      expect(body.handoffs.items[0]?.state).toBe(HandoffOperatorState.Blocked);
+      expect(body.handoffs.items[0]?.reason).toBe("agent task failed");
+    } finally {
+      handoffStore.close();
       await ctx.cleanup();
     }
   });

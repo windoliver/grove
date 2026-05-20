@@ -15,11 +15,18 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { contributionToEntity } from "../../core/entity.js";
+import type { HandoffStore } from "../../core/handoff.js";
+import {
+  countHandoffOperatorStates,
+  deriveHandoffOperatorProjection,
+  type HandoffOperatorProjection,
+  healthSignalsFromAgentTasks,
+} from "../../core/handoff-operator-state.js";
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
 import { sendMessageWithDelivery } from "../../core/operations/inbox-delegation.js";
-import type { ServerEnv } from "../deps.js";
+import type { ServerDeps, ServerEnv } from "../deps.js";
 import { toOperationDeps } from "../operation-adapter.js";
 import { contributionStoreForSession } from "./shared.js";
 
@@ -78,6 +85,51 @@ interface BoardroomSummary {
     }[];
   };
   readonly activeClaimCount: number;
+  readonly handoffs: {
+    readonly pending: number;
+    readonly overdue: number;
+    readonly blocked: number;
+    readonly deadLettered: number;
+    readonly items: readonly HandoffOperatorProjection[];
+  };
+}
+
+function resolveHandoffStore(
+  deps: ServerDeps,
+  sessionId: string | undefined,
+): HandoffStore | undefined {
+  if (sessionId !== undefined) {
+    const scoped = deps.handoffStoreForSession?.(sessionId);
+    if (scoped !== undefined) return scoped;
+  }
+
+  return deps.handoffStore;
+}
+
+async function buildHandoffSummary(
+  deps: ServerDeps,
+  sessionId: string | undefined,
+): Promise<BoardroomSummary["handoffs"]> {
+  const handoffStore = resolveHandoffStore(deps, sessionId);
+  if (handoffStore === undefined) {
+    return { pending: 0, overdue: 0, blocked: 0, deadLettered: 0, items: [] };
+  }
+
+  await handoffStore.expireStale();
+  const [handoffs, agentTasks] = await Promise.all([
+    handoffStore.list({ limit: 200 }),
+    deps.agentTaskStore?.listAgentTasks() ?? Promise.resolve([]),
+  ]);
+  const healthSignals = healthSignalsFromAgentTasks(agentTasks);
+  const projections = handoffs.map((handoff) =>
+    deriveHandoffOperatorProjection(handoff, { healthSignals }),
+  );
+  const counts = countHandoffOperatorStates(projections);
+
+  return {
+    ...counts,
+    items: projections.slice(0, 20),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +241,7 @@ boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => 
 
   // Active claim count (use countActiveClaims to avoid materializing all claim objects)
   const activeClaimCount = await claimStore.countActiveClaims();
+  const handoffs = await buildHandoffSummary(deps, sessionId);
 
   const summary: BoardroomSummary = {
     pendingQuestions,
@@ -199,6 +252,7 @@ boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => 
       byAgent,
     },
     activeClaimCount,
+    handoffs,
   };
 
   return c.json(summary);
