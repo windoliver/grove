@@ -409,7 +409,10 @@ export interface TuiHandoffProvider {
 /** Type guard: does the provider support handoff queries? */
 export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
   const candidate = p as Partial<Record<keyof TuiHandoffProvider, unknown>>;
+  const capabilities = (p as { readonly capabilities?: Partial<ProviderCapabilities> | undefined })
+    .capabilities;
   return (
+    capabilities?.handoffs === true &&
     typeof candidate.getHandoffs === "function" &&
     typeof candidate.markHandoffDelivered === "function" &&
     typeof candidate.cancelHandoff === "function" &&

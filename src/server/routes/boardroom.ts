@@ -107,9 +107,12 @@ function resolveHandoffStore(
   deps: ServerDeps,
   sessionId: string | undefined,
 ): HandoffStore | undefined {
-  if (sessionId !== undefined) {
-    const scoped = deps.handoffStoreForSession?.(sessionId);
-    if (scoped !== undefined) return scoped;
+  if (
+    sessionId !== undefined &&
+    sessionId.length > 0 &&
+    deps.handoffStoreForSession !== undefined
+  ) {
+    return deps.handoffStoreForSession(sessionId);
   }
 
   return deps.handoffStore;

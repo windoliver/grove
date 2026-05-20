@@ -137,7 +137,7 @@ describe("HandoffsView", () => {
     if (!renderer) throw new Error("renderer did not mount");
 
     const text = collectText(renderer.toJSON());
-    expect(text).toContain("blocked");
+    expect(text).toContain("! blocked");
     expect(text).toContain("agent task failed");
     expect(text).toContain("resend");
     expect(text).toContain("reroute");
@@ -170,7 +170,7 @@ describe("HandoffsView", () => {
     if (!renderer) throw new Error("renderer did not mount");
 
     const text = collectText(renderer.toJSON());
-    expect(text).toContain("dead_lettered");
+    expect(text).toContain("! dead_lettered");
     expect(text).toContain("delivery failed");
   });
 });

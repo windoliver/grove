@@ -124,6 +124,13 @@ export interface RunningKeyboardActions {
   readonly traceScrollToBottom: () => void;
   readonly traceScrollToTop: () => void;
   readonly traceCycleAgent: () => void;
+  // Handoff panel
+  readonly handoffCursorDown: () => void;
+  readonly handoffCursorUp: () => void;
+  readonly resendSelectedHandoff: () => void;
+  readonly rerouteSelectedHandoff: () => void;
+  readonly cancelSelectedHandoff: () => void;
+  readonly manualResolveSelectedHandoff: () => void;
   // Navigation
   readonly openDetail: () => void;
   readonly enterInspect: () => void;
@@ -416,6 +423,34 @@ export function routeRunningKey(
     // Tab: cycle to next agent
     if (input === "tab") {
       actions.traceCycleAgent();
+      return true;
+    }
+    return false;
+  }
+
+  if (state.expandedPanel === RunningPanel.Handoffs) {
+    if (input === "j" || input === "down") {
+      actions.handoffCursorDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.handoffCursorUp();
+      return true;
+    }
+    if (input === "s") {
+      actions.resendSelectedHandoff();
+      return true;
+    }
+    if (input === "r") {
+      actions.rerouteSelectedHandoff();
+      return true;
+    }
+    if (input === "x") {
+      actions.cancelSelectedHandoff();
+      return true;
+    }
+    if (input === "v") {
+      actions.manualResolveSelectedHandoff();
       return true;
     }
     return false;

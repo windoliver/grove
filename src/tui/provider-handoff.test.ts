@@ -42,6 +42,27 @@ describe("TUI handoff provider actions", () => {
     expect(isHandoffProvider(makeProvider())).toBe(true);
   });
 
+  test("provider without handoff store is not actionable and throws clear errors", async () => {
+    const provider = new LocalDataProvider({
+      contributionStore: stores.contributionStore,
+      claimStore: stores.claimStore,
+      frontier: new DefaultFrontierCalculator(stores.contributionStore),
+      groveName: "test",
+    });
+
+    expect(isHandoffProvider(provider)).toBe(false);
+    await expect(provider.cancelHandoff("missing")).rejects.toThrow("Handoff store not configured");
+  });
+
+  test("store-backed replacement actions reject missing originals", async () => {
+    const provider = makeProvider();
+
+    await expect(provider.resendHandoff("missing")).rejects.toThrow("Handoff not found: missing");
+    await expect(provider.rerouteHandoff("missing", { toRole: "auditor" })).rejects.toThrow(
+      "Handoff not found: missing",
+    );
+  });
+
   test("store-backed terminal actions update handoff status and reason", async () => {
     const provider = makeProvider();
     const cancelled = await stores.handoffStore.create({

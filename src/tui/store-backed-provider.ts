@@ -774,17 +774,17 @@ export abstract class StoreBackedProvider
   }
 
   async markHandoffDelivered(handoffId: string): Promise<void> {
-    await this.handoffs?.markDelivered(handoffId);
+    await this.requireHandoffStore().markDelivered(handoffId);
   }
 
   async cancelHandoff(handoffId: string, reason?: string): Promise<void> {
-    await this.handoffs?.markCancelled(handoffId, {
+    await this.requireHandoffStore().markCancelled(handoffId, {
       terminalReason: reason ?? "operator cancelled",
     });
   }
 
   async manualResolveHandoff(handoffId: string, reason?: string): Promise<void> {
-    await this.handoffs?.markManuallyResolved(handoffId, {
+    await this.requireHandoffStore().markManuallyResolved(handoffId, {
       terminalReason: reason ?? "operator resolved",
     });
   }
@@ -827,7 +827,7 @@ export abstract class StoreBackedProvider
 
   private async cancelReplacementAfterOriginalFailure(replacementId: string): Promise<void> {
     try {
-      await this.handoffs?.markCancelled(replacementId, {
+      await this.requireHandoffStore().markCancelled(replacementId, {
         terminalReason: "replacement cancelled after original cancellation failed",
       });
     } catch {
@@ -843,14 +843,14 @@ export abstract class StoreBackedProvider
       readonly replyDueAt?: string | undefined;
     },
   ): Promise<void> {
-    if (this.handoffs === undefined) return;
+    const store = this.requireHandoffStore();
 
-    const original = await this.handoffs.get(handoffId);
-    if (original === undefined) return;
+    const original = await store.get(handoffId);
+    if (original === undefined) throw new Error(`Handoff not found: ${handoffId}`);
 
     const replyDueAt = this.replacementDueAt(original, options.replyDueAt);
     validateTransition(handoffId, original.status, HandoffStatus.Cancelled);
-    const replacement = await this.handoffs.create({
+    const replacement = await store.create({
       sourceCid: original.sourceCid,
       fromRole: original.fromRole,
       toRole: options.toRole ?? original.toRole,
@@ -859,7 +859,7 @@ export abstract class StoreBackedProvider
     });
 
     try {
-      await this.handoffs.markCancelled(handoffId, {
+      await store.markCancelled(handoffId, {
         terminalReason: options.reason,
         replacementHandoffId: replacement.handoffId,
       });
@@ -867,5 +867,12 @@ export abstract class StoreBackedProvider
       await this.cancelReplacementAfterOriginalFailure(replacement.handoffId);
       throw err;
     }
+  }
+
+  private requireHandoffStore(): HandoffStore {
+    if (this.handoffs === undefined) {
+      throw new Error("Handoff store not configured");
+    }
+    return this.handoffs;
   }
 }

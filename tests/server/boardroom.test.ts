@@ -312,6 +312,54 @@ describe("boardroom routes", () => {
     }
   });
 
+  test("GET /api/boardroom/summary does not fall back to global handoffs for missing session scope", async () => {
+    const ctx = await createTestContext();
+    const globalHandoffStore = new InMemoryHandoffStore();
+    try {
+      await globalHandoffStore.create({
+        handoffId: "global-handoff",
+        sourceCid: "blake3:global",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+      });
+      const app = createApp(
+        {
+          ...ctx.deps,
+          handoffStore: globalHandoffStore,
+          handoffStoreForSession: () => undefined,
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/summary?sessionId=missing-session", {
+        headers: TEST_AUTH_HEADERS,
+      });
+      expect(resp.status).toBe(200);
+
+      const body = (await resp.json()) as {
+        handoffs: {
+          pending: number;
+          overdue: number;
+          blocked: number;
+          deadLettered: number;
+          items: unknown[];
+        };
+      };
+
+      expect(body.handoffs).toEqual({
+        pending: 0,
+        overdue: 0,
+        blocked: 0,
+        deadLettered: 0,
+        items: [],
+      });
+    } finally {
+      globalHandoffStore.close();
+      await ctx.cleanup();
+    }
+  });
+
   test("GET /api/boardroom/summary includes messages", async () => {
     const ctx = await createTestContext();
     try {

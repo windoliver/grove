@@ -3,8 +3,23 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AgentTaskPhase, type AgentTaskView } from "../../core/agent-task.js";
 import { type Handoff, HandoffStatus } from "../../core/handoff.js";
-import type { TuiDataProvider } from "../provider.js";
-import { loadHandoffPanelSnapshot } from "./running-view.js";
+import type { ProviderCapabilities, TuiDataProvider } from "../provider.js";
+import { loadHandoffPanelSnapshot } from "./handoff-panel-snapshot.js";
+
+const HANDOFFS_CAPABILITY: ProviderCapabilities = {
+  outcomes: false,
+  artifacts: false,
+  vfs: false,
+  messaging: false,
+  costTracking: false,
+  askUser: false,
+  github: false,
+  bounties: false,
+  gossip: false,
+  goals: false,
+  sessions: false,
+  handoffs: true,
+};
 
 function agentTask(role: string, sessionId: string, phase: AgentTaskPhase): AgentTaskView {
   return {
@@ -34,12 +49,17 @@ function agentTask(role: string, sessionId: string, phase: AgentTaskPhase): Agen
 describe("RunningView handoff refresh wiring", () => {
   test("refetches handoffs when the contribution feed changes", () => {
     const source = readFileSync(resolve(import.meta.dir, "running-view.tsx"), "utf-8");
+    const snapshotSource = readFileSync(
+      resolve(import.meta.dir, "handoff-panel-snapshot.ts"),
+      "utf-8",
+    );
 
     expect(source).toContain("const refreshHandoffs = useCallback");
     expect(source).toContain("feedCidKey");
     expect(source).toContain("[feedCidKey, refreshHandoffs]");
-    expect(source).toContain("healthSignalsFromAgentFailures");
-    expect(source).toContain("healthSignalsFromAgentTasks");
+    expect(source).toContain("loadHandoffPanelSnapshot");
+    expect(snapshotSource).toContain("healthSignalsFromAgentFailures");
+    expect(snapshotSource).toContain("healthSignalsFromAgentTasks");
     expect(source).toContain("handoffHealthSignals");
   });
 
@@ -54,6 +74,7 @@ describe("RunningView handoff refresh wiring", () => {
       createdAt: "2099-01-01T00:00:00.000Z",
     };
     const provider = {
+      capabilities: HANDOFFS_CAPABILITY,
       getHandoffs: async () => [handoff],
       getAgentTasks: async () => {
         throw new Error("agent task route unavailable");
@@ -87,6 +108,7 @@ describe("RunningView handoff refresh wiring", () => {
       createdAt: "2099-01-01T00:00:00.000Z",
     };
     const provider = {
+      capabilities: HANDOFFS_CAPABILITY,
       getHandoffs: async () => [handoff],
       getAgentTasks: async () => [agentTask("reviewer", "session-b", AgentTaskPhase.Failed)],
       markHandoffDelivered: async () => undefined,

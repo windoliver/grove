@@ -589,6 +589,43 @@ describe("routes — /api/handoffs", () => {
     expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
   });
 
+  test("explicit session scope does not fall back to global handoff store", async () => {
+    const global = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    const scopedApp = createApp(
+      {
+        ...ctx.deps,
+        handoffStore,
+        handoffStoreForSession: () => undefined,
+      },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const listRes = await scopedApp.request("/api/handoffs?sessionId=missing-session&limit=10", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as { handoffs: readonly { handoffId: string }[] };
+    expect(listBody.handoffs).toEqual([]);
+
+    const cancelRes = await scopedApp.request(
+      `/api/handoffs/${global.handoffId}/cancel?sessionId=missing-session`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({ reason: "should not touch global" }),
+      },
+    );
+    expect(cancelRes.status).toBe(404);
+    const stored = await handoffStore.get(global.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
+  });
+
   test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,

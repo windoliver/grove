@@ -16,6 +16,7 @@ import {
   deriveHandoffOperatorProjection,
   type HandoffHealthSignal,
   type HandoffOperatorAction,
+  HandoffOperatorState,
 } from "../../core/handoff-operator-state.js";
 import { truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
@@ -26,7 +27,7 @@ import { isHandoffProvider } from "../provider.js";
 const COLUMNS = [
   { header: "FROM", key: "from", width: 8 },
   { header: "TO", key: "to", width: 8 },
-  { header: "STATE", key: "state", width: 14 },
+  { header: "STATE", key: "state", width: 16 },
   { header: "REASON", key: "reason", width: 18 },
   { header: "RECEIPT", key: "receipt", width: 8 },
   { header: "DEADLINE", key: "deadline", width: 10 },
@@ -92,6 +93,17 @@ function actionOrder(action: HandoffOperatorAction): number {
 function actionLabel(action: HandoffOperatorAction): string {
   if (action === "manual_resolve") return "manual";
   return action;
+}
+
+function stateLabel(state: HandoffOperatorState): string {
+  if (
+    state === HandoffOperatorState.Blocked ||
+    state === HandoffOperatorState.DeadLettered ||
+    state === HandoffOperatorState.Overdue
+  ) {
+    return `! ${state}`;
+  }
+  return state;
 }
 
 export interface HandoffsViewProps {
@@ -170,7 +182,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     const rows = projections.map((projection) => ({
       from: projection.handoff.fromRole,
       to: projection.handoff.toRole,
-      state: projection.state,
+      state: stateLabel(projection.state),
       reason: projection.reason,
       receipt: receiptLabel(projection.handoff),
       deadline: deadlineLabel(projection.handoff),

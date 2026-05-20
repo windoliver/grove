@@ -52,8 +52,8 @@ const invalidJsonBodySchema = z.custom(() => false, { message: "Invalid JSON bod
  * Returns 501 if not available, otherwise passes through.
  */
 handoffs.use("/*", async (c, next) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) {
+  const { handoffStore, handoffStoreForSession } = c.get("deps");
+  if (handoffStore === undefined && handoffStoreForSession === undefined) {
     return c.json(
       { error: { code: "NOT_CONFIGURED", message: "Handoff store not available" } },
       501,
@@ -79,13 +79,23 @@ handoffs.use("/*", async (c, next) => {
  * that keeps a well-behaved remote TUI from seeing peer sessions'
  * handoffs; it is NOT a security boundary against a hostile client.
  */
-function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
+interface StoreResolution {
+  readonly store?: HandoffStore | undefined;
+  readonly scopedMissing: boolean;
+}
+
+function resolveStore(c: Context<ServerEnv>): StoreResolution {
   const { handoffStore, handoffStoreForSession } = c.get("deps");
   const sessionId = c.req.query("sessionId");
-  if (sessionId && handoffStoreForSession) {
-    return handoffStoreForSession(sessionId) ?? handoffStore;
+  if (sessionId !== undefined && sessionId.length > 0 && handoffStoreForSession !== undefined) {
+    const scoped = handoffStoreForSession(sessionId);
+    return scoped === undefined ? { scopedMissing: true } : { store: scoped, scopedMissing: false };
   }
-  return handoffStore;
+  return { store: handoffStore, scopedMissing: false };
+}
+
+function notFound(c: Context<ServerEnv>): Response {
+  return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
 }
 
 async function parseOptionalJson(c: Context<ServerEnv>): Promise<unknown> {
@@ -126,7 +136,8 @@ async function cancelReplacementAfterOriginalFailure(
 
 /** GET /api/handoffs — List handoffs with optional filters. */
 handoffs.get("/", zValidator("query", listQuerySchema), async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return c.json({ handoffs: [] });
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   // Expire stale handoffs before listing so callers always see fresh status.
@@ -147,7 +158,8 @@ handoffs.get("/", zValidator("query", listQuerySchema), async (c) => {
 
 /** GET /api/handoffs/:id — Get a single handoff. */
 handoffs.get("/:id", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -155,16 +167,15 @@ handoffs.get("/:id", async (c) => {
     return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
   }
   const handoff = await store.get(id);
-  if (handoff === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (handoff === undefined) return notFound(c);
 
   return c.json(handoff);
 });
 
 /** POST /api/handoffs/:id/cancel — Mark unresolved handoff cancelled by operator action. */
 handoffs.post("/:id/cancel", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -175,15 +186,14 @@ handoffs.post("/:id/cancel", async (c) => {
   const action = terminalActionSchema.parse(await parseOptionalJson(c));
   await store.markCancelled(id, { terminalReason: action.reason ?? "operator cancelled" });
   const updated = await store.get(id);
-  if (updated === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updated === undefined) return notFound(c);
   return c.json(updated);
 });
 
 /** POST /api/handoffs/:id/manual-resolve — Mark eligible handoff manually resolved. */
 handoffs.post("/:id/manual-resolve", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -194,15 +204,14 @@ handoffs.post("/:id/manual-resolve", async (c) => {
   const action = terminalActionSchema.parse(await parseOptionalJson(c));
   await store.markManuallyResolved(id, { terminalReason: action.reason ?? "operator resolved" });
   const updated = await store.get(id);
-  if (updated === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updated === undefined) return notFound(c);
   return c.json(updated);
 });
 
 /** POST /api/handoffs/:id/resend — Create retry handoff and cancel the original. */
 handoffs.post("/:id/resend", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -212,9 +221,7 @@ handoffs.post("/:id/resend", async (c) => {
 
   const action = replacementActionSchema.parse(await parseOptionalJson(c));
   const original = await store.get(id);
-  if (original === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (original === undefined) return notFound(c);
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
   validateTransition(id, original.status, HandoffStatus.Cancelled);
@@ -235,15 +242,14 @@ handoffs.post("/:id/resend", async (c) => {
     throw err;
   }
   const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updatedOriginal === undefined) return notFound(c);
   return c.json({ original: updatedOriginal, replacement });
 });
 
 /** POST /api/handoffs/:id/reroute — Create replacement handoff for selected role. */
 handoffs.post("/:id/reroute", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -253,9 +259,7 @@ handoffs.post("/:id/reroute", async (c) => {
 
   const action = rerouteActionSchema.parse(await parseOptionalJson(c));
   const original = await store.get(id);
-  if (original === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (original === undefined) return notFound(c);
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
   validateTransition(id, original.status, HandoffStatus.Cancelled);
@@ -276,9 +280,7 @@ handoffs.post("/:id/reroute", async (c) => {
     throw err;
   }
   const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updatedOriginal === undefined) return notFound(c);
   return c.json({ original: updatedOriginal, replacement });
 });
 
@@ -303,7 +305,8 @@ handoffs.post("/:id/reroute", async (c) => {
  * target-role processing; they only stop or replace stalled delivery work.
  */
 handoffs.post("/:id/delivered", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -313,9 +316,7 @@ handoffs.post("/:id/delivered", async (c) => {
 
   await store.markDelivered(id);
   const updated = await store.get(id);
-  if (updated === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updated === undefined) return notFound(c);
   return c.json(updated);
 });
 
