@@ -86,11 +86,9 @@ function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
   return handoffStore;
 }
 
-async function parseOptionalJson(c: Context<ServerEnv>): Promise<Record<string, unknown>> {
+async function parseOptionalJson(c: Context<ServerEnv>): Promise<unknown> {
   try {
-    const parsed: unknown = await c.req.json();
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, unknown>;
+    return await c.req.json();
   } catch {
     return {};
   }

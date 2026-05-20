@@ -371,6 +371,29 @@ describe("routes — /api/handoffs", () => {
     expect(data.terminalReason).toBe("operator stopped waiting");
   });
 
+  test("POST /:id/cancel rejects non-object JSON body", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify([]),
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+
+    const stored = await handoffStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
+  });
+
   test("POST /:id/manual-resolve marks dead-lettered handoff manually resolved", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,
