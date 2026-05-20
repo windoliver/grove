@@ -7,9 +7,16 @@ export const HandoffStatus = {
   Expired: "expired",
   /** IPC delivery failed after retries — requires operator attention. */
   DeadLettered: "dead_lettered",
+  Cancelled: "cancelled",
+  ManuallyResolved: "manually_resolved",
 } as const;
 
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
+
+export interface HandoffTerminalMetadata {
+  readonly terminalReason?: string | undefined;
+  readonly replacementHandoffId?: string | undefined;
+}
 
 /**
  * Valid status transitions for handoffs.
@@ -21,29 +28,42 @@ export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
  * TTL expiry:  pending_pickup → expired
  *              delivered → expired
  *              processed → expired
+ * Operator:    pending_pickup/delivered/processed/expired/dead_lettered
+ *              → cancelled/manually_resolved
  *
  * pending_pickup → replied is NOT allowed: a reply must acknowledge delivery
  * first. Callers that want to atomically deliver-and-reply should call
  * markDelivered() then markReplied().
  *
- * Terminal states (replied, expired, dead_lettered) cannot transition further.
+ * Terminal states (replied, cancelled, manually_resolved) cannot transition further.
  */
 export const VALID_TRANSITIONS: Readonly<Record<HandoffStatus, readonly HandoffStatus[]>> = {
   [HandoffStatus.PendingPickup]: [
     HandoffStatus.Delivered,
     HandoffStatus.Expired,
     HandoffStatus.DeadLettered,
+    HandoffStatus.Cancelled,
+    HandoffStatus.ManuallyResolved,
   ],
   [HandoffStatus.Delivered]: [
     HandoffStatus.Processed,
     HandoffStatus.Replied,
     HandoffStatus.Expired,
     HandoffStatus.DeadLettered,
+    HandoffStatus.Cancelled,
+    HandoffStatus.ManuallyResolved,
   ],
-  [HandoffStatus.Processed]: [HandoffStatus.Replied, HandoffStatus.Expired],
+  [HandoffStatus.Processed]: [
+    HandoffStatus.Replied,
+    HandoffStatus.Expired,
+    HandoffStatus.Cancelled,
+    HandoffStatus.ManuallyResolved,
+  ],
   [HandoffStatus.Replied]: [],
-  [HandoffStatus.Expired]: [],
-  [HandoffStatus.DeadLettered]: [],
+  [HandoffStatus.Expired]: [HandoffStatus.Cancelled, HandoffStatus.ManuallyResolved],
+  [HandoffStatus.DeadLettered]: [HandoffStatus.Cancelled, HandoffStatus.ManuallyResolved],
+  [HandoffStatus.Cancelled]: [],
+  [HandoffStatus.ManuallyResolved]: [],
 };
 
 /**
@@ -105,6 +125,8 @@ export interface Handoff {
   readonly createdAt: string;
   /** Nexus IPC message ID — set when the handoff is relayed via IPC. */
   readonly ipcMessageId?: string | undefined;
+  readonly terminalReason?: string | undefined;
+  readonly replacementHandoffId?: string | undefined;
 }
 
 export interface HandoffInput {
@@ -148,6 +170,8 @@ export interface HandoffStore {
   markReplied(id: string, resolvedByCid: string): Promise<void>;
   /** Mark a handoff as dead-lettered (IPC delivery failed after retries). */
   markDeadLettered(id: string): Promise<void>;
+  markCancelled(id: string, metadata?: HandoffTerminalMetadata): Promise<void>;
+  markManuallyResolved(id: string, metadata?: HandoffTerminalMetadata): Promise<void>;
   /** Set the IPC message ID on a handoff (called after IPC relay succeeds). */
   setIpcMessageId?(id: string, ipcMessageId: string): Promise<void>;
   /**
