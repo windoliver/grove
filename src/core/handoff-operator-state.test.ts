@@ -96,6 +96,15 @@ describe("deriveHandoffOperatorProjection", () => {
     expect(projection.state).toBe(HandoffOperatorState.Overdue);
   });
 
+  test("persisted expired handoff projects to overdue", () => {
+    const projection = deriveHandoffOperatorProjection(handoff({ status: HandoffStatus.Expired }), {
+      now: "2026-05-20T10:01:00.000Z",
+    });
+
+    expect(projection.state).toBe(HandoffOperatorState.Overdue);
+    expect(projection.reason).toBe("deadline passed");
+  });
+
   test("unhealthy target projects unresolved handoff to blocked", () => {
     const projection = deriveHandoffOperatorProjection(
       handoff({ status: HandoffStatus.Processed }),
