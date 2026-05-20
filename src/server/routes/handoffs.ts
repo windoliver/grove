@@ -15,7 +15,7 @@ import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { HandoffStore } from "../../core/handoff.js";
-import { HandoffStatus as HandoffStatusValue } from "../../core/handoff.js";
+import { HANDOFF_STATUS_VALUES } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -23,16 +23,7 @@ const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
 const listQuerySchema = z.object({
   toRole: z.string().optional(),
   fromRole: z.string().optional(),
-  status: z
-    .enum([
-      HandoffStatusValue.PendingPickup,
-      HandoffStatusValue.Delivered,
-      HandoffStatusValue.Processed,
-      HandoffStatusValue.Replied,
-      HandoffStatusValue.Expired,
-      HandoffStatusValue.DeadLettered,
-    ])
-    .optional(),
+  status: z.enum(HANDOFF_STATUS_VALUES).optional(),
   sourceCid: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   sessionId: z.string().optional(),

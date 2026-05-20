@@ -185,9 +185,16 @@ export {
   FrontierRewardService,
   type FrontierRewardServiceOptions,
 } from "./frontier-reward-service.js";
-export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
+export type {
+  Handoff,
+  HandoffInput,
+  HandoffQuery,
+  HandoffStore,
+  HandoffTerminalMetadata,
+} from "./handoff.js";
 export {
   canTransition,
+  HANDOFF_STATUS_VALUES,
   HandoffStatus,
   InvalidTransitionError,
   VALID_TRANSITIONS,

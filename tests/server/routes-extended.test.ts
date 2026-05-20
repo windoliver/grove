@@ -303,6 +303,54 @@ describe("routes — /api/handoffs", () => {
     expect(res.status).toBe(400);
   });
 
+  test("GET / accepts operator terminal status filters", async () => {
+    const cancelled = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markCancelled(cancelled.handoffId, {
+      terminalReason: "operator cancelled",
+    });
+
+    const expired = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "tester",
+      requiresReply: true,
+      replyDueAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    await handoffStore.expireStale();
+    await handoffStore.markManuallyResolved(expired.handoffId, {
+      terminalReason: "operator handled offline",
+    });
+
+    const cancelledRes = await app.request(
+      `/api/handoffs?status=${HandoffStatus.Cancelled}&limit=10`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(cancelledRes.status).toBe(200);
+    const cancelledData = (await cancelledRes.json()) as {
+      handoffs: readonly { handoffId: string; status: string }[];
+    };
+    expect(cancelledData.handoffs.find((h) => h.handoffId === cancelled.handoffId)?.status).toBe(
+      HandoffStatus.Cancelled,
+    );
+
+    const resolvedRes = await app.request(
+      `/api/handoffs?status=${HandoffStatus.ManuallyResolved}&limit=10`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(resolvedRes.status).toBe(200);
+    const resolvedData = (await resolvedRes.json()) as {
+      handoffs: readonly { handoffId: string; status: string }[];
+    };
+    expect(resolvedData.handoffs.find((h) => h.handoffId === expired.handoffId)?.status).toBe(
+      HandoffStatus.ManuallyResolved,
+    );
+  });
+
   test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,

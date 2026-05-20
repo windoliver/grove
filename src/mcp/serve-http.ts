@@ -619,6 +619,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       "markProcessed",
       "markReplied",
       "markDeadLettered",
+      "markCancelled",
+      "markManuallyResolved",
       "setIpcMessageId",
       "markSeen",
       "markAcked",

@@ -341,7 +341,8 @@ export function initSqliteDb(dbPath: string): Database {
     db.exec(GOAL_SESSION_DDL);
 
     // Pre-HANDOFF_DDL column-safe migration: legacy handoffs tables (pre-#164)
-    // lack session_id/seen_at/acked_at/ipc_message_id. HANDOFF_DDL now includes
+    // lack session_id/seen_at/acked_at/ipc_message_id and operator terminal
+    // metadata columns. HANDOFF_DDL now includes
     // `CREATE INDEX idx_handoffs_session_id ON handoffs(session_id)`, which
     // fails on those older tables because CREATE TABLE IF NOT EXISTS leaves the
     // existing schema alone. Add the missing columns here so the index
@@ -360,7 +361,14 @@ export function initSqliteDb(dbPath: string): Database {
       }[];
       if (handoffCols.length > 0) {
         const names = new Set(handoffCols.map((c) => c.name));
-        for (const col of ["seen_at", "acked_at", "session_id", "ipc_message_id"]) {
+        for (const col of [
+          "seen_at",
+          "acked_at",
+          "session_id",
+          "ipc_message_id",
+          "terminal_reason",
+          "replacement_handoff_id",
+        ]) {
           if (!names.has(col)) {
             db.run(`ALTER TABLE handoffs ADD COLUMN ${col} TEXT`);
           }

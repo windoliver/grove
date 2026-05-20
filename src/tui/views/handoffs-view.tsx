@@ -34,7 +34,14 @@ const STATUS_LABELS: Record<string, string> = {
   [HandoffStatus.Delivered]: "\uD83D\uDCEC delivered",
   [HandoffStatus.Replied]: "\u2705 [done]",
   [HandoffStatus.Expired]: "\u231B expired",
+  [HandoffStatus.Cancelled]: "\u2715 cancelled",
+  [HandoffStatus.ManuallyResolved]: "\u2713 resolved",
 };
+
+const OPERATOR_TERMINAL_STATUSES: ReadonlySet<HandoffStatus> = new Set([
+  HandoffStatus.Cancelled,
+  HandoffStatus.ManuallyResolved,
+]);
 
 /**
  * Receipt state — derived from seenAt/ackedAt timestamps.
@@ -56,6 +63,7 @@ function deadlineLabel(h: Handoff): string {
   // Already resolved — show checkmark
   if (h.status === HandoffStatus.Replied) return "\u2713 met";
   if (h.status === HandoffStatus.Expired) return "\u2717 expired";
+  if (OPERATOR_TERMINAL_STATUSES.has(h.status)) return "\u2713 closed";
 
   // Overdue
   if (diff < 0) {
@@ -82,7 +90,13 @@ function formatTime(iso: string): string {
 /** Check if a handoff is overdue (has deadline, unresolved, past due). */
 function isOverdue(h: Handoff): boolean {
   if (h.replyDueAt === undefined) return false;
-  if (h.status === HandoffStatus.Replied || h.status === HandoffStatus.Expired) return false;
+  if (
+    h.status === HandoffStatus.Replied ||
+    h.status === HandoffStatus.Expired ||
+    OPERATOR_TERMINAL_STATUSES.has(h.status)
+  ) {
+    return false;
+  }
   return new Date(h.replyDueAt).getTime() < Date.now();
 }
 

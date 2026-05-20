@@ -13,6 +13,26 @@ export const HandoffStatus = {
 
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
 
+export const HANDOFF_STATUS_VALUES: readonly [
+  typeof HandoffStatus.PendingPickup,
+  typeof HandoffStatus.Delivered,
+  typeof HandoffStatus.Processed,
+  typeof HandoffStatus.Replied,
+  typeof HandoffStatus.Expired,
+  typeof HandoffStatus.DeadLettered,
+  typeof HandoffStatus.Cancelled,
+  typeof HandoffStatus.ManuallyResolved,
+] = [
+  HandoffStatus.PendingPickup,
+  HandoffStatus.Delivered,
+  HandoffStatus.Processed,
+  HandoffStatus.Replied,
+  HandoffStatus.Expired,
+  HandoffStatus.DeadLettered,
+  HandoffStatus.Cancelled,
+  HandoffStatus.ManuallyResolved,
+];
+
 export interface HandoffTerminalMetadata {
   readonly terminalReason?: string | undefined;
   readonly replacementHandoffId?: string | undefined;
