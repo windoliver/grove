@@ -39,6 +39,7 @@ import { createTuiConfigWatcher } from "../config-watcher.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
 import { debugLog } from "../debug-log.js";
+import { choiceDialogOptions, textPromptDialogOptions } from "../dialog-options.js";
 import { performHandoffOperatorAction } from "../handoff-actions.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
@@ -656,11 +657,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     const promptHandoffReason = useCallback(
       async (action: HandoffOperatorAction): Promise<string | null> => {
-        return dialog.prompt({
-          title: `Handoff ${handoffActionVerb(action)}`,
-          message: "Reason",
-          defaultValue: handoffActionVerb(action),
-        });
+        const value = await dialog.prompt<string>(
+          textPromptDialogOptions({
+            title: `Handoff ${handoffActionVerb(action)}`,
+            message: "Reason",
+            defaultValue: handoffActionVerb(action),
+          }),
+        );
+        return value === undefined ? null : value;
       },
       [dialog],
     );
@@ -669,14 +673,36 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       const selected = selectedHandoffProjection?.handoff;
       const choices = (activeRoles ?? []).filter((role) => role !== selected?.toRole);
       if (choices.length > 0) {
-        return dialog.choice({
+        const value = await dialog.choice(
+          choiceDialogOptions({
+            title: "Reroute Handoff",
+            message: "Target role",
+            choices,
+          }),
+        );
+        return value === undefined ? null : value;
+      }
+      const value = await dialog.prompt<string>(
+        textPromptDialogOptions({
           title: "Reroute Handoff",
           message: "Target role",
-          choices: [...choices],
-        });
-      }
-      return dialog.prompt({ title: "Reroute Handoff", message: "Target role" });
+        }),
+      );
+      return value === undefined ? null : value;
     }, [activeRoles, dialog, selectedHandoffProjection]);
+
+    const promptLeaveSession = useCallback(
+      async <const K extends string>(choices: readonly K[]): Promise<K | undefined> => {
+        return dialog.choice(
+          choiceDialogOptions({
+            title: "Leave Session",
+            message: "Agents will be stopped.",
+            choices,
+          }),
+        );
+      },
+      [dialog],
+    );
 
     const executeSelectedHandoffAction = useCallback(
       (action: HandoffOperatorAction): void => {
@@ -950,22 +976,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
-            void dialog
-              .choice({
-                title: "Leave Session",
-                message: "Agents will be stopped.",
-                choices: ["Quit", "Back to main", "Cancel"],
-              })
-              .then((choice) => {
-                if (choice === "Quit") onQuit();
-                else if (choice === "Back to main") onBackToMain();
-              });
+            void promptLeaveSession(["Quit", "Back to main", "Cancel"] as const).then((choice) => {
+              if (choice === "Quit") onQuit();
+              else if (choice === "Back to main") onBackToMain();
+            });
           } else {
-            void dialog
-              .confirm({ title: "Quit Session?", message: "Agents will be stopped." })
-              .then((confirmed) => {
-                if (confirmed) onQuit();
-              });
+            void promptLeaveSession(["Quit", "Cancel"] as const).then((choice) => {
+              if (choice === "Quit") onQuit();
+            });
           }
         },
         approvePermission: () => {
@@ -1078,7 +1096,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         topology,
         handoffs.length,
         executeSelectedHandoffAction,
-        dialog,
+        promptLeaveSession,
         aliases,
         gotoDispatch,
         flash,
