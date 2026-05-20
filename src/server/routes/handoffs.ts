@@ -19,7 +19,7 @@ import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Handoff, HandoffStore } from "../../core/handoff.js";
-import { HANDOFF_STATUS_VALUES } from "../../core/handoff.js";
+import { HANDOFF_STATUS_VALUES, HandoffStatus, validateTransition } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -109,6 +109,19 @@ function replacementDueAt(original: Handoff, next?: string): string | undefined 
     return original.replyDueAt;
   }
   return undefined;
+}
+
+async function cancelReplacementAfterOriginalFailure(
+  store: HandoffStore,
+  replacementId: string,
+): Promise<void> {
+  try {
+    await store.markCancelled(replacementId, {
+      terminalReason: "replacement cancelled after original cancellation failed",
+    });
+  } catch {
+    // Best-effort cleanup only; callers must see the original cancellation error.
+  }
 }
 
 /** GET /api/handoffs — List handoffs with optional filters. */
@@ -204,23 +217,27 @@ handoffs.post("/:id/resend", async (c) => {
   }
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
-  const replacementHandoffId = crypto.randomUUID();
-  await store.markCancelled(id, {
-    terminalReason: action.reason ?? "resent",
-    replacementHandoffId,
-  });
-  const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  validateTransition(id, original.status, HandoffStatus.Cancelled);
   const replacement = await store.create({
-    handoffId: replacementHandoffId,
     sourceCid: original.sourceCid,
     fromRole: original.fromRole,
     toRole: original.toRole,
     requiresReply: original.requiresReply,
     ...(replyDueAt !== undefined ? { replyDueAt } : {}),
   });
+  try {
+    await store.markCancelled(id, {
+      terminalReason: action.reason ?? "resent",
+      replacementHandoffId: replacement.handoffId,
+    });
+  } catch (err) {
+    await cancelReplacementAfterOriginalFailure(store, replacement.handoffId);
+    throw err;
+  }
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
   return c.json({ original: updatedOriginal, replacement });
 });
 
@@ -241,23 +258,27 @@ handoffs.post("/:id/reroute", async (c) => {
   }
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
-  const replacementHandoffId = crypto.randomUUID();
-  await store.markCancelled(id, {
-    terminalReason: action.reason ?? `rerouted to ${action.toRole}`,
-    replacementHandoffId,
-  });
-  const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  validateTransition(id, original.status, HandoffStatus.Cancelled);
   const replacement = await store.create({
-    handoffId: replacementHandoffId,
     sourceCid: original.sourceCid,
     fromRole: original.fromRole,
     toRole: action.toRole,
     requiresReply: original.requiresReply,
     ...(replyDueAt !== undefined ? { replyDueAt } : {}),
   });
+  try {
+    await store.markCancelled(id, {
+      terminalReason: action.reason ?? `rerouted to ${action.toRole}`,
+      replacementHandoffId: replacement.handoffId,
+    });
+  } catch (err) {
+    await cancelReplacementAfterOriginalFailure(store, replacement.handoffId);
+    throw err;
+  }
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
   return c.json({ original: updatedOriginal, replacement });
 });
 

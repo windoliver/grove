@@ -21,7 +21,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { HandoffStatus } from "../../src/core/handoff.js";
+import { type Handoff, type HandoffInput, HandoffStatus } from "../../src/core/handoff.js";
 import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
@@ -34,6 +34,22 @@ import {
 } from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
+
+class CreateFailingHandoffStore extends InMemoryHandoffStore {
+  private shouldFailCreate = false;
+
+  failNextCreate(): void {
+    this.shouldFailCreate = true;
+  }
+
+  override async create(input: HandoffInput): Promise<Handoff> {
+    if (this.shouldFailCreate) {
+      this.shouldFailCreate = false;
+      throw new Error("simulated replacement create failure");
+    }
+    return super.create(input);
+  }
+}
 
 // ===================================================================
 // 1. Diff route (/api/diff)
@@ -491,6 +507,37 @@ describe("routes — /api/handoffs", () => {
     const after = await handoffStore.list();
     expect(after).toHaveLength(beforeCount);
     expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
+  });
+
+  test("POST /:id/resend leaves original unchanged when replacement create fails", async () => {
+    const failingStore = new CreateFailingHandoffStore();
+    const failingApp = createApp(
+      { ...ctx.deps, handoffStore: failingStore },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+    const handoff = await failingStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await failingStore.markDeadLettered(handoff.handoffId);
+    failingStore.failNextCreate();
+
+    const res = await failingApp.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(500);
+    const stored = await failingStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.DeadLettered);
+    expect(stored?.replacementHandoffId).toBeUndefined();
+
+    const handoffs = await failingStore.list();
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0]?.handoffId).toBe(handoff.handoffId);
   });
 
   test("POST /:id/reroute creates replacement handoff for selected role", async () => {
