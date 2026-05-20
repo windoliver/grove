@@ -394,6 +394,29 @@ describe("routes — /api/handoffs", () => {
     expect(stored?.terminalReason).toBeUndefined();
   });
 
+  test("POST /:id/cancel rejects malformed non-empty JSON body", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: "{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+
+    const stored = await handoffStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
+  });
+
   test("POST /:id/manual-resolve marks dead-lettered handoff manually resolved", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,
@@ -447,6 +470,29 @@ describe("routes — /api/handoffs", () => {
     expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
   });
 
+  test("POST /:id/resend on ineligible original returns 409 without creating replacement", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+    const beforeCount = (await handoffStore.list()).length;
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(409);
+    const after = await handoffStore.list();
+    expect(after).toHaveLength(beforeCount);
+    expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
+  });
+
   test("POST /:id/reroute creates replacement handoff for selected role", async () => {
     const handoff = await handoffStore.create({
       sourceCid: FAKE_CID,
@@ -471,6 +517,29 @@ describe("routes — /api/handoffs", () => {
     expect(data.original.replacementHandoffId).toBe(data.replacement.handoffId);
     expect(data.replacement.toRole).toBe("qa");
     expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
+  });
+
+  test("POST /:id/reroute on ineligible original returns 409 without creating replacement", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+    const beforeCount = (await handoffStore.list()).length;
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/reroute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ toRole: "qa", reason: "reviewer unavailable" }),
+    });
+
+    expect(res.status).toBe(409);
+    const after = await handoffStore.list();
+    expect(after).toHaveLength(beforeCount);
+    expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
   });
 
   test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {

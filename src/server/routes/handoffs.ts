@@ -45,6 +45,8 @@ const rerouteActionSchema = replacementActionSchema.extend({
   toRole: z.string().min(1),
 });
 
+const invalidJsonBodySchema = z.custom(() => false, { message: "Invalid JSON body" });
+
 /**
  * Middleware: require handoffStore to be configured.
  * Returns 501 if not available, otherwise passes through.
@@ -87,9 +89,16 @@ function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
 }
 
 async function parseOptionalJson(c: Context<ServerEnv>): Promise<unknown> {
+  const body = await c.req.text();
+  if (body.trim() === "") {
+    return {};
+  }
+
   try {
-    return await c.req.json();
+    const parsed: unknown = JSON.parse(body);
+    return parsed;
   } catch {
+    invalidJsonBodySchema.parse(body);
     return {};
   }
 }
@@ -195,21 +204,23 @@ handoffs.post("/:id/resend", async (c) => {
   }
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
+  const replacementHandoffId = crypto.randomUUID();
+  await store.markCancelled(id, {
+    terminalReason: action.reason ?? "resent",
+    replacementHandoffId,
+  });
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
   const replacement = await store.create({
+    handoffId: replacementHandoffId,
     sourceCid: original.sourceCid,
     fromRole: original.fromRole,
     toRole: original.toRole,
     requiresReply: original.requiresReply,
     ...(replyDueAt !== undefined ? { replyDueAt } : {}),
   });
-  await store.markCancelled(id, {
-    terminalReason: action.reason ?? "resent",
-    replacementHandoffId: replacement.handoffId,
-  });
-  const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
   return c.json({ original: updatedOriginal, replacement });
 });
 
@@ -230,21 +241,23 @@ handoffs.post("/:id/reroute", async (c) => {
   }
 
   const replyDueAt = replacementDueAt(original, action.replyDueAt);
+  const replacementHandoffId = crypto.randomUUID();
+  await store.markCancelled(id, {
+    terminalReason: action.reason ?? `rerouted to ${action.toRole}`,
+    replacementHandoffId,
+  });
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
   const replacement = await store.create({
+    handoffId: replacementHandoffId,
     sourceCid: original.sourceCid,
     fromRole: original.fromRole,
     toRole: action.toRole,
     requiresReply: original.requiresReply,
     ...(replyDueAt !== undefined ? { replyDueAt } : {}),
   });
-  await store.markCancelled(id, {
-    terminalReason: action.reason ?? `rerouted to ${action.toRole}`,
-    replacementHandoffId: replacement.handoffId,
-  });
-  const updatedOriginal = await store.get(id);
-  if (updatedOriginal === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
   return c.json({ original: updatedOriginal, replacement });
 });
 
