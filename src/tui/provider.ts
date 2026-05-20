@@ -408,7 +408,15 @@ export interface TuiHandoffProvider {
 
 /** Type guard: does the provider support handoff queries? */
 export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
-  return typeof (p as TuiHandoffProvider).getHandoffs === "function";
+  const candidate = p as Partial<Record<keyof TuiHandoffProvider, unknown>>;
+  return (
+    typeof candidate.getHandoffs === "function" &&
+    typeof candidate.markHandoffDelivered === "function" &&
+    typeof candidate.cancelHandoff === "function" &&
+    typeof candidate.manualResolveHandoff === "function" &&
+    typeof candidate.resendHandoff === "function" &&
+    typeof candidate.rerouteHandoff === "function"
+  );
 }
 
 /** Goal management — available when capabilities.goals is true. */

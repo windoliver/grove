@@ -24,6 +24,10 @@ describe("HandoffsView", () => {
     const provider = {
       getHandoffs: async () => [],
       markHandoffDelivered: async () => undefined,
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
     } as unknown as TuiDataProvider;
     const handoff: Handoff = {
       handoffId: "handoff-1",
@@ -59,6 +63,10 @@ describe("HandoffsView", () => {
     const provider = {
       getHandoffs: async () => [],
       markHandoffDelivered: async () => undefined,
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
     } as unknown as TuiDataProvider;
     const baseHandoff = {
       sourceCid: "blake3:a913b2e46abcdef",
