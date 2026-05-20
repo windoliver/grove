@@ -19,6 +19,7 @@ import { useKeyboard } from "@opentui/react";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentTaskView } from "../../core/agent-task.js";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Handoff } from "../../core/handoff.js";
@@ -178,6 +179,54 @@ function formatTime(iso: string): string {
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   } catch {
     return "--:--";
+  }
+}
+
+export interface HandoffPanelSnapshot {
+  readonly handoffs: readonly Handoff[];
+  readonly healthSignals: readonly HandoffHealthSignal[];
+}
+
+export interface HandoffPanelSnapshotOptions {
+  readonly provider: TuiDataProvider;
+  readonly sessionStartedAt?: string | undefined;
+  readonly agentFailures?: ReadonlyMap<string, string> | undefined;
+}
+
+export async function loadHandoffPanelSnapshot(
+  options: HandoffPanelSnapshotOptions,
+): Promise<HandoffPanelSnapshot> {
+  if (!isHandoffProvider(options.provider)) {
+    return {
+      handoffs: [],
+      healthSignals: healthSignalsFromAgentFailures(options.agentFailures),
+    };
+  }
+
+  const [all, tasks] = await Promise.all([
+    options.provider.getHandoffs({ limit: 200 }),
+    loadAgentTasksForHandoffHealth(options.provider),
+  ]);
+  const cutoff =
+    options.sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+  return {
+    handoffs: all.filter((h) => h.createdAt >= cutoff),
+    healthSignals: [
+      ...healthSignalsFromAgentFailures(options.agentFailures),
+      ...healthSignalsFromAgentTasks(tasks),
+    ],
+  };
+}
+
+async function loadAgentTasksForHandoffHealth(
+  provider: TuiDataProvider,
+): Promise<readonly AgentTaskView[]> {
+  if (provider.getAgentTasks === undefined) return [];
+  try {
+    return await provider.getAgentTasks();
+  } catch {
+    return [];
   }
 }
 
@@ -588,23 +637,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      void Promise.all([
-        provider.getHandoffs({ limit: 200 }),
-        provider.getAgentTasks ? provider.getAgentTasks() : Promise.resolve([]),
-      ])
-        .then(([all, tasks]) => {
-          const cutoff =
-            sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-          const filtered = all.filter((h) => h.createdAt >= cutoff);
-          debugLog(
-            "handoffs",
-            `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
-          );
-          setHandoffs(filtered);
-          setHandoffHealthSignals([
-            ...healthSignalsFromAgentFailures(agentFailures),
-            ...healthSignalsFromAgentTasks(tasks),
-          ]);
+      void loadHandoffPanelSnapshot({ provider, sessionStartedAt, agentFailures })
+        .then((snapshot) => {
+          debugLog("handoffs", `afterFilter=${snapshot.handoffs.length}`);
+          setHandoffs(snapshot.handoffs);
+          setHandoffHealthSignals(snapshot.healthSignals);
         })
         .catch((err: unknown) => {
           debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);

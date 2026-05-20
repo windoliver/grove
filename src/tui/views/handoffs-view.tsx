@@ -15,23 +15,23 @@ import {
   countHandoffOperatorStates,
   deriveHandoffOperatorProjection,
   type HandoffHealthSignal,
+  type HandoffOperatorAction,
 } from "../../core/handoff-operator-state.js";
 import { truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { isHandoffProvider } from "../provider.js";
-import { theme } from "../theme.js";
 
 const COLUMNS = [
-  { header: "FROM", key: "from", width: 10 },
-  { header: "TO", key: "to", width: 10 },
-  { header: "STATE", key: "state", width: 16 },
-  { header: "REASON", key: "reason", width: 22 },
-  { header: "RECEIPT", key: "receipt", width: 10 },
-  { header: "DEADLINE", key: "deadline", width: 12 },
-  { header: "ACTIONS", key: "actions", width: 40 },
-  { header: "SOURCE CID", key: "cid", width: 18 },
+  { header: "FROM", key: "from", width: 8 },
+  { header: "TO", key: "to", width: 8 },
+  { header: "STATE", key: "state", width: 14 },
+  { header: "REASON", key: "reason", width: 18 },
+  { header: "RECEIPT", key: "receipt", width: 8 },
+  { header: "DEADLINE", key: "deadline", width: 10 },
+  { header: "ACTIONS", key: "actions", width: 25 },
+  { header: "SOURCE CID", key: "cid", width: 12 },
 ] as const;
 
 const OPERATOR_TERMINAL_STATUSES: ReadonlySet<HandoffStatus> = new Set([
@@ -72,6 +72,26 @@ function deadlineLabel(h: Handoff): string {
   const remainMins = Math.floor(diff / 60_000);
   if (remainMins < 60) return `${remainMins}m left`;
   return `${Math.floor(remainMins / 60)}h left`;
+}
+
+function actionsLabel(actions: readonly HandoffOperatorAction[]): string {
+  return [...actions].sort(compareActionLabels).map(actionLabel).join(", ");
+}
+
+function compareActionLabels(a: HandoffOperatorAction, b: HandoffOperatorAction): number {
+  return actionOrder(a) - actionOrder(b);
+}
+
+function actionOrder(action: HandoffOperatorAction): number {
+  if (action === "resend") return 0;
+  if (action === "reroute") return 1;
+  if (action === "manual_resolve") return 2;
+  return 3;
+}
+
+function actionLabel(action: HandoffOperatorAction): string {
+  if (action === "manual_resolve") return "manual";
+  return action;
 }
 
 export interface HandoffsViewProps {
@@ -154,7 +174,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
       reason: projection.reason,
       receipt: receiptLabel(projection.handoff),
       deadline: deadlineLabel(projection.handoff),
-      actions: projection.actions.join(", "),
+      actions: actionsLabel(projection.actions),
       cid: truncateCid(projection.handoff.sourceCid),
     }));
 
@@ -167,9 +187,6 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
               ? `  ${handoffs.length} total, ${counts.pending} pending, ${counts.overdue} overdue, ${counts.blocked} blocked, ${counts.deadLettered} failed`
               : "  (no handoffs yet)"}
           </text>
-          {counts.deadLettered > 0 && (
-            <text color={theme.error}>{`  ${counts.deadLettered} failed`}</text>
-          )}
         </box>
         {handoffs.length === 0 ? (
           <text opacity={0.4}>
