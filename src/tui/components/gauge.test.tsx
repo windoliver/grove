@@ -15,7 +15,9 @@ async function renderFrame(element: React.ReactNode): Promise<string> {
     renderer = TestRenderer.create(element as React.ReactElement);
   });
   const flat = JSON.stringify(renderer.toJSON());
-  renderer.unmount();
+  await act(async () => {
+    renderer.unmount();
+  });
   return flat;
 }
 

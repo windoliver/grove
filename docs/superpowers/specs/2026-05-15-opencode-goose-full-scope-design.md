@@ -546,4 +546,3 @@ This design should produce separate implementation plans for each track. Track
 depends on stable string IDs and a merged registry. Track 6 and Track 7 should
 not begin until the UI extension and layout paths are stable enough to expose
 their state.
-
