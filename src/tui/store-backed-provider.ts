@@ -67,8 +67,8 @@ import type {
 import {
   activityFromStore,
   claimsFromStore,
-  contributionsForCidsInOrder,
   contributionDetailFromStore,
+  contributionsForCidsInOrder,
   dagFromStore,
   diffArtifactsFromBuffers,
   HttpConflictError,

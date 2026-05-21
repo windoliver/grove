@@ -10,7 +10,7 @@ function identity<T>(value: T): T {
 }
 
 function useEffectStub(): void {
-  return undefined;
+  /* test stub */
 }
 
 function useRefStub<T>(initial: T): { current: T } {

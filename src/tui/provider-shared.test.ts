@@ -11,8 +11,8 @@ import {
   activityFromStore,
   archiveSessionHttp,
   claimsFromStore,
-  contributionsForCidsInOrder,
   contributionDetailFromStore,
+  contributionsForCidsInOrder,
   dagFromStore,
   dashboardFromStores,
   diffArtifactsFromBuffers,
@@ -170,11 +170,7 @@ describe("provider-shared", () => {
         "blake3:second",
       ]);
 
-      expect(result.map((c) => c.cid)).toEqual([
-        "blake3:third",
-        "blake3:first",
-        "blake3:second",
-      ]);
+      expect(result.map((c) => c.cid)).toEqual(["blake3:third", "blake3:first", "blake3:second"]);
     });
   });
 
