@@ -54,4 +54,67 @@ describe("HandoffsView", () => {
     expect(text).toContain("[done]");
     expect(text).toContain("met");
   });
+
+  test("filterRole scopes rows to touching role; omitting prop shows all", () => {
+    const provider = {
+      getHandoffs: async () => [],
+      markHandoffDelivered: async () => undefined,
+    } as unknown as TuiDataProvider;
+
+    const coderHandoff: Handoff = {
+      handoffId: "handoff-coder",
+      sourceCid: "blake3:coder001",
+      fromRole: "coder",
+      toRole: "reviewer",
+      status: HandoffStatus.PendingPickup,
+      requiresReply: false,
+      createdAt: "2026-05-07T19:00:00.000Z",
+    };
+    const plannerHandoff: Handoff = {
+      handoffId: "handoff-planner",
+      sourceCid: "blake3:planner001",
+      fromRole: "planner",
+      toRole: "reviewer",
+      status: HandoffStatus.Delivered,
+      requiresReply: false,
+      createdAt: "2026-05-07T19:01:00.000Z",
+    };
+
+    // --- With filterRole="coder": only coder-touching handoff appears ---
+    let filteredRenderer: TestRenderer.ReactTestRenderer | undefined;
+    act(() => {
+      filteredRenderer = TestRenderer.create(
+        React.createElement(HandoffsView, {
+          provider,
+          active: true,
+          cursor: 0,
+          handoffs: [coderHandoff, plannerHandoff],
+          filterRole: "coder",
+        }),
+      );
+    });
+    if (!filteredRenderer) throw new Error("filteredRenderer did not mount");
+    const filteredText = collectText(filteredRenderer.toJSON());
+    expect(filteredText).toContain("coder");
+    expect(filteredText).not.toContain("planner");
+    filteredRenderer.unmount();
+
+    // --- Without filterRole: both handoffs appear ---
+    let allRenderer: TestRenderer.ReactTestRenderer | undefined;
+    act(() => {
+      allRenderer = TestRenderer.create(
+        React.createElement(HandoffsView, {
+          provider,
+          active: true,
+          cursor: 0,
+          handoffs: [coderHandoff, plannerHandoff],
+        }),
+      );
+    });
+    if (!allRenderer) throw new Error("allRenderer did not mount");
+    const allText = collectText(allRenderer.toJSON());
+    expect(allText).toContain("coder");
+    expect(allText).toContain("planner");
+    allRenderer.unmount();
+  });
 });

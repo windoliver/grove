@@ -16,7 +16,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as pathResolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Resolve the MCP serve entry point from the grove installation.
@@ -24,25 +25,26 @@ import { dirname, join } from "node:path";
  * @param projectRoot — fallback if no installation path can be derived
  */
 export function resolveMcpServePath(projectRoot?: string): string {
-  const entryPoint = process.argv[1] ?? "";
-  // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
-  // Climb 3 levels: main.js → cli/ → dist/ or src/ → <groveRoot>
-  const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
+  const groveRoots: string[] = [];
+  if (process.argv[1]) {
+    const entryPoint = pathResolve(process.argv[1]);
+    // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
+    // Climb 3 levels: main.js -> cli/ -> dist/ or src/ -> <groveRoot>
+    groveRoots.push(dirname(dirname(dirname(entryPoint))));
+  }
 
-  // import.meta.url fallback — may point to a bundled chunk, but worth trying
-  const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+  // import.meta.url fallback may point to a bundled chunk, but worth trying.
+  groveRoots.push(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 
   // Try dist first (built install), then src (development)
-  const candidates = [
-    join(groveRootFromEntry, "dist", "mcp", "serve.js"),
-    join(groveRootFromEntry, "src", "mcp", "serve.ts"),
-    join(groveRootFromMeta, "dist", "mcp", "serve.js"),
-    join(groveRootFromMeta, "src", "mcp", "serve.ts"),
-  ];
+  const candidates = groveRoots.flatMap((groveRoot) => [
+    join(groveRoot, "dist", "mcp", "serve.js"),
+    join(groveRoot, "src", "mcp", "serve.ts"),
+  ]);
 
   // Last resort: project root (only works when project IS the grove repo)
   if (projectRoot) {
-    candidates.push(join(projectRoot, "src", "mcp", "serve.ts"));
+    candidates.push(join(pathResolve(projectRoot), "src", "mcp", "serve.ts"));
   }
 
   for (const candidate of candidates) {
@@ -65,13 +67,16 @@ export function resolveMcpServePath(projectRoot?: string): string {
  * @param projectRoot — fallback if no installation path can be derived
  */
 export function resolveBundledSkillsRoot(projectRoot?: string): string {
-  const entryPoint = process.argv[1] ?? "";
-  // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
-  const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
-  const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+  const groveRoots: string[] = [];
+  if (process.argv[1]) {
+    const entryPoint = pathResolve(process.argv[1]);
+    // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
+    groveRoots.push(dirname(dirname(dirname(entryPoint))));
+  }
+  groveRoots.push(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 
-  const candidates = [join(groveRootFromEntry, "skills"), join(groveRootFromMeta, "skills")];
-  if (projectRoot) candidates.push(join(projectRoot, "skills"));
+  const candidates = groveRoots.map((groveRoot) => join(groveRoot, "skills"));
+  if (projectRoot) candidates.push(join(pathResolve(projectRoot), "skills"));
 
   for (const c of candidates) {
     if (existsSync(c)) return c;

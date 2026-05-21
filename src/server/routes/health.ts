@@ -38,6 +38,16 @@ health.get("/", async (c) => {
 
   const healthy = Object.values(checks).every((v) => v === "ok");
 
+  // Grove-Server-Pid: diagnostic only.
+  // Grove-Health-Token: authoritative readiness proof — echoes the
+  // GROVE_HEALTH_TOKEN env value the parent injected at spawn time. The
+  // spawner in service-lifecycle.waitForOwnedReadiness checks this against
+  // the per-spawn unguessable token so a foreign listener cannot spoof
+  // readiness on the unauthenticated /health endpoint.
+  c.header("Grove-Server-Pid", String(process.pid));
+  const token = process.env.GROVE_HEALTH_TOKEN;
+  if (token) c.header("Grove-Health-Token", token);
+
   return c.json(
     {
       status: healthy ? "ok" : "degraded",

@@ -190,7 +190,16 @@ export function App({
   const [contributionList, setContributionList] = useState<readonly Contribution[]>([]);
   const [rowCount, setRowCount] = useState(0);
   const [selectedSession, setSelectedSession] = useState<string | undefined>();
-  const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
+  // Frontier active-slice state lives in refs (not React state) because the
+  // keyboard handler must read the current value synchronously. If terminal
+  // input delivers `]` then `a` (or `]` then Enter in compare mode) within
+  // the same JS tick, a setState-based snapshot would still hold the
+  // previous slice's data because React hasn't committed yet — that would
+  // adopt/select a row from the wrong slice. Refs are mutated synchronously
+  // by the FrontierView callback AND by slice-nav handlers; no rendering
+  // depends on these values, so state is unnecessary.
+  const frontierCidsRef = useRef<readonly string[]>([]);
+  const frontierEntriesRef = useRef<ReadonlyArray<{ cid: string; summary: string }>>([]);
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -551,8 +560,15 @@ export function App({
   }, []);
 
   const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
-    setFrontierCids(cids);
+    frontierCidsRef.current = cids;
   }, []);
+
+  const handleFrontierEntriesChanged = useCallback(
+    (entries: ReadonlyArray<{ cid: string; summary: string }>) => {
+      frontierEntriesRef.current = entries;
+    },
+    [],
+  );
 
   const handleSelect = useCallback(
     (index: number) => {
@@ -717,13 +733,27 @@ export function App({
       if (role?.platform) context.platform = role.platform;
       if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;
+      // Snapshot adoptContext into the spawn-call context, then clear it
+      // synchronously. Two reasons:
+      //  1. Race-safety: if spawn A is in flight and the user starts spawn B
+      //     with a new adoptContext, an async clear in A's success handler
+      //     would clobber B's pending target. Synchronous clear here means
+      //     B's ADOPT_SET runs after A's clear.
+      //  2. Failure path: if spawn rejects, the stale target would otherwise
+      //     leak into the next palette open. The spawn already has its copy
+      //     in `context` regardless of subsequent reducer state.
+      if (ks.adoptContext) {
+        context.adoptTarget = ks.adoptContext.targetCid;
+        context.adoptSummary = ks.adoptContext.summary;
+        dispatch({ type: "ADOPT_CLEAR" });
+      }
 
-      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
+      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : "Spawn failed";
         showError(msg);
       });
     },
-    [topology, activeClaims, showError, spawnManager],
+    [topology, activeClaims, showError, spawnManager, ks.adoptContext],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
@@ -738,7 +768,9 @@ export function App({
   );
 
   const handleCommandPaletteClose = useCallback(() => {
+    dispatch({ type: "ADOPT_CLEAR" });
     panels.setMode(InputMode.Normal);
+    dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
 
   // ---------------------------------------------------------------------------
@@ -752,7 +784,14 @@ export function App({
       panels,
       nav,
       onQuit: handleQuit,
-      onSpawnPalette: () => dispatch({ type: "PALETTE_RESET" }),
+      onSpawnPalette: () => {
+        // Defensive: opening a fresh palette must not inherit a stale adopt
+        // target from a previous 'a'-on-Frontier press that was dismissed
+        // through a path other than onPaletteClose.
+        dispatch({ type: "ADOPT_CLEAR" });
+        dispatch({ type: "PALETTE_RESET" });
+      },
+      onPaletteClose: handleCommandPaletteClose,
       onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
       onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
       onTerminalScrollUp: () => dispatch({ type: "TERMINAL_SCROLL_UP" }),
@@ -768,8 +807,16 @@ export function App({
       onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
       onCompareAdopt: (side: "a" | "b") => {
         const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
-        showError(`Adopted: ${(cid ?? "").slice(0, 16)}...`);
+        if (!cid) return;
+        // Read from refs (synchronous current value) — same race-safety
+        // discipline as the 'a' adopt path.
+        const summary =
+          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
+          contributionList.find((c) => c.cid === cid)?.summary ??
+          "";
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         dispatch({ type: "COMPARE_ADOPT" });
+        panels.setMode(InputMode.CommandPalette);
       },
       onSearchStart: () => {
         dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
@@ -926,16 +973,47 @@ export function App({
       pageSize: PAGE_SIZE,
       paletteItemCount: filteredPaletteItems.length,
       compareMode: ks.compareMode,
-      frontierCids,
+      frontierCids: () => frontierCidsRef.current,
       selectedSession,
       hasTmux: tmux !== undefined,
       keybindingOverrides,
       keyActionMap,
+      // Slice nav also resets the global cursor to 0 AND synchronously
+      // clears the entries/cids refs. Without the cursor reset, switching
+      // from a long slice (cursor=9) to a short slice (2 rows) leaves the
+      // cursor off-row, hiding the selection AND blocking 'a'. Without the
+      // synchronous ref clear, a fast `]` then `a` (or `]` then Enter)
+      // delivered in the same JS tick would still see the previous slice's
+      // entries because setState defers the visible value to the next
+      // render. The refs are mutated in place so the very next routeKey
+      // call sees an empty array; the effect re-fills both state and ref
+      // on the next render with the new active slice's data.
+      onFrontierTabNext: () => {
+        dispatch({ type: "FRONTIER_SLICE_NEXT" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      onFrontierTabPrev: () => {
+        dispatch({ type: "FRONTIER_SLICE_PREV" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      onFrontierAdopt: (cid: string, summary: string) => {
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+        panels.setMode(InputMode.CommandPalette);
+      },
+      // Function form so the keyboard handler always reads the latest ref
+      // (refs are mutated synchronously by handleFrontierEntriesChanged and
+      // by slice-nav handlers; state-based values would lag by one render).
+      frontierEntries: () => frontierEntriesRef.current,
     }),
     [
       panels,
       nav,
       handleQuit,
+      handleCommandPaletteClose,
       handleSelect,
       handleApproveQuestion,
       handleDenyQuestion,
@@ -955,7 +1033,7 @@ export function App({
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
-      frontierCids,
+      contributionList,
       agentProfiles,
       topology,
       paletteParentId,
@@ -1012,6 +1090,7 @@ export function App({
               parentAgentId={paletteParentId}
               items={paletteItems}
               query={ks.paletteQuery}
+              adoptContext={ks.adoptContext}
             />
           </box>
         )}
@@ -1054,6 +1133,9 @@ export function App({
           compareCids={ks.compareCids}
           onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
           onFrontierCidsChanged={handleFrontierCidsChanged}
+          activeSliceKey={ks.activeFrontierSlice}
+          onFrontierTabsChanged={(keys) => dispatch({ type: "FRONTIER_SET_TABS", keys })}
+          onFrontierEntriesChanged={handleFrontierEntriesChanged}
           zoomLevel={ks.zoomLevel}
           activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
           terminalScrollOffset={ks.terminalScrollOffset}
