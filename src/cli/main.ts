@@ -4,7 +4,7 @@
  * Dispatches subcommands to dedicated handlers. Each command parses
  * its own arguments via `parseArgs` from `node:util`.
  *
- * Global flags (--help, --version, --verbose, --grove) are handled
+ * Global flags (--help, --version, --verbose, --grove, --no-color) are handled
  * before dispatch.
  *
  * Commands:
@@ -677,6 +677,7 @@ Global options:
   --help, -h        Show this help message
   --version, -v     Show version
   --verbose         Show stack traces on error
+  --no-color        Disable ANSI color output
   --wide            Show full values in table output (frontier, log, search, threads)
   --json            Machine-readable JSON output
 

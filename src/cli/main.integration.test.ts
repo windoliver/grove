@@ -107,6 +107,7 @@ describe("CLI dispatch", () => {
     expect(stdout).toContain("grove");
     expect(stdout).toContain("checkout");
     expect(stdout).toContain("frontier");
+    expect(stdout).toContain("--no-color");
   });
 
   cliTest("-h prints usage", async () => {

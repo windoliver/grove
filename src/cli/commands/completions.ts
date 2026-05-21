@@ -18,6 +18,11 @@ import { COMMANDS, type CommandMeta } from "../registry.js";
 export type Shell = "bash" | "zsh" | "fish";
 
 const SHELLS: readonly Shell[] = ["bash", "zsh", "fish"];
+const GLOBAL_FLAGS = [
+  { name: "help", description: "help" },
+  { name: "version", description: "version" },
+  { name: "no-color", description: "disable ANSI color output" },
+] as const;
 
 /**
  * Parse completions arguments.
@@ -71,6 +76,7 @@ function escapeZshDescription(s: string): string {
 
 function generateBash(commands: readonly CommandMeta[]): string {
   const cmdNames = commands.map((c) => c.name).join(" ");
+  const globalFlags = GLOBAL_FLAGS.map((f) => `--${f.name}`).join(" ");
 
   // Top-level case arms: complete subcommand names + top-level flags
   const topCaseEntries = commands
@@ -113,7 +119,7 @@ _grove_completions() {
   commands="${cmdNames}"
 
   if [[ \${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "$commands --help --version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "$commands ${globalFlags}" -- "$cur") )
     return 0
   fi
 
@@ -144,6 +150,9 @@ function generateZsh(commands: readonly CommandMeta[]): string {
   const cmdDescriptions = commands
     .map((cmd) => `    '${cmd.name}:${escapeZshDescription(cmd.description)}'`)
     .join(" \\\n");
+  const globalArgs = GLOBAL_FLAGS.map(
+    (flag) => `'--${flag.name}[${escapeZshDescription(flag.description)}]'`,
+  ).join(" ");
 
   // Generate per-command helper functions for commands with subcommands
   const helperFunctions: string[] = [];
@@ -204,7 +213,7 @@ ${helpers}_grove() {
 ${cmdDescriptions}
   )
 
-  _arguments -C '1:command:->cmd' '*::arg:->args'
+  _arguments -C ${globalArgs} '1:command:->cmd' '*::arg:->args'
 
   case $state in
     cmd)
@@ -232,6 +241,11 @@ function generateFish(commands: readonly CommandMeta[]): string {
     "",
     "# Disable file completions for grove",
     "complete -c grove -f",
+    "",
+    "# Global flags",
+    ...GLOBAL_FLAGS.map(
+      (flag) => `complete -c grove -l '${flag.name}' -d '${escapeSingleQuoted(flag.description)}'`,
+    ),
     "",
     "# Top-level commands",
   ];
