@@ -8,6 +8,7 @@
  */
 
 import { execFileSync, execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -16,14 +17,18 @@ import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { parseGroveConfig } from "../core/config.js";
-import type { AgentIdentity } from "../core/models.js";
+import { HandoffStatus } from "../core/handoff.js";
+import { LocalEventBus } from "../core/local-event-bus.js";
+import type { AgentIdentity, Contribution } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
+import { hasValidRoutingSignature } from "../core/routing-provenance.js";
 import { parseAcpxSessionId } from "../core/session-id.js";
 import { injectSkills } from "../core/skill-injector.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
+import { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
@@ -44,12 +49,15 @@ import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
 import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
-import type { TuiDataProvider } from "./provider.js";
+import { isHandoffProvider, type TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
 const CODEX_GENERATED_MCP_END = "# END GROVE GENERATED MCP";
 const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+const LOCAL_CONTRIBUTION_POLL_LIMIT = 200;
+const LOCAL_CONTRIBUTION_POLL_MS = 3_000;
+const LOCAL_CONTRIBUTION_INITIAL_DELAY_MS = 15_000;
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -104,6 +112,18 @@ export interface PrContext {
   readonly number: number;
   readonly title: string;
   readonly filesChanged: number;
+}
+
+/** Options for TUI local contribution polling delivery. */
+export interface LocalContributionDeliveryOptions {
+  /** Delay before the first automatic poll. Defaults to 15s. */
+  readonly initialDelayMs?: number | undefined;
+  /** Interval between automatic polls. Defaults to 3s. */
+  readonly pollMs?: number | undefined;
+  /** Seed the seen set with contributions that predate delivery startup. */
+  readonly seedExisting?: boolean | undefined;
+  /** Start background timers. Tests can disable this and call the poll hook directly. */
+  readonly startTimers?: boolean | undefined;
 }
 
 /** Tracked state for a spawned agent. */
@@ -183,6 +203,14 @@ export class SpawnManager {
   private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
   private topology: AgentTopology | undefined;
   private logPollTimer: (() => void) | null = null;
+  private localContributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private localContributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private localContributionPollInFlight = false;
+  private localContributionDeliveryEnabled = false;
+  private readonly localContributionSeenCids = new Set<string>();
+  private readonly localContributionDeliveredTargets = new Map<string, Set<string>>();
+  private readonly routingTokensByRole = new Map<string, string>();
+  private readonly localContributionEventBus = new LocalEventBus();
   // spawnIds that should receive IPC routing — populated when agents are spawned
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
@@ -338,6 +366,41 @@ export class SpawnManager {
   }
 
   /**
+   * Enable local-store contribution polling as the inter-agent delivery path.
+   *
+   * This is used when the TUI is running ACP-backed local agents without a
+   * Nexus bridge. Agent MCP processes write contributions into the shared local
+   * store, but their LocalEventBus instances are process-local; polling bridges
+   * that process boundary and pushes verified contributions to downstream roles.
+   */
+  enableLocalContributionDelivery(options: LocalContributionDeliveryOptions = {}): void {
+    if (!this.agentRuntime) {
+      this.markDeliveryDisabled("agentRuntime unavailable for local contribution delivery");
+      return;
+    }
+    this.localContributionDeliveryEnabled = true;
+    this.markDeliveryReady();
+
+    if (options.seedExisting !== false) {
+      void this.seedLocalContributionSeenCids();
+    }
+    if (options.startTimers === false) return;
+
+    this.stopLocalContributionPolling();
+    const initialDelayMs = options.initialDelayMs ?? LOCAL_CONTRIBUTION_INITIAL_DELAY_MS;
+    const pollMs = options.pollMs ?? LOCAL_CONTRIBUTION_POLL_MS;
+    this.localContributionPollStartTimer = setTimeout(() => {
+      this.localContributionPollTimer = setInterval(() => {
+        void this.pollLocalContributions();
+      }, pollMs);
+      (this.localContributionPollTimer as unknown as { unref?: () => void }).unref?.();
+      void this.pollLocalContributions();
+      this.localContributionPollStartTimer = null;
+    }, initialDelayMs);
+    (this.localContributionPollStartTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  /**
    * Recover from a `disabled` delivery state once the bridge reports a
    * role's SSE channel has resumed. Without this transition, a transient
    * Nexus restart that briefly exceeded the unhealthy threshold leaves
@@ -370,6 +433,11 @@ export class SpawnManager {
   /** @internal — test surface for waitForDelivery() (private). */
   testWaitForDelivery(timeoutMs: number): Promise<void> {
     return this.waitForDelivery(timeoutMs);
+  }
+
+  /** @internal — test surface for local contribution polling. */
+  testPollLocalContributions(): Promise<void> {
+    return this.pollLocalContributions();
   }
 
   /**
@@ -444,6 +512,8 @@ export class SpawnManager {
       }
     }
     this.wsBridge = bridge;
+    this.stopLocalContributionPolling();
+    this.localContributionDeliveryEnabled = false;
     this.markDeliveryReady();
     // Register any sessions that were spawned before the bridge was ready.
     // The bridge is created async (dynamic import) so agents may already be running.
@@ -735,6 +805,7 @@ export class SpawnManager {
     let provisionedWorkspacePath: string | undefined;
     let provisionedBranch: string | undefined;
     let provisionedRepoCwd: string | undefined;
+    const routingToken = this.ensureRoutingToken(roleId);
     {
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
@@ -792,7 +863,7 @@ export class SpawnManager {
       // via grove_claim MCP tool when they need swarm coordination.
       try {
         await mkdir(workspacePath, { recursive: true });
-        await this.writeMcpConfig(workspacePath);
+        await this.writeMcpConfig(workspacePath, roleId, routingToken);
         await this.writeAgentInstructions(workspacePath, roleId, context);
         if (context?.rolePrompt || context?.roleDescription) {
           await this.writeAgentContext(workspacePath, roleId, context);
@@ -865,7 +936,9 @@ export class SpawnManager {
     try {
       const roleEnv: Record<string, string> = {
         GROVE_AGENT_ID: spawnId,
+        GROVE_ROLE: roleId,
         GROVE_AGENT_ROLE: roleId,
+        GROVE_ROUTING_TOKEN: routingToken,
       };
       const prEnv: Record<string, string> = this.prContext
         ? {
@@ -1111,6 +1184,11 @@ export class SpawnManager {
    */
   async stopActiveSession(): Promise<void> {
     this.stopLogPolling();
+    this.stopLocalContributionPolling();
+    this.localContributionDeliveryEnabled = false;
+    this.localContributionSeenCids.clear();
+    this.localContributionDeliveredTargets.clear();
+    this.routingTokensByRole.clear();
     this.routableSessions.clear();
     if (this.agentFailures.size > 0) {
       this.agentFailures.clear();
@@ -1376,6 +1454,150 @@ export class SpawnManager {
     return false;
   }
 
+  private async seedLocalContributionSeenCids(): Promise<void> {
+    try {
+      const existing = await this.provider.getContributions({
+        limit: LOCAL_CONTRIBUTION_POLL_LIMIT,
+        order: "created_at_desc",
+      });
+      for (const contribution of existing) {
+        this.localContributionSeenCids.add(contribution.cid);
+      }
+    } catch (err) {
+      debugLog("route", `local contribution seed failed: ${messageFromError(err)}`);
+    }
+  }
+
+  private async pollLocalContributions(): Promise<void> {
+    if (!this.localContributionDeliveryEnabled || !this.agentRuntime || !this.topology) return;
+    if (this.localContributionPollInFlight) return;
+    this.localContributionPollInFlight = true;
+    try {
+      const contributions = await this.provider.getContributions({
+        limit: LOCAL_CONTRIBUTION_POLL_LIMIT,
+        order: "created_at_desc",
+      });
+      for (const contribution of [...contributions].reverse()) {
+        if (this.localContributionSeenCids.has(contribution.cid)) continue;
+        await this.routeLocalContribution(contribution);
+      }
+    } catch (err) {
+      const message = `local contribution poll failed: ${messageFromError(err)}`;
+      debugLog("route", message);
+      this.onError(message);
+    } finally {
+      this.localContributionPollInFlight = false;
+    }
+  }
+
+  private async routeLocalContribution(contribution: Contribution): Promise<void> {
+    if (!this.agentRuntime || !this.topology) return;
+
+    const sourceRole = contribution.agent.role;
+    if (!sourceRole) return;
+    const source = this.findRoutableSessionForRole(sourceRole);
+    if (!source) return;
+
+    const expectedToken = this.routingTokensByRole.get(sourceRole);
+    if (expectedToken === undefined || !hasValidRoutingSignature(contribution, expectedToken)) {
+      return;
+    }
+    if (contribution.agent.agentId !== source.session.id) return;
+
+    const router = new TopologyRouter(this.topology, this.localContributionEventBus);
+    const targetRoles = [...new Set(router.targetsFor(sourceRole).map((edge) => edge.target))];
+    if (targetRoles.length === 0) {
+      this.localContributionSeenCids.add(contribution.cid);
+      return;
+    }
+
+    const deliveredTargets =
+      this.localContributionDeliveredTargets.get(contribution.cid) ?? new Set<string>();
+    const sourceWorkspace = this.workspacePathForRole(sourceRole) ?? "(unknown)";
+    const action =
+      contribution.kind === "review"
+        ? "This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work."
+        : `Read the source files at ${sourceWorkspace} and respond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`;
+    const message =
+      `[grove] New ${contribution.kind} from ${sourceRole}:\n` +
+      `  CID: ${contribution.cid}\n` +
+      `  Summary: ${contribution.summary}\n` +
+      `  Workspace: ${sourceWorkspace}\n\n` +
+      action;
+
+    for (const targetRole of targetRoles) {
+      if (deliveredTargets.has(targetRole)) continue;
+      const target = this.findRoutableSessionForRole(targetRole);
+      if (!target) continue;
+      this.syncWorkspaces(sourceRole, targetRole);
+      const turn = await this.agentRuntime.send(target.session, message);
+      watchTurnError(turn, `localContributionDelivery(${targetRole})`, (m) => {
+        debugLog("route", m);
+        process.stderr.write(`${m}\n`);
+      });
+      deliveredTargets.add(targetRole);
+      await this.markLocalHandoffsDelivered(contribution.cid, targetRole);
+    }
+
+    if (deliveredTargets.size > 0) {
+      this.localContributionDeliveredTargets.set(contribution.cid, deliveredTargets);
+    }
+    if (targetRoles.every((targetRole) => deliveredTargets.has(targetRole))) {
+      this.localContributionSeenCids.add(contribution.cid);
+      this.localContributionDeliveredTargets.delete(contribution.cid);
+    }
+  }
+
+  private async markLocalHandoffsDelivered(sourceCid: string, targetRole: string): Promise<void> {
+    if (!isHandoffProvider(this.provider)) return;
+    try {
+      const handoffs = await this.provider.getHandoffs({
+        sourceCid,
+        toRole: targetRole,
+        status: HandoffStatus.PendingPickup,
+      });
+      for (const handoff of handoffs) {
+        await this.provider.markHandoffDelivered(handoff.handoffId, this.sessionId);
+      }
+    } catch (err) {
+      const message = `mark local handoff delivered failed: ${messageFromError(err)}`;
+      debugLog("route", message);
+      this.onError(message);
+    }
+  }
+
+  private findRoutableSessionForRole(
+    role: string,
+  ): { readonly spawnId: string; readonly session: AgentSession } | undefined {
+    for (const [spawnId, session] of this.agentSessions) {
+      if (!this.routableSessions.has(spawnId)) continue;
+      if (session.status === "crashed" || session.status === "stopped") continue;
+      const record = this.spawnRecords.get(spawnId);
+      const sessionRole = record?.role ?? session.role;
+      if (sessionRole === role) return { spawnId, session };
+    }
+    return undefined;
+  }
+
+  private ensureRoutingToken(roleId: string): string {
+    const existing = this.routingTokensByRole.get(roleId);
+    if (existing !== undefined) return existing;
+    const token = randomUUID();
+    this.routingTokensByRole.set(roleId, token);
+    return token;
+  }
+
+  private stopLocalContributionPolling(): void {
+    if (this.localContributionPollStartTimer) {
+      clearTimeout(this.localContributionPollStartTimer);
+      this.localContributionPollStartTimer = null;
+    }
+    if (this.localContributionPollTimer) {
+      clearInterval(this.localContributionPollTimer);
+      this.localContributionPollTimer = null;
+    }
+  }
+
   /** Get list of active agent roles (for UI display). */
   getActiveRoles(): string[] {
     const roles: string[] = [];
@@ -1635,6 +1857,11 @@ export class SpawnManager {
 
   destroy(): void {
     this.stopLogPolling();
+    this.stopLocalContributionPolling();
+    this.localContributionDeliveryEnabled = false;
+    this.localContributionSeenCids.clear();
+    this.localContributionDeliveredTargets.clear();
+    this.routingTokensByRole.clear();
     this.routableSessions.clear();
     // Settle any in-flight waitForDelivery calls so destroy() doesn't
     // leave per-waiter timers holding the event loop open. Route via
@@ -1667,13 +1894,18 @@ export class SpawnManager {
     this.acpSessionStore?.dispose();
     this.agentSessions.clear();
     this.wsBridge?.close();
+    this.localContributionEventBus.close();
   }
 
   /**
    * Write .mcp.json into the agent workspace so the agent CLI (claude, codex)
    * discovers grove MCP tools automatically.
    */
-  private async writeMcpConfig(workspacePath: string): Promise<void> {
+  private async writeMcpConfig(
+    workspacePath: string,
+    roleId: string,
+    routingToken: string,
+  ): Promise<void> {
     // Prefer the active session's .grove directory. Fallback workspaces for
     // Nexus-backed providers can live outside `.grove/workspaces`, so deriving
     // the Grove root from `workspacePath` can point MCP at the wrong project.
@@ -1693,8 +1925,10 @@ export class SpawnManager {
     // Agents' MCP servers need GROVE_NEXUS_URL so contributions go to Nexus
     // (enables IPC push via NexusEventBus + TopologyRouter). Without it,
     // contributions only land in local SQLite and the reviewer is never notified.
-    let resolvedNexusUrl: string | undefined = process.env.GROVE_NEXUS_URL;
-    if (!resolvedNexusUrl && this.groveDir) {
+    let resolvedNexusUrl: string | undefined = this.localContributionDeliveryEnabled
+      ? undefined
+      : process.env.GROVE_NEXUS_URL;
+    if (!this.localContributionDeliveryEnabled && !resolvedNexusUrl && this.groveDir) {
       try {
         const configPath = join(this.groveDir, "grove.json");
         if (existsSync(configPath)) {
@@ -1729,6 +1963,9 @@ export class SpawnManager {
     // Without it, contributions only go to local SQLite and reviewer never gets notified.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
+      GROVE_ROLE: roleId,
+      GROVE_AGENT_ROLE: roleId,
+      GROVE_ROUTING_TOKEN: routingToken,
     };
     if (resolvedNexusUrl) {
       mcpEnv.GROVE_NEXUS_URL = resolvedNexusUrl;
