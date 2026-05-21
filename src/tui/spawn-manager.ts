@@ -230,7 +230,7 @@ export class SpawnManager {
   private topology: AgentTopology | undefined;
   private logPollTimer: (() => void) | null = null;
   private localContributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
-  private localContributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private localContributionPollTimer: (() => void) | null = null;
   private localContributionPollInFlight = false;
   private localContributionDeliveryEnabled = false;
   private readonly localContributionSeenCids = new Set<string>();
@@ -416,10 +416,13 @@ export class SpawnManager {
     const initialDelayMs = options.initialDelayMs ?? LOCAL_CONTRIBUTION_INITIAL_DELAY_MS;
     const pollMs = options.pollMs ?? LOCAL_CONTRIBUTION_POLL_MS;
     this.localContributionPollStartTimer = setTimeout(() => {
-      this.localContributionPollTimer = setInterval(() => {
-        void this.pollLocalContributions();
-      }, pollMs);
-      (this.localContributionPollTimer as unknown as { unref?: () => void }).unref?.();
+      this.localContributionPollTimer = startInterval(
+        () => {
+          void this.pollLocalContributions();
+        },
+        pollMs,
+        { unref: true },
+      );
       void this.pollLocalContributions();
       this.localContributionPollStartTimer = null;
     }, initialDelayMs);
@@ -1635,7 +1638,7 @@ export class SpawnManager {
       this.localContributionPollStartTimer = null;
     }
     if (this.localContributionPollTimer) {
-      clearInterval(this.localContributionPollTimer);
+      this.localContributionPollTimer();
       this.localContributionPollTimer = null;
     }
   }
