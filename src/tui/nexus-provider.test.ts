@@ -145,6 +145,7 @@ describe("NexusDataProvider lifecycle", () => {
     await contributionStore.put(second);
     const session = await sessionStore.createSession({ goal: "nexus history" });
     await sessionStore.addContribution(session.id, second.cid);
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await sessionStore.addContribution(session.id, first.cid);
 
     const provider = new NexusDataProvider({
