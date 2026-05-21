@@ -42,7 +42,7 @@ import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-stack.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
-import { isHandoffProvider, isVfsProvider } from "../provider.js";
+import { isHandoffProvider, isSessionProvider, isVfsProvider } from "../provider.js";
 import { useConfirmAndMutateOpen } from "../safety/index.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
@@ -179,6 +179,16 @@ function formatTime(iso: string): string {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+export async function fetchRunningContributions(
+  provider: TuiDataProvider,
+  sessionId: string | undefined,
+): Promise<readonly Contribution[]> {
+  if (sessionId !== undefined && isSessionProvider(provider)) {
+    return provider.getSessionContributions(sessionId);
+  }
+  return provider.getContributions();
+}
 
 /** Screen 4: running view with contribution feed, agent status, and expandable panels. */
 export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.memo(
@@ -436,7 +446,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
-      const result = await provider.getContributions();
+      const result = await fetchRunningContributions(provider, sessionId);
       debugLog("feed.fetch", `total=${result?.length ?? 0}`);
       if (fetchCountRef.current <= 5 || fetchCountRef.current % 20 === 0) {
         debugLog(
@@ -445,7 +455,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         );
       }
       return result;
-    }, [provider]);
+    }, [provider, sessionId]);
 
     // Gate polling: pause contributions when panel is fullscreen and not showing feed
     const feedActive =
