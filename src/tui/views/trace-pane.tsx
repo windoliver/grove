@@ -63,6 +63,10 @@ function formatTimestamp(ts: number): string {
   return `${h}:${m}:${s}`;
 }
 
+export function traceLineTextColor(line: LogLine): string {
+  return line.historical ? theme.disabled : theme.text;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -177,7 +181,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
                 // biome-ignore lint/suspicious/noArrayIndexKey: trace lines have no stable identity
                 <box key={i} flexDirection="row">
                   <text color={theme.disabled}>{formatTimestamp(line.ts)} </text>
-                  <text>{line.line}</text>
+                  <text color={traceLineTextColor(line)}>{line.line}</text>
                 </box>
               ))}
             </box>

@@ -42,7 +42,7 @@ import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-stack.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
-import { isHandoffProvider, isSessionProvider, isVfsProvider } from "../provider.js";
+import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { useConfirmAndMutateOpen } from "../safety/index.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
@@ -63,6 +63,10 @@ import {
   exitCmdMode,
   initialCmdState,
 } from "./running-cmd-mode.js";
+import {
+  fetchRunningContributions,
+  updateRunningContributionSeenState,
+} from "./running-contributions.js";
 import {
   collapsePanel,
   expandPanel as expandPanelTransition,
@@ -128,6 +132,8 @@ export interface RunningViewProps {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
+  /** Suppress side effects for the first loaded feed, used when resuming historical sessions. */
+  readonly suppressInitialFeedSideEffects?: boolean | undefined;
   readonly onEnterInspect: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
@@ -180,16 +186,6 @@ function formatTime(iso: string): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export async function fetchRunningContributions(
-  provider: TuiDataProvider,
-  sessionId: string | undefined,
-): Promise<readonly Contribution[]> {
-  if (sessionId !== undefined && isSessionProvider(provider)) {
-    return provider.getSessionContributions(sessionId);
-  }
-  return provider.getContributions();
-}
-
 /** Screen 4: running view with contribution feed, agent status, and expandable panels. */
 export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.memo(
   function RunningView({
@@ -208,6 +204,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     activeRoles,
     logBuffers,
     agentFailures,
+    suppressInitialFeedSideEffects = false,
     onEnterInspect,
     onComplete: _onComplete,
     onQuit,
@@ -676,36 +673,38 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const seenCidsRef = React.useRef<Set<string>>(new Set());
     const initialSeededRef = React.useRef(false);
     useEffect(() => {
-      if (!onNewContribution || !feed.length) return;
+      if (!feed.length) return;
 
-      if (!initialSeededRef.current && !sessionStartedAt) {
-        debugLog("seenCids", `seeding ${feed.length} existing CIDs (no sessionStartedAt)`);
-        for (const c of feed) {
-          seenCidsRef.current.add(c.cid);
-        }
-        initialSeededRef.current = true;
+      const update = updateRunningContributionSeenState(
+        { seenCids: seenCidsRef.current, initialSeeded: initialSeededRef.current },
+        feed,
+        suppressInitialFeedSideEffects || !sessionStartedAt,
+      );
+      seenCidsRef.current = new Set(update.state.seenCids);
+      initialSeededRef.current = update.state.initialSeeded;
+
+      if (update.seededInitialFeed) {
+        debugLog("seenCids", `seeding ${feed.length} existing CIDs`);
+      }
+      if (!onNewContribution) {
         return;
       }
-      initialSeededRef.current = true;
 
-      for (const c of feed) {
-        if (!seenCidsRef.current.has(c.cid)) {
-          debugLog(
-            "seenCids",
-            `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
-          );
-          seenCidsRef.current.add(c.cid);
-          onNewContribution(c);
-          // Toast notification for new contributions
-          const role = c.agent.role ?? c.agent.agentName ?? "agent";
-          if (c.kind === "ask_user") {
-            toast.warning(`${role}: question pending`, { duration: 5000 });
-          } else {
-            toast.info(`${role}: ${c.kind}`, { duration: 3000 });
-          }
+      for (const c of update.unseen) {
+        debugLog(
+          "seenCids",
+          `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+        );
+        onNewContribution(c);
+        // Toast notification for new contributions
+        const role = c.agent.role ?? c.agent.agentName ?? "agent";
+        if (c.kind === "ask_user") {
+          toast.warning(`${role}: question pending`, { duration: 5000 });
+        } else {
+          toast.info(`${role}: ${c.kind}`, { duration: 3000 });
         }
       }
-    }, [feed, onNewContribution, sessionStartedAt]);
+    }, [feed, onNewContribution, sessionStartedAt, suppressInitialFeedSideEffects]);
 
     // ─── Keyboard routing ───
     const pendingAskUser = feed.find((c) => c.kind === "ask_user");

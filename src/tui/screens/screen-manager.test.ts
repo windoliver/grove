@@ -1232,6 +1232,7 @@ describe("ScreenManager navigation and edge cases", () => {
     expect(captured.screen).toBe("running");
     expect(captured.spawnProgress).toBeUndefined();
     expect(spawnManager.spawnCalls).toEqual([]);
+    expect(requireRunningView().suppressInitialFeedSideEffects).toBe(false);
   });
 
   test("resumed grove starts on running when an active session is available", async () => {
@@ -1249,6 +1250,7 @@ describe("ScreenManager navigation and edge cases", () => {
 
     expect(captured.screen).toBe("running");
     expect(providerBundle.calls.setSessionScope).toEqual(["session-active"]);
+    expect(requireRunningView().suppressInitialFeedSideEffects).toBe(true);
   });
 
   test("running -> back to main: confirmed modal archives and navigates", async () => {

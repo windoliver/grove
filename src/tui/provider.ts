@@ -518,5 +518,8 @@ export function isGoalProvider(
 export function isSessionProvider(
   provider: TuiDataProvider,
 ): provider is TuiDataProvider & TuiSessionProvider {
-  return provider.capabilities.sessions;
+  return (
+    provider.capabilities.sessions &&
+    typeof (provider as Partial<TuiSessionProvider>).getSessionContributions === "function"
+  );
 }

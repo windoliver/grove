@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { AgentLogBuffer, type LogLine } from "../data/agent-log-buffer.js";
+import { traceLineTextColor } from "./trace-pane.js";
 
 // ---------------------------------------------------------------------------
 // We test the rendering logic extracted from the component, not the React
@@ -117,6 +118,13 @@ describe("TracePane line classification display", () => {
     const viewport = computeViewport(buf, 0, 10);
     expect(viewport[0]?.historical).toBe(true);
     expect(viewport[1]?.historical).toBeUndefined();
+  });
+
+  test("historical line text uses dimmed color", () => {
+    const oldLine: LogLine = { ts: 1, line: "old", type: "output", historical: true };
+    const newLine: LogLine = { ts: 2, line: "new", type: "output" };
+
+    expect(traceLineTextColor(oldLine)).not.toBe(traceLineTextColor(newLine));
   });
 });
 
