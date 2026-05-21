@@ -38,8 +38,10 @@ import type {
 import {
   addContributionToSessionHttp,
   archiveSessionHttp,
+  contributionsForCidsInOrder,
   createSessionHttp,
   fetchGoalHttp,
+  getSessionContributionsHttp,
   getSessionHttp,
   listSessionsHttp,
   setGoalHttp,
@@ -421,6 +423,18 @@ export class NexusDataProvider
       }
     }
     return super.getSession(sessionId);
+  }
+
+  override async getSessionContributions(sessionId: string): Promise<readonly Contribution[]> {
+    if (this.serverUrl) {
+      try {
+        return await getSessionContributionsHttp(this.serverUrl, sessionId, this.authHeaders);
+      } catch {
+        /* fall through to Nexus VFS */
+      }
+    }
+    const cids = await this.nexusSessionStore.getContributions(sessionId);
+    return contributionsForCidsInOrder(this.store, cids);
   }
 
   override async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {

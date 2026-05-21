@@ -6,10 +6,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Claim } from "../core/models.js";
+import { createContribution } from "../core/manifest.js";
+import type { Claim, Contribution } from "../core/models.js";
 import type { WorkspaceInfo, WorkspaceManager } from "../core/workspace.js";
 import { WorkspaceStatus } from "../core/workspace.js";
 import { MockNexusClient } from "../nexus/mock-client.js";
+import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
+import { NexusSessionStore } from "../nexus/nexus-session-store.js";
 import { NexusDataProvider } from "./nexus-provider.js";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +67,19 @@ function makeMockWorkspaceManager(): WorkspaceManager & {
   };
 }
 
+function makeNexusContribution(_cid: string, summary: string): Contribution {
+  return createContribution({
+    kind: "work",
+    mode: "evaluation",
+    summary,
+    tags: [],
+    artifacts: {},
+    relations: [],
+    agent: { agentId: "agent-1" },
+    createdAt: new Date().toISOString(),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -111,6 +127,33 @@ describe("NexusDataProvider lifecycle", () => {
     const messages = await provider.getInboxMessages({ recipient: "@bob" });
 
     expect(messages.map((m) => m.body)).toEqual(["provider inbox"]);
+  });
+
+  test("getSessionContributions reads Nexus session links without a co-located server", async () => {
+    const client = new MockNexusClient();
+    const contributionStore = new NexusContributionStore({ client, zoneId: "zone-1" });
+    const sessionStore = new NexusSessionStore(client, "zone-1");
+    const first = makeNexusContribution(
+      "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "first",
+    );
+    const second = makeNexusContribution(
+      "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "second",
+    );
+    await contributionStore.put(first);
+    await contributionStore.put(second);
+    const session = await sessionStore.createSession({ goal: "nexus history" });
+    await sessionStore.addContribution(session.id, second.cid);
+    await sessionStore.addContribution(session.id, first.cid);
+
+    const provider = new NexusDataProvider({
+      nexusConfig: { client, zoneId: "zone-1" },
+    });
+
+    const result = await provider.getSessionContributions(session.id);
+
+    expect(result.map((c) => c.cid)).toEqual([second.cid, first.cid]);
   });
 
   test("createClaim creates a claim via NexusClaimStore", async () => {
