@@ -17,7 +17,7 @@ import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.j
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { parseGroveConfig } from "../core/config.js";
 import type { EventBus, GroveEvent, PublishResult } from "../core/event-bus.js";
-import type { HandoffStore } from "../core/handoff.js";
+import { canTransition, HandoffStatus, type HandoffStore } from "../core/handoff.js";
 import type { AgentIdentity, Contribution } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
@@ -196,7 +196,10 @@ export class SpawnManager {
   private localContributionRouteStartTimer: ReturnType<typeof setTimeout> | null = null;
   private localContributionRouteGeneration = 0;
   private localContributionRouteEventBus: EventBus | undefined;
+  private localContributionRouteEnabled = false;
+  private localContributionRouteOptions: LocalContributionRoutingOptions | undefined;
   private readonly localContributionRouteSeenCids = new Set<string>();
+  private readonly localContributionRouteInFlightCids = new Set<string>();
   // spawnIds that should receive IPC routing — populated when agents are spawned
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
@@ -398,6 +401,8 @@ export class SpawnManager {
     eventBus?: EventBus | undefined,
     options?: LocalContributionRoutingOptions,
   ): void {
+    this.localContributionRouteEnabled = true;
+    this.localContributionRouteOptions = options;
     this.localContributionRouteEventBus = eventBus;
     this.markDeliveryReady();
     if (options?.autoStart === false) return;
@@ -485,8 +490,14 @@ export class SpawnManager {
     const sorted = [...contributions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const contribution of sorted) {
       if (this.localContributionRouteSeenCids.has(contribution.cid)) continue;
-      const complete = await this.routeLocalContribution(contribution);
-      if (complete) this.localContributionRouteSeenCids.add(contribution.cid);
+      if (this.localContributionRouteInFlightCids.has(contribution.cid)) continue;
+      this.localContributionRouteInFlightCids.add(contribution.cid);
+      try {
+        const complete = await this.routeLocalContribution(contribution);
+        if (complete) this.localContributionRouteSeenCids.add(contribution.cid);
+      } finally {
+        this.localContributionRouteInFlightCids.delete(contribution.cid);
+      }
     }
   }
 
@@ -539,7 +550,6 @@ export class SpawnManager {
         continue;
       }
       this.syncWorkspaces(sourceRole, targetRole);
-      await this.markLocalHandoffDelivered(contribution.cid, targetRole);
       const sourceWorkspace = this.workspacePathForRole(sourceRole) ?? "(unknown)";
       const action =
         contribution.kind === "review"
@@ -553,12 +563,25 @@ export class SpawnManager {
         action;
       try {
         const turn = await this.agentRuntime.send(targetSession, message);
-        watchTurnError(turn, `localRoute(${sourceRole}→${targetRole})`, (m) => {
-          debugLog("localRoute", m);
-          process.stderr.write(`${m}\n`);
-        });
+        const result = await turn.result.catch((err) => ({
+          turnId: turn.turnId,
+          stopReason: "error" as const,
+          error: {
+            code: "turn_rejected",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }));
+        if (result.stopReason === "end_turn") {
+          await this.markLocalHandoffDelivered(contribution.cid, targetRole);
+          continue;
+        }
+        const detail = result.error
+          ? `${result.error.code}: ${result.error.message}`
+          : `stopReason=${result.stopReason}`;
+        await this.markLocalHandoffDeadLettered(contribution.cid, targetRole);
+        this.recordAgentFailure(targetRole, `local contribution delivery failed: ${detail}`);
       } catch (err) {
-        allTargetsReady = false;
+        await this.markLocalHandoffDeadLettered(contribution.cid, targetRole);
         this.recordAgentFailure(
           targetRole,
           `local contribution delivery failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -582,6 +605,18 @@ export class SpawnManager {
   }
 
   private async markLocalHandoffDelivered(sourceCid: string, targetRole: string): Promise<void> {
+    await this.markLocalHandoffStatus(sourceCid, targetRole, HandoffStatus.Delivered);
+  }
+
+  private async markLocalHandoffDeadLettered(sourceCid: string, targetRole: string): Promise<void> {
+    await this.markLocalHandoffStatus(sourceCid, targetRole, HandoffStatus.DeadLettered);
+  }
+
+  private async markLocalHandoffStatus(
+    sourceCid: string,
+    targetRole: string,
+    targetStatus: typeof HandoffStatus.Delivered | typeof HandoffStatus.DeadLettered,
+  ): Promise<void> {
     const provider = this.provider as {
       getHandoffStore?: () => HandoffStore | undefined;
     };
@@ -593,12 +628,16 @@ export class SpawnManager {
         handoffStore.list.bind(handoffStore);
       const handoffs = await list({ sourceCid });
       const handoff = handoffs.find((h) => h.toRole === targetRole);
-      if (!handoff || handoff.status === "delivered" || handoff.status === "replied") return;
-      await handoffStore.markDelivered(handoff.handoffId);
+      if (!handoff || !canTransition(handoff.status, targetStatus)) return;
+      if (targetStatus === HandoffStatus.Delivered) {
+        await handoffStore.markDelivered(handoff.handoffId);
+      } else {
+        await handoffStore.markDeadLettered(handoff.handoffId);
+      }
     } catch (err) {
       debugLog(
         "localRoute",
-        `markDelivered failed: ${err instanceof Error ? err.message : String(err)}`,
+        `mark ${targetStatus} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -1650,10 +1689,19 @@ export class SpawnManager {
 
   /** Set the session ID for log buffer naming and persistence. */
   setSessionId(id: string | undefined): void {
-    if (this.sessionId !== id) {
+    const changed = this.sessionId !== id;
+    if (changed) {
       this.localContributionRouteSeenCids.clear();
+      this.localContributionRouteInFlightCids.clear();
     }
     this.sessionId = id;
+    if (
+      changed &&
+      this.localContributionRouteEnabled &&
+      this.localContributionRouteOptions?.autoStart !== false
+    ) {
+      this.startLocalContributionRouting(this.localContributionRouteOptions);
+    }
   }
 
   /**

@@ -20,6 +20,7 @@ setDefaultTimeout(30_000);
 
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
+import { type Handoff, HandoffStatus } from "../core/handoff.js";
 import {
   type Claim,
   type Contribution,
@@ -323,6 +324,19 @@ function fakeTurn(turnId = "turn-1"): AcpxTurn {
       /* no messages */
     })(),
     result: Promise.resolve({ turnId, stopReason: "end_turn" }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function fakeTurnWithResult(turnId: string, result: AcpxTurn["result"]): AcpxTurn {
+  return {
+    sessionId: "session-test",
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result,
     cancel: async () => undefined,
     close: async () => undefined,
   };
@@ -1627,6 +1641,237 @@ describe("SpawnManager — delivery state recovery", () => {
 });
 
 describe("SpawnManager — local contribution routing", () => {
+  test("marks a local handoff delivered only after the target turn succeeds", async () => {
+    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
+      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
+      getHandoffStore(): {
+        list(query?: { readonly sourceCid?: string }): Promise<readonly Handoff[]>;
+        markDelivered(id: string): Promise<void>;
+        markDeadLettered(id: string): Promise<void>;
+      };
+    };
+    const contribution = makeContribution("blake3:1".padEnd(71, "0"), "coder", "session-coder");
+    provider.getSessionContributions = async () => [contribution];
+    let delivered = 0;
+    let deadLettered = 0;
+    const handoff: Handoff = {
+      handoffId: "handoff-1",
+      sourceCid: contribution.cid,
+      fromRole: "coder",
+      toRole: "reviewer",
+      status: HandoffStatus.PendingPickup,
+      requiresReply: true,
+      createdAt: new Date().toISOString(),
+    };
+    provider.getHandoffStore = () => ({
+      list: async () => [handoff],
+      markDelivered: async () => {
+        delivered++;
+      },
+      markDeadLettered: async () => {
+        deadLettered++;
+      },
+    });
+
+    const runtime = makeMockRuntime();
+    let resolveTurn: ((value: Awaited<AcpxTurn["result"]>) => void) | undefined;
+    const result = new Promise<Awaited<AcpxTurn["result"]>>((resolve) => {
+      resolveTurn = resolve;
+    });
+    runtime.send = async (): Promise<AcpxTurn> => fakeTurnWithResult("turn-pending", result);
+
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+    manager.setSessionId("session-local");
+    manager.setTopology({
+      structure: "graph",
+      roles: [
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+        { name: "reviewer" },
+      ],
+    });
+    manager.enableLocalContributionRouting(undefined, { autoStart: false });
+    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
+      .agentSessions;
+    sessions.set("coder-a", {
+      id: "session-coder",
+      role: "coder",
+      status: "running",
+      agent: "mock",
+    });
+    sessions.set("reviewer-a", {
+      id: "session-reviewer",
+      role: "reviewer",
+      status: "running",
+      agent: "mock",
+    });
+
+    const poll = manager.testPollLocalContributionRouting();
+    await Promise.resolve();
+    expect(delivered).toBe(0);
+    expect(deadLettered).toBe(0);
+
+    resolveTurn?.({ turnId: "turn-pending", stopReason: "end_turn" });
+    await poll;
+
+    expect(delivered).toBe(1);
+    expect(deadLettered).toBe(0);
+  });
+
+  test("dead-letters a local handoff when the target turn ends abnormally", async () => {
+    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
+      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
+      getHandoffStore(): {
+        list(query?: { readonly sourceCid?: string }): Promise<readonly Handoff[]>;
+        markDelivered(id: string): Promise<void>;
+        markDeadLettered(id: string): Promise<void>;
+      };
+    };
+    const contribution = makeContribution("blake3:2".padEnd(71, "0"), "coder", "session-coder");
+    provider.getSessionContributions = async () => [contribution];
+    let delivered = 0;
+    let deadLettered = 0;
+    const handoff: Handoff = {
+      handoffId: "handoff-2",
+      sourceCid: contribution.cid,
+      fromRole: "coder",
+      toRole: "reviewer",
+      status: HandoffStatus.PendingPickup,
+      requiresReply: true,
+      createdAt: new Date().toISOString(),
+    };
+    provider.getHandoffStore = () => ({
+      list: async () => [handoff],
+      markDelivered: async () => {
+        delivered++;
+      },
+      markDeadLettered: async () => {
+        deadLettered++;
+      },
+    });
+
+    const runtime = makeMockRuntime();
+    runtime.send = async (): Promise<AcpxTurn> =>
+      fakeTurnWithResult(
+        "turn-error",
+        Promise.resolve({
+          turnId: "turn-error",
+          stopReason: "error",
+          error: { code: "boom", message: "target failed" },
+        }),
+      );
+
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+    manager.setSessionId("session-local");
+    manager.setTopology({
+      structure: "graph",
+      roles: [
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+        { name: "reviewer" },
+      ],
+    });
+    manager.enableLocalContributionRouting(undefined, { autoStart: false });
+    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
+      .agentSessions;
+    sessions.set("coder-a", {
+      id: "session-coder",
+      role: "coder",
+      status: "running",
+      agent: "mock",
+    });
+    sessions.set("reviewer-a", {
+      id: "session-reviewer",
+      role: "reviewer",
+      status: "running",
+      agent: "mock",
+    });
+
+    await manager.testPollLocalContributionRouting();
+
+    expect(delivered).toBe(0);
+    expect(deadLettered).toBe(1);
+  });
+
+  test("re-seeds historical contributions when local routing scope changes to a resumed session", async () => {
+    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
+      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
+    };
+    const contribution = makeContribution("blake3:3".padEnd(71, "0"), "coder", "session-coder");
+    const sessionIds: string[] = [];
+    provider.getSessionContributions = async (sessionId: string) => {
+      sessionIds.push(sessionId);
+      return sessionId === "resumed-session" ? [contribution] : [];
+    };
+
+    const runtime = makeMockRuntime();
+    const sent: string[] = [];
+    runtime.send = async (session: AgentSession): Promise<AcpxTurn> => {
+      sent.push(session.id);
+      return fakeTurn(`turn-${sent.length}`);
+    };
+
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+    manager.setTopology({
+      structure: "graph",
+      roles: [
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+        { name: "reviewer" },
+      ],
+    });
+    manager.enableLocalContributionRouting(undefined, {
+      initialDelayMs: 60_000,
+      pollMs: 60_000,
+    });
+    manager.setSessionId("resumed-session");
+
+    for (let i = 0; i < 20 && !sessionIds.includes("resumed-session"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(sessionIds).toContain("resumed-session");
+
+    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
+      .agentSessions;
+    sessions.set("coder-a", {
+      id: "session-coder",
+      role: "coder",
+      status: "running",
+      agent: "mock",
+    });
+    sessions.set("reviewer-a", {
+      id: "session-reviewer",
+      role: "reviewer",
+      status: "running",
+      agent: "mock",
+    });
+
+    await manager.testPollLocalContributionRouting();
+
+    expect(sent).toEqual([]);
+  });
+
   test("routes new session contributions to downstream roles without Nexus", async () => {
     const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
       getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;

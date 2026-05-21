@@ -592,6 +592,7 @@ async function buildAppProps(
       agentRuntime,
       contract,
       userConfig,
+      backendMode: backend.mode,
       initialDashboard,
     },
     provider,

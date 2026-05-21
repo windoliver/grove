@@ -98,6 +98,12 @@ const INIT_STEPS = [
   "Starting services",
 ] as const;
 
+export function shouldUseLocalContributionRoutingForMissingBridge(
+  backendMode: AppProps["backendMode"],
+): boolean {
+  return backendMode === "local";
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -508,11 +514,20 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       // contributions to downstream roles. Nexus remains the push path when
       // configured.
       const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
+      const useLocalRouting = shouldUseLocalContributionRoutingForMissingBridge(
+        appProps.backendMode,
+      );
       if (topo.roles.length > 1) {
-        manager.enableLocalContributionRouting(appProps.eventBus);
+        if (useLocalRouting) {
+          manager.enableLocalContributionRouting(appProps.eventBus);
+        } else {
+          manager.markDeliveryDisabled(reason);
+        }
       }
       process.stderr.write(
-        `[grove] WARNING: Nexus bridge not initialized (${reason}). Using local contribution polling for inter-agent delivery.\n`,
+        useLocalRouting
+          ? `[grove] WARNING: Nexus bridge not initialized (${reason}). Using local contribution polling for inter-agent delivery.\n`
+          : `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
       );
     } else if (topo && !agentRuntime) {
       // Topology declared but no agent runtime. Multi-role sessions
