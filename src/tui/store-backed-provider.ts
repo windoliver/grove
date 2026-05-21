@@ -11,6 +11,7 @@
 import type { AgentTaskView } from "../core/agent-task.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
+import { HandoffStatus, validateTransition } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
 import type { AgentIdentity, Claim, Contribution } from "../core/models.js";
 import {
@@ -781,6 +782,105 @@ export abstract class StoreBackedProvider
   }
 
   async markHandoffDelivered(handoffId: string): Promise<void> {
-    await this.handoffs?.markDelivered(handoffId);
+    await this.requireHandoffStore().markDelivered(handoffId);
+  }
+
+  async cancelHandoff(handoffId: string, reason?: string): Promise<void> {
+    await this.requireHandoffStore().markCancelled(handoffId, {
+      terminalReason: reason ?? "operator cancelled",
+    });
+  }
+
+  async manualResolveHandoff(handoffId: string, reason?: string): Promise<void> {
+    await this.requireHandoffStore().markManuallyResolved(handoffId, {
+      terminalReason: reason ?? "operator resolved",
+    });
+  }
+
+  async resendHandoff(
+    handoffId: string,
+    options?: {
+      readonly reason?: string | undefined;
+      readonly replyDueAt?: string | undefined;
+    },
+  ): Promise<void> {
+    await this.replaceHandoff(handoffId, {
+      reason: options?.reason ?? "resent",
+      replyDueAt: options?.replyDueAt,
+    });
+  }
+
+  async rerouteHandoff(
+    handoffId: string,
+    options: {
+      readonly toRole: string;
+      readonly reason?: string | undefined;
+      readonly replyDueAt?: string | undefined;
+    },
+  ): Promise<void> {
+    await this.replaceHandoff(handoffId, {
+      toRole: options.toRole,
+      reason: options.reason ?? `rerouted to ${options.toRole}`,
+      replyDueAt: options.replyDueAt,
+    });
+  }
+
+  private replacementDueAt(original: Handoff, next: string | undefined): string | undefined {
+    if (next !== undefined) return next;
+    if (original.replyDueAt !== undefined && Date.parse(original.replyDueAt) > Date.now()) {
+      return original.replyDueAt;
+    }
+    return undefined;
+  }
+
+  private async cancelReplacementAfterOriginalFailure(replacementId: string): Promise<void> {
+    try {
+      await this.requireHandoffStore().markCancelled(replacementId, {
+        terminalReason: "replacement cancelled after original cancellation failed",
+      });
+    } catch {
+      // Best-effort cleanup only; callers must see the original cancellation error.
+    }
+  }
+
+  private async replaceHandoff(
+    handoffId: string,
+    options: {
+      readonly toRole?: string | undefined;
+      readonly reason: string;
+      readonly replyDueAt?: string | undefined;
+    },
+  ): Promise<void> {
+    const store = this.requireHandoffStore();
+
+    const original = await store.get(handoffId);
+    if (original === undefined) throw new Error(`Handoff not found: ${handoffId}`);
+
+    const replyDueAt = this.replacementDueAt(original, options.replyDueAt);
+    validateTransition(handoffId, original.status, HandoffStatus.Cancelled);
+    const replacement = await store.create({
+      sourceCid: original.sourceCid,
+      fromRole: original.fromRole,
+      toRole: options.toRole ?? original.toRole,
+      requiresReply: original.requiresReply,
+      ...(replyDueAt !== undefined ? { replyDueAt } : {}),
+    });
+
+    try {
+      await store.markCancelled(handoffId, {
+        terminalReason: options.reason,
+        replacementHandoffId: replacement.handoffId,
+      });
+    } catch (err) {
+      await this.cancelReplacementAfterOriginalFailure(replacement.handoffId);
+      throw err;
+    }
+  }
+
+  private requireHandoffStore(): HandoffStore {
+    if (this.handoffs === undefined) {
+      throw new Error("Handoff store not configured");
+    }
+    return this.handoffs;
   }
 }

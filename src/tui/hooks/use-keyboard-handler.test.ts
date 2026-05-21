@@ -52,6 +52,7 @@ function mockActions(overrides?: {
   focused?: Panel;
   compareMode?: boolean;
   frontierCids?: readonly string[];
+  frontierEntries?: ReadonlyArray<{ cid: string; summary: string }>;
   paletteItemCount?: number;
   rowCount?: number;
   selectedSession?: string;
@@ -100,6 +101,7 @@ function mockActions(overrides?: {
     },
     onQuit: () => record("onQuit"),
     onSpawnPalette: () => record("onSpawnPalette"),
+    onPaletteClose: () => record("onPaletteClose"),
     onVfsNavigate: () => record("onVfsNavigate"),
     onArtifactPrev: () => record("onArtifactPrev"),
     onArtifactNext: () => record("onArtifactNext"),
@@ -135,11 +137,15 @@ function mockActions(overrides?: {
     onLayoutToggle: () => record("onLayoutToggle"),
     onRefresh: () => record("onRefresh"),
     onSelect: (index) => record("onSelect", index),
+    onFrontierTabNext: () => record("onFrontierTabNext"),
+    onFrontierTabPrev: () => record("onFrontierTabPrev"),
+    onFrontierAdopt: (cid, summary) => record("onFrontierAdopt", cid, summary),
+    frontierEntries: () => overrides?.frontierEntries ?? [],
     rowCount: overrides?.rowCount ?? 10,
     pageSize: 20,
     paletteItemCount: overrides?.paletteItemCount ?? 5,
     compareMode: overrides?.compareMode ?? false,
-    frontierCids: overrides?.frontierCids ?? [],
+    frontierCids: () => overrides?.frontierCids ?? [],
     selectedSession: overrides?.selectedSession,
     hasTmux: overrides?.hasTmux ?? false,
     keybindingOverrides: overrides?.keybindingOverrides,
@@ -767,5 +773,83 @@ describe("routeKey — registry-driven panel dispatch", () => {
       expect(log.calls).toContain("panels.toggle");
       expect(log.calls).not.toContain("panels.focus");
     }
+  });
+});
+
+describe("routeKey — Frontier panel slice nav + adopt", () => {
+  test("']' dispatches onFrontierTabNext when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("]"), actions);
+    expect(log.calls).toContain("onFrontierTabNext");
+  });
+
+  test("'[' dispatches onFrontierTabPrev when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("["), actions);
+    expect(log.calls).toContain("onFrontierTabPrev");
+  });
+
+  test("Tab on Frontier panel does NOT dispatch slice-next (global panel cycle wins)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("tab"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("digit '4' on Frontier panel does NOT dispatch slice-jump (panel focus wins)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("4"), actions);
+    // Should fall through to PANEL_REGISTRY which focuses Panel.Claims (key '4').
+    expect(log.calls).toContain("panels.focus");
+  });
+
+  test("'a' on a frontier row dispatches onFrontierAdopt with cid + summary", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      frontierEntries: [{ cid: "cid-z", summary: "do thing" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).toContain("onFrontierAdopt");
+    expect(log.args.onFrontierAdopt).toEqual(["cid-z", "do thing"]);
+  });
+
+  test("'a' suppressed when in compareMode", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      compareMode: true,
+      frontierEntries: [{ cid: "cid-z", summary: "x" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).not.toContain("onFrontierAdopt");
+  });
+
+  test("']' does NOT dispatch onFrontierTabNext when a different panel is focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    routeKey(keyEvent("]"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("Esc on CommandPalette mode dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Esc on Normal mode does NOT dispatch onPaletteClose", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).not.toContain("onPaletteClose");
+  });
+
+  test("Ctrl+P toggle-OFF dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Ctrl+P toggle-ON dispatches onSpawnPalette (defensively clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onSpawnPalette");
+    expect(log.calls).not.toContain("onPaletteClose");
   });
 });

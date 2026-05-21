@@ -129,6 +129,9 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     onSpawnPalette: () => {
       /* noop */
     },
+    onPaletteClose: () => {
+      /* noop */
+    },
     onVfsNavigate: () => {
       /* noop */
     },
@@ -238,7 +241,17 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     pageSize: 20,
     paletteItemCount: 5,
     compareMode: false,
-    frontierCids: [],
+    frontierCids: () => [],
+    frontierEntries: () => [],
+    onFrontierTabNext: () => {
+      /* noop */
+    },
+    onFrontierTabPrev: () => {
+      /* noop */
+    },
+    onFrontierAdopt: () => {
+      /* noop */
+    },
     selectedSession: undefined,
     hasTmux: false,
   };

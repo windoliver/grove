@@ -41,10 +41,25 @@ describe("generateCompletions", () => {
     expect(script).toContain("complete -F _grove_completions grove");
   });
 
-  test("bash: includes --help and --version in top-level completions", () => {
+  test("bash: includes global flags in top-level completions", () => {
     const script = generateCompletions("bash");
     expect(script).toContain("--help");
     expect(script).toContain("--version");
+    expect(script).toContain("--no-color");
+  });
+
+  test("zsh: includes global flags", () => {
+    const script = generateCompletions("zsh");
+    expect(script).toContain("'--help[help]'");
+    expect(script).toContain("'--version[version]'");
+    expect(script).toContain("'--no-color[disable ANSI color output]'");
+  });
+
+  test("fish: includes global flags", () => {
+    const script = generateCompletions("fish");
+    expect(script).toContain("complete -c grove -l 'help'");
+    expect(script).toContain("complete -c grove -l 'version'");
+    expect(script).toContain("complete -c grove -l 'no-color'");
   });
 
   test("zsh: contains compdef header", () => {

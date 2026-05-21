@@ -508,18 +508,18 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           );
         });
     } else if (agentRuntime && topo) {
-      // Bridge preconditions missing. In local mode, agent MCP child
-      // processes write to SQLite while the TUI owns the runtime sessions, so
-      // SpawnManager polls the session contribution history and forwards new
-      // contributions to downstream roles. Nexus remains the push path when
-      // configured.
+      // Bridge preconditions missing. In local mode, agent MCP processes write
+      // signed contributions into the shared local store; the SpawnManager
+      // polls that store and pushes verified work to downstream ACP sessions.
+      // Remote/Nexus backends need their configured push path so we fail closed
+      // instead of polling a provider that may not share the agent write path.
       const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
       const useLocalRouting = shouldUseLocalContributionRoutingForMissingBridge(
         appProps.backendMode,
       );
       if (topo.roles.length > 1) {
         if (useLocalRouting) {
-          manager.enableLocalContributionRouting(appProps.eventBus);
+          manager.enableLocalContributionDelivery();
         } else {
           manager.markDeliveryDisabled(reason);
         }

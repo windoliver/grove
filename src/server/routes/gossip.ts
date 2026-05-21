@@ -11,7 +11,11 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import { MAX_GOSSIP_FRONTIER_ENTRIES, MAX_GOSSIP_OFFERED_PEERS } from "../../core/constants.js";
+import {
+  CID_REGEX,
+  MAX_GOSSIP_FRONTIER_ENTRIES,
+  MAX_GOSSIP_OFFERED_PEERS,
+} from "../../core/constants.js";
 import { GossipAuthError, verifyPayload } from "../../gossip/protocol.js";
 import type { ServerEnv } from "../deps.js";
 
@@ -137,6 +141,34 @@ gossip.get("/frontier", (c) => {
   return c.json({
     entries: gossipService.mergedFrontier(),
   });
+});
+
+/** POST /api/gossip/fetch/:cid — On-demand federation fetch of a contribution. */
+gossip.post("/fetch/:cid", async (c) => {
+  const cid = c.req.param("cid");
+  if (!CID_REGEX.test(cid)) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: "cid must be blake3:<64-hex>" } },
+      400,
+    );
+  }
+  const { gossip: gossipService } = c.get("deps");
+  if (!gossipService) {
+    return c.json({ error: { code: "NOT_CONFIGURED", message: "Gossip is not enabled" } }, 501);
+  }
+  const result = await gossipService.fetchRemoteContribution(cid);
+  switch (result.kind) {
+    case "ok":
+    case "already-local":
+      return c.json(result, 200);
+    case "no-source":
+      return c.json(
+        { ...result, error: { code: "NOT_FOUND", message: `No peer has advertised ${cid}` } },
+        404,
+      );
+    case "failed":
+      return c.json({ ...result, error: { code: "BAD_GATEWAY", message: result.reason } }, 502);
+  }
 });
 
 export { gossip };

@@ -438,3 +438,16 @@ describe("PagesStore — registerDirtyCheck / hasDirtyTop", () => {
     expect(s.hasDirtyTop()).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. PageKind 'pulse'
+// ---------------------------------------------------------------------------
+
+describe("PageKind 'pulse'", () => {
+  test("'pulse' is a valid PageKind that can be pushed", () => {
+    const store = new PagesStore();
+    store.resetTo({ kind: "running" });
+    store.push({ kind: "pulse" });
+    expect(store.top()?.kind).toBe("pulse");
+  });
+});

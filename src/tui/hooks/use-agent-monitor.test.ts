@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   isLogLineKept,
+  mergeOutputs,
   parseLogContent,
   parsePermissionPrompt,
   roleFromLogFilename,
@@ -228,5 +229,60 @@ describe("parseLogContent", () => {
     const content = "\x1b]0;my-terminal\x07Actual output\n";
     const lines = parseLogContent(content, 8);
     expect(lines).toEqual(["Actual output"]);
+  });
+});
+
+// ===========================================================================
+// mergeOutputs
+// ===========================================================================
+
+describe("mergeOutputs", () => {
+  test("returns next outputs and a parallel timestamp map keyed by role", () => {
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { outputs, timestamps } = mergeOutputs(
+      new Map([["coder", ["old"]]]),
+      new Map(),
+      new Map([["coder", ["old", "new"]]]),
+      now,
+    );
+    expect(outputs.get("coder")).toEqual(["old", "new"]);
+    expect(timestamps.get("coder")).toBe(now);
+  });
+
+  test("preserves prior timestamps for roles whose outputs did not change", () => {
+    const prior = new Date("2026-05-18T11:00:00Z").toISOString();
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { timestamps } = mergeOutputs(
+      new Map([["coder", ["x"]]]),
+      new Map([["coder", prior]]),
+      new Map([["coder", ["x"]]]),
+      now,
+    );
+    expect(timestamps.get("coder")).toBe(prior);
+  });
+
+  test("assigns now to a brand-new role with no prior output or timestamp", () => {
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { outputs, timestamps } = mergeOutputs(
+      new Map(),
+      new Map(),
+      new Map([["planner", ["first line"]]]),
+      now,
+    );
+    expect(outputs.get("planner")).toEqual(["first line"]);
+    expect(timestamps.get("planner")).toBe(now);
+  });
+
+  test("drops timestamp entries for roles absent from next outputs", () => {
+    const prior = new Date("2026-05-18T11:00:00Z").toISOString();
+    const now = new Date("2026-05-18T12:00:00Z").toISOString();
+    const { timestamps } = mergeOutputs(
+      new Map([["gone", ["x"]]]),
+      new Map([["gone", prior]]),
+      new Map([["coder", ["y"]]]),
+      now,
+    );
+    expect(timestamps.has("gone")).toBe(false);
+    expect(timestamps.get("coder")).toBe(now);
   });
 });

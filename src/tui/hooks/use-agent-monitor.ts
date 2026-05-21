@@ -51,6 +51,9 @@ export interface AgentMonitorOptions {
 export interface AgentMonitorState {
   /** Per-role output lines (last N lines from logs or tmux capture). */
   readonly agentOutputs: ReadonlyMap<string, readonly string[]>;
+  /** ISO timestamp of the most recent change per role. Updated only when the
+   *  role's line array differs from its prior value. */
+  readonly agentOutputTimestamps: ReadonlyMap<string, string>;
   /** Pending permission prompts detected in tmux panes. */
   readonly pendingPermissions: readonly PermissionPrompt[];
   /** Recent IPC messages from the EventBus. */
@@ -136,6 +139,30 @@ export function parseLogContent(content: string, maxLines: number): readonly str
   return lines.slice(-maxLines);
 }
 
+/**
+ * Merge a fresh outputs snapshot with the prior state and produce a parallel
+ * timestamp map. A role's timestamp is bumped to `now` only when its line
+ * array changed. Pure — exported for testing.
+ */
+export function mergeOutputs(
+  priorOutputs: ReadonlyMap<string, readonly string[]>,
+  priorTimestamps: ReadonlyMap<string, string>,
+  nextOutputs: ReadonlyMap<string, readonly string[]>,
+  now: string,
+): {
+  readonly outputs: ReadonlyMap<string, readonly string[]>;
+  readonly timestamps: ReadonlyMap<string, string>;
+} {
+  const timestamps = new Map<string, string>();
+  for (const [role, lines] of nextOutputs) {
+    const prior = priorOutputs.get(role);
+    const changed =
+      !prior || prior.length !== lines.length || prior.some((line, i) => line !== lines[i]);
+    timestamps.set(role, changed ? now : (priorTimestamps.get(role) ?? now));
+  }
+  return { outputs: nextOutputs, timestamps };
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -147,6 +174,14 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   const [agentOutputs, setAgentOutputs] = useState<ReadonlyMap<string, readonly string[]>>(
     new Map(),
   );
+  const [agentOutputTimestamps, setAgentOutputTimestampsRaw] = useState<
+    ReadonlyMap<string, string>
+  >(new Map());
+  const agentOutputTimestampsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const setAgentOutputTimestamps = useCallback((next: ReadonlyMap<string, string>) => {
+    agentOutputTimestampsRef.current = next;
+    setAgentOutputTimestampsRaw(next);
+  }, []);
   const [pendingPermissions, setPendingPermissions] = useState<readonly PermissionPrompt[]>([]);
   const [ipcMessages, setIpcMessages] = useState<readonly IpcMessage[]>([]);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
@@ -228,12 +263,17 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
         outputs.set(role, lines.slice(-maxOutputLines));
       }
       if (mountedRef.current && outputs.size > 0) {
-        setAgentOutputs(outputs);
+        const now = new Date().toISOString();
+        setAgentOutputs((prior) => {
+          const merged = mergeOutputs(prior, agentOutputTimestampsRef.current, outputs, now);
+          setAgentOutputTimestamps(merged.timestamps);
+          return merged.outputs;
+        });
       }
     } catch {
       // Non-fatal
     }
-  }, [groveDir, maxOutputLines]);
+  }, [groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
   useEffect(() => {
     void logPoll();
@@ -255,12 +295,17 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
         outputs.set(role, lines.slice(-maxOutputLines).map(stripAnsi));
       }
       if (mountedRef.current) {
-        setAgentOutputs(outputs);
+        const now = new Date().toISOString();
+        setAgentOutputs((prior) => {
+          const merged = mergeOutputs(prior, agentOutputTimestampsRef.current, outputs, now);
+          setAgentOutputTimestamps(merged.timestamps);
+          return merged.outputs;
+        });
       }
     } catch {
       // Non-fatal
     }
-  }, [tmux, groveDir, maxOutputLines]);
+  }, [tmux, groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
   useInterval(() => void tmuxPoll(), POLL_INTERVAL_MS, Boolean(tmux) && !groveDir);
 
@@ -289,5 +334,5 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
 
   useInterval(() => void permissionPoll(), POLL_INTERVAL_MS, Boolean(tmux));
 
-  return { agentOutputs, pendingPermissions, ipcMessages, spinnerFrame };
+  return { agentOutputs, agentOutputTimestamps, pendingPermissions, ipcMessages, spinnerFrame };
 }

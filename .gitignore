@@ -12,3 +12,6 @@ coverage/
 nexus-data/
 nexus-stack.yml
 nexus.yaml
+
+# Visual companion brainstorming sessions
+.superpowers/

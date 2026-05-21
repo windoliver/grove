@@ -21,13 +21,12 @@ setDefaultTimeout(30_000);
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { type Handoff, HandoffStatus } from "../core/handoff.js";
+import type { Claim } from "../core/models.js";
 import {
-  type Claim,
-  type Contribution,
-  ContributionKind,
-  ContributionMode,
-} from "../core/models.js";
-import type { AgentTopology } from "../core/topology.js";
+  computeRoutingSignatureForContribution,
+  ROUTING_SIGNATURE_CONTEXT_KEY,
+} from "../core/routing-provenance.js";
+import { makeContribution, makeTopology } from "../core/test-helpers.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";
 import type { ClaimInput, ClaimsQuery, TuiDataProvider } from "./provider.js";
@@ -41,17 +40,20 @@ import { SpawnManager } from "./spawn-manager.js";
 /** Minimal mock provider that tracks claims in memory. */
 function makeMockProvider(): TuiDataProvider & {
   readonly claims: Map<string, Claim>;
+  readonly contributions: ReturnType<typeof makeContribution>[];
   readonly workspaces: Map<string, string>;
   readonly cleanedWorkspaces: Set<string>;
   heartbeatCount: number;
 } {
   const claims = new Map<string, Claim>();
+  const contributions: ReturnType<typeof makeContribution>[] = [];
   const workspaces = new Map<string, string>();
   const cleanedWorkspaces = new Set<string>();
   let heartbeatCount = 0;
 
   return {
     claims,
+    contributions,
     workspaces,
     cleanedWorkspaces,
     heartbeatCount,
@@ -86,7 +88,7 @@ function makeMockProvider(): TuiDataProvider & {
       };
     },
     async getContributions() {
-      return [];
+      return contributions;
     },
     async getContribution() {
       return undefined;
@@ -262,18 +264,24 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 function makeMockRuntime(): AgentRuntime & {
   readonly configs: AgentConfig[];
+  readonly sendCalls: Array<{ readonly session: AgentSession; readonly message: string }>;
   setSessionStatus(sessionId: string, status: AgentSession["status"], message?: string): void;
 } {
   const configs: AgentConfig[] = [];
+  const sendCalls: Array<{ readonly session: AgentSession; readonly message: string }> = [];
   const sessions = new Map<string, AgentSession>();
+  const roleCounts = new Map<string, number>();
   const idleCallbacks = new Map<string, Array<() => void>>();
   return {
     sendsInitialPromptOnSpawn: true,
     configs,
+    sendCalls,
     async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
       configs.push(config);
+      const count = (roleCounts.get(role) ?? 0) + 1;
+      roleCounts.set(role, count);
       const session: AgentSession = {
-        id: `session-${role}`,
+        id: count === 1 ? `session-${role}` : `session-${role}-${count}`,
         role,
         status: "running",
         agent: "mock",
@@ -281,8 +289,30 @@ function makeMockRuntime(): AgentRuntime & {
       sessions.set(session.id, session);
       return session;
     },
-    async send(): Promise<AcpxTurn> {
-      throw new Error("mock runtime send should not be called by SpawnManager.spawn");
+    async send(session: AgentSession, message: string): Promise<AcpxTurn> {
+      sendCalls.push({ session, message });
+      const turnId = `turn-${sendCalls.length}`;
+      return {
+        sessionId: session.id,
+        turnId,
+        messages: {
+          [Symbol.asyncIterator]: () => ({
+            async next() {
+              return { done: true as const, value: undefined as never };
+            },
+          }),
+        },
+        result: Promise.resolve({
+          turnId,
+          stopReason: "end_turn" as const,
+        }),
+        async cancel() {
+          // No-op for test mock.
+        },
+        async close() {
+          // No-op for test mock.
+        },
+      };
     },
     async close(): Promise<void> {
       // No-op for test mock.
@@ -316,50 +346,61 @@ function makeMockRuntime(): AgentRuntime & {
   };
 }
 
-function fakeTurn(turnId = "turn-1"): AcpxTurn {
+function signContributionForRouting(
+  contribution: ReturnType<typeof makeContribution>,
+  routingToken: string,
+): ReturnType<typeof makeContribution> {
+  const signature = computeRoutingSignatureForContribution(contribution, routingToken);
   return {
-    sessionId: "session-test",
-    turnId,
-    messages: (async function* () {
-      /* no messages */
-    })(),
-    result: Promise.resolve({ turnId, stopReason: "end_turn" }),
-    cancel: async () => undefined,
-    close: async () => undefined,
+    ...contribution,
+    context: {
+      ...(contribution.context ?? {}),
+      [ROUTING_SIGNATURE_CONTEXT_KEY]: signature,
+    },
   };
 }
 
-function fakeTurnWithResult(turnId: string, result: AcpxTurn["result"]): AcpxTurn {
+function deferredTurn(turnId: string): {
+  readonly turn: AcpxTurn;
+  resolve(result: Awaited<AcpxTurn["result"]>): void;
+  reject(error: unknown): void;
+} {
+  let resolveResult: (result: Awaited<AcpxTurn["result"]>) => void = () => undefined;
+  let rejectResult: (error: unknown) => void = () => undefined;
+  const result = new Promise<Awaited<AcpxTurn["result"]>>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
   return {
-    sessionId: "session-test",
-    turnId,
-    messages: (async function* () {
-      /* no messages */
-    })(),
-    result,
-    cancel: async () => undefined,
-    close: async () => undefined,
+    turn: {
+      sessionId: "session-reviewer",
+      turnId,
+      messages: {
+        [Symbol.asyncIterator]: () => ({
+          async next() {
+            return { done: true as const, value: undefined as never };
+          },
+        }),
+      },
+      result,
+      async cancel() {
+        // No-op for test mock.
+      },
+      async close() {
+        // No-op for test mock.
+      },
+    },
+    resolve: resolveResult,
+    reject: rejectResult,
   };
 }
 
-function makeContribution(
-  cid: string,
-  role: string,
-  agentId: string,
-  summary = "ready for review",
-): Contribution {
-  return {
-    cid,
-    manifestVersion: 1,
-    kind: ContributionKind.Work,
-    mode: ContributionMode.Evaluation,
-    summary,
-    artifacts: {},
-    relations: [],
-    tags: [],
-    agent: { agentId, role },
-    createdAt: new Date().toISOString(),
-  };
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("condition was not met");
 }
 
 // ---------------------------------------------------------------------------
@@ -1640,45 +1681,137 @@ describe("SpawnManager — delivery state recovery", () => {
   });
 });
 
-describe("SpawnManager — local contribution routing", () => {
-  test("marks a local handoff delivered only after the target turn succeeds", async () => {
-    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
-      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
-      getHandoffStore(): {
-        list(query?: { readonly sourceCid?: string }): Promise<readonly Handoff[]>;
-        markDelivered(id: string): Promise<void>;
-        markDeadLettered(id: string): Promise<void>;
+describe("SpawnManager — local contribution delivery", () => {
+  test("local delivery suppresses managed Nexus URL in spawned MCP config", async () => {
+    const { projectRoot, groveDir } = makeTempGitProject("grove-local-delivery-mcp-");
+    try {
+      writeNexusGroveConfig(groveDir, {
+        policy: "warn-and-fallback",
+        nexusUrl: "http://localhost:23456",
+      });
+      const provider = makeMockProvider();
+      const runtime = makeMockRuntime();
+      manager = new SpawnManager(
+        provider,
+        undefined,
+        () => undefined,
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+        runtime,
+      );
+      manager.setTopology(makeTopology());
+      manager.enableLocalContributionDelivery({ seedExisting: false, startTimers: false });
+
+      const spawned = await manager.spawn("coder", "codex");
+      const mcpConfig = JSON.parse(
+        readFileSync(join(spawned.workspacePath, ".mcp.json"), "utf-8"),
+      ) as {
+        readonly mcpServers?: {
+          readonly grove?: { readonly env?: Readonly<Record<string, string>> | undefined };
+        };
       };
-    };
-    const contribution = makeContribution("blake3:1".padEnd(71, "0"), "coder", "session-coder");
-    provider.getSessionContributions = async () => [contribution];
-    let delivered = 0;
-    let deadLettered = 0;
-    const handoff: Handoff = {
+      const forwardedEnv = runtime.configs[0]?.mcpServers?.[0]?.env;
+
+      expect(mcpConfig.mcpServers?.grove?.env?.GROVE_NEXUS_URL).toBeUndefined();
+      expect(forwardedEnv?.GROVE_NEXUS_URL).toBeUndefined();
+      expect(forwardedEnv?.GROVE_ROUTING_TOKEN).toBeDefined();
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("routes signed local contributions and marks matching handoffs delivered without Nexus", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    const deliveredHandoffs: string[] = [];
+    const handoffs: Handoff[] = [];
+    (provider.capabilities as { handoffs: boolean }).handoffs = true;
+    Object.assign(provider, {
+      getHandoffs: async (query?: { readonly sourceCid?: string; readonly toRole?: string }) =>
+        handoffs.filter(
+          (handoff) =>
+            (query?.sourceCid === undefined || handoff.sourceCid === query.sourceCid) &&
+            (query?.toRole === undefined || handoff.toRole === query.toRole),
+        ),
+      markHandoffDelivered: async (handoffId: string) => {
+        deliveredHandoffs.push(handoffId);
+      },
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
+    });
+
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+    manager.setTopology(makeTopology());
+    expect(manager.getDeliveryState()).toBe("pending");
+
+    manager.enableLocalContributionDelivery({ seedExisting: false, startTimers: false });
+    expect(manager.getDeliveryState()).toBe("ready");
+
+    const coder = await manager.spawn("coder", "codex");
+    await manager.spawn("reviewer", "claude", undefined, 0, { waitForPush: true });
+    const coderToken = runtime.configs.find((config) => config.role === "coder")?.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderToken).toBeDefined();
+
+    const contribution = signContributionForRouting(
+      makeContribution({
+        summary: "local coder handoff",
+        agent: { agentId: "session-coder", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    handoffs.push({
       handoffId: "handoff-1",
       sourceCid: contribution.cid,
       fromRole: "coder",
       toRole: "reviewer",
       status: HandoffStatus.PendingPickup,
       requiresReply: true,
-      createdAt: new Date().toISOString(),
-    };
-    provider.getHandoffStore = () => ({
-      list: async () => [handoff],
-      markDelivered: async () => {
-        delivered++;
-      },
-      markDeadLettered: async () => {
-        deadLettered++;
-      },
+      createdAt: "2026-01-01T00:00:00Z",
     });
+    provider.contributions.push(contribution);
 
+    await manager.testPollLocalContributions();
+
+    expect(runtime.sendCalls).toHaveLength(1);
+    expect(runtime.sendCalls[0]?.session.id).toBe("session-reviewer");
+    expect(runtime.sendCalls[0]?.message).toContain("local coder handoff");
+    expect(runtime.sendCalls[0]?.message).toContain(coder.workspacePath);
+    expect(deliveredHandoffs).toEqual(["handoff-1"]);
+  });
+
+  test("routes signed local contributions from the matching same-role session", async () => {
+    const provider = makeMockProvider();
     const runtime = makeMockRuntime();
-    let resolveTurn: ((value: Awaited<AcpxTurn["result"]>) => void) | undefined;
-    const result = new Promise<Awaited<AcpxTurn["result"]>>((resolve) => {
-      resolveTurn = resolve;
+    const deliveredHandoffs: string[] = [];
+    const handoffs: Handoff[] = [];
+    (provider.capabilities as { handoffs: boolean }).handoffs = true;
+    Object.assign(provider, {
+      getHandoffs: async (query?: { readonly sourceCid?: string; readonly toRole?: string }) =>
+        handoffs.filter(
+          (handoff) =>
+            (query?.sourceCid === undefined || handoff.sourceCid === query.sourceCid) &&
+            (query?.toRole === undefined || handoff.toRole === query.toRole),
+        ),
+      markHandoffDelivered: async (handoffId: string) => {
+        deliveredHandoffs.push(handoffId);
+      },
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
     });
-    runtime.send = async (): Promise<AcpxTurn> => fakeTurnWithResult("turn-pending", result);
 
     manager = new SpawnManager(
       provider,
@@ -1689,84 +1822,64 @@ describe("SpawnManager — local contribution routing", () => {
       "/tmp/no-grove",
       runtime,
     );
-    manager.setSessionId("session-local");
-    manager.setTopology({
-      structure: "graph",
-      roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
-        { name: "reviewer" },
-      ],
-    });
-    manager.enableLocalContributionRouting(undefined, { autoStart: false });
-    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
-      .agentSessions;
-    sessions.set("coder-a", {
-      id: "session-coder",
-      role: "coder",
-      status: "running",
-      agent: "mock",
-    });
-    sessions.set("reviewer-a", {
-      id: "session-reviewer",
-      role: "reviewer",
-      status: "running",
-      agent: "mock",
-    });
+    manager.setTopology(makeTopology());
+    manager.enableLocalContributionDelivery({ seedExisting: false, startTimers: false });
 
-    const poll = manager.testPollLocalContributionRouting();
-    await Promise.resolve();
-    expect(delivered).toBe(0);
-    expect(deadLettered).toBe(0);
+    await manager.spawn("coder", "codex");
+    const secondCoder = await manager.spawn("coder", "codex");
+    await manager.spawn("reviewer", "claude", undefined, 0, { waitForPush: true });
+    const coderToken = runtime.configs.find((config) => config.role === "coder")?.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderToken).toBeDefined();
 
-    resolveTurn?.({ turnId: "turn-pending", stopReason: "end_turn" });
-    await poll;
-
-    expect(delivered).toBe(1);
-    expect(deadLettered).toBe(0);
-  });
-
-  test("dead-letters a local handoff when the target turn ends abnormally", async () => {
-    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
-      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
-      getHandoffStore(): {
-        list(query?: { readonly sourceCid?: string }): Promise<readonly Handoff[]>;
-        markDelivered(id: string): Promise<void>;
-        markDeadLettered(id: string): Promise<void>;
-      };
-    };
-    const contribution = makeContribution("blake3:2".padEnd(71, "0"), "coder", "session-coder");
-    provider.getSessionContributions = async () => [contribution];
-    let delivered = 0;
-    let deadLettered = 0;
-    const handoff: Handoff = {
-      handoffId: "handoff-2",
+    const contribution = signContributionForRouting(
+      makeContribution({
+        summary: "second local coder handoff",
+        agent: { agentId: "session-coder-2", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    handoffs.push({
+      handoffId: "handoff-second-coder",
       sourceCid: contribution.cid,
       fromRole: "coder",
       toRole: "reviewer",
       status: HandoffStatus.PendingPickup,
       requiresReply: true,
-      createdAt: new Date().toISOString(),
-    };
-    provider.getHandoffStore = () => ({
-      list: async () => [handoff],
-      markDelivered: async () => {
-        delivered++;
-      },
-      markDeadLettered: async () => {
-        deadLettered++;
-      },
+      createdAt: "2026-01-01T00:00:00Z",
     });
+    provider.contributions.push(contribution);
 
+    await manager.testPollLocalContributions();
+
+    expect(runtime.sendCalls).toHaveLength(1);
+    expect(runtime.sendCalls[0]?.session.id).toBe("session-reviewer");
+    expect(runtime.sendCalls[0]?.message).toContain("second local coder handoff");
+    expect(runtime.sendCalls[0]?.message).toContain(secondCoder.workspacePath);
+    expect(deliveredHandoffs).toEqual(["handoff-second-coder"]);
+  });
+
+  test("marks matching handoffs delivered only after the target turn succeeds", async () => {
+    const provider = makeMockProvider();
     const runtime = makeMockRuntime();
-    runtime.send = async (): Promise<AcpxTurn> =>
-      fakeTurnWithResult(
-        "turn-error",
-        Promise.resolve({
-          turnId: "turn-error",
-          stopReason: "error",
-          error: { code: "boom", message: "target failed" },
-        }),
-      );
+    const deliveredHandoffs: string[] = [];
+    const handoffs: Handoff[] = [];
+    (provider.capabilities as { handoffs: boolean }).handoffs = true;
+    Object.assign(provider, {
+      getHandoffs: async (query?: { readonly sourceCid?: string; readonly toRole?: string }) =>
+        handoffs.filter(
+          (handoff) =>
+            (query?.sourceCid === undefined || handoff.sourceCid === query.sourceCid) &&
+            (query?.toRole === undefined || handoff.toRole === query.toRole),
+        ),
+      markHandoffDelivered: async (handoffId: string) => {
+        deliveredHandoffs.push(handoffId);
+      },
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
+    });
 
     manager = new SpawnManager(
       provider,
@@ -1777,53 +1890,149 @@ describe("SpawnManager — local contribution routing", () => {
       "/tmp/no-grove",
       runtime,
     );
-    manager.setSessionId("session-local");
-    manager.setTopology({
-      structure: "graph",
-      roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
-        { name: "reviewer" },
-      ],
+    manager.setTopology(makeTopology());
+    manager.enableLocalContributionDelivery({ seedExisting: false, startTimers: false });
+
+    await manager.spawn("coder", "codex");
+    await manager.spawn("reviewer", "claude", undefined, 0, { waitForPush: true });
+    const coderToken = runtime.configs.find((config) => config.role === "coder")?.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderToken).toBeDefined();
+
+    const pendingTurn = deferredTurn("turn-delayed");
+    runtime.send = async (session: AgentSession, message: string) => {
+      runtime.sendCalls.push({ session, message });
+      return pendingTurn.turn;
+    };
+
+    const contribution = signContributionForRouting(
+      makeContribution({
+        summary: "delayed local handoff",
+        agent: { agentId: "session-coder", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    handoffs.push({
+      handoffId: "handoff-delayed",
+      sourceCid: contribution.cid,
+      fromRole: "coder",
+      toRole: "reviewer",
+      status: HandoffStatus.PendingPickup,
+      requiresReply: true,
+      createdAt: "2026-01-01T00:00:00Z",
     });
-    manager.enableLocalContributionRouting(undefined, { autoStart: false });
-    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
-      .agentSessions;
-    sessions.set("coder-a", {
-      id: "session-coder",
-      role: "coder",
-      status: "running",
-      agent: "mock",
-    });
-    sessions.set("reviewer-a", {
-      id: "session-reviewer",
-      role: "reviewer",
-      status: "running",
-      agent: "mock",
+    provider.contributions.push(contribution);
+
+    const pollPromise = manager.testPollLocalContributions();
+    await waitForCondition(() => runtime.sendCalls.length === 1);
+
+    expect(deliveredHandoffs).toEqual([]);
+
+    pendingTurn.resolve({ turnId: "turn-delayed", stopReason: "end_turn" });
+    await pollPromise;
+
+    expect(deliveredHandoffs).toEqual(["handoff-delayed"]);
+  });
+
+  test("dead-letters local handoffs when the target turn ends abnormally", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    const deliveredHandoffs: string[] = [];
+    const deadLetteredHandoffs: string[] = [];
+    const handoffs: Handoff[] = [];
+    (provider.capabilities as { handoffs: boolean }).handoffs = true;
+    Object.assign(provider, {
+      getHandoffs: async (query?: { readonly sourceCid?: string; readonly toRole?: string }) =>
+        handoffs.filter(
+          (handoff) =>
+            (query?.sourceCid === undefined || handoff.sourceCid === query.sourceCid) &&
+            (query?.toRole === undefined || handoff.toRole === query.toRole),
+        ),
+      markHandoffDelivered: async (handoffId: string) => {
+        deliveredHandoffs.push(handoffId);
+      },
+      cancelHandoff: async () => undefined,
+      manualResolveHandoff: async () => undefined,
+      resendHandoff: async () => undefined,
+      rerouteHandoff: async () => undefined,
+      getHandoffStore: () => ({
+        list: async (query?: { readonly sourceCid?: string; readonly toRole?: string }) =>
+          handoffs.filter(
+            (handoff) =>
+              (query?.sourceCid === undefined || handoff.sourceCid === query.sourceCid) &&
+              (query?.toRole === undefined || handoff.toRole === query.toRole),
+          ),
+        markDeadLettered: async (handoffId: string) => {
+          deadLetteredHandoffs.push(handoffId);
+        },
+      }),
     });
 
-    await manager.testPollLocalContributionRouting();
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+    manager.setTopology(makeTopology());
+    manager.enableLocalContributionDelivery({ seedExisting: false, startTimers: false });
 
-    expect(delivered).toBe(0);
-    expect(deadLettered).toBe(1);
+    await manager.spawn("coder", "codex");
+    await manager.spawn("reviewer", "claude", undefined, 0, { waitForPush: true });
+    const coderToken = runtime.configs.find((config) => config.role === "coder")?.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderToken).toBeDefined();
+
+    runtime.send = async (session: AgentSession, message: string) => {
+      runtime.sendCalls.push({ session, message });
+      return {
+        ...deferredTurn("turn-max-tokens").turn,
+        sessionId: session.id,
+        result: Promise.resolve({ turnId: "turn-max-tokens", stopReason: "max_tokens" as const }),
+      };
+    };
+
+    const contribution = signContributionForRouting(
+      makeContribution({
+        summary: "abnormal local handoff",
+        agent: { agentId: "session-coder", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    handoffs.push({
+      handoffId: "handoff-abnormal",
+      sourceCid: contribution.cid,
+      fromRole: "coder",
+      toRole: "reviewer",
+      status: HandoffStatus.PendingPickup,
+      requiresReply: true,
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    provider.contributions.push(contribution);
+
+    await manager.testPollLocalContributions();
+
+    expect(runtime.sendCalls).toHaveLength(1);
+    expect(deliveredHandoffs).toEqual([]);
+    expect(deadLetteredHandoffs).toEqual(["handoff-abnormal"]);
+    expect(manager.getAgentFailures().get("reviewer")).toContain("stopReason=max_tokens");
   });
 
   test("re-seeds historical contributions when local routing scope changes to a resumed session", async () => {
-    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
-      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
-    };
-    const contribution = makeContribution("blake3:3".padEnd(71, "0"), "coder", "session-coder");
-    const sessionIds: string[] = [];
-    provider.getSessionContributions = async (sessionId: string) => {
-      sessionIds.push(sessionId);
-      return sessionId === "resumed-session" ? [contribution] : [];
-    };
-
+    const provider = makeMockProvider();
     const runtime = makeMockRuntime();
-    const sent: string[] = [];
-    runtime.send = async (session: AgentSession): Promise<AcpxTurn> => {
-      sent.push(session.id);
-      return fakeTurn(`turn-${sent.length}`);
-    };
+    let sessionContributions: ReturnType<typeof makeContribution>[] = [];
+    let sessionReads = 0;
+    (provider.capabilities as { sessions: boolean }).sessions = true;
+    Object.assign(provider, {
+      getSessionContributions: async () => {
+        sessionReads++;
+        return sessionContributions;
+      },
+    });
 
     manager = new SpawnManager(
       provider,
@@ -1834,109 +2043,44 @@ describe("SpawnManager — local contribution routing", () => {
       "/tmp/no-grove",
       runtime,
     );
-    manager.setTopology({
-      structure: "graph",
-      roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
-        { name: "reviewer" },
-      ],
-    });
-    manager.enableLocalContributionRouting(undefined, {
-      initialDelayMs: 60_000,
-      pollMs: 60_000,
-    });
+    manager.setTopology(makeTopology());
+    manager.enableLocalContributionDelivery({ startTimers: false });
+
+    await manager.spawn("coder", "codex");
+    await manager.spawn("reviewer", "claude", undefined, 0, { waitForPush: true });
+    const coderToken = runtime.configs.find((config) => config.role === "coder")?.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderToken).toBeDefined();
+
+    const historical = signContributionForRouting(
+      makeContribution({
+        summary: "historical resumed contribution",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        agent: { agentId: "session-coder", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    sessionContributions = [historical];
+
     manager.setSessionId("resumed-session");
+    await waitForCondition(() => sessionReads > 0);
 
-    for (let i = 0; i < 20 && !sessionIds.includes("resumed-session"); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    expect(sessionIds).toContain("resumed-session");
+    await manager.testPollLocalContributions();
+    expect(runtime.sendCalls).toHaveLength(0);
 
-    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
-      .agentSessions;
-    sessions.set("coder-a", {
-      id: "session-coder",
-      role: "coder",
-      status: "running",
-      agent: "mock",
-    });
-    sessions.set("reviewer-a", {
-      id: "session-reviewer",
-      role: "reviewer",
-      status: "running",
-      agent: "mock",
-    });
-
-    await manager.testPollLocalContributionRouting();
-
-    expect(sent).toEqual([]);
-  });
-
-  test("routes new session contributions to downstream roles without Nexus", async () => {
-    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
-      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
-    };
-    const contributions: Contribution[] = [];
-    const sessionIds: string[] = [];
-    provider.getSessionContributions = async (sessionId: string) => {
-      sessionIds.push(sessionId);
-      return contributions;
-    };
-
-    const runtime = makeMockRuntime();
-    const sent: Array<{ sessionId: string; message: string }> = [];
-    runtime.send = async (session: AgentSession, message: string): Promise<AcpxTurn> => {
-      sent.push({ sessionId: session.id, message });
-      return fakeTurn(`turn-${sent.length}`);
-    };
-
-    manager = new SpawnManager(
-      provider,
-      undefined,
-      () => undefined,
-      [{ kind: "local" as const, path: "/tmp" }],
-      undefined,
-      "/tmp/no-grove",
-      runtime,
+    const fresh = signContributionForRouting(
+      makeContribution({
+        summary: "fresh resumed contribution",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        agent: { agentId: "session-coder", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
     );
+    sessionContributions = [historical, fresh];
 
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
-        { name: "reviewer" },
-      ],
-    };
-    manager.setSessionId("session-local");
-    manager.setTopology(topology);
-    expect(manager.getDeliveryState()).toBe("pending");
+    await manager.testPollLocalContributions();
 
-    manager.enableLocalContributionRouting(undefined, { autoStart: false });
-    expect(manager.getDeliveryState()).toBe("ready");
-
-    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
-      .agentSessions;
-    sessions.set("coder-a", {
-      id: "session-coder",
-      role: "coder",
-      status: "running",
-      agent: "mock",
-    });
-    sessions.set("reviewer-a", {
-      id: "session-reviewer",
-      role: "reviewer",
-      status: "running",
-      agent: "mock",
-    });
-
-    await manager.testPollLocalContributionRouting();
-    contributions.push(makeContribution("blake3:1".padEnd(71, "0"), "coder", "session-coder"));
-    await manager.testPollLocalContributionRouting();
-
-    expect(sessionIds).toContain("session-local");
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.sessionId).toBe("session-reviewer");
-    expect(sent[0]?.message).toContain("ready for review");
-    expect(sent[0]?.message).toContain("blake3:");
+    expect(runtime.sendCalls).toHaveLength(1);
+    expect(runtime.sendCalls[0]?.message).toContain("fresh resumed contribution");
   });
 });

@@ -5,6 +5,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  type HandoffTerminalMetadata,
   validateTransition,
 } from "./handoff.js";
 
@@ -122,6 +123,42 @@ export class InMemoryHandoffStore implements HandoffStore {
     }
     validateTransition(id, handoff.status, HandoffStatus.DeadLettered);
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.DeadLettered });
+  }
+
+  async markCancelled(id: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.Cancelled);
+    this.handoffs.set(id, {
+      ...handoff,
+      status: HandoffStatus.Cancelled,
+      ...(metadata?.terminalReason !== undefined
+        ? { terminalReason: metadata.terminalReason }
+        : {}),
+      ...(metadata?.replacementHandoffId !== undefined
+        ? { replacementHandoffId: metadata.replacementHandoffId }
+        : {}),
+    });
+  }
+
+  async markManuallyResolved(id: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.ManuallyResolved);
+    this.handoffs.set(id, {
+      ...handoff,
+      status: HandoffStatus.ManuallyResolved,
+      ...(metadata?.terminalReason !== undefined
+        ? { terminalReason: metadata.terminalReason }
+        : {}),
+      ...(metadata?.replacementHandoffId !== undefined
+        ? { replacementHandoffId: metadata.replacementHandoffId }
+        : {}),
+    });
   }
 
   async setIpcMessageId(id: string, ipcMessageId: string): Promise<void> {

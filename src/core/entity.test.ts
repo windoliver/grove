@@ -19,6 +19,7 @@ import {
   timelineEventToEntity,
   workBlockToEntity,
 } from "./entity.js";
+import type { HandoffTerminalMetadata } from "./index.js";
 import { Finalizer } from "./lifecycle-metadata.js";
 import type { Claim, ClaimView, Contribution } from "./models.js";
 import {
@@ -700,5 +701,15 @@ describe("core/index exports", () => {
     expect(typeof mod.contributionToEntity).toBe("function");
     expect(typeof mod.claimToEntity).toBe("function");
     expect(typeof mod.agentSessionToEntity).toBe("function");
+  });
+
+  test("re-exports handoff terminal metadata type", () => {
+    const metadata = {
+      terminalReason: "operator handled offline",
+      replacementHandoffId: "handoff-replacement",
+    } satisfies HandoffTerminalMetadata;
+
+    expect(metadata.terminalReason).toBe("operator handled offline");
+    expect(metadata.replacementHandoffId).toBe("handoff-replacement");
   });
 });
