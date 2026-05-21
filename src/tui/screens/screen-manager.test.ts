@@ -385,6 +385,7 @@ function makeProvider(options?: {
     capabilities,
     getDashboard: async () => makeDashboard(),
     getContributions: async () => options?.contributions ?? [],
+    getSessionContributions: async () => options?.contributions ?? [],
     getContribution: async () => undefined,
     getClaims: async () => [],
     getFrontier: async () => ({

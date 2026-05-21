@@ -62,6 +62,7 @@ import {
   createSessionHttp,
   diffArtifactsUsing,
   fetchGoalHttp,
+  getSessionContributionsHttp,
   getSessionHttp,
   listSessionsHttp,
   setGoalHttp,
@@ -795,6 +796,10 @@ export class RemoteDataProvider
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
     return addContributionToSessionHttp(this.baseUrl, sessionId, cid, this.authHeaders);
+  }
+
+  async getSessionContributions(sessionId: string): Promise<readonly Contribution[]> {
+    return getSessionContributionsHttp(this.baseUrl, sessionId, this.authHeaders);
   }
 
   // ---------------------------------------------------------------------------
