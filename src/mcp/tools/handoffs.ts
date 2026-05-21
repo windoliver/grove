@@ -11,7 +11,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { canTransition, HandoffStatus, type HandoffStore } from "../../core/handoff.js";
+import {
+  canTransition,
+  HANDOFF_STATUS_VALUES,
+  HandoffStatus,
+  type HandoffStore,
+} from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { handleToolError, toolError } from "../error-handler.js";
 
@@ -75,14 +80,7 @@ const listHandoffsInputSchema = z.object({
     .optional()
     .describe("Filter by originating role (e.g. 'coder'). Omit to list all."),
   status: z
-    .enum([
-      HandoffStatus.PendingPickup,
-      HandoffStatus.Delivered,
-      HandoffStatus.Processed,
-      HandoffStatus.Replied,
-      HandoffStatus.Expired,
-      HandoffStatus.DeadLettered,
-    ])
+    .enum(HANDOFF_STATUS_VALUES)
     .optional()
     .describe(
       "Filter by status. Omit to return all statuses. Call this with status='pending_pickup' to find work waiting for your role.",

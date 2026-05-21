@@ -21,7 +21,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { HandoffStatus } from "../../src/core/handoff.js";
+import { type Handoff, type HandoffInput, HandoffStatus } from "../../src/core/handoff.js";
 import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
@@ -34,6 +34,22 @@ import {
 } from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
+
+class CreateFailingHandoffStore extends InMemoryHandoffStore {
+  private shouldFailCreate = false;
+
+  failNextCreate(): void {
+    this.shouldFailCreate = true;
+  }
+
+  override async create(input: HandoffInput): Promise<Handoff> {
+    if (this.shouldFailCreate) {
+      this.shouldFailCreate = false;
+      throw new Error("simulated replacement create failure");
+    }
+    return super.create(input);
+  }
+}
 
 // ===================================================================
 // 1. Diff route (/api/diff)
@@ -301,6 +317,313 @@ describe("routes — /api/handoffs", () => {
       headers: TEST_AUTH_HEADERS,
     });
     expect(res.status).toBe(400);
+  });
+
+  test("GET / accepts operator terminal status filters", async () => {
+    const cancelled = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markCancelled(cancelled.handoffId, {
+      terminalReason: "operator cancelled",
+    });
+
+    const expired = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "tester",
+      requiresReply: true,
+      replyDueAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    await handoffStore.expireStale();
+    await handoffStore.markManuallyResolved(expired.handoffId, {
+      terminalReason: "operator handled offline",
+    });
+
+    const cancelledRes = await app.request(
+      `/api/handoffs?status=${HandoffStatus.Cancelled}&limit=10`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(cancelledRes.status).toBe(200);
+    const cancelledData = (await cancelledRes.json()) as {
+      handoffs: readonly { handoffId: string; status: string }[];
+    };
+    expect(cancelledData.handoffs.find((h) => h.handoffId === cancelled.handoffId)?.status).toBe(
+      HandoffStatus.Cancelled,
+    );
+
+    const resolvedRes = await app.request(
+      `/api/handoffs?status=${HandoffStatus.ManuallyResolved}&limit=10`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(resolvedRes.status).toBe(200);
+    const resolvedData = (await resolvedRes.json()) as {
+      handoffs: readonly { handoffId: string; status: string }[];
+    };
+    expect(resolvedData.handoffs.find((h) => h.handoffId === expired.handoffId)?.status).toBe(
+      HandoffStatus.ManuallyResolved,
+    );
+  });
+
+  test("POST /:id/cancel marks unresolved handoff cancelled", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "operator stopped waiting" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { status: string; terminalReason?: string };
+    expect(data.status).toBe(HandoffStatus.Cancelled);
+    expect(data.terminalReason).toBe("operator stopped waiting");
+  });
+
+  test("POST /:id/cancel rejects non-object JSON body", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify([]),
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+
+    const stored = await handoffStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
+  });
+
+  test("POST /:id/cancel rejects malformed non-empty JSON body", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: "{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+
+    const stored = await handoffStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
+  });
+
+  test("POST /:id/manual-resolve marks dead-lettered handoff manually resolved", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/manual-resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "handled in terminal" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { status: string; terminalReason?: string };
+    expect(data.status).toBe(HandoffStatus.ManuallyResolved);
+    expect(data.terminalReason).toBe("handled in terminal");
+  });
+
+  test("POST /:id/resend creates replacement handoff and cancels original", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      original: {
+        handoffId: string;
+        status: string;
+        replacementHandoffId?: string;
+        terminalReason?: string;
+      };
+      replacement: { handoffId: string; toRole: string; status: string };
+    };
+    expect(data.original.status).toBe(HandoffStatus.Cancelled);
+    expect(data.original.terminalReason).toBe("retry delivery");
+    expect(data.original.replacementHandoffId).toBe(data.replacement.handoffId);
+    expect(data.replacement.toRole).toBe(handoff.toRole);
+    expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
+  });
+
+  test("POST /:id/resend on ineligible original returns 409 without creating replacement", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+    const beforeCount = (await handoffStore.list()).length;
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(409);
+    const after = await handoffStore.list();
+    expect(after).toHaveLength(beforeCount);
+    expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
+  });
+
+  test("POST /:id/resend leaves original unchanged when replacement create fails", async () => {
+    const failingStore = new CreateFailingHandoffStore();
+    const failingApp = createApp(
+      { ...ctx.deps, handoffStore: failingStore },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+    const handoff = await failingStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await failingStore.markDeadLettered(handoff.handoffId);
+    failingStore.failNextCreate();
+
+    const res = await failingApp.request(`/api/handoffs/${handoff.handoffId}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ reason: "retry delivery" }),
+    });
+
+    expect(res.status).toBe(500);
+    const stored = await failingStore.get(handoff.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.DeadLettered);
+    expect(stored?.replacementHandoffId).toBeUndefined();
+
+    const handoffs = await failingStore.list();
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0]?.handoffId).toBe(handoff.handoffId);
+  });
+
+  test("POST /:id/reroute creates replacement handoff for selected role", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDeadLettered(handoff.handoffId);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/reroute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ toRole: "qa", reason: "reviewer unavailable" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      original: { status: string; replacementHandoffId?: string };
+      replacement: { handoffId: string; toRole: string; status: string };
+    };
+    expect(data.original.status).toBe(HandoffStatus.Cancelled);
+    expect(data.original.replacementHandoffId).toBe(data.replacement.handoffId);
+    expect(data.replacement.toRole).toBe("qa");
+    expect(data.replacement.status).toBe(HandoffStatus.PendingPickup);
+  });
+
+  test("POST /:id/reroute on ineligible original returns 409 without creating replacement", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+    const beforeCount = (await handoffStore.list()).length;
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/reroute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ toRole: "qa", reason: "reviewer unavailable" }),
+    });
+
+    expect(res.status).toBe(409);
+    const after = await handoffStore.list();
+    expect(after).toHaveLength(beforeCount);
+    expect(after.find((h) => h.handoffId !== handoff.handoffId)).toBeUndefined();
+  });
+
+  test("explicit session scope does not fall back to global handoff store", async () => {
+    const global = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    const scopedApp = createApp(
+      {
+        ...ctx.deps,
+        handoffStore,
+        handoffStoreForSession: () => undefined,
+      },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const listRes = await scopedApp.request("/api/handoffs?sessionId=missing-session&limit=10", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as { handoffs: readonly { handoffId: string }[] };
+    expect(listBody.handoffs).toEqual([]);
+
+    const cancelRes = await scopedApp.request(
+      `/api/handoffs/${global.handoffId}/cancel?sessionId=missing-session`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({ reason: "should not touch global" }),
+      },
+    );
+    expect(cancelRes.status).toBe(404);
+    const stored = await handoffStore.get(global.handoffId);
+    expect(stored?.status).toBe(HandoffStatus.PendingPickup);
+    expect(stored?.terminalReason).toBeUndefined();
   });
 
   test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {

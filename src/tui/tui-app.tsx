@@ -502,16 +502,15 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           );
         });
     } else if (agentRuntime && topo) {
-      // Bridge preconditions missing: without Nexus + credentials, nothing
-      // routes contributions between agents. Only fail closed when cross-
-      // role delivery is actually needed (multi-role); a single-role
-      // session has no inter-agent traffic, so warn but keep it spawnable.
+      // Bridge preconditions missing: fall back to local-store polling.
+      // Agent MCP processes write signed contributions into the shared local
+      // store; the SpawnManager polls that store and pushes verified work to
+      // downstream ACP sessions. This preserves local Codex/Claude review
+      // loops when Nexus/Docker is unavailable.
       const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
-      if (topo.roles.length > 1) {
-        manager.markDeliveryDisabled(reason);
-      }
+      manager.enableLocalContributionDelivery();
       process.stderr.write(
-        `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
+        `[grove] WARNING: Nexus bridge not initialized (${reason}). Using local contribution polling for inter-agent delivery.\n`,
       );
     } else if (topo && !agentRuntime) {
       // Topology declared but no agent runtime. Multi-role sessions

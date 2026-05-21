@@ -8,7 +8,16 @@
 import { describe, expect, test } from "bun:test";
 import { canTransition, HandoffStatus } from "./handoff.js";
 
-const { PendingPickup, Delivered, Processed, Replied, Expired, DeadLettered } = HandoffStatus;
+const {
+  PendingPickup,
+  Delivered,
+  Processed,
+  Replied,
+  Expired,
+  DeadLettered,
+  Cancelled,
+  ManuallyResolved,
+} = HandoffStatus;
 
 describe("canTransition", () => {
   // --- Happy path ---
@@ -53,7 +62,25 @@ describe("canTransition", () => {
     expect(canTransition(Processed, Expired)).toBe(true);
   });
 
-  // --- Terminal states: no outgoing transitions ---
+  // --- Operator terminal paths ---
+
+  test("unresolved and failed handoffs can be cancelled by an operator", () => {
+    expect(canTransition(PendingPickup, Cancelled)).toBe(true);
+    expect(canTransition(Delivered, Cancelled)).toBe(true);
+    expect(canTransition(Processed, Cancelled)).toBe(true);
+    expect(canTransition(Expired, Cancelled)).toBe(true);
+    expect(canTransition(DeadLettered, Cancelled)).toBe(true);
+  });
+
+  test("unresolved and failed handoffs can be manually resolved by an operator", () => {
+    expect(canTransition(PendingPickup, ManuallyResolved)).toBe(true);
+    expect(canTransition(Delivered, ManuallyResolved)).toBe(true);
+    expect(canTransition(Processed, ManuallyResolved)).toBe(true);
+    expect(canTransition(Expired, ManuallyResolved)).toBe(true);
+    expect(canTransition(DeadLettered, ManuallyResolved)).toBe(true);
+  });
+
+  // --- Terminal states ---
 
   test("replied is terminal — cannot transition to anything", () => {
     expect(canTransition(Replied, PendingPickup)).toBe(false);
@@ -61,22 +88,48 @@ describe("canTransition", () => {
     expect(canTransition(Replied, Processed)).toBe(false);
     expect(canTransition(Replied, Expired)).toBe(false);
     expect(canTransition(Replied, DeadLettered)).toBe(false);
+    expect(canTransition(Replied, Cancelled)).toBe(false);
+    expect(canTransition(Replied, ManuallyResolved)).toBe(false);
   });
 
-  test("expired is terminal — cannot transition to anything", () => {
+  test("expired can only transition to operator terminal statuses", () => {
     expect(canTransition(Expired, PendingPickup)).toBe(false);
     expect(canTransition(Expired, Delivered)).toBe(false);
     expect(canTransition(Expired, Processed)).toBe(false);
     expect(canTransition(Expired, Replied)).toBe(false);
     expect(canTransition(Expired, DeadLettered)).toBe(false);
+    expect(canTransition(Expired, Cancelled)).toBe(true);
+    expect(canTransition(Expired, ManuallyResolved)).toBe(true);
   });
 
-  test("dead_lettered is terminal — cannot transition to anything", () => {
+  test("dead_lettered can only transition to operator terminal statuses", () => {
     expect(canTransition(DeadLettered, PendingPickup)).toBe(false);
     expect(canTransition(DeadLettered, Delivered)).toBe(false);
     expect(canTransition(DeadLettered, Processed)).toBe(false);
     expect(canTransition(DeadLettered, Replied)).toBe(false);
     expect(canTransition(DeadLettered, Expired)).toBe(false);
+    expect(canTransition(DeadLettered, Cancelled)).toBe(true);
+    expect(canTransition(DeadLettered, ManuallyResolved)).toBe(true);
+  });
+
+  test("cancelled is terminal", () => {
+    expect(canTransition(Cancelled, PendingPickup)).toBe(false);
+    expect(canTransition(Cancelled, Delivered)).toBe(false);
+    expect(canTransition(Cancelled, Processed)).toBe(false);
+    expect(canTransition(Cancelled, Replied)).toBe(false);
+    expect(canTransition(Cancelled, Expired)).toBe(false);
+    expect(canTransition(Cancelled, DeadLettered)).toBe(false);
+    expect(canTransition(Cancelled, ManuallyResolved)).toBe(false);
+  });
+
+  test("manually_resolved is terminal", () => {
+    expect(canTransition(ManuallyResolved, PendingPickup)).toBe(false);
+    expect(canTransition(ManuallyResolved, Delivered)).toBe(false);
+    expect(canTransition(ManuallyResolved, Processed)).toBe(false);
+    expect(canTransition(ManuallyResolved, Replied)).toBe(false);
+    expect(canTransition(ManuallyResolved, Expired)).toBe(false);
+    expect(canTransition(ManuallyResolved, DeadLettered)).toBe(false);
+    expect(canTransition(ManuallyResolved, Cancelled)).toBe(false);
   });
 
   // --- Invalid transitions ---
@@ -88,6 +141,8 @@ describe("canTransition", () => {
     expect(canTransition(Replied, Replied)).toBe(false);
     expect(canTransition(Expired, Expired)).toBe(false);
     expect(canTransition(DeadLettered, DeadLettered)).toBe(false);
+    expect(canTransition(Cancelled, Cancelled)).toBe(false);
+    expect(canTransition(ManuallyResolved, ManuallyResolved)).toBe(false);
   });
 
   test("cannot skip forward: pending_pickup → processed (must go through delivered)", () => {
@@ -123,9 +178,11 @@ describe("HandoffStatus enum values", () => {
     expect(HandoffStatus.Replied).toBe("replied");
     expect(HandoffStatus.Expired).toBe("expired");
     expect(HandoffStatus.DeadLettered).toBe("dead_lettered");
+    expect(HandoffStatus.Cancelled).toBe("cancelled");
+    expect(HandoffStatus.ManuallyResolved).toBe("manually_resolved");
   });
 
-  test("enum has exactly 6 values", () => {
-    expect(Object.keys(HandoffStatus)).toHaveLength(6);
+  test("enum has exactly 8 values", () => {
+    expect(Object.keys(HandoffStatus)).toHaveLength(8);
   });
 });

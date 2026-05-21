@@ -22,6 +22,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Handoff } from "../../core/handoff.js";
+import {
+  deriveHandoffOperatorProjection,
+  type HandoffHealthSignal,
+  HandoffOperatorAction,
+} from "../../core/handoff-operator-state.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
@@ -34,6 +39,8 @@ import { createTuiConfigWatcher } from "../config-watcher.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
 import { debugLog } from "../debug-log.js";
+import { choiceDialogOptions, textPromptDialogOptions } from "../dialog-options.js";
+import { performHandoffOperatorAction } from "../handoff-actions.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
@@ -54,6 +61,7 @@ import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
 import { emptyFeedHint } from "./empty-feed-hint.js";
+import { loadHandoffPanelSnapshot } from "./handoff-panel-snapshot.js";
 import {
   type CmdModeState,
   appendChar as cmdAppend,
@@ -196,6 +204,11 @@ function formatTime(iso: string): string {
   } catch {
     return "--:--";
   }
+}
+
+function handoffActionVerb(action: HandoffOperatorAction): string {
+  if (action === HandoffOperatorAction.ManualResolve) return "manual resolve";
+  return action;
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +660,13 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     ]);
 
     const [handoffs, setHandoffs] = useState<readonly Handoff[]>([]);
+    const [handoffCursor, setHandoffCursor] = useState(0);
+    const [handoffHealthSignals, setHandoffHealthSignals] = useState<
+      readonly HandoffHealthSignal[]
+    >([]);
+    useEffect(() => {
+      setHandoffCursor((current) => Math.min(current, Math.max(0, handoffs.length - 1)));
+    }, [handoffs.length]);
     const refreshHandoffs = useCallback((): void => {
       const hasMethod = isHandoffProvider(provider);
       debugLog(
@@ -654,22 +674,16 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      void provider
-        .getHandoffs({ limit: 200 })
-        .then((all) => {
-          const cutoff =
-            sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-          const filtered = all.filter((h) => h.createdAt >= cutoff);
-          debugLog(
-            "handoffs",
-            `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
-          );
-          setHandoffs(filtered);
+      void loadHandoffPanelSnapshot({ provider, sessionId, sessionStartedAt, agentFailures })
+        .then((snapshot) => {
+          debugLog("handoffs", `afterFilter=${snapshot.handoffs.length}`);
+          setHandoffs(snapshot.handoffs);
+          setHandoffHealthSignals(snapshot.healthSignals);
         })
         .catch((err: unknown) => {
           debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
         });
-    }, [provider, sessionStartedAt]);
+    }, [provider, sessionId, sessionStartedAt, agentFailures]);
 
     useEffect(() => {
       refreshHandoffs();
@@ -708,6 +722,103 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         }
       };
     }, [eventBus, topology, provider, refreshHandoffs]);
+
+    const selectedHandoffProjection = useMemo(() => {
+      const selected = handoffs[Math.min(handoffCursor, Math.max(0, handoffs.length - 1))];
+      if (selected === undefined) return undefined;
+      return deriveHandoffOperatorProjection(selected, { healthSignals: handoffHealthSignals });
+    }, [handoffs, handoffCursor, handoffHealthSignals]);
+
+    const promptHandoffReason = useCallback(
+      async (action: HandoffOperatorAction): Promise<string | null> => {
+        const value = await dialog.prompt<string>(
+          textPromptDialogOptions({
+            title: `Handoff ${handoffActionVerb(action)}`,
+            message: "Reason",
+            defaultValue: handoffActionVerb(action),
+          }),
+        );
+        return value === undefined ? null : value;
+      },
+      [dialog],
+    );
+
+    const promptRerouteRole = useCallback(async (): Promise<string | null> => {
+      const selected = selectedHandoffProjection?.handoff;
+      const choices = (activeRoles ?? []).filter((role) => role !== selected?.toRole);
+      if (choices.length > 0) {
+        const value = await dialog.choice(
+          choiceDialogOptions({
+            title: "Reroute Handoff",
+            message: "Target role",
+            choices,
+          }),
+        );
+        return value === undefined ? null : value;
+      }
+      const value = await dialog.prompt<string>(
+        textPromptDialogOptions({
+          title: "Reroute Handoff",
+          message: "Target role",
+        }),
+      );
+      return value === undefined ? null : value;
+    }, [activeRoles, dialog, selectedHandoffProjection]);
+
+    const promptLeaveSession = useCallback(
+      async <const K extends string>(choices: readonly K[]): Promise<K | undefined> => {
+        return dialog.choice(
+          choiceDialogOptions({
+            title: "Leave Session",
+            message: "Agents will be stopped.",
+            choices,
+          }),
+        );
+      },
+      [dialog],
+    );
+
+    const executeSelectedHandoffAction = useCallback(
+      (action: HandoffOperatorAction): void => {
+        const projection = selectedHandoffProjection;
+        if (projection === undefined) {
+          flash("handoff: no row selected");
+          return;
+        }
+        void performHandoffOperatorAction({
+          provider,
+          projection,
+          action,
+          sessionId,
+          activeRoles,
+          promptReason: promptHandoffReason,
+          promptRerouteRole,
+        })
+          .then((performed) => {
+            if (!performed) {
+              flash(`handoff: ${handoffActionVerb(action)} unavailable`);
+              return;
+            }
+            toast.success(`handoff ${handoffActionVerb(action)}`, { duration: 3000 });
+            refreshHandoffs();
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            flash(`handoff: ${msg}`);
+            toast.error(`handoff: ${msg}`, { duration: 5000 });
+          });
+      },
+      [
+        activeRoles,
+        flash,
+        promptHandoffReason,
+        promptRerouteRole,
+        provider,
+        refreshHandoffs,
+        selectedHandoffProjection,
+        sessionId,
+      ],
+    );
 
     debugLog("feed.fetch", `total=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`);
 
@@ -924,6 +1035,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
           setTraceScrollOffset(0);
         },
+        handoffCursorDown: () =>
+          setHandoffCursor((current) => Math.min(current + 1, Math.max(0, handoffs.length - 1))),
+        handoffCursorUp: () => setHandoffCursor((current) => Math.max(current - 1, 0)),
+        resendSelectedHandoff: () => executeSelectedHandoffAction(HandoffOperatorAction.Resend),
+        rerouteSelectedHandoff: () => executeSelectedHandoffAction(HandoffOperatorAction.Reroute),
+        cancelSelectedHandoff: () => executeSelectedHandoffAction(HandoffOperatorAction.Cancel),
+        manualResolveSelectedHandoff: () =>
+          executeSelectedHandoffAction(HandoffOperatorAction.ManualResolve),
         // LogView actions (#310): mirror trace-pane controlled-component pattern.
         logTogglePause: () => setLogPaused((p) => !p),
         logScrollDown: () => setLogScrollOffset((n) => n + 1),
@@ -943,28 +1062,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         logViewActive: useLogView,
         // openDetail kept as an interface field for future detail-route work,
         // but wired to a no-op so Enter cannot accidentally enter inspect.
-        openDetail: () => {},
+        openDetail: () => {
+          // no-op
+        },
         enterInspect: () => onEnterInspect(),
         openPulse: () => onOpenPulse?.(),
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
-            void dialog
-              .choice({
-                title: "Leave Session",
-                message: "Agents will be stopped.",
-                choices: ["Quit", "Back to main", "Cancel"],
-              })
-              .then((choice) => {
-                if (choice === "Quit") onQuit();
-                else if (choice === "Back to main") onBackToMain();
-              });
+            void promptLeaveSession(["Quit", "Back to main", "Cancel"] as const).then((choice) => {
+              if (choice === "Quit") onQuit();
+              else if (choice === "Back to main") onBackToMain();
+            });
           } else {
-            void dialog
-              .confirm({ title: "Quit Session?", message: "Agents will be stopped." })
-              .then((confirmed) => {
-                if (confirmed) onQuit();
-              });
+            void promptLeaveSession(["Quit", "Cancel"] as const).then((choice) => {
+              if (choice === "Quit") onQuit();
+            });
           }
         },
         approvePermission: () => {
@@ -1076,7 +1189,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         tmux,
         pendingAskUser,
         topology,
-        dialog,
+        handoffs.length,
+        executeSelectedHandoffAction,
+        promptLeaveSession,
         aliases,
         gotoDispatch,
         flash,
@@ -1392,6 +1507,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             logScrollOffset,
             sessionStartedAt,
             handoffs,
+            handoffCursor,
+            handoffHealthSignals,
             activeRoles,
             agentFailures,
             filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
@@ -1478,6 +1595,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logScrollOffset,
                 sessionStartedAt,
                 handoffs,
+                handoffCursor,
+                handoffHealthSignals,
                 activeRoles,
                 agentFailures,
                 filterText: cmdState.mode === "filter" ? cmdState.text : filterQuery,
@@ -1866,6 +1985,8 @@ interface PanelRenderContext {
   readonly logScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
+  readonly handoffCursor?: number | undefined;
+  readonly handoffHealthSignals?: readonly HandoffHealthSignal[] | undefined;
   readonly activeRoles?: readonly string[] | undefined;
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   /** C2 (#302): in-view filter query. Applied to current expanded panel only. */
@@ -1974,9 +2095,10 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           provider={ctx.provider}
           intervalMs={ctx.intervalMs}
           active
-          cursor={0}
+          cursor={ctx.handoffCursor ?? 0}
           sessionStartedAt={ctx.sessionStartedAt}
           handoffs={ctx.handoffs}
+          healthSignals={ctx.handoffHealthSignals}
         />
       );
 
@@ -2130,6 +2252,7 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> J/K Scroll trace output (when trace open)</text>
       <text color={theme.text}> G/g Jump to bottom/top of trace</text>
       <text color={theme.text}> m Send message to agent</text>
+      <text color={theme.text}> Handoffs: s resend, r reroute, x cancel, v resolve</text>
       <text color={theme.text}> : Goto / command (alias chain)</text>
       <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
@@ -2171,6 +2294,10 @@ function contextualHints(
   } else if (expandedPanel === RunningPanel.Trace) {
     // Trace pane active
     hints.push("j/k:agent", "J/K:scroll", "G/g:top/bottom", "Tab:cycle");
+    if (zoomLevel !== "full") hints.push("f:full");
+    hints.push("Esc:close");
+  } else if (expandedPanel === RunningPanel.Handoffs) {
+    hints.push("j/k:row", "s:resend", "r:reroute", "x:cancel", "v:resolve");
     if (zoomLevel !== "full") hints.push("f:full");
     hints.push("Esc:close");
   } else {

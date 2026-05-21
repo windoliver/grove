@@ -6,6 +6,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  type HandoffTerminalMetadata,
   validateTransition,
 } from "../core/handoff.js";
 
@@ -23,6 +24,8 @@ export const HANDOFF_DDL = `
     acked_at TEXT,
     session_id TEXT,
     ipc_message_id TEXT,
+    terminal_reason TEXT,
+    replacement_handoff_id TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -59,6 +62,8 @@ interface HandoffRow {
   readonly acked_at: string | null;
   readonly session_id: string | null;
   readonly ipc_message_id: string | null;
+  readonly terminal_reason: string | null;
+  readonly replacement_handoff_id: string | null;
   readonly created_at: string;
 }
 
@@ -75,13 +80,18 @@ function rowToHandoff(row: HandoffRow): Handoff {
     ...(row.seen_at !== null ? { seenAt: row.seen_at } : {}),
     ...(row.acked_at !== null ? { ackedAt: row.acked_at } : {}),
     ...(row.ipc_message_id !== null ? { ipcMessageId: row.ipc_message_id } : {}),
+    ...(row.terminal_reason !== null ? { terminalReason: row.terminal_reason } : {}),
+    ...(row.replacement_handoff_id !== null
+      ? { replacementHandoffId: row.replacement_handoff_id }
+      : {}),
     createdAt: row.created_at,
   };
 }
 
 const SELECT_COLS = `handoff_id, source_cid, from_role, to_role, status,
                 requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
-                session_id, ipc_message_id, created_at`;
+                session_id, ipc_message_id, terminal_reason, replacement_handoff_id,
+                created_at`;
 
 /**
  * SQLite-backed handoff store with optional session scoping.
@@ -132,6 +142,8 @@ export class SqliteHandoffStore implements HandoffStore {
     if (!columns.includes("acked_at")) this.safeAddColumn("acked_at");
     if (!columns.includes("session_id")) this.safeAddColumn("session_id");
     if (!columns.includes("ipc_message_id")) this.safeAddColumn("ipc_message_id");
+    if (!columns.includes("terminal_reason")) this.safeAddColumn("terminal_reason");
+    if (!columns.includes("replacement_handoff_id")) this.safeAddColumn("replacement_handoff_id");
 
     // Quarantine legacy NULL-session rows. Non-destructive (status is not
     // touched — see PR #258 Codex round 3) but stamps an unreachable
@@ -197,6 +209,10 @@ export class SqliteHandoffStore implements HandoffStore {
     };
   }
 
+  private metadataParams(metadata?: HandoffTerminalMetadata): readonly (string | null)[] {
+    return [metadata?.terminalReason ?? null, metadata?.replacementHandoffId ?? null];
+  }
+
   async create(input: HandoffInput): Promise<Handoff> {
     const handoffId = this.insertSync(input);
     const handoff = await this.get(handoffId);
@@ -217,8 +233,8 @@ export class SqliteHandoffStore implements HandoffStore {
         `INSERT INTO handoffs (
           handoff_id, source_cid, from_role, to_role, status,
           requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
-          session_id, ipc_message_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          session_id, ipc_message_id, terminal_reason, replacement_handoff_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         handoffId,
@@ -232,6 +248,8 @@ export class SqliteHandoffStore implements HandoffStore {
         null,
         null,
         this.sessionId ?? null,
+        null,
+        null,
         null,
         new Date().toISOString(),
       );
@@ -429,6 +447,68 @@ export class SqliteHandoffStore implements HandoffStore {
         validateTransition(id, current.status, HandoffStatus.DeadLettered);
       }
       // Already dead-lettered — idempotent no-op
+    }
+  }
+
+  async markCancelled(id: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs
+         SET status = ?, terminal_reason = ?, replacement_handoff_id = ?${claimSet}
+         WHERE handoff_id = ? AND status IN (?, ?, ?, ?, ?)${scopeExtra}`,
+      )
+      .run(
+        HandoffStatus.Cancelled,
+        ...this.metadataParams(metadata),
+        ...claimParams,
+        id,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        HandoffStatus.Processed,
+        HandoffStatus.Expired,
+        HandoffStatus.DeadLettered,
+        ...scopeParams,
+      );
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      validateTransition(id, current.status, HandoffStatus.Cancelled);
+    }
+  }
+
+  async markManuallyResolved(id: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs
+         SET status = ?, terminal_reason = ?, replacement_handoff_id = ?${claimSet}
+         WHERE handoff_id = ? AND status IN (?, ?, ?, ?, ?)${scopeExtra}`,
+      )
+      .run(
+        HandoffStatus.ManuallyResolved,
+        ...this.metadataParams(metadata),
+        ...claimParams,
+        id,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        HandoffStatus.Processed,
+        HandoffStatus.Expired,
+        HandoffStatus.DeadLettered,
+        ...scopeParams,
+      );
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      validateTransition(id, current.status, HandoffStatus.ManuallyResolved);
     }
   }
 

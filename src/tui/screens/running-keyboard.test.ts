@@ -125,6 +125,12 @@ function mockActions(overrides?: {
     traceScrollToBottom: () => record("traceScrollToBottom"),
     traceScrollToTop: () => record("traceScrollToTop"),
     traceCycleAgent: () => record("traceCycleAgent"),
+    handoffCursorDown: () => record("handoffCursorDown"),
+    handoffCursorUp: () => record("handoffCursorUp"),
+    resendSelectedHandoff: () => record("resendSelectedHandoff"),
+    rerouteSelectedHandoff: () => record("rerouteSelectedHandoff"),
+    cancelSelectedHandoff: () => record("cancelSelectedHandoff"),
+    manualResolveSelectedHandoff: () => record("manualResolveSelectedHandoff"),
     logTogglePause: () => record("logTogglePause"),
     logScrollDown: () => record("logScrollDown"),
     logScrollUp: () => record("logScrollUp"),
@@ -151,6 +157,32 @@ function mockActions(overrides?: {
   };
 
   return { actions, log };
+}
+
+function mockActionsWithHandoffs(): { actions: RunningKeyboardActions; log: ActionLog } {
+  const { actions, log } = mockActions();
+  const withHandoffs = {
+    ...actions,
+    handoffCursorDown: () => {
+      log.calls.push("handoffCursorDown");
+    },
+    handoffCursorUp: () => {
+      log.calls.push("handoffCursorUp");
+    },
+    resendSelectedHandoff: () => {
+      log.calls.push("resendSelectedHandoff");
+    },
+    rerouteSelectedHandoff: () => {
+      log.calls.push("rerouteSelectedHandoff");
+    },
+    cancelSelectedHandoff: () => {
+      log.calls.push("cancelSelectedHandoff");
+    },
+    manualResolveSelectedHandoff: () => {
+      log.calls.push("manualResolveSelectedHandoff");
+    },
+  } as RunningKeyboardActions;
+  return { actions: withHandoffs, log };
 }
 
 // ===========================================================================
@@ -482,6 +514,39 @@ describe("routeRunningKey — j/k cursor routing", () => {
     const state = defaultState({ expandedPanel: RunningPanel.Terminal, zoomLevel: "full" });
     routeRunningKey(keyEvent("j"), state, actions);
     expect(log.calls).toContain("feedCursorDown");
+  });
+});
+
+describe("routeRunningKey — handoff panel recovery keys", () => {
+  const handoffsState = defaultState({
+    expandedPanel: RunningPanel.Handoffs,
+    zoomLevel: "half",
+  });
+
+  test("j/k navigate handoff rows instead of the feed", () => {
+    const { actions, log } = mockActionsWithHandoffs();
+
+    routeRunningKey(keyEvent("j"), handoffsState, actions);
+    routeRunningKey(keyEvent("k"), handoffsState, actions);
+
+    expect(log.calls).toContain("handoffCursorDown");
+    expect(log.calls).toContain("handoffCursorUp");
+    expect(log.calls).not.toContain("feedCursorDown");
+    expect(log.calls).not.toContain("feedCursorUp");
+  });
+
+  test("s/r/x/v invoke selected handoff recovery actions", () => {
+    const { actions, log } = mockActionsWithHandoffs();
+
+    routeRunningKey(keyEvent("s"), handoffsState, actions);
+    routeRunningKey(keyEvent("r"), handoffsState, actions);
+    routeRunningKey(keyEvent("x"), handoffsState, actions);
+    routeRunningKey(keyEvent("v"), handoffsState, actions);
+
+    expect(log.calls).toContain("resendSelectedHandoff");
+    expect(log.calls).toContain("rerouteSelectedHandoff");
+    expect(log.calls).toContain("cancelSelectedHandoff");
+    expect(log.calls).toContain("manualResolveSelectedHandoff");
   });
 });
 

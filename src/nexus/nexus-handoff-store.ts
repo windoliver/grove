@@ -19,6 +19,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  type HandoffTerminalMetadata,
   validateTransition,
 } from "../core/handoff.js";
 import { debugLog } from "../tui/debug-log.js";
@@ -304,6 +305,38 @@ export class NexusHandoffStore implements HandoffStore {
     await this.updateHandoff(handoffId, (h) => {
       validateTransition(handoffId, h.status, HandoffStatus.DeadLettered);
       return { ...h, status: HandoffStatus.DeadLettered };
+    });
+  }
+
+  async markCancelled(handoffId: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    await this.updateHandoff(handoffId, (h) => {
+      validateTransition(handoffId, h.status, HandoffStatus.Cancelled);
+      return {
+        ...h,
+        status: HandoffStatus.Cancelled,
+        ...(metadata?.terminalReason !== undefined
+          ? { terminalReason: metadata.terminalReason }
+          : {}),
+        ...(metadata?.replacementHandoffId !== undefined
+          ? { replacementHandoffId: metadata.replacementHandoffId }
+          : {}),
+      };
+    });
+  }
+
+  async markManuallyResolved(handoffId: string, metadata?: HandoffTerminalMetadata): Promise<void> {
+    await this.updateHandoff(handoffId, (h) => {
+      validateTransition(handoffId, h.status, HandoffStatus.ManuallyResolved);
+      return {
+        ...h,
+        status: HandoffStatus.ManuallyResolved,
+        ...(metadata?.terminalReason !== undefined
+          ? { terminalReason: metadata.terminalReason }
+          : {}),
+        ...(metadata?.replacementHandoffId !== undefined
+          ? { replacementHandoffId: metadata.replacementHandoffId }
+          : {}),
+      };
     });
   }
 
