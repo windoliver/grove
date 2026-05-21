@@ -526,7 +526,7 @@ export function buildAcpLaunchEnv(
   env: NodeJS.ProcessEnv,
   mcpServers: AgentConfig["mcpServers"] | undefined,
 ): NodeJS.ProcessEnv {
-  const launchEnv: NodeJS.ProcessEnv = { ...env };
+  const launchEnv: NodeJS.ProcessEnv = { ...env, PATH: withStandardUserBinPath(env) };
   if (agent !== "codex") return launchEnv;
 
   for (const server of mcpServers ?? []) {
@@ -537,6 +537,23 @@ export function buildAcpLaunchEnv(
   }
 
   return launchEnv;
+}
+
+function withStandardUserBinPath(env: NodeJS.ProcessEnv): string | undefined {
+  const pathValue = env.PATH;
+  const home = env.HOME;
+  if (home === undefined || home.length === 0) return pathValue;
+
+  const entries = pathValue?.split(":").filter((entry) => entry.length > 0) ?? [];
+  const seen = new Set(entries);
+  const additions = [join(home, ".local", "bin"), join(home, ".bun", "bin")];
+  for (const dir of additions) {
+    if (!seen.has(dir) && existsSync(dir)) {
+      entries.unshift(dir);
+      seen.add(dir);
+    }
+  }
+  return entries.length > 0 ? entries.join(":") : undefined;
 }
 
 const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;

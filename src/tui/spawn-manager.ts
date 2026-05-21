@@ -17,7 +17,7 @@ import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { parseGroveConfig } from "../core/config.js";
-import { HandoffStatus } from "../core/handoff.js";
+import { canTransition, HandoffStatus, type HandoffStore } from "../core/handoff.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import type { AgentIdentity, Contribution } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
@@ -49,7 +49,7 @@ import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
 import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
-import { isHandoffProvider, type TuiDataProvider } from "./provider.js";
+import { isHandoffProvider, isSessionProvider, type TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
@@ -233,6 +233,7 @@ export class SpawnManager {
   private localContributionPollTimer: (() => void) | null = null;
   private localContributionPollInFlight = false;
   private localContributionDeliveryEnabled = false;
+  private localContributionSeedExisting = true;
   private readonly localContributionSeenCids = new Set<string>();
   private readonly localContributionDeliveredTargets = new Map<string, Set<string>>();
   private readonly routingTokensByRole = new Map<string, string>();
@@ -405,9 +406,10 @@ export class SpawnManager {
       return;
     }
     this.localContributionDeliveryEnabled = true;
+    this.localContributionSeedExisting = options.seedExisting !== false;
     this.markDeliveryReady();
 
-    if (options.seedExisting !== false) {
+    if (this.localContributionSeedExisting) {
       void this.seedLocalContributionSeenCids();
     }
     if (options.startTimers === false) return;
@@ -1483,12 +1485,19 @@ export class SpawnManager {
     return false;
   }
 
+  private async getLocalContributionCandidates(): Promise<readonly Contribution[]> {
+    if (this.sessionId !== undefined && isSessionProvider(this.provider)) {
+      return this.provider.getSessionContributions(this.sessionId);
+    }
+    return this.provider.getContributions({
+      limit: LOCAL_CONTRIBUTION_POLL_LIMIT,
+      order: "created_at_desc",
+    });
+  }
+
   private async seedLocalContributionSeenCids(): Promise<void> {
     try {
-      const existing = await this.provider.getContributions({
-        limit: LOCAL_CONTRIBUTION_POLL_LIMIT,
-        order: "created_at_desc",
-      });
+      const existing = await this.getLocalContributionCandidates();
       for (const contribution of existing) {
         this.localContributionSeenCids.add(contribution.cid);
       }
@@ -1502,11 +1511,9 @@ export class SpawnManager {
     if (this.localContributionPollInFlight) return;
     this.localContributionPollInFlight = true;
     try {
-      const contributions = await this.provider.getContributions({
-        limit: LOCAL_CONTRIBUTION_POLL_LIMIT,
-        order: "created_at_desc",
-      });
-      for (const contribution of [...contributions].reverse()) {
+      const contributions = await this.getLocalContributionCandidates();
+      const ordered = [...contributions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const contribution of ordered) {
         if (this.localContributionSeenCids.has(contribution.cid)) continue;
         await this.routeLocalContribution(contribution);
       }
@@ -1558,13 +1565,37 @@ export class SpawnManager {
       const target = this.findRoutableSessionForRole(targetRole);
       if (!target) continue;
       this.syncWorkspacesForSpawnIds(source, target);
-      const turn = await this.agentRuntime.send(target.session, message);
-      watchTurnError(turn, `localContributionDelivery(${targetRole})`, (m) => {
-        debugLog("route", m);
-        process.stderr.write(`${m}\n`);
-      });
-      deliveredTargets.add(targetRole);
-      await this.markLocalHandoffsDelivered(contribution.cid, targetRole);
+      try {
+        const turn = await this.agentRuntime.send(target.session, message);
+        const result = await turn.result.catch((err) => ({
+          turnId: turn.turnId,
+          stopReason: "error" as const,
+          error: {
+            code: "turn_rejected",
+            message: messageFromError(err),
+          },
+        }));
+        if (result.stopReason === "end_turn") {
+          deliveredTargets.add(targetRole);
+          await this.markLocalHandoffsDelivered(contribution.cid, targetRole);
+          continue;
+        }
+
+        const detail =
+          result.error !== undefined
+            ? `${result.error.code}: ${result.error.message}`
+            : `stopReason=${result.stopReason}`;
+        deliveredTargets.add(targetRole);
+        await this.markLocalHandoffsDeadLettered(contribution.cid, targetRole);
+        this.recordAgentFailure(targetRole, `local contribution delivery failed: ${detail}`);
+      } catch (err) {
+        deliveredTargets.add(targetRole);
+        await this.markLocalHandoffsDeadLettered(contribution.cid, targetRole);
+        this.recordAgentFailure(
+          targetRole,
+          `local contribution delivery failed: ${messageFromError(err)}`,
+        );
+      }
     }
 
     if (deliveredTargets.size > 0) {
@@ -1589,6 +1620,31 @@ export class SpawnManager {
       }
     } catch (err) {
       const message = `mark local handoff delivered failed: ${messageFromError(err)}`;
+      debugLog("route", message);
+      this.onError(message);
+    }
+  }
+
+  private async markLocalHandoffsDeadLettered(
+    sourceCid: string,
+    targetRole: string,
+  ): Promise<void> {
+    const provider = this.provider as {
+      getHandoffStore?: () => HandoffStore | undefined;
+    };
+    const store = provider.getHandoffStore?.();
+    if (store === undefined) return;
+    try {
+      const handoffs = await store.list({
+        sourceCid,
+        toRole: targetRole,
+      });
+      for (const handoff of handoffs) {
+        if (!canTransition(handoff.status, HandoffStatus.DeadLettered)) continue;
+        await store.markDeadLettered(handoff.handoffId);
+      }
+    } catch (err) {
+      const message = `mark local handoff dead-lettered failed: ${messageFromError(err)}`;
       debugLog("route", message);
       this.onError(message);
     }
@@ -1685,7 +1741,14 @@ export class SpawnManager {
 
   /** Set the session ID for log buffer naming and persistence. */
   setSessionId(id: string | undefined): void {
+    const changed = this.sessionId !== id;
     this.sessionId = id;
+    if (!changed) return;
+    this.localContributionSeenCids.clear();
+    this.localContributionDeliveredTargets.clear();
+    if (this.localContributionDeliveryEnabled && this.localContributionSeedExisting) {
+      void this.seedLocalContributionSeenCids();
+    }
   }
 
   /**

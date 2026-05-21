@@ -318,4 +318,31 @@ describe("RemoteDataProvider specific", () => {
       },
     ]);
   });
+
+  test("getSessionContributions uses the dedicated session history route", async () => {
+    const requestedPaths: string[] = [];
+    const contribution = { manifestVersion: 1, ...makeContribution({ summary: "history item" }) };
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        requestedPaths.push(`${url.pathname}${url.search}`);
+        if (url.pathname === "/api/sessions/session-1/contributions") {
+          return Response.json([contribution]);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    try {
+      const provider = new RemoteDataProvider(`http://localhost:${server.port}`);
+      const result = await provider.getSessionContributions("session-1");
+
+      expect(result.map((c) => c.cid)).toEqual([contribution.cid]);
+    } finally {
+      server.stop(true);
+    }
+
+    expect(requestedPaths).toEqual(["/api/sessions/session-1/contributions"]);
+  });
 });

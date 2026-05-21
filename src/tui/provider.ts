@@ -449,6 +449,8 @@ export interface TuiSessionProvider {
   }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  /** Return all contributions linked to a session, preserving session history order. */
+  getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
   /**
    * Archive a session.
    *
@@ -546,5 +548,8 @@ export function isGoalProvider(
 export function isSessionProvider(
   provider: TuiDataProvider,
 ): provider is TuiDataProvider & TuiSessionProvider {
-  return provider.capabilities.sessions;
+  return (
+    provider.capabilities.sessions &&
+    typeof (provider as Partial<TuiSessionProvider>).getSessionContributions === "function"
+  );
 }

@@ -80,6 +80,8 @@ export interface ScreenState {
   sessionWarning?: string;
   /** ISO timestamp when the current session started — used to scope contribution feed. */
   sessionStartedAt?: string;
+  /** True when RunningView is attached to an existing session rather than a freshly spawned one. */
+  resumedSession?: boolean;
   /** Per-agent spawn progress for the spawning screen. */
   spawnStates?: AgentSpawnState[];
   /** Snapshot data captured on transition to complete screen. */
@@ -334,6 +336,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
         ...(resumeSessionStartedAt ? { sessionStartedAt: resumeSessionStartedAt } : {}),
         ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+        ...(effectiveResume ? { resumedSession: true } : {}),
       };
     });
 
@@ -710,7 +713,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 /* best-effort */
               }
             }
-            setState((s) => ({ ...s, sessionId: session.id }));
+            setState((s) => ({ ...s, sessionId: session.id, resumedSession: false }));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
@@ -737,13 +740,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             const fallbackId = crypto.randomUUID();
             spawnManager.setSessionId(fallbackId);
-            setState((s) => ({ ...s, sessionId: fallbackId }));
+            setState((s) => ({ ...s, sessionId: fallbackId, resumedSession: false }));
           }
         } else {
           // No session provider — generate a local session ID for MCP scoping
           const fallbackId = crypto.randomUUID();
           spawnManager.setSessionId(fallbackId);
-          setState((s) => ({ ...s, sessionId: fallbackId }));
+          setState((s) => ({ ...s, sessionId: fallbackId, resumedSession: false }));
         }
 
         // Transition to spawning screen with per-agent tracking
@@ -832,7 +835,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           })();
         } else {
           // No topology — go straight to running
-          setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
+          setState((s) => ({
+            ...s,
+            screen: "running",
+            goal,
+            sessionStartedAt,
+            resumedSession: false,
+          }));
           // Collapse the wizard so esc from running doesn't re-enter launch-preview.
           // Use resetTo (not replace) for parity with the topology branch in
           // handleSpawnComplete — both paths must collapse the entire wizard
@@ -978,6 +987,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           goal: _g,
           sessionId: _s,
           sessionStartedAt: _st,
+          resumedSession: _rs,
           spawnStates: _sp,
           completeSnapshot: _c,
           ...preserved
@@ -1101,6 +1111,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             goal={state.goal}
             sessionId={state.sessionId}
             sessionStartedAt={state.sessionStartedAt}
+            suppressInitialFeedSideEffects={state.resumedSession === true}
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
@@ -1201,6 +1212,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       state.goal,
       state.sessionId,
       state.sessionStartedAt,
+      state.resumedSession,
       state.spawnStates,
       state.completeSnapshot,
       topology,

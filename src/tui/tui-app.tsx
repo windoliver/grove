@@ -98,6 +98,12 @@ const INIT_STEPS = [
   "Starting services",
 ] as const;
 
+export function shouldUseLocalContributionRoutingForMissingBridge(
+  backendMode: AppProps["backendMode"],
+): boolean {
+  return backendMode === "local";
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -502,15 +508,26 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           );
         });
     } else if (agentRuntime && topo) {
-      // Bridge preconditions missing: fall back to local-store polling.
-      // Agent MCP processes write signed contributions into the shared local
-      // store; the SpawnManager polls that store and pushes verified work to
-      // downstream ACP sessions. This preserves local Codex/Claude review
-      // loops when Nexus/Docker is unavailable.
+      // Bridge preconditions missing. In local mode, agent MCP processes write
+      // signed contributions into the shared local store; the SpawnManager
+      // polls that store and pushes verified work to downstream ACP sessions.
+      // Remote/Nexus backends need their configured push path so we fail closed
+      // instead of polling a provider that may not share the agent write path.
       const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
-      manager.enableLocalContributionDelivery();
+      const useLocalRouting = shouldUseLocalContributionRoutingForMissingBridge(
+        appProps.backendMode,
+      );
+      if (topo.roles.length > 1) {
+        if (useLocalRouting) {
+          manager.enableLocalContributionDelivery();
+        } else {
+          manager.markDeliveryDisabled(reason);
+        }
+      }
       process.stderr.write(
-        `[grove] WARNING: Nexus bridge not initialized (${reason}). Using local contribution polling for inter-agent delivery.\n`,
+        useLocalRouting
+          ? `[grove] WARNING: Nexus bridge not initialized (${reason}). Using local contribution polling for inter-agent delivery.\n`
+          : `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
       );
     } else if (topo && !agentRuntime) {
       // Topology declared but no agent runtime. Multi-role sessions

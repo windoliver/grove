@@ -73,6 +73,10 @@ import {
   initialCmdState,
 } from "./running-cmd-mode.js";
 import {
+  fetchRunningContributions,
+  updateRunningContributionSeenState,
+} from "./running-contributions.js";
+import {
   collapsePanel,
   expandPanel as expandPanelTransition,
   RUNNING_PANEL_LABELS,
@@ -156,6 +160,8 @@ export interface RunningViewProps {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
+  /** Suppress side effects for the first loaded feed, used when resuming historical sessions. */
+  readonly suppressInitialFeedSideEffects?: boolean | undefined;
   readonly onEnterInspect: () => void;
   /** Open the Pulse dashboard page (#308). */
   readonly onOpenPulse?: (() => void) | undefined;
@@ -233,6 +239,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     activeRoles,
     logBuffers,
     agentFailures,
+    suppressInitialFeedSideEffects = false,
     onEnterInspect,
     onOpenPulse,
     onComplete: _onComplete,
@@ -491,7 +498,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
-      const result = await provider.getContributions();
+      const result = await fetchRunningContributions(provider, sessionId);
       debugLog("feed.fetch", `total=${result?.length ?? 0}`);
       if (fetchCountRef.current <= 5 || fetchCountRef.current % 20 === 0) {
         debugLog(
@@ -500,7 +507,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         );
       }
       return result;
-    }, [provider]);
+    }, [provider, sessionId]);
 
     // Gate polling: pause contributions when panel is fullscreen and not showing feed
     const feedActive =
@@ -851,36 +858,38 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const seenCidsRef = React.useRef<Set<string>>(new Set());
     const initialSeededRef = React.useRef(false);
     useEffect(() => {
-      if (!onNewContribution || !feed.length) return;
+      if (!feed.length) return;
 
-      if (!initialSeededRef.current && !sessionStartedAt) {
-        debugLog("seenCids", `seeding ${feed.length} existing CIDs (no sessionStartedAt)`);
-        for (const c of feed) {
-          seenCidsRef.current.add(c.cid);
-        }
-        initialSeededRef.current = true;
+      const update = updateRunningContributionSeenState(
+        { seenCids: seenCidsRef.current, initialSeeded: initialSeededRef.current },
+        feed,
+        suppressInitialFeedSideEffects || !sessionStartedAt,
+      );
+      seenCidsRef.current = new Set(update.state.seenCids);
+      initialSeededRef.current = update.state.initialSeeded;
+
+      if (update.seededInitialFeed) {
+        debugLog("seenCids", `seeding ${feed.length} existing CIDs`);
+      }
+      if (!onNewContribution) {
         return;
       }
-      initialSeededRef.current = true;
 
-      for (const c of feed) {
-        if (!seenCidsRef.current.has(c.cid)) {
-          debugLog(
-            "seenCids",
-            `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
-          );
-          seenCidsRef.current.add(c.cid);
-          onNewContribution(c);
-          // Toast notification for new contributions
-          const role = c.agent.role ?? c.agent.agentName ?? "agent";
-          if (c.kind === "ask_user") {
-            toast.warning(`${role}: question pending`, { duration: 5000 });
-          } else {
-            toast.info(`${role}: ${c.kind}`, { duration: 3000 });
-          }
+      for (const c of update.unseen) {
+        debugLog(
+          "seenCids",
+          `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+        );
+        onNewContribution(c);
+        // Toast notification for new contributions
+        const role = c.agent.role ?? c.agent.agentName ?? "agent";
+        if (c.kind === "ask_user") {
+          toast.warning(`${role}: question pending`, { duration: 5000 });
+        } else {
+          toast.info(`${role}: ${c.kind}`, { duration: 3000 });
         }
       }
-    }, [feed, onNewContribution, sessionStartedAt]);
+    }, [feed, onNewContribution, sessionStartedAt, suppressInitialFeedSideEffects]);
 
     // ─── Keyboard routing ───
     const pendingAskUser = feed.find((c) => c.kind === "ask_user");
