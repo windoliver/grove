@@ -136,6 +136,22 @@ export async function contributionDetailFromStore(
   return { contribution, ancestors, children, thread };
 }
 
+/** Batch-load contributions by CID while preserving the requested CID order. */
+export async function contributionsForCidsInOrder(
+  store: ContributionStore,
+  cids: readonly string[],
+): Promise<readonly Contribution[]> {
+  if (cids.length === 0) return [];
+
+  const byCid = await store.getMany(cids);
+  const ordered: Contribution[] = [];
+  for (const cid of cids) {
+    const contribution = byCid.get(cid);
+    if (contribution !== undefined) ordered.push(contribution);
+  }
+  return ordered;
+}
+
 // ---------------------------------------------------------------------------
 // Claims
 // ---------------------------------------------------------------------------

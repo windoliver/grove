@@ -11,6 +11,7 @@ import {
   activityFromStore,
   archiveSessionHttp,
   claimsFromStore,
+  contributionsForCidsInOrder,
   contributionDetailFromStore,
   dagFromStore,
   dashboardFromStores,
@@ -45,6 +46,14 @@ function makeMockContributionStore(contributions: Contribution[] = []): Contribu
   return {
     storeIdentity: "mock-store",
     get: async (cid: string) => contributions.find((c) => c.cid === cid),
+    getMany: async (cids: readonly string[]) => {
+      const result = new Map<string, Contribution>();
+      for (const cid of cids) {
+        const contribution = contributions.find((c) => c.cid === cid);
+        if (contribution !== undefined) result.set(cid, contribution);
+      }
+      return result;
+    },
     put: async () => {
       /* noop */
     },
@@ -147,6 +156,28 @@ function makeMockFrontier(): FrontierCalculator {
 // ---------------------------------------------------------------------------
 
 describe("provider-shared", () => {
+  describe("contributionsForCidsInOrder", () => {
+    test("batch-loads contributions and preserves requested CID order", async () => {
+      const first = makeContribution({ cid: "blake3:first" });
+      const second = makeContribution({ cid: "blake3:second" });
+      const third = makeContribution({ cid: "blake3:third" });
+      const store = makeMockContributionStore([first, second, third]);
+
+      const result = await contributionsForCidsInOrder(store, [
+        "blake3:third",
+        "blake3:first",
+        "blake3:missing",
+        "blake3:second",
+      ]);
+
+      expect(result.map((c) => c.cid)).toEqual([
+        "blake3:third",
+        "blake3:first",
+        "blake3:second",
+      ]);
+    });
+  });
+
   describe("dashboardFromStores", () => {
     test("returns structured dashboard data", async () => {
       const store = makeMockContributionStore([makeContribution()]);

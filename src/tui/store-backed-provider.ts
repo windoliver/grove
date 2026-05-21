@@ -67,6 +67,7 @@ import type {
 import {
   activityFromStore,
   claimsFromStore,
+  contributionsForCidsInOrder,
   contributionDetailFromStore,
   dagFromStore,
   diffArtifactsFromBuffers,
@@ -682,6 +683,13 @@ export abstract class StoreBackedProvider
   /** Get a session by ID. Returns `undefined` when no store is configured. */
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     return this.goalSession?.getSession(sessionId);
+  }
+
+  /** Return all contributions linked to a session, preserving session link order. */
+  async getSessionContributions(sessionId: string): Promise<readonly Contribution[]> {
+    if (!this.goalSession) return [];
+    const cids = await this.goalSession.getSessionContributions(sessionId);
+    return contributionsForCidsInOrder(this.store, cids);
   }
 
   /**

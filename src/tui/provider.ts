@@ -419,6 +419,8 @@ export interface TuiSessionProvider {
   }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  /** Return all contributions linked to a session, preserving session history order. */
+  getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
   /**
    * Archive a session.
    *
