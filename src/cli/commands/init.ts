@@ -14,6 +14,7 @@ import type { AgentOverrides } from "../agent.js";
 import { resolveAgent } from "../agent.js";
 import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
 import { getPreset, listPresetNames } from "../presets/index.js";
+import { formatNextCommandHint } from "../utils/color.js";
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -168,6 +169,33 @@ export interface ExecuteInitTestHooks {
  * 7. Seed demo contributions if preset defines them
  * 8. Optionally ingest seed artifacts
  */
+/**
+ * Ensure the project `.gitignore` excludes grove's transient dirs.
+ * Idempotent: creates the file if absent; appends only the entries that
+ * are not already present (matched as exact trimmed lines, so an existing
+ * `.grove/` is respected). Best-effort — a write failure must not fail init.
+ */
+export async function ensureGitignore(cwd: string): Promise<void> {
+  const required = [".grove/", "nexus-data/"];
+  const gitignorePath = join(cwd, ".gitignore");
+  let existing = "";
+  try {
+    existing = await readFile(gitignorePath, "utf8");
+  } catch {
+    existing = "";
+  }
+  const present = new Set(existing.split("\n").map((l) => l.trim()));
+  const missing = required.filter((entry) => !present.has(entry));
+  if (missing.length === 0) return;
+  const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  const block = `${existing.length > 0 ? "" : "# grove transient state\n"}${missing.join("\n")}\n`;
+  try {
+    await writeFile(gitignorePath, existing + prefix + block, "utf8");
+  } catch {
+    /* best-effort — never fail init on .gitignore write */
+  }
+}
+
 export async function executeInit(
   options: InitOptions,
   onProgress?: InitProgressCallback,
@@ -204,6 +232,15 @@ export async function executeInit(
   const workspacesPath = join(grovePath, "workspaces");
   await mkdir(casPath, { recursive: true });
   await mkdir(workspacesPath, { recursive: true });
+
+  // 3a. Ensure `.grove/` and `nexus-data/` are gitignored in the project.
+  //     These hold transient per-session DB + IPC state. If committed (e.g.
+  //     a user runs `git add -A` after a session), git worktrees spawned
+  //     for the NEXT session inherit a stale session's IPC tree and the
+  //     coder→reviewer handoff hangs forever (the new session's inbox is
+  //     never provisioned over the checked-out stale one). Idempotent:
+  //     create the file if absent, append only missing entries.
+  await ensureGitignore(options.cwd);
 
   // 3b. Ensure `.grove/project-id` exists (spec #288). Folded under the
   //     directory-creation step to keep progress indices stable.
@@ -480,18 +517,12 @@ export async function executeInit(
         break;
     }
     if (preset) {
-      const services: string[] = [];
-      if (preset.services?.server) services.push("HTTP server");
-      if (preset.services?.mcp) services.push("MCP server");
-      const serviceList = services.length > 0 ? ` (${services.join(", ")})` : "";
-      console.log(`\nNext: run 'grove up' to start all services${serviceList}.`);
       console.log(
         `\nThe '${preset.name}' topology in GROVE.md is the default. Override per-session with:`,
       );
       console.log(`  grove session start --preset <name> --goal "..."`);
-    } else {
-      console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
     }
+    console.log(`\n${formatNextCommandHint("Run `grove up` to start services")}`);
   } catch (err) {
     const { rollbackProjectIdentity } = await import("../utils/ensure-project-id.js");
     await rollbackProjectIdentity(grovePath, ensureResult, hooks?.registryPath);

@@ -10,6 +10,8 @@
 
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
+import type { TuiRegistryEntry } from "../plugins/registry.js";
+import { type BuiltInPanelId, PanelId, panelToId } from "./panel-ids.js";
 
 // ---------------------------------------------------------------------------
 // Per-preset panel visibility
@@ -37,6 +39,32 @@ export const PRESET_PANELS: Readonly<Record<string, ReadonlySet<Panel>>> = {
   ]),
 };
 
+export const PRESET_PANEL_IDS: Readonly<Record<string, ReadonlySet<BuiltInPanelId>>> = {
+  "review-loop": new Set([PanelId.Dag, PanelId.Detail, PanelId.Claims, PanelId.Terminal]),
+  "swarm-ops": new Set([
+    PanelId.Dag,
+    PanelId.Detail,
+    PanelId.Claims,
+    PanelId.Terminal,
+    PanelId.Frontier,
+    PanelId.Outcomes,
+    PanelId.Bounties,
+  ]),
+  "federated-swarm": new Set([
+    PanelId.Dag,
+    PanelId.Detail,
+    PanelId.Claims,
+    PanelId.Terminal,
+    PanelId.Frontier,
+    PanelId.Gossip,
+  ]),
+};
+
+export function getPresetPanelIds(presetName?: string): ReadonlySet<BuiltInPanelId> | undefined {
+  if (!presetName) return undefined;
+  return PRESET_PANEL_IDS[presetName];
+}
+
 /** Get the allowed panels for a preset. Returns undefined if all panels are allowed. */
 export function getPresetPanels(presetName?: string): ReadonlySet<Panel> | undefined {
   if (!presetName) return undefined;
@@ -58,7 +86,7 @@ export type LayoutMode = "grid" | "tab";
 // ---------------------------------------------------------------------------
 
 /** Layout metadata for a panel definition. */
-export interface PanelDef {
+interface PanelDefBase {
   /** The Panel enum value. */
   readonly panel: Panel;
   /** Display label (from PANEL_LABELS). */
@@ -75,6 +103,11 @@ export interface PanelDef {
    * Operator panels: key toggles the panel on/off.
    */
   readonly keybinding: string;
+}
+
+export interface PanelDef extends PanelDefBase {
+  readonly id: BuiltInPanelId;
+  readonly slot: "operator-panel";
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +128,7 @@ export interface PanelDef {
  *   7 — Bounties + Gossip  (operator)
  *   8 — Inbox + Decisions + GitHub (operator)
  */
-export const PANEL_REGISTRY: readonly PanelDef[] = [
+const PANEL_REGISTRY_BASE: readonly PanelDefBase[] = [
   // Row 0: DAG + Detail (core)
   {
     panel: Panel.Dag,
@@ -258,6 +291,16 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
   },
 ] as const;
 
+export const PANEL_REGISTRY: readonly PanelDef[] = Object.freeze(
+  PANEL_REGISTRY_BASE.map((def) =>
+    Object.freeze({
+      ...def,
+      id: panelToId(def.panel),
+      slot: "operator-panel" as const,
+    }),
+  ),
+);
+
 // ---------------------------------------------------------------------------
 // Public query functions
 // ---------------------------------------------------------------------------
@@ -267,10 +310,27 @@ export function getRegistry(): readonly PanelDef[] {
   return PANEL_REGISTRY;
 }
 
+export function getPanelDefById(id: BuiltInPanelId): PanelDef | undefined {
+  return PANEL_REGISTRY.find((def) => def.id === id);
+}
+
+export function getBuiltInTuiRegistryEntries(): readonly TuiRegistryEntry[] {
+  return PANEL_REGISTRY.map((def, order) => ({
+    id: def.id,
+    label: def.label,
+    slot: def.slot,
+    order,
+    source: "builtin",
+    builtInPanel: def.panel,
+  }));
+}
+
 /** Groups panel definitions by their row group number. */
-export function getRowGroups(): Map<number, readonly PanelDef[]> {
+export function getRowGroups(
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
+): Map<number, readonly PanelDef[]> {
   const groups = new Map<number, PanelDef[]>();
-  for (const def of PANEL_REGISTRY) {
+  for (const def of registry) {
     let group = groups.get(def.rowGroup);
     if (group === undefined) {
       group = [];
@@ -293,15 +353,16 @@ export function getVisiblePanelsForLayout(
   panelState: PanelFocusState,
   mode: LayoutMode,
   allowedPanels?: ReadonlySet<Panel>,
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
 ): readonly PanelDef[] {
   if (mode === "tab") {
-    const def = PANEL_REGISTRY.find((d) => d.panel === panelState.focused);
+    const def = registry.find((d) => d.panel === panelState.focused);
     return def !== undefined ? [def] : [];
   }
 
   // Grid mode: core panels always visible, operator panels per state.
   // Also filter by allowedPanels if provided (preset-based visibility).
-  return PANEL_REGISTRY.filter(
+  return registry.filter(
     (def) =>
       isPanelVisible(panelState, def.panel) &&
       (allowedPanels === undefined || allowedPanels.has(def.panel)),
@@ -318,14 +379,16 @@ export function getVisiblePanelsForLayout(
 export function getActivePanelsForLayout(
   panelState: PanelFocusState,
   mode: LayoutMode,
+  registry: readonly PanelDef[] = PANEL_REGISTRY,
 ): ReadonlySet<Panel> {
   if (mode === "tab") {
-    return new Set([panelState.focused]);
+    const def = registry.find((d) => d.panel === panelState.focused);
+    return def !== undefined ? new Set([panelState.focused]) : new Set();
   }
 
   // Grid mode: every visible panel is active.
   const active = new Set<Panel>();
-  for (const def of PANEL_REGISTRY) {
+  for (const def of registry) {
     if (isPanelVisible(panelState, def.panel)) {
       active.add(def.panel);
     }

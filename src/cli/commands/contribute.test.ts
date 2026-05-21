@@ -60,6 +60,18 @@ function makeContributeOptions(overrides?: Partial<ContributeOptions>): Contribu
   };
 }
 
+async function captureConsoleLog(fn: () => Promise<void>): Promise<string[]> {
+  const logged: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return logged;
+}
+
 // ---------------------------------------------------------------------------
 // parseMetricString
 // ---------------------------------------------------------------------------
@@ -440,6 +452,34 @@ describe("validateContributeOptions", () => {
 // ---------------------------------------------------------------------------
 
 describe("executeContribute", () => {
+  test("prints next frontier hint in human output", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+      const logged = await captureConsoleLog(async () => {
+        await executeContribute(makeContributeOptions({ cwd: dir, summary: "Hinted work" }));
+      });
+      expect(logged.join("\n")).toContain("hint: Run `grove frontier` to see updated frontier");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not print next frontier hint in JSON output", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+      const logged = await captureConsoleLog(async () => {
+        await executeContribute(
+          makeContributeOptions({ cwd: dir, summary: "JSON hinted work", json: true }),
+        );
+      });
+      expect(logged.join("\n")).not.toContain("hint: Run `grove frontier`");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("creates a work contribution with artifacts", async () => {
     const dir = await createTempDir();
     try {

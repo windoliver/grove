@@ -56,6 +56,7 @@ import { AgentListView } from "../views/agent-list.js";
 import { AgentTasksView } from "../views/agent-tasks.js";
 import { DagView } from "../views/dag.js";
 import { HandoffsView } from "../views/handoffs-view.js";
+import { LogView } from "../views/log-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
@@ -81,6 +82,11 @@ import {
   routeRunningKey,
   toggleFullscreen as toggleFullscreenTransition,
 } from "./running-keyboard.js";
+import { permissionBoxVisible } from "./supervision/permission-box-visibility.js";
+import { Supervision } from "./supervision/supervision.js";
+import { supervisionInputActive } from "./supervision/supervision-input-guard.js";
+import { routeSupervisionKey } from "./supervision/supervision-keyboard.js";
+import { useFleetModel } from "./supervision/use-fleet-model.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,6 +117,20 @@ const RUNNING_PANEL_PARAM: Readonly<Record<RunningPanel, string | undefined>> = 
   [RunningPanel.Reviews]: "reviews",
 });
 
+// #310: LogView mount gate. Read process.env once at module load — env vars
+// don't change at runtime, so re-reading on every render is wasted work and
+// (more importantly) churns useMemo deps that include `useLogView`.
+// TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+// spawnManager.getSession(role).runtime), drop the env gate and detect
+// per-role: useLogView = session?.runtime === "acpx". Tracked as a
+// follow-up of issue #310.
+const useLogView = process.env.GROVE_LOGVIEW === "1";
+
+// #193: supervision body gate. STRICTLY ADDITIVE — unset → byte-for-byte
+// identical RunningView. Read once at module load (env vars are static at
+// runtime) so it never churns useMemo/useCallback deps.
+const useSupervision = process.env.GROVE_SUPERVISION === "1";
+
 /** Props for the RunningView screen. */
 export interface RunningViewProps {
   readonly provider: TuiDataProvider;
@@ -137,6 +157,8 @@ export interface RunningViewProps {
   /** Per-role runtime failures, such as ACP bootstrap/auth failures. */
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   readonly onEnterInspect: () => void;
+  /** Open the Pulse dashboard page (#308). */
+  readonly onOpenPulse?: (() => void) | undefined;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
   /** Return to the preset-select / main screen. */
@@ -212,6 +234,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     logBuffers,
     agentFailures,
     onEnterInspect,
+    onOpenPulse,
     onComplete: _onComplete,
     onQuit,
     onBackToMain,
@@ -235,6 +258,25 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       () => savedState?.traceSelectedAgent ?? 0,
     );
     const [traceScrollOffset, setTraceScrollOffset] = useState(0);
+
+    // ─── LogView state (#310): controlled by central keyboard dispatcher ───
+    // Mount gate lives at module scope (`useLogView`) so env reads don't
+    // churn useMemo deps each render.
+    const [logPaused, setLogPaused] = useState(false);
+    const [logFilter, setLogFilter] = useState("");
+    const [logFilterMode, setLogFilterModeRaw] = useState(false);
+    const [logScrollOffset, setLogScrollOffset] = useState(0);
+    // Mirror `logFilterMode` into a ref so the keyboard dispatcher sees the
+    // latest value within a same-tick burst (paste / scripted input) — same
+    // race rationale as `cmdStateRef` below. Without this, a burst like
+    // `/foo` after committing the prior filter could see stale
+    // `logFilterMode === false` between `setLogFilterMode(true)` and React's
+    // commit, sending printable chars to normal-mode handlers.
+    const logFilterModeRef = useRef<boolean>(false);
+    const setLogFilterMode = useCallback((next: boolean) => {
+      logFilterModeRef.current = next;
+      setLogFilterModeRaw(next);
+    }, []);
 
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
@@ -517,6 +559,38 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }, [eventBus, topology, provider, dashboardPoll.refresh, contributionsPoll.refresh]);
 
     const dashboard = dashboardPoll.data ?? undefined;
+
+    // ─── Supervision fleet model (#193, gated by GROVE_SUPERVISION) ───
+    // `active` is only true when the supervision body is the visible body
+    // (flag on AND no panel expanded) so the fetchers stay idle otherwise.
+    const fleet = useFleetModel({
+      provider,
+      monitor,
+      agentFailures,
+      tmux,
+      filterText: filterQuery,
+      active: useSupervision && expandedPanel === null,
+    });
+    const [selectedSupervisionAgent, setSelectedSupervisionAgent] = useState<string | undefined>(
+      undefined,
+    );
+    const [supervisionCursor, setSupervisionCursor] = useState(0);
+    const selectedFleetAgent = useMemo(
+      () =>
+        fleet.find((a) => a.agentId === selectedSupervisionAgent) ??
+        fleet[supervisionCursor] ??
+        fleet[0],
+      [fleet, selectedSupervisionAgent, supervisionCursor],
+    );
+    const selectedFleetRole = selectedFleetAgent?.role;
+    const selectedFleetTail = useMemo<readonly string[]>(
+      () => (selectedFleetRole ? (monitor.agentOutputs.get(selectedFleetRole) ?? []) : []),
+      [selectedFleetRole, monitor.agentOutputs],
+    );
+    const handleSupervisionSelect = useCallback(
+      (id: string | undefined) => setSelectedSupervisionAgent(id),
+      [],
+    );
     const contributions = useMemo<readonly Contribution[] | undefined>(() => {
       if (!contribInformerReady) return contributionsPoll.data ?? undefined;
       // Time-based session scope. The watch protocol does not yet filter
@@ -824,6 +898,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdText: cmdState.text,
         filterQuery,
         confirmModalOpen,
+        logFilterMode,
       }),
       [
         expandedPanel,
@@ -837,6 +912,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.text,
         filterQuery,
         confirmModalOpen,
+        logFilterMode,
       ],
     );
 
@@ -967,12 +1043,30 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cancelSelectedHandoff: () => executeSelectedHandoffAction(HandoffOperatorAction.Cancel),
         manualResolveSelectedHandoff: () =>
           executeSelectedHandoffAction(HandoffOperatorAction.ManualResolve),
+        // LogView actions (#310): mirror trace-pane controlled-component pattern.
+        logTogglePause: () => setLogPaused((p) => !p),
+        logScrollDown: () => setLogScrollOffset((n) => n + 1),
+        logScrollUp: () => setLogScrollOffset((n) => Math.max(0, n - 1)),
+        logScrollToBottom: () => setLogScrollOffset(0),
+        // LogViewport clamps with Math.max(0, end - viewportLines), so a huge
+        // offset maps to "top of buffer".
+        logScrollToTop: () => setLogScrollOffset(Number.MAX_SAFE_INTEGER),
+        logEnterFilterMode: () => setLogFilterMode(true),
+        logCommitFilter: () => setLogFilterMode(false), // keep logFilter
+        logCancelFilter: () => {
+          setLogFilterMode(false);
+          setLogFilter("");
+        },
+        logFilterAppend: (ch: string) => setLogFilter((f) => f + ch),
+        logFilterBackspace: () => setLogFilter((f) => f.slice(0, -1)),
+        logViewActive: useLogView,
         // openDetail kept as an interface field for future detail-route work,
         // but wired to a no-op so Enter cannot accidentally enter inspect.
         openDetail: () => {
           // no-op
         },
         enterInspect: () => onEnterInspect(),
+        openPulse: () => onOpenPulse?.(),
         quit: () => onQuit(),
         showQuitDialog: () => {
           if (onBackToMain) {
@@ -1088,6 +1182,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         onSendToAgent,
         feed,
         onEnterInspect,
+        onOpenPulse,
         onQuit,
         onBackToMain,
         monitor.pendingPermissions,
@@ -1110,6 +1205,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         // latest value via React's reducer form.
         setCmdState,
         setFilterQuery,
+        // #310: ref-mirrored setter (stable identity per render via
+        // useCallback) — keeps logEnterFilterMode/logCommitFilter/
+        // logCancelFilter exhaustive without churning the memo each render.
+        setLogFilterMode,
+        // #310: `useLogView` lives at module scope (env-derived constant), so
+        // it isn't a dep — kept out of the array deliberately.
       ],
     );
 
@@ -1165,17 +1266,81 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             return;
           }
 
-          // Live snapshot of cmdMode/cmdText/filterQuery from refs — needed
-          // because keyboardState's useMemo only re-runs after React commits,
-          // and a burst of keys arriving in a single tick would otherwise see
-          // stale state. See cmdState refs above for the race rationale.
+          // Live snapshot of cmdMode/cmdText/filterQuery/logFilterMode from
+          // refs — needed because keyboardState's useMemo only re-runs after
+          // React commits, and a burst of keys arriving in a single tick
+          // would otherwise see stale state. See cmdState refs above for the
+          // race rationale; logFilterMode follows the same pattern (#310).
           const liveState: RunningKeyboardState = {
             ...keyboardState,
             cmdMode: cmdStateRef.current.mode,
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
             confirmModalOpen,
+            logFilterMode: logFilterModeRef.current,
           };
+          // #193: supervision body owns the keyboard when the flag is on and
+          // it is the visible body with no modal / overlay / input mode
+          // active. Guard predicate is the exported `supervisionInputActive`
+          // (unit-tested) so the risky condition is covered without mounting
+          // RunningView. Falls through to routeRunningKey if not consumed.
+          if (
+            supervisionInputActive({
+              useSupervision,
+              expandedPanelNull: expandedPanel === null,
+              cmdMode: cmdStateRef.current.mode,
+              promptMode,
+              showHelp,
+              showVfs,
+              filterQuery: filterQueryRef.current,
+            })
+          ) {
+            const handled = routeSupervisionKey(
+              { name: key.name },
+              { selectedHealth: selectedFleetAgent?.health },
+              {
+                moveCursor: (delta) => {
+                  const next = Math.max(0, Math.min(fleet.length - 1, supervisionCursor + delta));
+                  setSupervisionCursor(next);
+                  setSelectedSupervisionAgent(fleet[next]?.agentId);
+                },
+                pinSelection: () => setSelectedSupervisionAgent(selectedFleetAgent?.agentId),
+                jumpTop: () => {
+                  setSupervisionCursor(0);
+                  setSelectedSupervisionAgent(fleet[0]?.agentId);
+                },
+                jumpBottom: () => {
+                  const last = Math.max(0, fleet.length - 1);
+                  setSupervisionCursor(last);
+                  setSelectedSupervisionAgent(fleet[last]?.agentId);
+                },
+                approve: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "y");
+                },
+                deny: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "n");
+                },
+                always: () => {
+                  const p = selectedFleetAgent?.pendingApproval;
+                  if (p && tmux) void tmux.sendKeys(p.sessionName, "a");
+                },
+                openTail: () => keyboardActions.expandPanel(RunningPanel.Terminal),
+                openDag: () => keyboardActions.expandPanel(RunningPanel.Dag),
+                reroute: () => flash("Reroute lands with #163"),
+                kill: () => flash("Kill action lands with claim-revoke provider API"),
+                openMessage: () => {
+                  if (!selectedFleetRole) return;
+                  const idx = (activeRoles ?? []).indexOf(selectedFleetRole);
+                  if (idx < 0) return;
+                  setPromptMode(true);
+                  setPromptTarget(idx);
+                },
+              },
+            );
+            if (handled) return;
+          }
           routeRunningKey(key, liveState, keyboardActions);
         },
         [
@@ -1187,6 +1352,28 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           showHelp,
           confirmModalOpen,
+          // #193: supervision keyboard owner deps. expandedPanel/fleet/
+          // selectedFleetAgent/selectedFleetRole change the consumed keys'
+          // behavior; supervisionCursor is read directly by moveCursor (flat
+          // setState, not the prior functional-update form). selectedFleetRole
+          // is still referenced directly inside openMessage, so it stays
+          // listed to satisfy biome's useExhaustiveDependencies (matching this
+          // file's list-everything discipline above). tmux/activeRoles/flash
+          // are stable refs/callbacks but listed for closure correctness.
+          // useSupervision is a module-scope env constant (not a dep), same as
+          // useLogView above.
+          expandedPanel,
+          fleet,
+          selectedFleetAgent,
+          selectedFleetRole,
+          supervisionCursor,
+          tmux,
+          activeRoles,
+          flash,
+          // #310: logFilterMode read via logFilterModeRef (synchronous) so a
+          // same-tick burst sees the latest mode. keyboardState already lists
+          // logFilterMode in its memo deps for rendering, so committed state
+          // changes still re-create the callback through that path.
         ],
       ),
     );
@@ -1313,6 +1500,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             logBuffers,
             traceSelectedAgent,
             traceScrollOffset,
+            logViewActive: useLogView,
+            logPaused,
+            logFilter,
+            logFilterMode,
+            logScrollOffset,
             sessionStartedAt,
             handoffs,
             handoffCursor,
@@ -1396,6 +1588,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
+                logViewActive: useLogView,
+                logPaused,
+                logFilter,
+                logFilterMode,
+                logScrollOffset,
                 sessionStartedAt,
                 handoffs,
                 handoffCursor,
@@ -1424,6 +1621,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             cmdState,
             gotoSuggestions,
             flashError,
+            useSupervision,
           )}
           {renderStatusBar(
             expandedPanel,
@@ -1451,27 +1649,52 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           showUnderline={true}
         />
 
-        {/* Agent status with live output */}
-        {renderAgentSection(
-          topology,
-          dashboard,
-          monitor,
-          agentFailures,
-          sessionStartedAt,
-          feed.length,
-        )}
+        {/* Default body: agent status + feed. #193: GROVE_SUPERVISION swaps
+            in the fleet/detail rail. Flag unset → byte-for-byte identical. */}
+        {useSupervision ? (
+          <Supervision
+            agents={fleet}
+            tail={selectedFleetTail}
+            cursor={supervisionCursor}
+            // Single selection authority: drive the pin from the already
+            // RESOLVED agent (selectedFleetAgent), not raw
+            // selectedSupervisionAgent. If we passed the raw pin and it left
+            // the fleet, running-view's memo falls back to fleet[cursor] while
+            // Supervision still re-resolves the stale pin, fires onSelect, and
+            // converge-by-setState churns every fleet refresh. Deriving from
+            // the resolved memo means Supervision's find() always hits and can
+            // never disagree with running-view's fallback.
+            // exactOptionalPropertyTypes: only pass pinnedAgentId when set.
+            {...(selectedFleetAgent?.agentId !== undefined
+              ? { pinnedAgentId: selectedFleetAgent.agentId }
+              : {})}
+            onSelect={handleSupervisionSelect}
+          />
+        ) : (
+          <>
+            {/* Agent status with live output */}
+            {renderAgentSection(
+              topology,
+              dashboard,
+              monitor,
+              agentFailures,
+              sessionStartedAt,
+              feed.length,
+            )}
 
-        {/* Main feed area */}
-        {renderFeedSection(
-          feed,
-          cursor,
-          goal,
-          pendingAskUser,
-          frontier,
-          autoFollow,
-          newSinceFreeze,
-          activeRoles,
-          agentFailures,
+            {/* Main feed area */}
+            {renderFeedSection(
+              feed,
+              cursor,
+              goal,
+              pendingAskUser,
+              frontier,
+              autoFollow,
+              newSinceFreeze,
+              activeRoles,
+              agentFailures,
+            )}
+          </>
         )}
 
         {/* Bottom chrome: permissions, IPC, quit confirm, progress, prompt */}
@@ -1487,6 +1710,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           cmdState,
           gotoSuggestions,
           flashError,
+          useSupervision,
         )}
 
         {/* Help overlay */}
@@ -1752,6 +1976,13 @@ interface PanelRenderContext {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
+  // #310: LogView controlled-component state. Optional so existing tests and
+  // non-ACPX call sites need no changes. Wired from running-view useState.
+  readonly logViewActive?: boolean;
+  readonly logPaused?: boolean;
+  readonly logFilter?: string;
+  readonly logFilterMode?: boolean;
+  readonly logScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
   readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
   readonly handoffCursor?: number | undefined;
@@ -1804,7 +2035,30 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         />
       );
 
-    case RunningPanel.Terminal:
+    case RunningPanel.Terminal: {
+      // #310: when ACPX/log-streaming is in use, render LogView instead of
+      // TerminalView. Gate is currently env-driven.
+      // TODO(#310): when ACPX session metadata reaches running-view (e.g. via
+      // spawnManager.getSession(role).runtime), drop the env gate and detect
+      // per-role: useLogView = session?.runtime === "acpx". Tracked as a
+      // follow-up of issue #310.
+      if (ctx.logViewActive) {
+        // Temporary: pick the first available role's buffer. Future work:
+        // track the operator's selected agent and route to its buffer
+        // (mirrors traceSelectedAgent in TracePane).
+        const firstRole = ctx.topology?.roles?.[0]?.name;
+        const buffer = firstRole ? ctx.logBuffers?.get(firstRole) : undefined;
+        return (
+          <LogView
+            sessionId={buffer?.sessionId ?? firstRole ?? ""}
+            buffer={buffer}
+            paused={ctx.logPaused ?? false}
+            filter={ctx.logFilter ?? ""}
+            filterMode={ctx.logFilterMode ?? false}
+            scrollOffset={ctx.logScrollOffset ?? 0}
+          />
+        );
+      }
       return (
         <TerminalView
           tmux={ctx.tmux}
@@ -1813,6 +2067,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           mode={InputMode.Normal}
         />
       );
+    }
 
     case RunningPanel.Trace: {
       const roles = (ctx.topology?.roles ?? []).map((r) => r.name);
@@ -1888,11 +2143,12 @@ function renderBottomChrome(
   cmdState: CmdModeState,
   gotoSuggestions: readonly string[],
   flashError: string | null,
+  supervisionOn: boolean,
 ): React.ReactNode {
   return (
     <>
       {/* Permission prompts from agents */}
-      {monitor.pendingPermissions.length > 0 ? (
+      {permissionBoxVisible(supervisionOn, monitor.pendingPermissions.length) ? (
         <box
           flexDirection="column"
           marginX={2}
@@ -2006,6 +2262,18 @@ function renderHelpOverlay(): React.ReactNode {
       <text color={theme.text}> ? Toggle this help</text>
       <text color={theme.text}> Esc Collapse panel / close overlay</text>
       <text color={theme.text}> q Quit (with confirmation)</text>
+      <text> </text>
+      <text color={theme.focus} bold>
+        Supervision (GROVE_SUPERVISION=1)
+      </text>
+      <text color={theme.text}> j/k Move fleet cursor · g/G top/bottom</text>
+      <text color={theme.text}> Enter Pin hovered agent as selected</text>
+      <text color={theme.text}> y/n/a Approve / deny / always-allow</text>
+      <text color={theme.text}> t Open Terminal panel</text>
+      <text color={theme.text}> d Open DAG panel</text>
+      <text color={theme.text}> r Reroute blocked handoff (placeholder)</text>
+      <text color={theme.text}> K Kill / revoke claim (placeholder)</text>
+      <text color={theme.text}> m Message the selected agent</text>
       <text color={theme.secondary}> Esc to close</text>
     </box>
   );

@@ -251,4 +251,37 @@ describe("DagView (xray)", () => {
     expect(store.snapshot().collapsed.size).toBe(0);
     renderer.unmount();
   });
+
+  test("accepts filterRole prop without crashing or changing default render", async () => {
+    const root = makeContribution({ summary: "root contribution" });
+    const child = makeContribution({
+      summary: "child contribution",
+      createdAt: "2026-05-11T11:30:00Z",
+      relations: [makeRelation({ targetCid: root.cid, relationType: RelationType.DerivesFrom })],
+    });
+    const store = new DagStateStore();
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <DagStateProvider store={store}>
+            <DagView
+              provider={makeStubProvider([root, child]) as never}
+              active
+              cursor={-1}
+              filterRole="agent-x"
+            />
+          </DagStateProvider>
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+    expect(flat).not.toBeNull();
+    expect(flat).toContain("root contribution");
+    expect(flat).toContain("child contribution");
+    renderer.unmount();
+  });
 });

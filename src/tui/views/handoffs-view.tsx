@@ -121,6 +121,8 @@ export interface HandoffsViewProps {
   /** Pre-fetched handoffs from parent. When provided, skips the internal fetch. */
   readonly handoffs?: readonly Handoff[] | undefined;
   readonly healthSignals?: readonly HandoffHealthSignal[] | undefined;
+  /** Optional: scope to handoffs touching this role. Omitted = no narrowing (#193). */
+  readonly filterRole?: string | undefined;
 }
 
 /** Handoffs panel component. */
@@ -134,6 +136,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     sessionStartedAt,
     handoffs: prefetched,
     healthSignals,
+    filterRole,
   }: HandoffsViewProps): React.ReactNode {
     // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
@@ -174,7 +177,11 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     }
 
     const handoffs = data ?? [];
-    const projections = handoffs.map((handoff) =>
+    const scoped =
+      filterRole === undefined
+        ? handoffs
+        : handoffs.filter((h) => h.fromRole === filterRole || h.toRole === filterRole);
+    const projections = scoped.map((handoff) =>
       deriveHandoffOperatorProjection(handoff, { healthSignals }),
     );
     const counts = countHandoffOperatorStates(projections);
@@ -195,12 +202,12 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
         <box marginBottom={1} flexDirection="row">
           <text>Handoffs</text>
           <text opacity={0.5}>
-            {handoffs.length > 0
-              ? `  ${handoffs.length} total, ${counts.pending} pending, ${counts.overdue} overdue, ${counts.blocked} blocked, ${counts.deadLettered} failed`
+            {scoped.length > 0
+              ? `  ${scoped.length} total, ${counts.pending} pending, ${counts.overdue} overdue, ${counts.blocked} blocked, ${counts.deadLettered} failed`
               : "  (no handoffs yet)"}
           </text>
         </box>
-        {handoffs.length === 0 ? (
+        {scoped.length === 0 ? (
           <text opacity={0.4}>
             No handoffs yet. Handoffs appear when contributions are routed between roles.
           </text>

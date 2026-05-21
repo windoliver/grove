@@ -45,6 +45,7 @@ describe("grove claim", () => {
     expect(stdout.length).toBe(1);
     expect(stdout[0]).toContain("Claimed");
     expect(stdout[0]).toContain("optimize-parser");
+    expect(stdout[0]).toContain("hint: Run `grove claims` to see active claims");
 
     const claims = await claimStore.activeClaims("optimize-parser");
     expect(claims.length).toBe(1);

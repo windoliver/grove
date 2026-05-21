@@ -56,6 +56,18 @@ class MockGossipTransport implements GossipTransport {
     if (this.shuffleResponse) return this.shuffleResponse;
     return { offered: [] };
   }
+
+  async fetchContribution(_peer: PeerInfo, _cid: string): Promise<unknown | undefined> {
+    return undefined;
+  }
+
+  async fetchArtifact(
+    _peer: PeerInfo,
+    _cid: string,
+    _artifactName: string,
+  ): Promise<Uint8Array | undefined> {
+    return undefined;
+  }
 }
 
 /** Mock frontier calculator returning configurable frontier data. */
@@ -138,6 +150,63 @@ describe("DefaultGossipService", () => {
 
   afterEach(async () => {
     await service.stop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Constructor validation
+  // -------------------------------------------------------------------------
+
+  describe("constructor validation", () => {
+    const baseConfig = {
+      peerId: "x",
+      address: "http://x:1",
+      seedPeers: [],
+    };
+    const baseOpts = {
+      transport: new MockGossipTransport(),
+      frontier: new MockFrontierCalculator(),
+    };
+
+    it("rejects NaN intervalMs", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: { ...baseConfig, intervalMs: Number.NaN },
+            ...baseOpts,
+          }),
+      ).toThrow(/intervalMs/);
+    });
+
+    it("rejects zero intervalMs", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: { ...baseConfig, intervalMs: 0 },
+            ...baseOpts,
+          }),
+      ).toThrow(/intervalMs/);
+    });
+
+    it("rejects negative anti-entropy batchSize", () => {
+      expect(
+        () =>
+          new DefaultGossipService({
+            config: {
+              ...baseConfig,
+              antiEntropy: { enabled: true, batchSize: -5 },
+            },
+            ...baseOpts,
+          }),
+      ).toThrow(/batchSize/);
+    });
+
+    it("accepts undefined for optional fields (defaults apply)", () => {
+      const svc = new DefaultGossipService({
+        config: baseConfig,
+        ...baseOpts,
+      });
+      expect(svc).toBeDefined();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -282,6 +351,42 @@ describe("DefaultGossipService", () => {
       const found = peers.find((p) => p.peerId === "new-peer");
       expect(found).toBeDefined();
     });
+
+    it("rejects HMAC-valid messages with non-finite timestamps", async () => {
+      // Build a fresh service with HMAC configured so the timestamp path
+      // runs. A signed message carrying `timestamp: "not-a-date"` makes
+      // Date.parse return NaN; without the finite-check guard, every
+      // comparison against age/lastSeen evaluates false and the message
+      // would be accepted, bypassing replay defense.
+      const secret = "test-secret-for-nan-timestamp";
+      const hmacService = new DefaultGossipService({
+        config: {
+          peerId: "self-nan",
+          address: "http://localhost:1",
+          seedPeers: [],
+          hmacSecret: secret,
+        },
+        transport: new MockGossipTransport(),
+        frontier: new MockFrontierCalculator(),
+      });
+      const bad: GossipMessage = {
+        peerId: "evil-peer",
+        address: "http://evil:1",
+        frontier: [],
+        load: { queueDepth: 0 },
+        capabilities: {},
+        timestamp: "not-a-date",
+      };
+      const { signPayload } = await import("./protocol.js");
+      const signed = {
+        ...bad,
+        hmacSignature: signPayload(bad as unknown as Record<string, unknown>, secret),
+      };
+      await expect(hmacService.handleExchange(signed as unknown as GossipMessage)).rejects.toThrow(
+        /invalid timestamp/,
+      );
+      await hmacService.stop();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -317,6 +422,43 @@ describe("DefaultGossipService", () => {
       const seedLiveness = livenessEntries.find((l) => l.peer.peerId === "seed-1");
       expect(seedLiveness).toBeDefined();
       expect(seedLiveness?.status).toBe(PeerStatus.Alive);
+    });
+
+    it("rejects replayed signed shuffles even after the 1-second throttle expires", async () => {
+      // Replay attack: a captured signed shuffle should not be re-usable for
+      // the full clock-skew window. Round 9 changed the monotonic guard from
+      // local-arrival throttle to a per-peer signed-timestamp check, so the
+      // exact same signed request should be rejected on the second call.
+      const { signPayload } = await import("./protocol.js");
+      const secret = "shuffle-replay-secret";
+      const hmacService = new DefaultGossipService({
+        config: {
+          peerId: "self-rs",
+          address: "http://localhost:1",
+          seedPeers: [],
+          hmacSecret: secret,
+        },
+        transport: new MockGossipTransport(),
+        frontier: new MockFrontierCalculator(),
+      });
+      const senderTs = new Date(Date.now()).toISOString();
+      const unsignedRequest = {
+        sender: { peerId: "replayer", address: "http://r:1", age: 0, lastSeen: senderTs },
+        offered: [{ peerId: "x", address: "http://x:1", age: 0, lastSeen: senderTs }],
+      };
+      const signature = signPayload(unsignedRequest, secret);
+      const replayed = { ...unsignedRequest, hmacSignature: signature };
+
+      // First call: accepted.
+      const first = hmacService.handleShuffle(replayed as unknown as ShuffleRequest);
+      expect(first.offered.length).toBeGreaterThanOrEqual(0);
+
+      // Second call with the SAME signed timestamp: must be rejected.
+      const second = hmacService.handleShuffle(replayed as unknown as ShuffleRequest);
+      // Rejection path returns { offered: [] } and does NOT advance liveness.
+      expect(second.offered).toEqual([]);
+
+      await hmacService.stop();
     });
   });
 
@@ -976,6 +1118,163 @@ describe("DefaultGossipService", () => {
       expect(msg.load).toEqual({ queueDepth: 0 });
       expect(msg.capabilities).toEqual({});
       await minimal.stop();
+    });
+  });
+
+  describe("peersAdvertising()", () => {
+    it("returns peers whose frontier digests included the cid", async () => {
+      const cid = `blake3:${"a".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-A", [
+          { metric: "tests_passed", value: 5, cid, direction: "maximize" },
+        ]),
+      });
+      expect(service.peersAdvertising(cid).map((p) => p.peerId)).toEqual(["peer-A"]);
+    });
+
+    it("returns empty when no peer has advertised the cid", () => {
+      expect(service.peersAdvertising(`blake3:${"b".repeat(64)}`)).toEqual([]);
+    });
+
+    it("aggregates advertisements from multiple peers", async () => {
+      const cid = `blake3:${"c".repeat(64)}`;
+      const entry = { metric: "m", value: 1, cid, direction: "maximize" as const };
+      await service.handleExchange(makeGossipMessage("peer-A", [entry]));
+      await service.handleExchange(makeGossipMessage("peer-B", [entry]));
+      expect(
+        service
+          .peersAdvertising(cid)
+          .map((p) => p.peerId)
+          .sort(),
+      ).toEqual(["peer-A", "peer-B"]);
+    });
+
+    it("returns [] when sender omits address (cannot fetch from peer)", async () => {
+      const cid = `blake3:${"d".repeat(64)}`;
+      // GossipMessage.address is `string | undefined` — exercise the undefined path.
+      const message: GossipMessage = {
+        ...makeGossipMessage("peer-noaddr", [
+          { metric: "tests_passed", value: 5, cid, direction: "maximize" },
+        ]),
+        address: undefined,
+      };
+      await service.handleExchange(message);
+      expect(service.peersAdvertising(cid)).toEqual([]);
+    });
+
+    it("evicts advertisements in parity with frontier eviction at saturation", async () => {
+      // First, advertise a low-value cid that lives happily in the frontier
+      // (which is still empty at this point).
+      const lowCid = `blake3:${"1".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-low", [
+          { metric: "loss", value: 1e9, cid: lowCid, direction: "minimize" },
+        ]),
+      });
+      expect(service.peersAdvertising(lowCid).map((p) => p.peerId)).toEqual(["peer-low"]);
+
+      // Next, a "high-quality" advertisement that we expect to survive the
+      // upcoming saturation event.
+      const highCid = `blake3:${"2".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-high", [
+          { metric: "loss", value: -1, cid: highCid, direction: "minimize" },
+        ]),
+      });
+
+      // Now flood the frontier with MAX_MERGED_FRONTIER_ENTRIES entries whose
+      // minimize values rank between highCid (best, value=-1) and lowCid
+      // (worst, value=1e9). Merge size becomes MAX + 2, eviction trims the
+      // two worst entries — which are lowCid plus one saturating cid. The
+      // advertisement for lowCid must be evicted alongside; highCid must
+      // remain.
+      const saturating: FrontierDigestEntry[] = [];
+      for (let i = 0; i < MAX_MERGED_FRONTIER_ENTRIES; i++) {
+        saturating.push({
+          metric: "loss",
+          value: i, // 0 .. MAX-1, all better than 1e9 and worse than -1
+          cid: `blake3:sat-${i}`,
+          direction: "minimize",
+        });
+      }
+      await service.handleExchange({
+        ...makeGossipMessage("peer-saturate"),
+        frontier: saturating,
+      });
+
+      // lowCid was pruned by the merge → advertisement must be evicted in parity.
+      expect(service.peersAdvertising(lowCid)).toEqual([]);
+      // highCid survived the merge → advertisement is preserved.
+      expect(service.peersAdvertising(highCid).map((p) => p.peerId)).toEqual(["peer-high"]);
+    });
+
+    it("re-advertising the same (peer, cid) refreshes lastSeen to the latest message timestamp", async () => {
+      const cid = `blake3:${"e".repeat(64)}`;
+      const earlierTs = new Date(1_000_000_000_000).toISOString();
+      const laterTs = new Date(1_000_000_900_000).toISOString();
+
+      await service.handleExchange({
+        ...makeGossipMessage("peer-refresh", [
+          { metric: "m", value: 1, cid, direction: "maximize" },
+        ]),
+        timestamp: earlierTs,
+      });
+      const first = service.peersAdvertising(cid);
+      expect(first).toHaveLength(1);
+      expect(first[0]?.lastSeen).toBe(earlierTs);
+
+      await service.handleExchange({
+        ...makeGossipMessage("peer-refresh", [
+          { metric: "m", value: 2, cid, direction: "maximize" },
+        ]),
+        timestamp: laterTs,
+      });
+      const second = service.peersAdvertising(cid);
+      expect(second).toHaveLength(1);
+      expect(second[0]?.lastSeen).toBe(laterTs);
+    });
+
+    it("filters peersAdvertising() against the live CYCLON view", async () => {
+      // peer-A advertises, gets admitted, becomes failed. Its
+      // advertisement entry remains in the map (may recover), but
+      // peersAdvertising() should hide it from federation fetch until
+      // the peer is back in the view.
+      const cid = `blake3:${"e".repeat(64)}`;
+      await service.handleExchange({
+        ...makeGossipMessage("peer-fail", [{ metric: "m", value: 1, cid, direction: "maximize" }]),
+      });
+      expect(service.peersAdvertising(cid).map((p) => p.peerId)).toEqual(["peer-fail"]);
+
+      // Force the peer out of the view by direct sampler manipulation —
+      // simulates the natural flow where a Failed peer is removed.
+      // biome-ignore lint/suspicious/noExplicitAny: reach into private sampler for test setup
+      const sampler = (service as any).sampler as { removePeer: (pid: string) => void };
+      sampler.removePeer("peer-fail");
+
+      expect(service.peersAdvertising(cid)).toEqual([]);
+    });
+
+    it("caps advertisers per CID to MAX_ADVERTISERS_PER_CID", async () => {
+      // Simulate a hostile peer churn: many distinct peer IDs all advertise
+      // the same CID. The advertiser set must be bounded so federation
+      // fetch fallback never has to walk an unbounded list.
+      const cid = `blake3:${"f".repeat(64)}`;
+      // Pre-seed the view so each peerId passes the in-view admit check.
+      // (We use the same `service` constructed in beforeEach, which has
+      // CYCLON maxViewSize default. Driving 32 peer IDs through the view
+      // exceeds that cap; only the surviving in-view peers should be
+      // recorded, and the per-CID cap still applies on top.)
+      for (let i = 0; i < 32; i++) {
+        await service.handleExchange({
+          ...makeGossipMessage(`peer-${i}`, [
+            { metric: "m", value: 1, cid, direction: "maximize" },
+          ]),
+        });
+      }
+      const advertisers = service.peersAdvertising(cid);
+      // The implementation caps at 16 per CID and CYCLON further caps the
+      // partial view, so the count cannot exceed the smaller of the two.
+      expect(advertisers.length).toBeLessThanOrEqual(16);
     });
   });
 });

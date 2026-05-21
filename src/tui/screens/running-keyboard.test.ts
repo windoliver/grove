@@ -70,6 +70,7 @@ function defaultState(overrides?: Partial<RunningKeyboardState>): RunningKeyboar
     cmdText: "",
     filterQuery: "",
     confirmModalOpen: false,
+    logFilterMode: false,
     ...overrides,
   };
 }
@@ -80,6 +81,7 @@ function mockActions(overrides?: {
   hasSendToAgent?: boolean;
   feedLength?: number;
   hasAskUser?: boolean;
+  logViewActive?: boolean;
 }): { actions: RunningKeyboardActions; log: ActionLog } {
   const log: ActionLog = { calls: [], args: {} };
 
@@ -129,8 +131,19 @@ function mockActions(overrides?: {
     rerouteSelectedHandoff: () => record("rerouteSelectedHandoff"),
     cancelSelectedHandoff: () => record("cancelSelectedHandoff"),
     manualResolveSelectedHandoff: () => record("manualResolveSelectedHandoff"),
+    logTogglePause: () => record("logTogglePause"),
+    logScrollDown: () => record("logScrollDown"),
+    logScrollUp: () => record("logScrollUp"),
+    logScrollToBottom: () => record("logScrollToBottom"),
+    logScrollToTop: () => record("logScrollToTop"),
+    logEnterFilterMode: () => record("logEnterFilterMode"),
+    logCommitFilter: () => record("logCommitFilter"),
+    logCancelFilter: () => record("logCancelFilter"),
+    logFilterAppend: (c: string) => record("logFilterAppend", c),
+    logFilterBackspace: () => record("logFilterBackspace"),
     openDetail: () => record("openDetail"),
     enterInspect: () => record("enterInspect"),
+    openPulse: () => record("openPulse"),
     quit: () => record("quit"),
     showQuitDialog: () => record("showQuitDialog"),
     approvePermission: () => record("approvePermission"),
@@ -140,6 +153,7 @@ function mockActions(overrides?: {
     hasSendToAgent: overrides?.hasSendToAgent ?? false,
     feedLength: overrides?.feedLength ?? 10,
     hasAskUser: overrides?.hasAskUser ?? false,
+    logViewActive: overrides?.logViewActive ?? false,
   };
 
   return { actions, log };
@@ -430,6 +444,26 @@ describe("routeRunningKey — normal mode misc", () => {
     const { actions } = mockActions();
     const handled = routeRunningKey(keyEvent("z"), defaultState(), actions);
     expect(handled).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Pulse hotkey (#308)
+// ===========================================================================
+
+describe("Pulse hotkey (#308)", () => {
+  test("'p' in normal mode invokes openPulse and is handled", () => {
+    const { actions, log } = mockActions();
+    const handled = routeRunningKey(keyEvent("p"), defaultState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("openPulse");
+  });
+
+  test("'p' is NOT routed to openPulse when prompt mode is active", () => {
+    const { actions, log } = mockActions();
+    const state = defaultState({ promptMode: true });
+    routeRunningKey(keyEvent("p"), state, actions);
+    expect(log.calls).not.toContain("openPulse");
   });
 });
 
@@ -1022,5 +1056,138 @@ describe("RunningPanel new entries", () => {
     expect(RUNNING_PANEL_LABELS[RunningPanel.Sessions]).toBe("Sessions");
     expect(RUNNING_PANEL_LABELS[RunningPanel.Tasks]).toBe("Tasks");
     expect(RUNNING_PANEL_LABELS[RunningPanel.Reviews]).toBe("Reviews");
+  });
+});
+
+// ===========================================================================
+// LogView keyboard routing (#310)
+// ===========================================================================
+
+describe("routeRunningKey — LogView mode (#310)", () => {
+  const logActiveState = () =>
+    defaultState({
+      expandedPanel: RunningPanel.Terminal,
+      zoomLevel: "half",
+      logFilterMode: false,
+    });
+  const logFilterState = () =>
+    defaultState({
+      expandedPanel: RunningPanel.Terminal,
+      zoomLevel: "half",
+      logFilterMode: true,
+    });
+
+  test("space toggles pause when LogView is active", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    const handled = routeRunningKey(keyEvent("space"), logActiveState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("logTogglePause");
+  });
+
+  test("'/' enters filter mode (overrides global C2 filter)", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    const handled = routeRunningKey(keyEvent("/", { sequence: "/" }), logActiveState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("logEnterFilterMode");
+    expect(log.calls).not.toContain("enterFilterMode");
+  });
+
+  test("j scrolls log down", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("j"), logActiveState(), actions);
+    expect(log.calls).toContain("logScrollDown");
+    expect(log.calls).not.toContain("feedCursorDown");
+  });
+
+  test("k scrolls log up", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("k"), logActiveState(), actions);
+    expect(log.calls).toContain("logScrollUp");
+    expect(log.calls).not.toContain("feedCursorUp");
+  });
+
+  test("down/up arrows scroll log", () => {
+    const { actions: a1, log: l1 } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("down"), logActiveState(), a1);
+    expect(l1.calls).toContain("logScrollDown");
+
+    const { actions: a2, log: l2 } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("up"), logActiveState(), a2);
+    expect(l2.calls).toContain("logScrollUp");
+  });
+
+  test("Shift+G jumps to bottom (resume tail)", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("g", { shift: true, sequence: "G" }), logActiveState(), actions);
+    expect(log.calls).toContain("logScrollToBottom");
+    expect(log.calls).not.toContain("logScrollToTop");
+  });
+
+  test("g jumps to top", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("g"), logActiveState(), actions);
+    expect(log.calls).toContain("logScrollToTop");
+  });
+
+  test("in filter mode, Enter commits filter", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("return"), logFilterState(), actions);
+    expect(log.calls).toContain("logCommitFilter");
+  });
+
+  test("in filter mode, Escape cancels filter (does not collapse panel)", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("escape"), logFilterState(), actions);
+    expect(log.calls).toContain("logCancelFilter");
+    expect(log.calls).not.toContain("collapsePanel");
+  });
+
+  test("in filter mode, backspace drops last char", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("backspace"), logFilterState(), actions);
+    expect(log.calls).toContain("logFilterBackspace");
+  });
+
+  test("in filter mode, printable keys append to filter buffer", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    const handled = routeRunningKey(keyEvent("a", { sequence: "a" }), logFilterState(), actions);
+    expect(handled).toBe(true);
+    expect(log.args.logFilterAppend).toEqual(["a"]);
+  });
+
+  test("in filter mode, non-printable keys are swallowed (not routed to feed)", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    // 'tab' is not handled by the filter-mode branch; it should be swallowed.
+    const handled = routeRunningKey(keyEvent("tab"), logFilterState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).not.toContain("feedCursorDown");
+    expect(log.calls).not.toContain("traceCycleAgent");
+  });
+
+  test("LogView keys are inert when logViewActive is false", () => {
+    const { actions, log } = mockActions({ logViewActive: false });
+    const handled = routeRunningKey(keyEvent("space"), logActiveState(), actions);
+    // 'space' has no global handler outside LogView/cmd-mode → returns false.
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("logTogglePause");
+  });
+
+  test("LogView keys are inert when Terminal panel is not expanded", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    const state = defaultState({ expandedPanel: RunningPanel.Dag, zoomLevel: "half" });
+    routeRunningKey(keyEvent("space"), state, actions);
+    expect(log.calls).not.toContain("logTogglePause");
+  });
+
+  test("panel-switch shortcuts still work over LogView (fallthrough)", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("3"), logActiveState(), actions);
+    expect(log.args.expandPanel).toEqual([RunningPanel.Dag]);
+  });
+
+  test("? still toggles help when LogView is active", () => {
+    const { actions, log } = mockActions({ logViewActive: true });
+    routeRunningKey(keyEvent("?", { shift: true, sequence: "?" }), logActiveState(), actions);
+    expect(log.calls).toContain("toggleHelp");
   });
 });

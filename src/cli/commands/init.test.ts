@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import { isValidProjectId } from "../../core/project-id.js";
 import { loadRegistry } from "../../core/project-registry.js";
 import type { InitOptions } from "./init.js";
-import { executeInit, parseInitArgs } from "./init.js";
+import { ensureGitignore, executeInit, parseInitArgs } from "./init.js";
 
 const INIT_INTEGRATION_TIMEOUT_MS = 30_000;
 
@@ -55,6 +55,18 @@ function makeOptions(overrides?: Partial<InitOptions>): InitOptions {
     cwd: "/tmp/test",
     ...overrides,
   };
+}
+
+async function captureConsoleLog(fn: () => Promise<void>): Promise<string[]> {
+  const logged: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return logged;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +159,18 @@ describe("parseInitArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("executeInit", () => {
+  initTest("prints grove up next-command hint", async () => {
+    const dir = await createTempDir();
+    try {
+      const logged = await captureConsoleLog(async () => {
+        await executeInit(makeOptions({ name: "test-grove", cwd: dir }));
+      });
+      expect(logged.join("\n")).toContain("hint: Run `grove up` to start services");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   initTest("creates .grove directory structure", async () => {
     const dir = await createTempDir();
     try {
@@ -374,5 +398,47 @@ describe("parseInitArgs — unify flags", () => {
 
   initTest("both --unify and --no-unify is an error", () => {
     expect(() => parseInitArgs(["--unify", "--no-unify"])).toThrow(/mutually exclusive/);
+  });
+});
+
+describe("ensureGitignore", () => {
+  test("creates .gitignore with both entries when absent", async () => {
+    const dir = await createTempDir();
+    try {
+      await ensureGitignore(dir);
+      const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(gi).toContain(".grove/");
+      expect(gi).toContain("nexus-data/");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("appends only missing entries, preserves existing content", async () => {
+    const dir = await createTempDir();
+    try {
+      await writeFile(join(dir, ".gitignore"), "node_modules\n.grove/\n", "utf8");
+      await ensureGitignore(dir);
+      const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(gi).toContain("node_modules");
+      // .grove/ already present — not duplicated
+      expect(gi.match(/^\.grove\/$/gm)?.length).toBe(1);
+      expect(gi).toContain("nexus-data/");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("is idempotent — second run is a no-op", async () => {
+    const dir = await createTempDir();
+    try {
+      await ensureGitignore(dir);
+      const first = readFileSync(join(dir, ".gitignore"), "utf8");
+      await ensureGitignore(dir);
+      const second = readFileSync(join(dir, ".gitignore"), "utf8");
+      expect(second).toBe(first);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

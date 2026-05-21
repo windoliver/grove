@@ -42,9 +42,23 @@ export function loadKeyRegistry(serverKeysPath: string): KeyRegistry {
  * @param exempt - Predicate returning true for requests that bypass bearer-token auth.
  *   Use this for routes with their own auth mechanism (e.g. POST gossip uses HMAC).
  */
+/**
+ * Subset of the Hono Context surface the exempt callback can read. The full
+ * `Context` type would impose a circular dependency on the route stack;
+ * we list only the request fields the federation auth exemption needs.
+ */
+export interface NamespaceAuthExemptContext {
+  readonly req: {
+    readonly path: string;
+    readonly method: string;
+    readonly url: string;
+    header(name: string): string | undefined;
+  };
+}
+
 export function namespaceAuth(
   registry: KeyRegistry,
-  { exempt }: { exempt?: (c: { req: { path: string; method: string } }) => boolean } = {},
+  { exempt }: { exempt?: (c: NamespaceAuthExemptContext) => boolean } = {},
 ): MiddlewareHandler<ServerEnv> {
   return async (c, next) => {
     if (exempt?.(c)) {

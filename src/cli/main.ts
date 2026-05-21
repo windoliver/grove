@@ -4,7 +4,7 @@
  * Dispatches subcommands to dedicated handlers. Each command parses
  * its own arguments via `parseArgs` from `node:util`.
  *
- * Global flags (--help, --version, --verbose, --grove) are handled
+ * Global flags (--help, --version, --verbose, --grove, --no-color) are handled
  * before dispatch.
  *
  * Commands:
@@ -29,6 +29,7 @@
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
 import type { SessionStore } from "../core/session.js";
 import { UsageError } from "./errors.js";
+import { setColorEnabled, shouldEnableColor } from "./utils/color.js";
 import { suggestCommand } from "./utils/string.js";
 
 // ---------------------------------------------------------------------------
@@ -524,6 +525,7 @@ Usage:
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  setColorEnabled(shouldEnableColor(process.env, rawArgs));
 
   // Extract global --grove option before subcommand
   let groveOverride: string | undefined;
@@ -543,7 +545,7 @@ async function main(): Promise<void> {
         throw new UsageError("--grove requires a non-empty path value");
       }
       groveOverride = value;
-    } else {
+    } else if (token !== "--no-color") {
       args.push(token);
     }
   }
@@ -675,6 +677,7 @@ Global options:
   --help, -h        Show this help message
   --version, -v     Show version
   --verbose         Show stack traces on error
+  --no-color        Disable ANSI color output
   --wide            Show full values in table output (frontier, log, search, threads)
   --json            Machine-readable JSON output
 
