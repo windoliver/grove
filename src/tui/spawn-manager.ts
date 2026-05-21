@@ -1485,27 +1485,30 @@ export class SpawnManager {
     //   first pollAll() fires → read from byte 0 → old data included.
     if (seekToEnd) {
       try {
-        const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
-        const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
-        for (const [role, buffer] of this.logBuffers) {
-          const roleFiles = files.filter(
-            (f: string) => f === `${role}.log` || f.startsWith(`${role}-`),
-          );
-          let seekCount = 0;
-          for (const roleFile of roleFiles) {
-            try {
-              const fileSize = statSync(`${logDir}/${roleFile}`).size;
-              buffer.recordSeekPosition(`${logDir}/${roleFile}`, fileSize);
-              seekCount++;
-            } catch {
-              // File unreadable — skip
+        const { existsSync, readdirSync, statSync } =
+          require("node:fs") as typeof import("node:fs");
+        if (existsSync(logDir)) {
+          const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
+          for (const [role, buffer] of this.logBuffers) {
+            const roleFiles = files.filter(
+              (f: string) => f === `${role}.log` || f.startsWith(`${role}-`),
+            );
+            let seekCount = 0;
+            for (const roleFile of roleFiles) {
+              try {
+                const fileSize = statSync(`${logDir}/${roleFile}`).size;
+                buffer.recordSeekPosition(`${logDir}/${roleFile}`, fileSize);
+                seekCount++;
+              } catch {
+                // File unreadable — skip
+              }
             }
+            buffer.clearForNewSession();
+            debugLog(
+              "seekToEnd",
+              `role=${role} seeked ${seekCount} file(s): [${roleFiles.join(",")}]`,
+            );
           }
-          buffer.clearForNewSession();
-          debugLog(
-            "seekToEnd",
-            `role=${role} seeked ${seekCount} file(s): [${roleFiles.join(",")}]`,
-          );
         }
       } catch (e) {
         debugLog("seekToEnd", `error: ${String(e)}`);
@@ -1516,7 +1519,8 @@ export class SpawnManager {
     const pollAll = () => {
       // Scan log directory for files matching each role (e.g., coder-0.log, coder-1.log)
       try {
-        const { readdirSync } = require("node:fs") as typeof import("node:fs");
+        const { existsSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+        if (!existsSync(logDir)) return;
         const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
         if (pollCount < 3 || pollCount % 10 === 0) {
           debugLog(

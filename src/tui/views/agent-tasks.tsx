@@ -5,7 +5,6 @@
 import React, { useCallback, useMemo } from "react";
 import type { AgentTaskEntity, AgentTaskView } from "../../core/agent-task.js";
 import { agentTaskViewToEntity, isAgentTaskSpecStale } from "../../core/agent-task.js";
-import { useInterval } from "../../local/use-interval.js";
 import { formatTimestamp } from "../../shared/format.js";
 import { ConditionChips } from "../components/condition-chips.js";
 import { EmptyState } from "../components/empty-state.js";
@@ -48,22 +47,16 @@ function viewToEntity(view: AgentTaskView): AgentTaskEntity {
 }
 
 export const AgentTasksView: React.NamedExoticComponent<AgentTasksViewProps> = React.memo(
-  function AgentTasksView({
-    provider,
-    intervalMs,
-    active,
-    cursor,
-  }: AgentTasksViewProps): React.ReactNode {
+  function AgentTasksView({ provider, active, cursor }: AgentTasksViewProps): React.ReactNode {
     const fetcher = useCallback(async (): Promise<readonly AgentTaskView[]> => {
       return provider.getAgentTasks ? provider.getAgentTasks() : [];
     }, [provider]);
-    const { data, loading, isStale, error, refresh } = useEventDrivenData<readonly AgentTaskView[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly AgentTaskView[]>(
       fetcher,
       undefined,
       undefined,
       active,
     );
-    useInterval(refresh, intervalMs, active && provider.getAgentTasks !== undefined);
 
     const entities = useMemo(() => (data ?? []).map(viewToEntity), [data]);
     const selected = cursor >= 0 && cursor < entities.length ? entities[cursor] : undefined;

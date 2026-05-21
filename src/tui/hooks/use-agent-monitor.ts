@@ -37,6 +37,12 @@ export interface IpcMessage {
 export interface AgentMonitorOptions {
   /** Path to .grove directory (for reading agent log files). */
   readonly groveDir?: string | undefined;
+  /**
+   * Push-fed per-agent log buffers owned by SpawnManager. When available,
+   * agent output snapshots subscribe to these buffers instead of reading
+   * log files on a timer.
+   */
+  readonly logBuffers?: ReadonlyMap<string, AgentOutputBuffer> | undefined;
   /** Tmux manager for pane capture and permission detection. */
   readonly tmux?: import("../agents/tmux-manager.js").TmuxManager | undefined;
   /** EventBus for IPC message subscription. */
@@ -60,6 +66,19 @@ export interface AgentMonitorState {
   readonly ipcMessages: readonly IpcMessage[];
   /** Current spinner frame index (braille animation). */
   readonly spinnerFrame: number;
+}
+
+export interface AgentOutputBufferLine {
+  readonly ts: number;
+  readonly line: string;
+}
+
+export interface AgentOutputBuffer {
+  readonly role: string;
+  readonly size: number;
+  slice(start: number, end: number): readonly AgentOutputBufferLine[];
+  subscribe(listener: () => void): void;
+  unsubscribe(listener: () => void): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,13 +182,40 @@ export function mergeOutputs(
   return { outputs: nextOutputs, timestamps };
 }
 
+export function outputsFromLogBuffers(
+  logBuffers: ReadonlyMap<string, AgentOutputBuffer>,
+  maxLines: number,
+): {
+  readonly outputs: ReadonlyMap<string, readonly string[]>;
+  readonly timestamps: ReadonlyMap<string, string>;
+} {
+  const outputs = new Map<string, readonly string[]>();
+  const timestamps = new Map<string, string>();
+  const limit = Math.max(0, maxLines);
+  for (const [key, buffer] of logBuffers) {
+    if (buffer.size <= 0 || limit === 0) continue;
+    const start = Math.max(0, buffer.size - limit);
+    const lines = buffer.slice(start, buffer.size);
+    if (lines.length === 0) continue;
+    const role = buffer.role || key;
+    outputs.set(
+      role,
+      lines.map((line) => line.line),
+    );
+    const newest = lines[lines.length - 1];
+    if (newest) timestamps.set(role, new Date(newest.ts).toISOString());
+  }
+  return { outputs, timestamps };
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
 /** Hook that monitors agent activity via log files, tmux, and IPC events. */
 export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState {
-  const { groveDir, tmux, eventBus, topology, maxOutputLines = 8 } = options;
+  const { groveDir, logBuffers, tmux, eventBus, topology, maxOutputLines = 8 } = options;
+  const hasLogBufferSource = logBuffers !== undefined && logBuffers.size > 0;
 
   const [agentOutputs, setAgentOutputs] = useState<ReadonlyMap<string, readonly string[]>>(
     new Map(),
@@ -196,6 +242,25 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
 
   // Braille spinner animation
   useInterval(() => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length), SPINNER_INTERVAL_MS);
+
+  const refreshFromLogBuffers = useCallback(() => {
+    if (!logBuffers || logBuffers.size === 0) return;
+    const snapshot = outputsFromLogBuffers(logBuffers, maxOutputLines);
+    if (!mountedRef.current) return;
+    setAgentOutputs(snapshot.outputs);
+    setAgentOutputTimestamps(snapshot.timestamps);
+  }, [logBuffers, maxOutputLines, setAgentOutputTimestamps]);
+
+  useEffect(() => {
+    if (!logBuffers || logBuffers.size === 0) return;
+    const buffers = [...logBuffers.values()];
+    const listener = () => refreshFromLogBuffers();
+    refreshFromLogBuffers();
+    for (const buffer of buffers) buffer.subscribe(listener);
+    return () => {
+      for (const buffer of buffers) buffer.unsubscribe(listener);
+    };
+  }, [logBuffers, refreshFromLogBuffers]);
 
   // Subscribe to EventBus for IPC message log.
   // Deduplicate: MCP TopologyRouter AND TUI wsBridge.send BOTH write into
@@ -276,10 +341,11 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   }, [groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
   useEffect(() => {
+    if (hasLogBufferSource) return;
     void logPoll();
-  }, [logPoll]);
+  }, [hasLogBufferSource, logPoll]);
 
-  useInterval(() => void logPoll(), POLL_INTERVAL_MS, Boolean(groveDir));
+  useInterval(() => void logPoll(), POLL_INTERVAL_MS, Boolean(groveDir) && !hasLogBufferSource);
 
   // Poll agent tmux panes for live output (fallback when no log files)
   const tmuxPoll = useCallback(async () => {
@@ -307,7 +373,11 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
     }
   }, [tmux, groveDir, maxOutputLines, setAgentOutputTimestamps]);
 
-  useInterval(() => void tmuxPoll(), POLL_INTERVAL_MS, Boolean(tmux) && !groveDir);
+  useInterval(
+    () => void tmuxPoll(),
+    POLL_INTERVAL_MS,
+    Boolean(tmux) && !groveDir && !hasLogBufferSource,
+  );
 
   // Poll agent tmux panes for permission prompts
   const permissionPoll = useCallback(async () => {

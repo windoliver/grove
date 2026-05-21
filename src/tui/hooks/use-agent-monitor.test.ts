@@ -12,9 +12,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import {
   isLogLineKept,
   mergeOutputs,
+  outputsFromLogBuffers,
   parseLogContent,
   parsePermissionPrompt,
   roleFromLogFilename,
@@ -284,5 +286,20 @@ describe("mergeOutputs", () => {
     );
     expect(timestamps.has("gone")).toBe(false);
     expect(timestamps.get("coder")).toBe(now);
+  });
+});
+
+describe("outputsFromLogBuffers", () => {
+  test("projects subscribed log buffers into output lines and latest timestamps", () => {
+    const buffer = new AgentLogBuffer("coder", "session-1", 100, 1);
+    const older = new Date("2026-05-18T11:59:59.000Z").getTime();
+    const newer = new Date("2026-05-18T12:00:00.000Z").getTime();
+    buffer.push({ ts: older, line: "older output", type: "output" });
+    buffer.push({ ts: newer, line: "new pushed output", type: "tool" });
+
+    const { outputs, timestamps } = outputsFromLogBuffers(new Map([["coder", buffer]]), 1);
+
+    expect(outputs.get("coder")).toEqual(["new pushed output"]);
+    expect(timestamps.get("coder")).toBe("2026-05-18T12:00:00.000Z");
   });
 });
