@@ -157,6 +157,48 @@ describe("NexusDataProvider lifecycle", () => {
     expect(result.map((c) => c.cid)).toEqual([second.cid, first.cid]);
   });
 
+  test("getSessionContributions prefers Nexus session-scoped manifests over server links", async () => {
+    const client = new MockNexusClient();
+    const scopedStore = new NexusContributionStore({
+      client,
+      zoneId: "zone-1",
+      sessionId: "sess-live",
+    });
+    const contribution = makeNexusContribution(
+      "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "live session work",
+    );
+    await scopedStore.put(contribution);
+
+    const oldFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls++;
+      return Promise.resolve(
+        new Response(JSON.stringify({ contributions: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const provider = new NexusDataProvider({
+        nexusConfig: { client, zoneId: "zone-1" },
+        serverUrl: "http://grove-server.test",
+        serverApiKey: "server-key",
+      });
+
+      const result = await provider.getSessionContributions("sess-live");
+
+      expect(result.map((c) => c.cid)).toEqual([contribution.cid]);
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = oldFetch;
+      scopedStore.close();
+    }
+  });
+
   test("createClaim creates a claim via NexusClaimStore", async () => {
     const { provider } = createProvider();
 

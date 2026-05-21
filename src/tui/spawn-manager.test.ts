@@ -20,7 +20,13 @@ setDefaultTimeout(30_000);
 
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
-import type { Claim } from "../core/models.js";
+import {
+  type Claim,
+  type Contribution,
+  ContributionKind,
+  ContributionMode,
+} from "../core/models.js";
+import type { AgentTopology } from "../core/topology.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";
 import type { ClaimInput, ClaimsQuery, TuiDataProvider } from "./provider.js";
@@ -306,6 +312,39 @@ function makeMockRuntime(): AgentRuntime & {
       sessions.set(sessionId, next);
       for (const callback of idleCallbacks.get(sessionId) ?? []) callback();
     },
+  };
+}
+
+function fakeTurn(turnId = "turn-1"): AcpxTurn {
+  return {
+    sessionId: "session-test",
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId, stopReason: "end_turn" }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function makeContribution(
+  cid: string,
+  role: string,
+  agentId: string,
+  summary = "ready for review",
+): Contribution {
+  return {
+    cid,
+    manifestVersion: 1,
+    kind: ContributionKind.Work,
+    mode: ContributionMode.Evaluation,
+    summary,
+    artifacts: {},
+    relations: [],
+    tags: [],
+    agent: { agentId, role },
+    createdAt: new Date().toISOString(),
   };
 }
 
@@ -1584,5 +1623,75 @@ describe("SpawnManager — delivery state recovery", () => {
     manager.markDeliveryDisabled("outage");
     manager.markDeliveryRecovered();
     await expect(manager.testWaitForDelivery(100)).resolves.toBeUndefined();
+  });
+});
+
+describe("SpawnManager — local contribution routing", () => {
+  test("routes new session contributions to downstream roles without Nexus", async () => {
+    const provider = makeMockProvider() as ReturnType<typeof makeMockProvider> & {
+      getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
+    };
+    const contributions: Contribution[] = [];
+    const sessionIds: string[] = [];
+    provider.getSessionContributions = async (sessionId: string) => {
+      sessionIds.push(sessionId);
+      return contributions;
+    };
+
+    const runtime = makeMockRuntime();
+    const sent: Array<{ sessionId: string; message: string }> = [];
+    runtime.send = async (session: AgentSession, message: string): Promise<AcpxTurn> => {
+      sent.push({ sessionId: session.id, message });
+      return fakeTurn(`turn-${sent.length}`);
+    };
+
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    const topology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+        { name: "reviewer" },
+      ],
+    };
+    manager.setSessionId("session-local");
+    manager.setTopology(topology);
+    expect(manager.getDeliveryState()).toBe("pending");
+
+    manager.enableLocalContributionRouting(undefined, { autoStart: false });
+    expect(manager.getDeliveryState()).toBe("ready");
+
+    const sessions = (manager as unknown as { agentSessions: Map<string, AgentSession> })
+      .agentSessions;
+    sessions.set("coder-a", {
+      id: "session-coder",
+      role: "coder",
+      status: "running",
+      agent: "mock",
+    });
+    sessions.set("reviewer-a", {
+      id: "session-reviewer",
+      role: "reviewer",
+      status: "running",
+      agent: "mock",
+    });
+
+    await manager.testPollLocalContributionRouting();
+    contributions.push(makeContribution("blake3:1".padEnd(71, "0"), "coder", "session-coder"));
+    await manager.testPollLocalContributionRouting();
+
+    expect(sessionIds).toContain("session-local");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.sessionId).toBe("session-reviewer");
+    expect(sent[0]?.message).toContain("ready for review");
+    expect(sent[0]?.message).toContain("blake3:");
   });
 });

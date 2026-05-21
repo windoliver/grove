@@ -16,7 +16,9 @@ import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { parseGroveConfig } from "../core/config.js";
-import type { AgentIdentity } from "../core/models.js";
+import type { EventBus, GroveEvent, PublishResult } from "../core/event-bus.js";
+import type { HandoffStore } from "../core/handoff.js";
+import type { AgentIdentity, Contribution } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
@@ -24,6 +26,7 @@ import { parseAcpxSessionId } from "../core/session-id.js";
 import { injectSkills } from "../core/skill-injector.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
+import { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
@@ -44,7 +47,7 @@ import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
 import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
-import type { TuiDataProvider } from "./provider.js";
+import type { TuiDataProvider, TuiSessionProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 const CODEX_GENERATED_MCP_START = "# BEGIN GROVE GENERATED MCP";
@@ -124,6 +127,12 @@ interface AcpEventSinkRuntime {
   setAcpEventSink(eventSink: AcpRuntimeEventSink | undefined): void;
 }
 
+interface LocalContributionRoutingOptions {
+  readonly autoStart?: boolean | undefined;
+  readonly pollMs?: number | undefined;
+  readonly initialDelayMs?: number | undefined;
+}
+
 /** Result of a spawn attempt. */
 export interface SpawnResult {
   readonly spawnId: string;
@@ -183,6 +192,11 @@ export class SpawnManager {
   private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
   private topology: AgentTopology | undefined;
   private logPollTimer: (() => void) | null = null;
+  private localContributionRouteTimer: (() => void) | null = null;
+  private localContributionRouteStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private localContributionRouteGeneration = 0;
+  private localContributionRouteEventBus: EventBus | undefined;
+  private readonly localContributionRouteSeenCids = new Set<string>();
   // spawnIds that should receive IPC routing — populated when agents are spawned
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
@@ -370,6 +384,223 @@ export class SpawnManager {
   /** @internal — test surface for waitForDelivery() (private). */
   testWaitForDelivery(timeoutMs: number): Promise<void> {
     return this.waitForDelivery(timeoutMs);
+  }
+
+  /**
+   * Enable local, SQLite-backed contribution routing for multi-role sessions.
+   *
+   * The Nexus bridge is still the push path when Nexus is configured. In local
+   * fallback there is no cross-process EventBus: agents write contributions via
+   * stdio MCP child processes, while the TUI owns the runtime sessions. Polling
+   * the local/session contribution view is the handoff bridge for that mode.
+   */
+  enableLocalContributionRouting(
+    eventBus?: EventBus | undefined,
+    options?: LocalContributionRoutingOptions,
+  ): void {
+    this.localContributionRouteEventBus = eventBus;
+    this.markDeliveryReady();
+    if (options?.autoStart === false) return;
+    this.startLocalContributionRouting(options);
+  }
+
+  /** @internal — test surface for local routing without waiting on timers. */
+  testPollLocalContributionRouting(): Promise<void> {
+    return this.pollLocalContributionRouting();
+  }
+
+  private startLocalContributionRouting(options?: LocalContributionRoutingOptions): void {
+    this.stopLocalContributionRouting();
+    const generation = ++this.localContributionRouteGeneration;
+    const pollMs = options?.pollMs ?? 3000;
+    const initialDelayMs = options?.initialDelayMs ?? 15000;
+
+    const start = () => {
+      if (generation !== this.localContributionRouteGeneration) return;
+      void this.pollLocalContributionRouting();
+      this.localContributionRouteTimer = startInterval(
+        () => {
+          void this.pollLocalContributionRouting();
+        },
+        pollMs,
+        { unref: true },
+      );
+    };
+
+    void this.seedLocalContributionRoutingSeen().finally(() => {
+      if (generation !== this.localContributionRouteGeneration) return;
+      if (initialDelayMs <= 0) {
+        start();
+        return;
+      }
+      this.localContributionRouteStartTimer = setTimeout(start, initialDelayMs);
+      (this.localContributionRouteStartTimer as unknown as { unref?: () => void }).unref?.();
+    });
+  }
+
+  private stopLocalContributionRouting(): void {
+    this.localContributionRouteGeneration++;
+    if (this.localContributionRouteStartTimer !== null) {
+      clearTimeout(this.localContributionRouteStartTimer);
+      this.localContributionRouteStartTimer = null;
+    }
+    if (this.localContributionRouteTimer !== null) {
+      this.localContributionRouteTimer();
+      this.localContributionRouteTimer = null;
+    }
+  }
+
+  private async fetchLocalRoutingContributions(): Promise<readonly Contribution[]> {
+    const sessionProvider = this.provider as Partial<TuiSessionProvider>;
+    if (
+      this.sessionId !== undefined &&
+      typeof sessionProvider.getSessionContributions === "function"
+    ) {
+      return sessionProvider.getSessionContributions(this.sessionId);
+    }
+    return this.provider.getContributions({ limit: 100 });
+  }
+
+  private async seedLocalContributionRoutingSeen(): Promise<void> {
+    try {
+      const contributions = await this.fetchLocalRoutingContributions();
+      for (const contribution of contributions) {
+        this.localContributionRouteSeenCids.add(contribution.cid);
+      }
+    } catch (err) {
+      debugLog("localRoute", `seed failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async pollLocalContributionRouting(): Promise<void> {
+    if (!this.topology || !this.agentRuntime) return;
+    let contributions: readonly Contribution[];
+    try {
+      contributions = await this.fetchLocalRoutingContributions();
+    } catch (err) {
+      debugLog("localRoute", `fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const sorted = [...contributions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const contribution of sorted) {
+      if (this.localContributionRouteSeenCids.has(contribution.cid)) continue;
+      const complete = await this.routeLocalContribution(contribution);
+      if (complete) this.localContributionRouteSeenCids.add(contribution.cid);
+    }
+  }
+
+  private async routeLocalContribution(contribution: Contribution): Promise<boolean> {
+    if (!this.topology || !this.agentRuntime) return true;
+    const sourceRole = contribution.agent.role;
+    if (!sourceRole) return true;
+    const sourceSession = this.activeRuntimeSessionForRole(sourceRole);
+    if (!sourceSession) return false;
+    if (contribution.agent.agentId !== sourceSession.id) return true;
+
+    const events: GroveEvent[] = [];
+    const router = new TopologyRouter(this.topology, {
+      publish: async (event: GroveEvent): Promise<PublishResult> => {
+        events.push(event);
+        if (this.localContributionRouteEventBus?.publishLocal) {
+          return this.localContributionRouteEventBus.publishLocal(event);
+        }
+        if (this.localContributionRouteEventBus) {
+          return this.localContributionRouteEventBus.publish(event);
+        }
+        return { ok: true };
+      },
+      subscribe() {
+        /* local routing publisher only */
+      },
+      unsubscribe() {
+        /* local routing publisher only */
+      },
+      close() {
+        /* local routing publisher only */
+      },
+    });
+
+    const payload = {
+      cid: contribution.cid,
+      kind: contribution.kind,
+      summary: contribution.summary,
+      agentId: contribution.agent.agentId,
+      ...(contribution.context !== undefined ? { context: contribution.context } : {}),
+    };
+    const routeResults = await router.route(sourceRole, payload);
+    if (routeResults.length === 0) return true;
+
+    let allTargetsReady = true;
+    for (const { targetRole } of routeResults) {
+      const targetSession = this.activeRuntimeSessionForRole(targetRole);
+      if (!targetSession) {
+        allTargetsReady = false;
+        continue;
+      }
+      this.syncWorkspaces(sourceRole, targetRole);
+      await this.markLocalHandoffDelivered(contribution.cid, targetRole);
+      const sourceWorkspace = this.workspacePathForRole(sourceRole) ?? "(unknown)";
+      const action =
+        contribution.kind === "review"
+          ? "This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work."
+          : "Read the source files and respond with the appropriate Grove tool.";
+      const message =
+        `[grove] New ${contribution.kind} from ${sourceRole}:\n` +
+        `  CID: ${contribution.cid}\n` +
+        `  Summary: ${contribution.summary}\n` +
+        `  Workspace: ${sourceWorkspace}\n\n` +
+        action;
+      try {
+        const turn = await this.agentRuntime.send(targetSession, message);
+        watchTurnError(turn, `localRoute(${sourceRole}→${targetRole})`, (m) => {
+          debugLog("localRoute", m);
+          process.stderr.write(`${m}\n`);
+        });
+      } catch (err) {
+        allTargetsReady = false;
+        this.recordAgentFailure(
+          targetRole,
+          `local contribution delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // Keep the event objects live for UI subscribers and for debugging.
+    debugLog("localRoute", `routed ${contribution.cid} to ${events.length} target(s)`);
+    return allTargetsReady;
+  }
+
+  private activeRuntimeSessionForRole(role: string): AgentSession | undefined {
+    for (const [spawnId, session] of this.agentSessions) {
+      if (session.status === "crashed" || session.status === "stopped") continue;
+      if (session.role === role || spawnId === role || spawnId.startsWith(`${role}-`)) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  private async markLocalHandoffDelivered(sourceCid: string, targetRole: string): Promise<void> {
+    const provider = this.provider as {
+      getHandoffStore?: () => HandoffStore | undefined;
+    };
+    const handoffStore = provider.getHandoffStore?.();
+    if (!handoffStore) return;
+    try {
+      const list =
+        handoffStore.listForCurrentSession?.bind(handoffStore) ??
+        handoffStore.list.bind(handoffStore);
+      const handoffs = await list({ sourceCid });
+      const handoff = handoffs.find((h) => h.toRole === targetRole);
+      if (!handoff || handoff.status === "delivered" || handoff.status === "replied") return;
+      await handoffStore.markDelivered(handoff.handoffId);
+    } catch (err) {
+      debugLog(
+        "localRoute",
+        `markDelivered failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -1111,6 +1342,7 @@ export class SpawnManager {
    */
   async stopActiveSession(): Promise<void> {
     this.stopLogPolling();
+    this.stopLocalContributionRouting();
     this.routableSessions.clear();
     if (this.agentFailures.size > 0) {
       this.agentFailures.clear();
@@ -1418,6 +1650,9 @@ export class SpawnManager {
 
   /** Set the session ID for log buffer naming and persistence. */
   setSessionId(id: string | undefined): void {
+    if (this.sessionId !== id) {
+      this.localContributionRouteSeenCids.clear();
+    }
     this.sessionId = id;
   }
 
@@ -1635,6 +1870,7 @@ export class SpawnManager {
 
   destroy(): void {
     this.stopLogPolling();
+    this.stopLocalContributionRouting();
     this.routableSessions.clear();
     // Settle any in-flight waitForDelivery calls so destroy() doesn't
     // leave per-waiter timers holding the event loop open. Route via
@@ -1690,9 +1926,11 @@ export class SpawnManager {
     // grove.json from it. Use `this.groveDir` (the SpawnManager's session-level
     // .grove path) for the config lookup instead.
     //
-    // Agents' MCP servers need GROVE_NEXUS_URL so contributions go to Nexus
-    // (enables IPC push via NexusEventBus + TopologyRouter). Without it,
-    // contributions only land in local SQLite and the reviewer is never notified.
+    // When Nexus is configured, agents' MCP servers write through it so
+    // NexusEventBus can push routing events immediately. In local-only mode
+    // GROVE_NEXUS_URL is intentionally absent; contributions land in SQLite
+    // and the TUI-side local contribution poller routes them to downstream
+    // runtime sessions.
     let resolvedNexusUrl: string | undefined = process.env.GROVE_NEXUS_URL;
     if (!resolvedNexusUrl && this.groveDir) {
       try {
@@ -1724,9 +1962,9 @@ export class SpawnManager {
       }
     }
 
-    // MCP server needs GROVE_NEXUS_URL so contributions are written to Nexus
-    // (enables IPC push via NexusEventBus + TopologyRouter for agent routing).
-    // Without it, contributions only go to local SQLite and reviewer never gets notified.
+    // Keep GROVE_NEXUS_URL optional. Local-only review loops rely on the
+    // SpawnManager polling SQLite contributions and delivering them through
+    // AgentRuntime instead of the Nexus bridge.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };

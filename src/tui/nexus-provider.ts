@@ -426,9 +426,25 @@ export class NexusDataProvider
   }
 
   override async getSessionContributions(sessionId: string): Promise<readonly Contribution[]> {
+    const scopedStore = new NexusContributionStore({
+      ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),
+      sessionId,
+    });
+    try {
+      const scopedContributions = await scopedStore.list();
+      if (scopedContributions.length > 0) return scopedContributions;
+    } finally {
+      scopedStore.close();
+    }
+
     if (this.serverUrl) {
       try {
-        return await getSessionContributionsHttp(this.serverUrl, sessionId, this.authHeaders);
+        const serverContributions = await getSessionContributionsHttp(
+          this.serverUrl,
+          sessionId,
+          this.authHeaders,
+        );
+        if (serverContributions.length > 0) return serverContributions;
       } catch {
         /* fall through to Nexus VFS */
       }
