@@ -1495,14 +1495,13 @@ export class SpawnManager {
 
     const sourceRole = contribution.agent.role;
     if (!sourceRole) return;
-    const source = this.findRoutableSessionForRole(sourceRole);
+    const source = this.findRoutableSessionForContribution(sourceRole, contribution.agent.agentId);
     if (!source) return;
 
     const expectedToken = this.routingTokensByRole.get(sourceRole);
     if (expectedToken === undefined || !hasValidRoutingSignature(contribution, expectedToken)) {
       return;
     }
-    if (contribution.agent.agentId !== source.session.id) return;
 
     const router = new TopologyRouter(this.topology, this.localContributionEventBus);
     const targetRoles = [...new Set(router.targetsFor(sourceRole).map((edge) => edge.target))];
@@ -1513,7 +1512,7 @@ export class SpawnManager {
 
     const deliveredTargets =
       this.localContributionDeliveredTargets.get(contribution.cid) ?? new Set<string>();
-    const sourceWorkspace = this.workspacePathForRole(sourceRole) ?? "(unknown)";
+    const sourceWorkspace = this.workspacePathForSpawnId(source.spawnId) ?? "(unknown)";
     const action =
       contribution.kind === "review"
         ? "This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work."
@@ -1529,7 +1528,7 @@ export class SpawnManager {
       if (deliveredTargets.has(targetRole)) continue;
       const target = this.findRoutableSessionForRole(targetRole);
       if (!target) continue;
-      this.syncWorkspaces(sourceRole, targetRole);
+      this.syncWorkspacesForSpawnIds(source, target);
       const turn = await this.agentRuntime.send(target.session, message);
       watchTurnError(turn, `localContributionDelivery(${targetRole})`, (m) => {
         debugLog("route", m);
@@ -1564,6 +1563,23 @@ export class SpawnManager {
       debugLog("route", message);
       this.onError(message);
     }
+  }
+
+  private findRoutableSessionForContribution(
+    role: string,
+    agentId: string,
+  ): { readonly spawnId: string; readonly session: AgentSession } | undefined {
+    for (const [spawnId, session] of this.agentSessions) {
+      if (!this.routableSessions.has(spawnId)) continue;
+      if (session.status === "crashed" || session.status === "stopped") continue;
+      const record = this.spawnRecords.get(spawnId);
+      const sessionRole = record?.role ?? session.role;
+      if (sessionRole !== role) continue;
+      if (session.id === agentId || spawnId === agentId || record?.agentId === agentId) {
+        return { spawnId, session };
+      }
+    }
+    return undefined;
   }
 
   private findRoutableSessionForRole(
@@ -1801,17 +1817,38 @@ export class SpawnManager {
     if (!this.groveDir) return;
     const sourceWs = this.workspacePathForRole(senderRole);
     const targetWs = this.workspacePathForRole(recipientRole);
+    this.syncWorkspacePaths(senderRole, recipientRole, sourceWs, targetWs);
+  }
+
+  private syncWorkspacesForSpawnIds(
+    sender: { readonly spawnId: string; readonly session: AgentSession },
+    recipient: { readonly spawnId: string; readonly session: AgentSession },
+  ): void {
+    if (!this.groveDir) return;
+    const sourceWs = this.workspacePathForSpawnId(sender.spawnId);
+    const targetWs = this.workspacePathForSpawnId(recipient.spawnId);
+    const senderLabel = this.spawnRecords.get(sender.spawnId)?.role ?? sender.session.role;
+    const recipientLabel = this.spawnRecords.get(recipient.spawnId)?.role ?? recipient.session.role;
+    this.syncWorkspacePaths(senderLabel, recipientLabel, sourceWs, targetWs);
+  }
+
+  private syncWorkspacePaths(
+    senderLabel: string,
+    recipientLabel: string,
+    sourceWs: string | undefined,
+    targetWs: string | undefined,
+  ): void {
     if (!sourceWs || !targetWs) return;
     try {
       execSync(
         `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWs}/" "${targetWs}/"`,
         { stdio: "pipe", timeout: 10_000 },
       );
-      debugLog("syncWorkspaces", `${senderRole}→${recipientRole} OK`);
+      debugLog("syncWorkspaces", `${senderLabel}→${recipientLabel} OK`);
     } catch (err) {
       debugLog(
         "syncWorkspaces",
-        `${senderRole}→${recipientRole} FAIL: ${err instanceof Error ? err.message : String(err)}`,
+        `${senderLabel}→${recipientLabel} FAIL: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -1829,6 +1866,17 @@ export class SpawnManager {
       const legacyPath = join(this.groveDir, "workspaces", spawnId);
       if (existsSync(legacyPath)) return legacyPath;
     }
+    return undefined;
+  }
+
+  private workspacePathForSpawnId(spawnId: string): string | undefined {
+    if (!this.groveDir) return undefined;
+    const record = this.spawnRecords.get(spawnId);
+    if (record?.workspacePath && existsSync(record.workspacePath)) {
+      return record.workspacePath;
+    }
+    const legacyPath = join(this.groveDir, "workspaces", spawnId);
+    if (existsSync(legacyPath)) return legacyPath;
     return undefined;
   }
 
