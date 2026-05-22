@@ -63,7 +63,7 @@ describe("agent task TUI helpers", () => {
     ).toBe("Running");
   });
 
-  test("does not refresh the active panel on interval", async () => {
+  test("refreshes the active panel on fallback interval", async () => {
     let fetches = 0;
     const provider = {
       getAgentTasks: async () => {
@@ -92,7 +92,7 @@ describe("agent task TUI helpers", () => {
       await sleep(35);
     });
 
-    expect(fetches).toBe(initialFetches);
+    expect(fetches).toBeGreaterThan(initialFetches);
 
     await act(async () => {
       renderer?.unmount();
