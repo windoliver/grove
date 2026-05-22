@@ -25,6 +25,7 @@ import {
 
 /** Default polling interval: 30s safety net. Primary updates are via Nexus SSE (instant). */
 const DEFAULT_INTERVAL_MS = 30_000;
+const MCP_STDIO_REAPER_PATTERN = "bun.*mcp/serve\\.(ts|js)";
 
 /** Parse TUI command-line arguments. */
 export function parseTuiArgs(args: readonly string[]): {
@@ -749,7 +750,10 @@ export async function handleTui(
     // TUI session leaks MCP server processes that accumulate memory.
     try {
       const { execSync } = await import("node:child_process");
-      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+      execSync(`pkill -f '${MCP_STDIO_REAPER_PATTERN}' 2>/dev/null || true`, {
+        stdio: "pipe",
+        timeout: 5000,
+      });
     } catch {
       // best-effort
     }
@@ -771,12 +775,15 @@ export async function handleTui(
   // survives the parent when the TUI crashes without cleanup.
   try {
     const { execSync } = await import("node:child_process");
-    const orphanCount = execSync("pgrep -f 'bun.*mcp/serve' 2>/dev/null | wc -l", {
+    const orphanCount = execSync(`pgrep -f '${MCP_STDIO_REAPER_PATTERN}' 2>/dev/null | wc -l`, {
       encoding: "utf-8",
       timeout: 3000,
     }).trim();
     if (Number(orphanCount) > 0) {
-      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+      execSync(`pkill -f '${MCP_STDIO_REAPER_PATTERN}' 2>/dev/null || true`, {
+        stdio: "pipe",
+        timeout: 5000,
+      });
       process.stderr.write(`[startup] reaped ${orphanCount} orphan MCP server process(es)\n`);
     }
   } catch {

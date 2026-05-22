@@ -750,8 +750,17 @@ export async function stopServices(services: RunningServices): Promise<void> {
 /** Default service ports. */
 const DEFAULT_SERVICE_PORTS = { server: 4515, mcp: 4015 } as const;
 
-/** Service health-check timeout (ms). */
-const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+/** Default service health-check timeout (ms). */
+const DEFAULT_SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+
+/** Resolve service health-check timeout (ms). */
+export function resolveServiceHealthTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.GROVE_SERVICE_HEALTH_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SERVICE_HEALTH_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1_000) return DEFAULT_SERVICE_HEALTH_TIMEOUT_MS;
+  return parsed;
+}
 
 /**
  * Per-probe ceilings for adoption-path checks. Split into two tiers:
@@ -1004,7 +1013,7 @@ type ListenerProbe =
 async function probeListenerPid(port: number): Promise<ListenerProbe> {
   try {
     const { spawnSync } = await import("node:child_process");
-    const r = spawnSync("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+    const r = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
       encoding: "utf8",
       timeout: PROBE_TIMEOUTS.lsofMs,
     });
@@ -1677,13 +1686,14 @@ async function spawnService(
     // owned-but-unhealthy / owned-but-unresponsive distinguish dependency
     // problems from bind-races so we don't kill our own healthy child.
     if (port) {
+      const healthTimeoutMs = resolveServiceHealthTimeoutMs();
       const readiness = await waitForOwnedReadiness({
         port,
         spawnedPid: pid,
         spawnedExit: exited,
         readinessToken,
         url: `http://localhost:${port}/health`,
-        timeoutMs: SERVICE_HEALTH_TIMEOUT_MS,
+        timeoutMs: healthTimeoutMs,
       });
       if (!readiness.ok) {
         // Teardown policy (round 6): every non-ok verdict EXCEPT
@@ -1720,11 +1730,11 @@ async function spawnService(
             case "owned-but-unresponsive":
               return (
                 `${name} bound the port (PID ${pid}) but /health never responded within ` +
-                `${SERVICE_HEALTH_TIMEOUT_MS}ms — dependency stall, not a bind-race. ` +
+                `${healthTimeoutMs}ms — dependency stall, not a bind-race. ` +
                 `Last fetch error: ${readiness.lastError}`
               );
             case "no-listener":
-              return `no listener bound within ${SERVICE_HEALTH_TIMEOUT_MS}ms`;
+              return `no listener bound within ${healthTimeoutMs}ms`;
           }
         })();
         throw new Error(

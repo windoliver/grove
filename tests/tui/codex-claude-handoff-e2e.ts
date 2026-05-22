@@ -15,6 +15,8 @@
  *   --keep          Leave the tmux session + work dir behind for inspection
  *   --attach        Print `tmux attach` command and wait
  *   --timeout <ms>  Overall budget (default 600000)
+ *   --nexus-source <path>  Build/start Nexus from local source
+ *   --nexus-image <ref>    Pin Nexus image ref (for prebuilt local test images)
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -22,8 +24,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
-const SOCKET = "grove-cx-cl-e2e";
+const SOCKET = process.env.GROVE_E2E_TMUX_SOCKET ?? `grove-cx-cl-e2e-${process.pid}`;
 const SESSION = "grove-cx-cl-e2e";
 const PROJECT_ROOT = join(import.meta.dir, "..", "..");
 
@@ -34,11 +37,32 @@ const { values } = parseArgs({
     keep: { type: "boolean", default: false },
     attach: { type: "boolean", default: false },
     timeout: { type: "string", default: "600000" },
+    "nexus-source": { type: "string" },
+    "nexus-image": { type: "string" },
   },
 });
 const KEEP = values.keep;
 const ATTACH = values.attach;
 const BUDGET_MS = Number.parseInt(values.timeout as string, 10);
+const NEXUS_SOURCE = values["nexus-source"] as string | undefined;
+const NEXUS_IMAGE = values["nexus-image"] as string | undefined;
+const SOURCE_SETUP_TIMEOUT_MS = (() => {
+  const parsed = Number.parseInt(process.env.GROVE_E2E_SOURCE_SETUP_TIMEOUT_MS ?? "1200000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1_200_000;
+})();
+
+interface NexusYaml {
+  services?: unknown;
+  compose_profiles?: unknown;
+  ports?: Record<string, unknown> | undefined;
+  api_key?: unknown;
+  [key: string]: unknown;
+}
+
+interface NexusListResponse {
+  items?: Array<{ path?: string; isDirectory?: boolean }>;
+  detail?: string;
+}
 
 // ─── tmux helpers ─────────────────────────────────────────────────────
 function tmux(cmd: string, opts: { check?: boolean } = {}): string {
@@ -68,13 +92,110 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function shQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function removeString(values: unknown, removed: string): string[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  return values.filter((value): value is string => typeof value === "string" && value !== removed);
+}
+
+function dropOptionalSearchService(nexusYamlPath: string): void {
+  const parsed = parseYaml(readFileSync(nexusYamlPath, "utf-8")) as NexusYaml | null;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Unable to parse Nexus YAML at ${nexusYamlPath}`);
+  }
+
+  const services = removeString(parsed.services, "zoekt");
+  const profiles = removeString(parsed.compose_profiles, "search");
+  if (services) parsed.services = services;
+  if (profiles) parsed.compose_profiles = profiles;
+
+  const ports = parsed.ports;
+  if (ports && typeof ports === "object" && !Array.isArray(ports)) {
+    const nextPorts: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(ports)) {
+      if (key !== "zoekt") nextPorts[key] = value;
+    }
+    parsed.ports = nextPorts;
+  }
+
+  writeFileSync(nexusYamlPath, stringifyYaml(parsed), "utf-8");
+}
+
+function tailFileIfExists(path: string, maxChars = 200_000): string {
+  if (!existsSync(path)) return "";
+  const content = readFileSync(path, "utf-8");
+  return content.length > maxChars ? content.slice(-maxChars) : content;
+}
+
+function hasCoderWorkSignal(text: string): boolean {
+  return /\[(?:seenCids|contribution)\].*kind=work role=coder/i.test(text);
+}
+
+function hasHandoffSignal(text: string): boolean {
+  return (
+    /\[nexus-ipc\] SEND OK sender=coder recipient=reviewer/i.test(text) ||
+    /\[eventBus\] handoff event/i.test(text) ||
+    /\[nexus-handoff\].*total=[1-9]/i.test(text) ||
+    /\[NexusHandoffStore\.readModifyWrite\].*count=[1-9]/i.test(text)
+  );
+}
+
+function hasReviewSignal(text: string): boolean {
+  return (
+    /\[(?:seenCids|contribution)\].*kind=review role=reviewer/i.test(text) ||
+    /\[contribution\].*kind=discussion role=reviewer summary="\[DONE\] Approved/i.test(text)
+  );
+}
+
+function hasCompletionSignal(text: string): boolean {
+  return (
+    /Session Complete/i.test(text) ||
+    /Reason:\s*Session signaled done/i.test(text) ||
+    /review-loop[\s\S]{0,80}Complete/i.test(text)
+  );
+}
+
+function encodeSegment(value: string): string {
+  return value.replaceAll("%", "%25").replaceAll("/", "%2F");
+}
+
+function readNexusApiKey(nexusYamlPath: string): string | undefined {
+  const parsed = parseYaml(readFileSync(nexusYamlPath, "utf-8")) as NexusYaml | null;
+  return typeof parsed?.api_key === "string" && parsed.api_key.length > 0
+    ? parsed.api_key
+    : undefined;
+}
+
+async function listNexusDir(
+  nexusUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<NexusListResponse> {
+  const params = new URLSearchParams({ path });
+  const res = await fetch(`${nexusUrl}/api/v2/files/list?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const body = (await res.json()) as NexusListResponse;
+  if (!res.ok) {
+    throw new Error(`Nexus list failed for ${path}: HTTP ${res.status} ${JSON.stringify(body)}`);
+  }
+  if (body.detail) {
+    throw new Error(`Nexus list failed for ${path}: ${body.detail}`);
+  }
+  return body;
+}
+
 async function waitForPane(predicate: (pane: string) => boolean, phase: string, maxMs = 60000) {
-  const deadline = Date.now() + maxMs;
+  const started = Date.now();
+  const deadline = started + maxMs;
   let last = "";
   while (Date.now() < deadline) {
     last = capturePane();
     if (predicate(last)) {
-      console.log(`[${phase}] matched in ${60000 - (deadline - Date.now())}ms`);
+      console.log(`[${phase}] matched in ${Date.now() - started}ms`);
       return last;
     }
     await sleep(1000);
@@ -163,18 +284,27 @@ async function main() {
     "[setup] patched GROVE.md: coder=codex (first occurrence), reviewer stays claude-code",
   );
 
+  const nexusYamlPath = join(repoDir, "nexus.yaml");
+  if (!existsSync(nexusYamlPath)) throw new Error(`nexus.yaml missing at ${nexusYamlPath}`);
+  dropOptionalSearchService(nexusYamlPath);
+  console.log("[setup] patched nexus.yaml: disabled optional search/zoekt service");
+
   // 5. Launch the TUI inside tmux. GROVE_DIR points at our temp grove.
   //    Use `--url` is not what we want — we want the interactive flow.
   // Wrap the TUI launch in a subshell that captures the exit code and
   // writes it to a file — the `; cat` at the end keeps the pane alive
   // so we can see the output even on crash.
   const stdoutLog = join(workDir, "tui.stdout.log");
+  const debugPath = join(workDir, "grove-debug.log");
+  const nexusSourceArgs = NEXUS_SOURCE ? ` --nexus-source ${shQuote(NEXUS_SOURCE)}` : "";
+  const nexusImageEnv = NEXUS_IMAGE ? `NEXUS_IMAGE_REF=${shQuote(NEXUS_IMAGE)} ` : "";
+  const healthTimeoutMs = NEXUS_SOURCE ? 120000 : 30000;
   // GROVE_ALLOW_ALL_PERMISSIONS=1 disables the RulesResolver gate so codex/claude
   // child processes are actually allowed to Edit + execute + fetch — otherwise
   // the coder cannot write hello.txt and the loop never produces a contribution.
   const launchCmd = [
     `cd ${repoDir}`,
-    `GROVE_ALLOW_ALL_PERMISSIONS=1 GROVE_DEBUG_LOG=${join(workDir, "grove-debug.log")} bun run ${PROJECT_ROOT}/src/cli/main.ts 2>&1 | tee ${stdoutLog}`,
+    `${nexusImageEnv}GROVE_SERVICE_HEALTH_TIMEOUT_MS=${healthTimeoutMs} GROVE_ALLOW_ALL_PERMISSIONS=1 GROVE_DEBUG_LOG=${debugPath} bun run ${PROJECT_ROOT}/src/cli/main.ts up --grove ${groveDir}${nexusSourceArgs} 2>&1 | tee ${stdoutLog}`,
     `echo [EXIT $?]`,
     `cat`, // keep pane alive
   ].join(" ; ");
@@ -228,12 +358,13 @@ async function main() {
   // 8. Default cursor is on first preset (review-loop). Pick it.
   tmuxSendKeys(["Enter"]);
 
-  // 9. Wait for goal-input screen — Nexus boot + service spawn can take a while,
-  //    but the goal screen renders before any of that is required.
+  // 9. Wait for goal-input screen. Source-backed Nexus builds can take several
+  //    minutes before the TUI can advance past setup.
+  const goalInputTimeoutMs = NEXUS_SOURCE ? SOURCE_SETUP_TIMEOUT_MS : 240_000;
   await waitForPane(
     (p) => /Goal|goal/.test(p) && /Continue|Esc:back|continue/i.test(p),
     "goal-input",
-    240000,
+    goalInputTimeoutMs,
   );
   console.log("[phase 2] goal-input screen visible");
 
@@ -279,75 +410,111 @@ async function main() {
   let sawCoderWork = false;
   let sawHandoff = false;
   let sawReview = false;
+  let sawComplete = false;
   let lastCapture = "";
   while (Date.now() < observeEnd) {
     await sleep(15000);
     lastCapture = capturePane();
+    const evidence = tailFileIfExists(debugPath);
     const headline = lastCapture.split("\n").slice(0, 5).join(" | ");
     const elapsed = Math.round((Date.now() - (observeEnd - OBSERVE_MS)) / 1000);
     console.log(`[observe t+${elapsed}s] ${headline.slice(0, 120)}`);
-    if (!sawCoderWork && /submit_work|coder.*contribution|kind.?work/i.test(lastCapture)) {
+    if (!sawCoderWork && hasCoderWorkSignal(evidence)) {
       sawCoderWork = true;
       console.log("[phase 5] coder work submission detected");
     }
-    if (!sawHandoff && /handoff/i.test(lastCapture)) {
+    if (!sawHandoff && hasHandoffSignal(evidence)) {
       sawHandoff = true;
       console.log("[phase 5] handoff event detected");
     }
-    if (!sawReview && /submit_review|reviewer.*contribution|kind.?review/i.test(lastCapture)) {
+    if (!sawReview && hasReviewSignal(evidence)) {
       sawReview = true;
       console.log("[phase 5] reviewer submission detected");
     }
-    if (sawHandoff && sawReview) break;
+    if (!sawComplete && hasCompletionSignal(lastCapture)) {
+      sawComplete = true;
+      console.log("[phase 5] session completion detected in tmux pane");
+    }
+    if (sawCoderWork && sawHandoff && sawReview && sawComplete) break;
   }
 
   // 15. Final capture + debug log tail.
+  const finalPane = capturePane();
+  sawComplete ||= hasCompletionSignal(finalPane);
   console.log("\n──── final pane ────");
-  console.log(capturePane());
+  console.log(finalPane);
   console.log("──── end final pane ────");
 
-  const debugPath = join(workDir, "grove-debug.log");
   if (existsSync(debugPath)) {
-    const debug = execSync(`tail -300 ${debugPath}`, { encoding: "utf-8" });
+    const debug = tailFileIfExists(debugPath).split("\n").slice(-300).join("\n");
     console.log("──── debug tail ────");
     console.log(debug);
     console.log("──── end debug tail ────");
+
+    const finalEvidence = debug;
+    sawCoderWork ||= hasCoderWorkSignal(finalEvidence);
+    sawHandoff ||= hasHandoffSignal(finalEvidence);
+    sawReview ||= hasReviewSignal(finalEvidence);
+  }
+
+  if (NEXUS_SOURCE) {
+    const stdout = existsSync(stdoutLog) ? readFileSync(stdoutLog, "utf-8") : "";
+    const sourceLabel = `source build from ${NEXUS_SOURCE}`;
+    if (!stdout.includes(sourceLabel)) {
+      throw new Error(`Source-backed Nexus validation failed — missing "${sourceLabel}"`);
+    }
+    console.log(`[nexus] source build validated: ${NEXUS_SOURCE}`);
   }
 
   // 16. Validate via Nexus VFS — contributions + handoffs should be there.
   console.log("\n[phase 6] querying Nexus VFS for contributions + handoffs");
-  try {
-    const groveJsonPath = join(groveDir, "grove.json");
-    const apiKeyPath = join(groveDir, "api-key");
-    const groveJson = JSON.parse(readFileSync(groveJsonPath, "utf-8")) as {
-      nexusUrl?: string;
-    };
-    const nexusUrl = groveJson.nexusUrl;
-    if (nexusUrl && existsSync(apiKeyPath)) {
-      const apiKey = readFileSync(apiKeyPath, "utf-8").trim();
-      for (const dir of [
-        "/zones/default/contributions",
-        "/zones/default/handoffs",
-        "/zones/default/sessions",
-      ]) {
-        const res = execSync(
-          `curl -s -X POST '${nexusUrl}/api/nfs/sys_readdir' ` +
-            `-H 'Authorization: Bearer ${apiKey}' -H 'Content-Type: application/json' ` +
-            `-d '${JSON.stringify({ path: dir })}'`,
-          { encoding: "utf-8" },
-        );
-        console.log(`[nexus] ${dir}: ${res.slice(0, 400)}`);
-      }
-    } else {
-      console.log("[nexus] no nexusUrl/api-key — skipping VFS validation");
-    }
-  } catch (err) {
-    console.log(`[nexus] validation failed: ${(err as Error).message}`);
+  const groveJsonPath = join(groveDir, "grove.json");
+  const namespacePath = join(groveDir, "namespace");
+  const currentSessionPath = join(groveDir, "current-session.json");
+  const groveJson = JSON.parse(readFileSync(groveJsonPath, "utf-8")) as {
+    nexusUrl?: string;
+  };
+  const nexusUrl = groveJson.nexusUrl;
+  const nexusApiKey = readNexusApiKey(nexusYamlPath);
+  if (!nexusUrl || !nexusApiKey) {
+    throw new Error("Nexus VFS validation unavailable — missing nexusUrl or nexus.yaml api_key");
+  }
+  const zoneId = readFileSync(namespacePath, "utf-8").trim();
+  const currentSession = JSON.parse(readFileSync(currentSessionPath, "utf-8")) as {
+    sessionId?: string;
+  };
+  const sessionId = currentSession.sessionId;
+  if (!sessionId) throw new Error("Nexus VFS validation unavailable — missing sessionId");
+
+  const encodedZoneRoot = `/zones/${encodeSegment(zoneId)}`;
+  const rawZoneRoot = `/zones/${zoneId}`;
+  const contributionList = await listNexusDir(
+    nexusUrl,
+    nexusApiKey,
+    `${encodedZoneRoot}/sessions/${encodeSegment(sessionId)}/contributions`,
+  );
+  const handoffList = await listNexusDir(nexusUrl, nexusApiKey, `${rawZoneRoot}/handoffs`);
+  const sessionList = await listNexusDir(nexusUrl, nexusApiKey, `${rawZoneRoot}/sessions`);
+  console.log(
+    `[nexus] contributions=${contributionList.items?.length ?? 0} handoffs=${handoffList.items?.length ?? 0} sessions=${sessionList.items?.length ?? 0}`,
+  );
+  if ((contributionList.items?.length ?? 0) < 2) {
+    throw new Error("Nexus VFS validation failed — expected at least work + review contributions");
+  }
+  if ((handoffList.items?.length ?? 0) < 1) {
+    throw new Error("Nexus VFS validation failed — expected at least one handoff record");
+  }
+  if ((sessionList.items?.length ?? 0) < 1) {
+    throw new Error("Nexus VFS validation failed — expected at least one session record");
   }
 
-  console.log(`\n[result] coderWork=${sawCoderWork} handoff=${sawHandoff} review=${sawReview}`);
-  if (!sawHandoff || !sawReview) {
-    throw new Error(`E2E incomplete — handoff=${sawHandoff} review=${sawReview}`);
+  console.log(
+    `\n[result] coderWork=${sawCoderWork} handoff=${sawHandoff} review=${sawReview} complete=${sawComplete}`,
+  );
+  if (!sawCoderWork || !sawHandoff || !sawReview || !sawComplete) {
+    throw new Error(
+      `E2E incomplete — coderWork=${sawCoderWork} handoff=${sawHandoff} review=${sawReview} complete=${sawComplete}`,
+    );
   }
   console.log("[result] E2E PASSED — codex → claude handoff completed");
 }

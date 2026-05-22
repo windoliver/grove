@@ -461,7 +461,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     useInterval(tickElapsed, 1000);
 
     // ─── Agent monitoring (extracted hook) ───
-    const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
+    const monitor = useAgentMonitor({ groveDir, logBuffers, tmux, eventBus, topology });
 
     // Toast for permission requests
     const prevPermCountRef = useRef(0);
@@ -483,7 +483,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // expires on wall-clock and frontier needs server compute, neither of
     // which the watch protocol covers.
     //
-    // Honor the session scope gate: in scoped sessions we keep the polled
+    // Honor the session scope gate: in scoped sessions we keep the snapshot
     // path because /api/list and /api/watch are still namespace-global —
     // the EntityStore would seed with all sessions' rows on init and admit
     // foreign-session writes via the watch fan-out. The session-time
@@ -502,39 +502,38 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       debugLog("feed.fetch", `total=${result?.length ?? 0}`);
       if (fetchCountRef.current <= 5 || fetchCountRef.current % 20 === 0) {
         debugLog(
-          "poll",
-          `fetch #${fetchCountRef.current} returned ${result?.length ?? 0} contributions`,
+          "feed.fetch",
+          `snapshot #${fetchCountRef.current} returned ${result?.length ?? 0} contributions`,
         );
       }
       return result;
     }, [provider, sessionId]);
 
-    // Gate polling: pause contributions when panel is fullscreen and not showing feed
+    // Gate snapshot fetches when panel is fullscreen and not showing feed.
     const feedActive =
       zoomLevel !== "full" || expandedPanel === RunningPanel.Feed || expandedPanel === null;
     // Only switch to informer data after it has synced and is healthy. Cold
-    // start or terminal watch failure must keep the polled fallback alive,
+    // start or terminal watch failure must keep the event-triggered snapshot fallback alive,
     // otherwise the feed renders empty even though `getContributions()` would
     // still return data.
     const contribInformerReady =
       useContribInformer && contribEntities.hasSynced && !contribEntities.error;
-    const dashboardPoll = useEventDrivenData<DashboardData>(
+    const dashboardSnapshot = useEventDrivenData<DashboardData>(
       dashboardFetcher,
       undefined,
       undefined,
       true,
     );
-    const contributionsPoll = useEventDrivenData<readonly Contribution[]>(
+    const contributionsSnapshot = useEventDrivenData<readonly Contribution[]>(
       contributionsFetcher,
       undefined,
       undefined,
       feedActive && !contribInformerReady,
     );
 
-    // The polled fetcher is only used for UI refresh of the contributions feed display;
-    // agent-to-agent contribution delivery is done via NexusWsBridge SSE push,
-    // not via polling. The eventBus handler below drives immediate UI refresh
-    // when a push arrives.
+    // This fetcher is not a timer. It seeds the feed before the informer is
+    // ready, and the EventBus handler below refreshes it immediately when SSE
+    // push arrives.
 
     // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch.
     //
@@ -542,8 +541,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // publishes contribution events with `targetRole` set to the role that
     // received the inbox delivery (coder / reviewer / …). Subscribing to a
     // sentinel channel like "system" never receives anything, which is how
-    // the feed silently stopped refreshing on push in live sessions — the
-    // per-poll interval was the only refresh path.
+    // the feed silently stopped refreshing on push in live sessions.
     //
     // ScreenManager renders RunningView OUTSIDE App's RefreshContext
     // provider (the inspect overlay is a different screen state),
@@ -556,16 +554,16 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       const handler = () => {
         const p = provider as { invalidateCaches?: () => void };
         p.invalidateCaches?.();
-        dashboardPoll.refresh();
-        contributionsPoll.refresh();
+        dashboardSnapshot.refresh();
+        contributionsSnapshot.refresh();
       };
       for (const role of roles) eventBus.subscribe(role, handler);
       return () => {
         for (const role of roles) eventBus.unsubscribe(role, handler);
       };
-    }, [eventBus, topology, provider, dashboardPoll.refresh, contributionsPoll.refresh]);
+    }, [eventBus, topology, provider, dashboardSnapshot.refresh, contributionsSnapshot.refresh]);
 
-    const dashboard = dashboardPoll.data ?? undefined;
+    const dashboard = dashboardSnapshot.data ?? undefined;
 
     // ─── Supervision fleet model (#193, gated by GROVE_SUPERVISION) ───
     // `active` is only true when the supervision body is the visible body
@@ -599,12 +597,12 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       [],
     );
     const contributions = useMemo<readonly Contribution[] | undefined>(() => {
-      if (!contribInformerReady) return contributionsPoll.data ?? undefined;
+      if (!contribInformerReady) return contributionsSnapshot.data ?? undefined;
       // Time-based session scope. The watch protocol does not yet filter
       // by sessionId server-side, so the EntityStore cache may contain
       // contributions from prior/parallel sessions in the same namespace.
       // Filter to entries created at-or-after the current session start to
-      // match the polled provider.getContributions() semantics, which the
+      // match the provider.getContributions() snapshot semantics, which the
       // TUI provider scopes server-side via setSessionScope. Without this
       // filter, switching to the EntityStore path in a scoped session
       // would surface other-session contributions in the feed.
@@ -622,7 +620,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       // every entity on each recompute, freezing the TUI even though the
       // visible feed only shows a window. Take the newest FEED_PROJECTION_CAP
       // by createdAt, then re-sort ASCENDING so the feed's auto-follow
-      // (`feed.length - 1`) lands on the newest row, matching the polled
+      // (`feed.length - 1`) lands on the newest row, matching the snapshot
       // `getContributions()` order.
       // DESC chronological for the cap (invalid-last so bad timestamps
       // don't displace real recent contributions); ASC for the final feed
@@ -641,7 +639,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         compareTimestampsAscNewestLast(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
       );
       return sorted.map(entityToContribution);
-    }, [contribInformerReady, contribEntities.data, contributionsPoll.data, sessionStartedAt]);
+    }, [contribInformerReady, contribEntities.data, contributionsSnapshot.data, sessionStartedAt]);
     // Session scoping is handled server-side (provider.setSessionScope).
     // The feed already contains only this session's contributions.
     const feed = contributions ?? [];
@@ -650,20 +648,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // path is unhealthy. Informer error always surfaces (even when we're still
     // polling as fallback) so operators see watch-pipeline failures.
     const pollHealth = useMemo(() => {
-      const contribStale = contribInformerReady ? false : contributionsPoll.isStale;
+      const contribStale = contribInformerReady ? false : contributionsSnapshot.isStale;
       const contribError =
         contribEntities.error?.message ??
-        (contribInformerReady ? undefined : contributionsPoll.error?.message);
-      const isStale = dashboardPoll.isStale || contribStale;
-      const error = dashboardPoll.error?.message ?? contribError ?? undefined;
+        (contribInformerReady ? undefined : contributionsSnapshot.error?.message);
+      const isStale = dashboardSnapshot.isStale || contribStale;
+      const error = dashboardSnapshot.error?.message ?? contribError ?? undefined;
       return { isStale, error };
     }, [
-      dashboardPoll.isStale,
-      dashboardPoll.error?.message,
+      dashboardSnapshot.isStale,
+      dashboardSnapshot.error?.message,
       contribInformerReady,
       contribEntities.error?.message,
-      contributionsPoll.isStale,
-      contributionsPoll.error?.message,
+      contributionsSnapshot.isStale,
+      contributionsSnapshot.error?.message,
     ]);
 
     const [handoffs, setHandoffs] = useState<readonly Handoff[]>([]);
@@ -1071,9 +1069,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         logViewActive: useLogView,
         // openDetail kept as an interface field for future detail-route work,
         // but wired to a no-op so Enter cannot accidentally enter inspect.
-        openDetail: () => {
-          // no-op
-        },
+        openDetail: () => undefined,
         enterInspect: () => onEnterInspect(),
         openPulse: () => onOpenPulse?.(),
         quit: () => onQuit(),
