@@ -179,34 +179,55 @@ declare module "@opentui-ui/dialog" {
 declare module "@opentui-ui/dialog/react" {
   import type { ReactNode } from "react";
 
+  export type DialogId = string | number;
+
+  export interface PromptContext<T> {
+    readonly resolve: (value: T) => void;
+    readonly dismiss: () => void;
+    readonly dialogId: DialogId;
+  }
+
+  export interface ChoiceContext<K> {
+    readonly resolve: (value: K) => void;
+    readonly dismiss: () => void;
+    readonly dialogId: DialogId;
+  }
+
   export interface DialogProviderProps {
     theme?: object;
     children?: ReactNode;
   }
 
   export interface DialogHook {
-    confirm(options: { title?: string; message?: string }): Promise<boolean>;
-    alert(options: { title?: string; message?: string }): Promise<void>;
-    prompt(options: {
-      title?: string;
-      message?: string;
-      defaultValue?: string;
-    }): Promise<string | null>;
-    choice(options: {
-      title?: string;
-      message?: string;
-      choices: string[];
-    }): Promise<string | null>;
-    show(options: { title?: string; message?: string }): string;
+    confirm(options: {
+      content: (ctx: {
+        readonly resolve: (value: boolean) => void;
+        readonly dismiss: () => void;
+        readonly dialogId: DialogId;
+      }) => ReactNode;
+      fallback?: boolean | undefined;
+    }): Promise<boolean>;
+    alert(options: {
+      content: (ctx: { readonly dismiss: () => void; readonly dialogId: DialogId }) => ReactNode;
+    }): Promise<void>;
+    prompt<T>(options: {
+      content: (ctx: PromptContext<T>) => ReactNode;
+      fallback?: T | undefined;
+    }): Promise<T | undefined>;
+    choice<K>(options: {
+      content: (ctx: ChoiceContext<K>) => ReactNode;
+      fallback?: K | undefined;
+    }): Promise<K | undefined>;
+    show(options: { content: () => ReactNode }): DialogId;
+    close(id?: DialogId): void;
     closeAll(): void;
-    isOpen(): boolean;
   }
 
   export function DialogProvider(props: DialogProviderProps): ReactNode;
   export function useDialog(): DialogHook;
   export function useDialogKeyboard(
     handler: (key: import("@opentui/core").KeyEvent) => void,
-    dialogId?: string,
+    dialogId?: DialogId,
   ): void;
   export function useDialogState<T>(selector: (state: unknown) => T): T;
   export { themes } from "@opentui-ui/dialog";

@@ -38,8 +38,10 @@ import type {
 import {
   addContributionToSessionHttp,
   archiveSessionHttp,
+  contributionsForCidsInOrder,
   createSessionHttp,
   fetchGoalHttp,
+  getSessionContributionsHttp,
   getSessionHttp,
   listSessionsHttp,
   setGoalHttp,
@@ -421,6 +423,34 @@ export class NexusDataProvider
       }
     }
     return super.getSession(sessionId);
+  }
+
+  override async getSessionContributions(sessionId: string): Promise<readonly Contribution[]> {
+    const scopedStore = new NexusContributionStore({
+      ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),
+      sessionId,
+    });
+    try {
+      const scopedContributions = await scopedStore.list();
+      if (scopedContributions.length > 0) return scopedContributions;
+    } finally {
+      scopedStore.close();
+    }
+
+    if (this.serverUrl) {
+      try {
+        const serverContributions = await getSessionContributionsHttp(
+          this.serverUrl,
+          sessionId,
+          this.authHeaders,
+        );
+        if (serverContributions.length > 0) return serverContributions;
+      } catch {
+        /* fall through to Nexus VFS */
+      }
+    }
+    const cids = await this.nexusSessionStore.getContributions(sessionId);
+    return contributionsForCidsInOrder(this.store, cids);
   }
 
   override async archiveSession(token: DangerousToken<"AgentSession">): Promise<void> {

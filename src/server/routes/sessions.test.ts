@@ -4,6 +4,7 @@ import { type CasMutationResult, type CasOpts, casOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { Finalizer } from "../../core/lifecycle-metadata.js";
+import type { Contribution } from "../../core/models.js";
 import type {
   CreateSessionInput,
   Session,
@@ -131,6 +132,25 @@ class TestGoalSessionStore implements GoalSessionStore {
   }
 }
 
+function cidForIndex(index: number): string {
+  return `blake3:${index.toString(16).padStart(64, "0")}`;
+}
+
+function makeRouteContribution(index: number): Contribution {
+  return {
+    cid: cidForIndex(index),
+    manifestVersion: 1,
+    kind: "work",
+    mode: "evaluation",
+    summary: `session contribution ${index}`,
+    tags: [],
+    artifacts: {},
+    relations: [],
+    agent: { agentId: "agent-1" },
+    createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+  };
+}
+
 describe("session routes", () => {
   test("GET /api/sessions/:id exposes lifecycle metadata", async () => {
     const goalSessionStore = new TestGoalSessionStore();
@@ -148,6 +168,29 @@ describe("session routes", () => {
     expect(data.finalizers).toEqual(session.finalizers);
     expect(data.deletionTimestamp).toBeUndefined();
     expect(data.deletionAudit).toBeUndefined();
+  });
+
+  test("GET /api/sessions/:id/contributions returns all linked contributions in session order", async () => {
+    const goalSessionStore = new TestGoalSessionStore();
+    const session = await goalSessionStore.createSession({ goal: "history" });
+    const { app, contributionStore } = createTestApp({ goalSessionStore });
+
+    const contributions = Array.from({ length: 125 }, (_, i) => makeRouteContribution(i + 1));
+    for (const contribution of contributions) {
+      await contributionStore.put(contribution);
+    }
+    for (const contribution of contributions.toReversed()) {
+      await goalSessionStore.addContributionToSession(session.id, contribution.cid);
+    }
+
+    const res = await app.request(`/api/sessions/${session.id}/contributions`, {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as readonly Contribution[];
+    expect(body.length).toBe(125);
+    expect(body.map((c) => c.cid)).toEqual(contributions.toReversed().map((c) => c.cid));
   });
 
   test("GET /api/sessions/:id/delete-blockers returns blockers for an existing session", async () => {

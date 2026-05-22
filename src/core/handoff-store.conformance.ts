@@ -348,6 +348,53 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       expect(after?.status).toBe(HandoffStatus.Expired);
     });
 
+    test("markCancelled transitions unresolved handoff to cancelled with terminal metadata", async () => {
+      const h = await store.create(makeHandoffInput());
+
+      await store.markCancelled(h.handoffId, {
+        terminalReason: "operator cancelled",
+        replacementHandoffId: "handoff-replacement",
+      });
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Cancelled);
+      expect(updated?.terminalReason).toBe("operator cancelled");
+      expect(updated?.replacementHandoffId).toBe("handoff-replacement");
+    });
+
+    test("markManuallyResolved transitions expired handoff to manually_resolved", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
+      await store.expireStale();
+
+      await store.markManuallyResolved(h.handoffId, {
+        terminalReason: "operator handled offline",
+      });
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.ManuallyResolved);
+      expect(updated?.terminalReason).toBe("operator handled offline");
+    });
+
+    test("markCancelled transitions dead-lettered handoff to cancelled", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDeadLettered(h.handoffId);
+
+      await store.markCancelled(h.handoffId, { terminalReason: "operator retrying elsewhere" });
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Cancelled);
+      expect(updated?.terminalReason).toBe("operator retrying elsewhere");
+    });
+
+    test("markCancelled on replied handoff throws InvalidTransitionError", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+      await store.markReplied(h.handoffId, "blake3:reply");
+
+      await expect(store.markCancelled(h.handoffId)).rejects.toThrow(InvalidTransitionError);
+    });
+
     // ------------------------------------------------------------------
     // countPending
     // ------------------------------------------------------------------

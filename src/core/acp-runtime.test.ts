@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AcpLaunch } from "./acp-launch.js";
@@ -215,6 +215,19 @@ describe("buildAcpLaunchArgs", () => {
       NEXUS_API_KEY: "example-secret",
       GROVE_SESSION_ID: "session-1",
     });
+  });
+
+  test("adds standard user bin dirs to adapter PATH so Claude Code installs are visible", () => {
+    const home = mkdtempSync(join(tmpdir(), "grove-acp-home-"));
+    try {
+      mkdirSync(join(home, ".local", "bin"), { recursive: true });
+
+      const env = buildAcpLaunchEnv("claude", { HOME: home, PATH: "/usr/bin" }, undefined);
+
+      expect(env.PATH?.split(":")).toContain(join(home, ".local", "bin"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("skips codex MCP argv overrides when CODEX_HOME config is authoritative", () => {

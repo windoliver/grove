@@ -45,12 +45,35 @@ function capturePane(session: string): string {
   return tmux(`capture-pane -t ${session} -p`);
 }
 
+function capturePaneOrEmpty(session: string): string {
+  try {
+    return capturePane(session);
+  } catch {
+    return "";
+  }
+}
+
 function sendKeys(session: string, keys: string): void {
   tmux(`send-keys -t ${session} ${keys}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForPane(
+  session: string,
+  predicate: (output: string) => boolean,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = capturePaneOrEmpty(session);
+    if (predicate(last)) return last;
+    await sleep(500);
+  }
+  return last;
 }
 
 function launchHarness(session: string, groveDir: string, label: string, count = 55): void {
@@ -136,10 +159,11 @@ describe.skipIf(!hasTmux)("Session isolation E2E — tmux capture-pane", () => {
     const groveDir = makeTempGroveDir();
     launchHarness("grove-a", groveDir, "grove-a", 55);
 
-    // Wait for DB seed + TUI render (seeding 55 rows takes ~1s; render ~2s)
-    await sleep(5000);
-
-    const output = capturePane("grove-a");
+    const output = await waitForPane(
+      "grove-a",
+      (pane) => pane.includes("Enter:select") && pane.includes("Recent sessions"),
+      10000,
+    );
 
     // TUI must show the preset-select screen (title "Grove", keyboard hints)
     expect(output).toContain("Enter:select");
@@ -168,10 +192,10 @@ describe.skipIf(!hasTmux)("Session isolation E2E — tmux capture-pane", () => {
     // Seed grove-b with "grove-b-goal-*" sessions
     launchHarness("grove-b", dirB, "grove-b", 5);
 
-    await sleep(5000);
-
-    const outputA = capturePane("grove-a");
-    const outputB = capturePane("grove-b");
+    const [outputA, outputB] = await Promise.all([
+      waitForPane("grove-a", (pane) => pane.includes("grove-a-goal"), 10000),
+      waitForPane("grove-b", (pane) => pane.includes("grove-b-goal"), 10000),
+    ]);
 
     // Grove-A picker contains "grove-a" goals but NOT "grove-b" goals
     expect(outputA).toContain("grove-a-goal");
@@ -189,10 +213,9 @@ describe.skipIf(!hasTmux)("Session isolation E2E — tmux capture-pane", () => {
   test("Pressing q quits the TUI cleanly from preset-select", async () => {
     const groveDir = makeTempGroveDir();
     launchHarness("grove-a", groveDir, "grove-a", 3);
-    await sleep(5000);
 
     // Confirm we're on the preset-select screen before quitting
-    const before = capturePane("grove-a");
+    const before = await waitForPane("grove-a", (pane) => pane.includes("Enter:select"), 10000);
     expect(before).toContain("Enter:select");
 
     // Press q to quit

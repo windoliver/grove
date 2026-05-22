@@ -437,15 +437,14 @@ async function buildAppProps(
         }
       : undefined;
 
-  // Create EventBus when Nexus is available. NexusWsBridge (in screen-manager.tsx)
-  // connects SSE and publishes events into this bus, which triggers re-fetches
-  // in RunningView via useEventDrivenData. Without a bridge connection, panels
-  // refresh on the global RefreshContext signal (r-key + app-level fan-out).
+  // Create an in-process EventBus for local UI fan-out. NexusWsBridge publishes
+  // SSE deliveries into it when Nexus is configured; local fallback routing uses
+  // the same bus after polling SQLite session contributions.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   {
     const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
-    if (nexusUrl && apiKey) {
+    if ((nexusUrl && apiKey) || backend.mode === "local") {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
       eventBus = new LocalEventBus();
       stopCallbacks.push(() => eventBus?.close());
@@ -594,6 +593,7 @@ async function buildAppProps(
       agentRuntime,
       contract,
       userConfig,
+      backendMode: backend.mode,
       initialDashboard,
     },
     provider,

@@ -20,7 +20,7 @@
 
 import React from "react";
 import { LogViewport } from "../components/log-viewport.js";
-import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
+import type { AgentLogBuffer, LogLine } from "../data/agent-log-buffer.js";
 import { agentStatusIcon, theme } from "../theme.js";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +55,10 @@ export interface TracePaneProps {
   readonly traceScrollOffset: number;
   /** Number of visible trace lines. */
   readonly viewportLines?: number;
+}
+
+export function traceLineTextColor(line: LogLine): string {
+  return line.historical ? theme.disabled : theme.text;
 }
 
 // ---------------------------------------------------------------------------

@@ -43,12 +43,34 @@ function capturePane(): string {
   return tmux(`capture-pane -t ${SESSION} -p`);
 }
 
+function capturePaneOrEmpty(): string {
+  try {
+    return capturePane();
+  } catch {
+    return "";
+  }
+}
+
 function sendKeys(keys: string): void {
   tmux(`send-keys -t ${SESSION} ${keys}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForPane(
+  predicate: (output: string) => boolean,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = capturePaneOrEmpty();
+    if (predicate(last)) return last;
+    await sleep(500);
+  }
+  return last;
 }
 
 function launchHarness(): void {
@@ -94,9 +116,8 @@ describe.skipIf(!hasTmux)("Session reuse E2E — tmux capture-pane", () => {
 
   test("Starts on complete screen (Screen 5) with session stats", async () => {
     launchHarness();
-    await sleep(3000);
 
-    const output = capturePane();
+    const output = await waitForPane((pane) => pane.includes("Session Complete"), 8000);
     expect(output).toContain("Session Complete");
     expect(output).toContain("signaled done");
     expect(output).toContain("7"); // 7 contributions
@@ -106,17 +127,18 @@ describe.skipIf(!hasTmux)("Session reuse E2E — tmux capture-pane", () => {
 
   test("Enter on complete → goal-input (NOT preset-select) — session reuse", async () => {
     launchHarness();
-    await sleep(3000);
 
     // Verify we're on complete screen
-    const before = capturePane();
+    const before = await waitForPane((pane) => pane.includes("Session Complete"), 8000);
     expect(before).toContain("Session Complete");
 
     // Press Enter — should reuse preset and skip to goal-input
     sendKeys("Enter");
-    await sleep(2000);
 
-    const after = capturePane();
+    const after = await waitForPane(
+      (pane) => !pane.includes("Session Complete") && pane.toLowerCase().includes("goal"),
+      8000,
+    );
     // Should be on goal-input (Screen 3), NOT preset-select (Screen 1)
     expect(after).not.toContain("Session Complete"); // Left the complete screen
     expect(after).not.toContain("Pick a preset"); // Did NOT go to preset-select
@@ -125,13 +147,12 @@ describe.skipIf(!hasTmux)("Session reuse E2E — tmux capture-pane", () => {
 
   test("Goal-input after reuse shows agent spawn preview with preserved roles", async () => {
     launchHarness();
-    await sleep(3000);
+    await waitForPane((pane) => pane.includes("Session Complete"), 8000);
 
     // Navigate: complete → goal-input via Enter
     sendKeys("Enter");
-    await sleep(2000);
 
-    const output = capturePane();
+    const output = await waitForPane((pane) => pane.includes("agents will be configured"), 8000);
     // Goal-input should show the spawn preview with the preserved role mapping
     expect(output).toContain("coder");
     expect(output).toContain("reviewer");

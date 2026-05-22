@@ -748,6 +748,49 @@ describe("schema migration", () => {
     }
   });
 
+  test("legacy handoffs table gets operator terminal metadata columns before HANDOFF_DDL", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS handoffs (
+          handoff_id TEXT PRIMARY KEY,
+          source_cid TEXT NOT NULL,
+          from_role TEXT NOT NULL,
+          to_role TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending_pickup',
+          requires_reply INTEGER NOT NULL DEFAULT 0,
+          reply_due_at TEXT,
+          resolved_by_cid TEXT,
+          created_at TEXT NOT NULL
+        );
+      `);
+      db.close();
+
+      const migrated = initSqliteDb(dbPath);
+      const cols = migrated.prepare("PRAGMA table_info(handoffs)").all() as readonly {
+        name: string;
+      }[];
+      migrated.close();
+
+      const colNames = new Set(cols.map((c) => c.name));
+      expect(colNames.has("seen_at")).toBe(true);
+      expect(colNames.has("acked_at")).toBe(true);
+      expect(colNames.has("session_id")).toBe(true);
+      expect(colNames.has("ipc_message_id")).toBe(true);
+      expect(colNames.has("terminal_reason")).toBe(true);
+      expect(colNames.has("replacement_handoff_id")).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("v14 migration backfills session contribution owner refs", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");
