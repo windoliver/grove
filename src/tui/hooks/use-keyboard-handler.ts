@@ -15,7 +15,6 @@ import {
 import type { ZoomLevel } from "../panels/panel-manager.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { isHelpToggleKey } from "./shared-keyboard-core.js";
-import type { KeybindingOverrides, RemappableAction } from "./use-keybinding-overrides.js";
 import type { NavigationActions } from "./use-navigation.js";
 import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
 
@@ -85,13 +84,6 @@ export interface KeyboardActions {
   readonly frontierCids: () => readonly string[];
   readonly selectedSession: string | undefined;
   readonly hasTmux: boolean;
-  /** Keybinding overrides from .grove/keybindings.json (item 19). */
-  readonly keybindingOverrides?: KeybindingOverrides | undefined;
-  /**
-   * Pre-built reverse map (key → action) derived from keybindingOverrides.
-   * Use buildKeyActionMap() to construct. Enables O(1) lookup vs O(n) scan.
-   */
-  readonly keyActionMap?: ReadonlyMap<string, RemappableAction> | undefined;
   readonly resolvedKeymap?: ResolvedKeymap | undefined;
   readonly keymapPrefix?: readonly string[] | undefined;
   readonly onKeymapPrefixChange?: (prefix: readonly string[]) => void;
@@ -277,66 +269,6 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   const mode = actions.panels.state.mode;
   const focused = actions.panels.state.focused;
   const keymapPrefix = actions.keymapPrefix ?? [];
-
-  // Keybinding overrides (item 19): O(1) lookup via pre-built reverse map.
-  // Override lookup only applies in normal mode to avoid breaking modal input.
-  const keyActionMap = actions.keyActionMap;
-  if (mode === InputMode.Normal && keymapPrefix.length === 0 && keyActionMap && input && !isCtrl) {
-    const action = keyActionMap.get(input);
-    if (action !== undefined) {
-      switch (action) {
-        case "quit":
-          actions.onQuit();
-          return true;
-        case "help":
-          actions.panels.setMode(InputMode.Help);
-          return true;
-        case "zoom_cycle":
-          actions.onZoomCycle();
-          return true;
-        case "zoom_reset":
-          actions.onZoomReset();
-          return true;
-        case "broadcast":
-          actions.onBroadcastMode();
-          return true;
-        case "direct_message":
-          actions.onDirectMessageMode();
-          return true;
-        case "search_start":
-          if (focused === Panel.Search) actions.onSearchStart();
-          return true;
-        case "terminal_input":
-          if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
-          return true;
-        case "compare_toggle":
-          if (focused === Panel.Frontier) actions.onCompareToggle();
-          return true;
-        case "artifact_prev":
-          if (focused === Panel.Artifact) actions.onArtifactPrev();
-          return true;
-        case "artifact_next":
-          if (focused === Panel.Artifact) actions.onArtifactNext();
-          return true;
-        case "artifact_diff":
-          if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
-          return true;
-        case "approve":
-          if (focused === Panel.Decisions) actions.onApproveQuestion();
-          return true;
-        case "deny":
-          if (focused === Panel.Decisions) actions.onDenyQuestion();
-          return true;
-        case "refresh":
-          actions.onRefresh();
-          return true;
-        case "palette":
-          actions.onSpawnPalette();
-          actions.panels.setMode(InputMode.CommandPalette);
-          return true;
-      }
-    }
-  }
 
   // Command palette toggle (works in all modes except help). Both
   // dismissal AND opening route through onPaletteClose / onSpawnPalette

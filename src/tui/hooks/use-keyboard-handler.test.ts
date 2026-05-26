@@ -9,9 +9,8 @@ import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "../app-reducer.js";
 import type { ResolvedKeymap } from "../keymap/keymap.js";
-import { resolveBuiltinKeymap } from "../keymap/keymap.js";
+import { resolveBuiltinKeymap, resolveKeymapWithOverrides } from "../keymap/keymap.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
-import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./use-keyboard-handler.js";
 import type { PanelFocusState } from "./use-panel-focus.js";
@@ -60,7 +59,6 @@ function mockActions(overrides?: {
   selectedSession?: string;
   hasTmux?: boolean;
   isDetailView?: boolean;
-  keybindingOverrides?: import("./use-keybinding-overrides.js").KeybindingOverrides;
   resolvedKeymap?: ResolvedKeymap;
   keymapPrefix?: readonly string[];
 }): { actions: KeyboardActions; log: ActionLog } {
@@ -152,10 +150,6 @@ function mockActions(overrides?: {
     frontierCids: () => overrides?.frontierCids ?? [],
     selectedSession: overrides?.selectedSession,
     hasTmux: overrides?.hasTmux ?? false,
-    keybindingOverrides: overrides?.keybindingOverrides,
-    keyActionMap: overrides?.keybindingOverrides
-      ? buildKeyActionMap(overrides.keybindingOverrides)
-      : undefined,
     resolvedKeymap: overrides?.resolvedKeymap,
     keymapPrefix: overrides?.keymapPrefix ?? [],
     onKeymapPrefixChange: (prefix) => record("onKeymapPrefixChange", prefix),
@@ -224,8 +218,7 @@ describe("routeKey — leader keymap", () => {
 
   test("pending leader sequence takes precedence over legacy override map", () => {
     const { actions, log } = mockActions({
-      keybindingOverrides: { refresh: "x" },
-      resolvedKeymap: resolveBuiltinKeymap("default"),
+      resolvedKeymap: resolveKeymapWithOverrides("default", { refresh: "x" }),
       keymapPrefix: ["space"],
     });
     const handled = routeKey(keyEvent("x"), actions);
@@ -379,7 +372,9 @@ describe("routeKey — normal mode misc", () => {
   });
 
   test("keybinding override for 'refresh' calls onRefresh", () => {
-    const { actions, log } = mockActions({ keybindingOverrides: { refresh: "F5" } });
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveKeymapWithOverrides("default", { refresh: "F5" }),
+    });
     const handled = routeKey(keyEvent("F5"), actions);
     expect(handled).toBe(true);
     expect(log.calls).toContain("onRefresh");

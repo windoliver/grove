@@ -2,14 +2,14 @@
  * Customizable keybindings loader.
  *
  * Loads keybinding overrides from `.grove/keybindings.json`.
- * Format: { "action": "key" } where action is a routeKey action name
- * and key is the key name (e.g., "q", "escape", "tab").
+ * Format: { "action": "sequence" } where action is a keymap binding id
+ * and sequence is a key sequence (e.g., "Q", "Space p t", "F5").
  *
  * Example .grove/keybindings.json:
  * {
- *   "quit": "Q",
+ *   "quit": "Space x",
  *   "help": "F1",
- *   "zoom_cycle": "z",
+ *   "toggle_panel:terminal": "Space p x",
  *   "broadcast": "B"
  * }
  *
@@ -81,50 +81,6 @@ export async function loadKeybindings(): Promise<KeybindingOverrides> {
     return {};
   }
 }
-
-/**
- * Build a reverse map: key → action name (for O(1) lookup in routeKey).
- *
- * Uses first-win semantics: if two actions are mapped to the same key,
- * the first one in iteration order wins.
- */
-export function buildKeyActionMap(
-  overrides: KeybindingOverrides,
-): ReadonlyMap<string, RemappableAction> {
-  const map = new Map<string, RemappableAction>();
-  for (const [action, key] of Object.entries(overrides)) {
-    if (!map.has(key)) {
-      map.set(key, action as RemappableAction);
-    }
-  }
-  return map;
-}
-
-/** Default key → action mappings (used when no override exists). */
-const LEGACY_DEFAULT_KEY_ACTIONS: Readonly<Partial<Record<RemappableAction, string>>> = {
-  quit: "q",
-  help: "?",
-  zoom_cycle: "+",
-  zoom_reset: "escape",
-  broadcast: "b",
-  direct_message: "@",
-  search_start: "/",
-  terminal_input: "i",
-  compare_toggle: "C",
-  artifact_prev: "h",
-  artifact_next: "l",
-  artifact_diff: "d",
-  approve: "a",
-  deny: "d",
-  palette: "m",
-  refresh: "r",
-};
-
-export const DEFAULT_KEY_ACTIONS: Readonly<Record<RemappableAction, string>> = Object.freeze(
-  Object.fromEntries(
-    REMAPPABLE_ACTIONS.map((action) => [action, LEGACY_DEFAULT_KEY_ACTIONS[action] ?? action]),
-  ) as Record<RemappableAction, string>,
-);
 
 /** Hook to load keybinding overrides from .grove/keybindings.json. */
 export function useKeybindingOverrides(): KeybindingOverrides {

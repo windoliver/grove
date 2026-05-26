@@ -5,15 +5,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { KeyEvent } from "@opentui/core";
-import {
-  buildKeyActionMap,
-  loadKeybindings,
-  REMAPPABLE_ACTIONS,
-} from "./use-keybinding-overrides.js";
+import { resolveKeymapWithOverrides } from "../keymap/keymap.js";
+import { loadKeybindings, REMAPPABLE_ACTIONS } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { routeKey } from "./use-keyboard-handler.js";
 import type { PanelFocusState } from "./use-panel-focus.js";
@@ -316,44 +314,15 @@ describe("loadKeybindings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildKeyActionMap
+// legacy reverse map cleanup
 // ---------------------------------------------------------------------------
 
-describe("buildKeyActionMap", () => {
-  test("empty overrides produces empty map", () => {
-    const map = buildKeyActionMap({});
-    expect(map.size).toBe(0);
-  });
+describe("legacy reverse-map cleanup", () => {
+  test("override module no longer exports the pre-keymap reverse map", () => {
+    const source = readFileSync(resolve(import.meta.dir, "use-keybinding-overrides.ts"), "utf-8");
 
-  test("builds reverse map from action→key to key→action", () => {
-    const map = buildKeyActionMap({ quit: "Q", help: "F1" });
-    expect(map.get("Q")).toBe("quit");
-    expect(map.get("F1")).toBe("help");
-  });
-
-  test("builds reverse map for parameterized panel ids", () => {
-    const map = buildKeyActionMap({ "toggle_panel:terminal": "Space p x" });
-
-    expect(map.get("Space p x")).toBe("toggle_panel:terminal");
-  });
-
-  test("first-win semantics when two actions share the same key", () => {
-    // Object.entries iteration order is insertion order for string keys
-    const overrides: Record<string, string> = {};
-    overrides.quit = "X";
-    overrides.refresh = "X";
-    const map = buildKeyActionMap(overrides);
-    // "quit" was inserted first → "X" maps to "quit"
-    expect(map.get("X")).toBe("quit");
-    expect(map.size).toBe(1); // only one entry for "X"
-  });
-
-  test("multiple distinct keys all appear in map", () => {
-    const map = buildKeyActionMap({ quit: "Q", help: "H", refresh: "R" });
-    expect(map.size).toBe(3);
-    expect(map.get("Q")).toBe("quit");
-    expect(map.get("H")).toBe("help");
-    expect(map.get("R")).toBe("refresh");
+    expect(source).not.toContain("buildKeyActionMap");
+    expect(source).not.toContain("DEFAULT_KEY_ACTIONS");
   });
 });
 
@@ -365,14 +334,12 @@ describe("routeKey — keybinding override integration", () => {
   test("remapped quit key triggers onQuit", () => {
     let quitCalled = false;
     const overrides = { quit: "Q" };
-    const keyMap = buildKeyActionMap(overrides);
     const actions: KeyboardActions = {
       ...mockActions(),
       onQuit: () => {
         quitCalled = true;
       },
-      keybindingOverrides: overrides,
-      keyActionMap: keyMap,
+      resolvedKeymap: resolveKeymapWithOverrides("default", overrides),
     };
 
     const handled = routeKey(keyEvent("Q"), actions);
@@ -387,8 +354,7 @@ describe("routeKey — keybinding override integration", () => {
       onQuit: () => {
         quitCalled = true;
       },
-      keybindingOverrides: {},
-      keyActionMap: new Map(),
+      resolvedKeymap: resolveKeymapWithOverrides("default", {}),
     };
 
     // No override for "q" — the default hardcoded "q" handler runs

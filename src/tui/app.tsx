@@ -36,7 +36,6 @@ import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import {
-  buildKeyActionMap,
   type KeybindingOverrides,
   useKeybindingOverrides,
 } from "./hooks/use-keybinding-overrides.js";
@@ -136,7 +135,6 @@ export function App({
     () => ({ ...userConfig?.keymap, ...hotkeyOverrides, ...fileOverrides }),
     [userConfig?.keymap, hotkeyOverrides, fileOverrides],
   );
-  const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
   const resolvedKeymap = useMemo(
     () => resolveKeymapWithOverrides(userConfig?.keymapPreset ?? "default", keybindingOverrides),
     [userConfig?.keymapPreset, keybindingOverrides],
@@ -991,8 +989,6 @@ export function App({
       frontierCids: () => frontierCidsRef.current,
       selectedSession,
       hasTmux: tmux !== undefined,
-      keybindingOverrides,
-      keyActionMap,
       resolvedKeymap,
       keymapPrefix,
       onKeymapPrefixChange: setKeymapPrefix,
@@ -1055,8 +1051,6 @@ export function App({
       agentProfiles,
       topology,
       paletteParentId,
-      keybindingOverrides,
-      keyActionMap,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
