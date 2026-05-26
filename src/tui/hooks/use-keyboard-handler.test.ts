@@ -222,6 +222,19 @@ describe("routeKey — leader keymap", () => {
     expect(log.calls).not.toContain("onQuit");
   });
 
+  test("pending leader sequence takes precedence over legacy override map", () => {
+    const { actions, log } = mockActions({
+      keybindingOverrides: { refresh: "x" },
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("x"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onRefresh");
+  });
+
   test("Escape clears pending leader prefix before zoom reset", () => {
     const { actions, log } = mockActions({
       resolvedKeymap: resolveBuiltinKeymap("default"),
@@ -671,6 +684,21 @@ describe("routeKey — Enter key", () => {
     routeKey(keyEvent("return"), actions);
     expect(log.calls).toContain("onSelect");
     expect(log.args.onSelect).toEqual([0]);
+  });
+
+  test("Enter selects contribution in Frontier when compare mode is off", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      compareMode: false,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      rowCount: 5,
+    });
+    const handled = routeKey(keyEvent("return"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onSelect");
+    expect(log.args.onSelect).toEqual([0]);
+    expect(log.calls).not.toContain("onCompareSelect");
   });
 
   test("Enter does not select in Claims panel", () => {

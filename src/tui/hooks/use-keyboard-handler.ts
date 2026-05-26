@@ -160,28 +160,36 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.onDirectMessageMode();
       return true;
     case "search_start":
-      if (focused === Panel.Search) actions.onSearchStart();
+      if (focused !== Panel.Search) return false;
+      actions.onSearchStart();
       return true;
     case "terminal_input":
-      if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
+      if (focused !== Panel.Terminal) return false;
+      actions.panels.setMode(InputMode.TerminalInput);
       return true;
     case "compare_toggle":
-      if (focused === Panel.Frontier) actions.onCompareToggle();
+      if (focused !== Panel.Frontier) return false;
+      actions.onCompareToggle();
       return true;
     case "artifact_prev":
-      if (focused === Panel.Artifact) actions.onArtifactPrev();
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactPrev();
       return true;
     case "artifact_next":
-      if (focused === Panel.Artifact) actions.onArtifactNext();
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactNext();
       return true;
     case "artifact_diff":
-      if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactDiffToggle();
       return true;
     case "approve":
-      if (focused === Panel.Decisions) actions.onApproveQuestion();
+      if (focused !== Panel.Decisions) return false;
+      actions.onApproveQuestion();
       return true;
     case "deny":
-      if (focused === Panel.Decisions) actions.onDenyQuestion();
+      if (focused !== Panel.Decisions) return false;
+      actions.onDenyQuestion();
       return true;
     case "cursor_down":
       actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
@@ -206,41 +214,53 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.nav.prevPage(actions.pageSize);
       return true;
     case "vfs_navigate":
-      if (focused === Panel.Vfs) actions.onVfsNavigate();
+      if (focused !== Panel.Vfs) return false;
+      actions.onVfsNavigate();
       return true;
     case "terminal_scroll_up":
-      if (focused === Panel.Terminal) actions.onTerminalScrollUp();
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollUp();
       return true;
     case "terminal_scroll_down":
-      if (focused === Panel.Terminal) actions.onTerminalScrollDown();
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollDown();
       return true;
     case "terminal_scroll_bottom":
-      if (focused === Panel.Terminal) actions.onTerminalScrollBottom();
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollBottom();
       return true;
     case "frontier_tab_next":
-      if (focused === Panel.Frontier) actions.onFrontierTabNext();
+      if (focused !== Panel.Frontier) return false;
+      actions.onFrontierTabNext();
       return true;
     case "frontier_tab_prev":
-      if (focused === Panel.Frontier) actions.onFrontierTabPrev();
+      if (focused !== Panel.Frontier) return false;
+      actions.onFrontierTabPrev();
       return true;
     case "frontier_adopt":
       if (focused === Panel.Frontier && !actions.compareMode) {
         const entries = actions.frontierEntries();
         const entry = entries[actions.nav.state.cursor];
         if (entry !== undefined) actions.onFrontierAdopt(entry.cid, entry.summary);
+        return entry !== undefined;
       }
-      return true;
+      return false;
     case "compare_select":
       if (focused === Panel.Frontier && actions.compareMode) {
         const cid = actions.frontierCids()[actions.nav.state.cursor];
-        if (cid !== undefined) actions.onCompareSelect(cid);
+        if (cid !== undefined) {
+          actions.onCompareSelect(cid);
+          return true;
+        }
       }
-      return true;
+      return false;
     case "compare_adopt_a":
-      if (focused === Panel.Artifact && actions.compareMode) actions.onCompareAdopt("a");
+      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
+      actions.onCompareAdopt("a");
       return true;
     case "compare_adopt_b":
-      if (focused === Panel.Artifact && actions.compareMode) actions.onCompareAdopt("b");
+      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
+      actions.onCompareAdopt("b");
       return true;
   }
 }
@@ -261,7 +281,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Keybinding overrides (item 19): O(1) lookup via pre-built reverse map.
   // Override lookup only applies in normal mode to avoid breaking modal input.
   const keyActionMap = actions.keyActionMap;
-  if (mode === InputMode.Normal && keyActionMap && input && !isCtrl) {
+  if (mode === InputMode.Normal && keymapPrefix.length === 0 && keyActionMap && input && !isCtrl) {
     const action = keyActionMap.get(input);
     if (action !== undefined) {
       switch (action) {
@@ -474,8 +494,9 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
           return true;
         case "match":
           actions.onKeymapPrefixChange?.([]);
-          executeKeymapAction(result.binding, actions);
-          return true;
+          if (executeKeymapAction(result.binding, actions)) return true;
+          if (keymapPrefix.length > 0) return true;
+          break;
         case "miss":
           if (keymapPrefix.length > 0) {
             actions.onKeymapPrefixChange?.([]);
