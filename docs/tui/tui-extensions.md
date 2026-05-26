@@ -37,9 +37,12 @@ export const auditExtension: TuiExtension = {
 
 ## Panel Registrations
 
-Panel IDs must be lowercase and may contain lowercase letters, numbers, dots,
-and hyphens. Plugin panels use the `operator-panel` slot. The first
-implementation renders plugin panels when `defaultVisible` is `true`.
+Panel IDs must start with a lowercase letter. After that, they may contain
+lowercase letters, numbers, dots, and hyphens. Plugin panels use the
+`operator-panel` slot. The first implementation renders default-visible plugin
+panels only in unsuppressed grid layout. They do not render in tab layout, full
+zoom, or medium and small responsive layouts, and they are not
+keyboard-toggleable or focusable.
 
 Panel components receive `TuiPluginContext`:
 
