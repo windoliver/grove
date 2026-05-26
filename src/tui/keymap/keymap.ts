@@ -66,14 +66,14 @@ export type TuiActionId =
   | "compare_adopt_a"
   | "compare_adopt_b";
 
-export type KeyBindingId =
-  | TuiActionId
-  | `focus_panel:${PanelKeymapId}`
-  | `toggle_panel:${PanelKeymapId}`;
+export type PanelTargetActionId = "focus_panel" | "toggle_panel";
+export type NonPanelTargetActionId = Exclude<TuiActionId, PanelTargetActionId>;
+export type PanelTargetBindingId = `focus_panel:${PanelKeymapId}` | `toggle_panel:${PanelKeymapId}`;
+export type KeyBindingId = NonPanelTargetActionId | PanelTargetBindingId;
 
 export type KeyBindingContext = "global" | "navigation" | "panel" | "messaging";
 
-export interface KeyBinding {
+interface KeyBindingBase {
   readonly id: KeyBindingId;
   readonly action: TuiActionId;
   readonly sequence: KeySequence;
@@ -83,6 +83,19 @@ export interface KeyBinding {
   readonly panel?: PanelValue | undefined;
   readonly preferred: boolean;
 }
+
+export interface ActionKeyBinding extends KeyBindingBase {
+  readonly id: NonPanelTargetActionId;
+  readonly action: NonPanelTargetActionId;
+}
+
+export interface PanelTargetKeyBinding extends Omit<KeyBindingBase, "id" | "action" | "panel"> {
+  readonly id: PanelTargetBindingId;
+  readonly action: PanelTargetActionId;
+  readonly panel: PanelValue;
+}
+
+export type KeyBinding = ActionKeyBinding | PanelTargetKeyBinding;
 
 export interface ResolvedKeymap {
   readonly preset: KeymapPresetName;
@@ -105,7 +118,9 @@ export type KeyDispatchResult = KeymapResolution;
 
 export interface KeyTokenEvent {
   readonly name?: string | undefined;
+  readonly sequence?: string | undefined;
   readonly ctrl?: boolean | undefined;
+  readonly meta?: boolean | undefined;
   readonly shift?: boolean | undefined;
 }
 
@@ -140,6 +155,33 @@ const DISPLAY_BY_TOKEN: Readonly<Record<string, string>> = {
   return: "Enter",
   tab: "Tab",
   "shift+tab": "Shift+Tab",
+};
+
+const SHIFTED_PRINTABLE_BY_NAME: Readonly<Record<string, string>> = {
+  "/": "?",
+  "=": "+",
+  v: "V",
+  z: "Z",
+  g: "G",
+  "1": "!",
+  "2": "@",
+  "3": "#",
+  "4": "$",
+  "5": "%",
+  "6": "^",
+  "7": "&",
+  "8": "*",
+  "9": "(",
+  "0": ")",
+  "-": "_",
+  "[": "{",
+  "]": "}",
+  "\\": "|",
+  ";": ":",
+  "'": '"',
+  ",": "<",
+  ".": ">",
+  "`": "~",
 };
 
 export function normalizeKeyToken(token: string): KeyToken {
@@ -185,9 +227,16 @@ export function formatKeySequence(sequence: KeySequence): string {
 
 export function keyEventToToken(event: KeyTokenEvent): KeyToken | undefined {
   const name = event.name;
-  if (!name) return undefined;
+  const sequence = event.sequence;
+  const ctrlName = name ?? sequence;
+  if (event.ctrl === true && ctrlName !== undefined) return `ctrl+${ctrlName.toLowerCase()}`;
   if (event.shift === true && name === "tab") return "shift+tab";
-  if (event.ctrl === true) return `ctrl+${name.toLowerCase()}`;
+  if (sequence === " ") return "space";
+  if (sequence !== undefined && sequence.length === 1 && event.meta !== true) {
+    return normalizeKeyToken(sequence);
+  }
+  if (!name) return undefined;
+  if (event.shift === true) return SHIFTED_PRINTABLE_BY_NAME[name] ?? normalizeKeyToken(name);
   return normalizeKeyToken(name);
 }
 

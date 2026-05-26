@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Panel } from "../hooks/use-panel-focus.js";
 import {
+  type ActionKeyBinding,
   createKeySequence,
   formatKeySequence,
   type KeyBinding,
@@ -13,10 +14,10 @@ import {
 } from "./keymap.js";
 
 function binding(
-  id: KeyBinding["id"],
+  id: ActionKeyBinding["id"],
   sequence: KeyBinding["sequence"],
-  action: KeyBinding["action"] = "help",
-): KeyBinding {
+  action: ActionKeyBinding["action"] = "help",
+): ActionKeyBinding {
   return {
     id,
     action,
@@ -65,13 +66,27 @@ describe("key token normalization", () => {
     expect(keyEventToToken({ name: "space", ctrl: false })).toBe("space");
     expect(keyEventToToken({ name: "p", ctrl: true })).toBe("ctrl+p");
     expect(keyEventToToken({ name: "F5", ctrl: false })).toBe("F5");
+    expect(keyEventToToken({ name: "space", sequence: " " })).toBe("space");
+    expect(keyEventToToken({ name: "/", sequence: "?", shift: true })).toBe("?");
+    expect(keyEventToToken({ name: "v", shift: true })).toBe("V");
+    expect(keyEventToToken({ name: "z", shift: true })).toBe("Z");
+    expect(keyEventToToken({ name: "2", shift: true })).toBe("@");
   });
 });
 
 describe("resolveKeySequence", () => {
   const bindings: readonly KeyBinding[] = [
     { ...binding("help", ["space", "?"]), layer: "leader" },
-    { ...binding("toggle_panel:terminal", ["space", "p", "t"], "toggle_panel"), layer: "leader" },
+    {
+      id: "toggle_panel:terminal",
+      action: "toggle_panel",
+      sequence: ["space", "p", "t"],
+      label: "terminal",
+      context: "panel",
+      layer: "leader",
+      panel: Panel.Terminal,
+      preferred: true,
+    },
     binding("refresh", ["r"], "refresh"),
   ];
 
@@ -98,7 +113,16 @@ describe("resolveKeySequence", () => {
   test("exact match wins over a longer prefix candidate", () => {
     const ambiguous: readonly KeyBinding[] = [
       { ...binding("palette", ["space", "p"], "palette"), layer: "leader" },
-      { ...binding("toggle_panel:terminal", ["space", "p", "t"], "toggle_panel"), layer: "leader" },
+      {
+        id: "toggle_panel:terminal",
+        action: "toggle_panel",
+        sequence: ["space", "p", "t"],
+        label: "terminal",
+        context: "panel",
+        layer: "leader",
+        panel: Panel.Terminal,
+        preferred: true,
+      },
     ];
 
     const result = resolveKeyBinding(ambiguous, ["space", "p"]);
