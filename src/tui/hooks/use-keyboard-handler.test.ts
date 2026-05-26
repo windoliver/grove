@@ -8,6 +8,8 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "../app-reducer.js";
+import type { ResolvedKeymap } from "../keymap/keymap.js";
+import { resolveBuiltinKeymap } from "../keymap/keymap.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
@@ -59,6 +61,8 @@ function mockActions(overrides?: {
   hasTmux?: boolean;
   isDetailView?: boolean;
   keybindingOverrides?: import("./use-keybinding-overrides.js").KeybindingOverrides;
+  resolvedKeymap?: ResolvedKeymap;
+  keymapPrefix?: readonly string[];
 }): { actions: KeyboardActions; log: ActionLog } {
   const log: ActionLog = { calls: [], args: {} };
 
@@ -152,6 +156,9 @@ function mockActions(overrides?: {
     keyActionMap: overrides?.keybindingOverrides
       ? buildKeyActionMap(overrides.keybindingOverrides)
       : undefined,
+    resolvedKeymap: overrides?.resolvedKeymap,
+    keymapPrefix: overrides?.keymapPrefix ?? [],
+    onKeymapPrefixChange: (prefix) => record("onKeymapPrefixChange", prefix),
   };
 
   return { actions, log };
@@ -173,6 +180,80 @@ describe("nextZoom", () => {
     zoom = nextZoom(zoom);
     zoom = nextZoom(zoom);
     expect(zoom).toBe("normal");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Normal mode — leader keymap
+// ---------------------------------------------------------------------------
+
+describe("routeKey — leader keymap", () => {
+  test("Space starts a pending leader sequence", () => {
+    const { actions, log } = mockActions({ resolvedKeymap: resolveBuiltinKeymap("default") });
+    const handled = routeKey(keyEvent("space"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([["space"]]);
+  });
+
+  test("Space p t toggles the Terminal panel", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const first = mockActions({ resolvedKeymap: keymap });
+    routeKey(keyEvent("space"), first.actions);
+    const second = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space"] });
+    routeKey(keyEvent("p"), second.actions);
+    const third = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space", "p"] });
+    const handled = routeKey(keyEvent("t"), third.actions);
+
+    expect(handled).toBe(true);
+    expect(third.log.args["panels.toggle"]).toEqual([Panel.Terminal]);
+    expect(third.log.args.onKeymapPrefixChange).toEqual([[]]);
+  });
+
+  test("invalid leader sequence clears prefix and consumes the key", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("x"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onQuit");
+  });
+
+  test("Escape clears pending leader prefix before zoom reset", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("escape"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onZoomReset");
+  });
+
+  test("leader key is not intercepted in message input mode", () => {
+    const { actions, log } = mockActions({
+      mode: InputMode.MessageInput,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("space"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onMessageChar).toEqual([" "]);
+    expect(log.calls).not.toContain("onKeymapPrefixChange");
+  });
+
+  test("power-user direct q still quits", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("power-user"),
+    });
+    const handled = routeKey(keyEvent("q"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onQuit");
   });
 });
 

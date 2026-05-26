@@ -45,6 +45,7 @@ import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
+import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import {
@@ -136,7 +137,19 @@ export function App({
     [userConfig?.keymap, hotkeyOverrides, fileOverrides],
   );
   const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
+  const resolvedKeymap = useMemo(
+    () => resolveKeymapWithOverrides(userConfig?.keymapPreset ?? "default", keybindingOverrides),
+    [userConfig?.keymapPreset, keybindingOverrides],
+  );
+  const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
+  const resolvedKeymapRef = useRef(resolvedKeymap);
+
+  useEffect(() => {
+    if (resolvedKeymapRef.current === resolvedKeymap) return;
+    resolvedKeymapRef.current = resolvedKeymap;
+    setKeymapPrefix([]);
+  }, [resolvedKeymap]);
 
   // Restore persisted state on first load.
   // restoredRef gates both restore AND save — save must not run before restore.
@@ -980,6 +993,9 @@ export function App({
       hasTmux: tmux !== undefined,
       keybindingOverrides,
       keyActionMap,
+      resolvedKeymap,
+      keymapPrefix,
+      onKeymapPrefixChange: setKeymapPrefix,
       // Slice nav also resets the global cursor to 0 AND synchronously
       // clears the entries/cids refs. Without the cursor reset, switching
       // from a long slice (cursor=9) to a short slice (2 rows) leaves the
@@ -1041,6 +1057,8 @@ export function App({
       paletteParentId,
       keybindingOverrides,
       keyActionMap,
+      resolvedKeymap,
+      keymapPrefix,
       refreshAll,
       provider,
       spawnManager,
