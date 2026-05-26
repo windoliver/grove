@@ -39,10 +39,24 @@ function bindingsForContext(
   return keymap.bindings.filter((binding) => binding.context === context && binding.preferred);
 }
 
+function isPanelSwitchBinding(binding: KeyBinding): boolean {
+  return binding.action === "focus_panel" || binding.action === "toggle_panel";
+}
+
+function bindingsForPanelSwitches(keymap: ResolvedKeymap): readonly KeyBinding[] {
+  return keymap.bindings.filter(
+    (binding) => binding.context === "panel" && binding.preferred && isPanelSwitchBinding(binding),
+  );
+}
+
 function bindingsForPanel(keymap: ResolvedKeymap, panel: Panel | undefined): readonly KeyBinding[] {
   if (panel === undefined) return [];
   return keymap.bindings.filter(
-    (binding) => binding.context === "panel" && binding.panel === panel && binding.preferred,
+    (binding) =>
+      binding.context === "panel" &&
+      binding.panel === panel &&
+      binding.preferred &&
+      !isPanelSwitchBinding(binding),
   );
 }
 
@@ -59,7 +73,7 @@ function renderSection(title: string, bindings: readonly KeyBindingEntry[]): Rea
         </text>
       </box>
       {bindings.map((b) => (
-        <box key={b.key} paddingLeft={1} flexDirection="row">
+        <box key={`${title}:${b.key}:${b.description}`} paddingLeft={1} flexDirection="row">
           <text color={theme.text} bold>
             {b.key.padEnd(14)}
           </text>
@@ -88,17 +102,17 @@ export const HelpOverlay: React.NamedExoticComponent<HelpOverlayProps> = React.m
 
     if (isDetailView) {
       sections.push(renderSection("Detail View", DETAIL_BINDINGS));
-    } else {
-      sections.push(
-        renderSection(
-          "Navigation",
-          bindingsForContext(resolvedKeymap, "navigation").map(toDisplayBinding),
-        ),
-      );
-      sections.push(
-        renderSection("Panels", bindingsForContext(resolvedKeymap, "panel").map(toDisplayBinding)),
-      );
     }
+
+    sections.push(
+      renderSection(
+        "Navigation",
+        bindingsForContext(resolvedKeymap, "navigation").map(toDisplayBinding),
+      ),
+    );
+    sections.push(
+      renderSection("Panels", bindingsForPanelSwitches(resolvedKeymap).map(toDisplayBinding)),
+    );
 
     const focusedBindings = bindingsForPanel(resolvedKeymap, focusedPanel).map(toDisplayBinding);
     if (focusedBindings.length > 0) sections.push(renderSection("Focused Panel", focusedBindings));
