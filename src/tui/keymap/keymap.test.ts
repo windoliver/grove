@@ -11,6 +11,7 @@ import {
   parseKeySequence,
   resolveBuiltinKeymap,
   resolveKeyBinding,
+  resolveKeymapWithOverrides,
   resolveKeySequence,
 } from "./keymap.js";
 
@@ -294,5 +295,49 @@ describe("resolveBuiltinKeymap", () => {
       expect(seen.has(key)).toBe(false);
       seen.add(key);
     }
+  });
+});
+
+describe("resolveKeymapWithOverrides", () => {
+  test("override replaces the preferred binding for the same action id", () => {
+    const keymap = resolveKeymapWithOverrides("default", { quit: "Space x" });
+    const quit = keymap.bindings.filter((binding) => binding.id === "quit");
+
+    expect(quit.some((binding) => binding.sequence.join(" ") === "space x")).toBe(true);
+    expect(quit.some((binding) => binding.sequence.join(" ") === "space q")).toBe(false);
+  });
+
+  test("parameterized panel override maps to the target panel", () => {
+    const keymap = resolveKeymapWithOverrides("default", {
+      "toggle_panel:terminal": "Space p x",
+    });
+    const terminal = keymap.bindings.find((binding) => binding.id === "toggle_panel:terminal");
+
+    expect(terminal?.sequence).toEqual(["space", "p", "x"]);
+    expect(terminal?.panel).toBe(Panel.Terminal);
+  });
+
+  test("duplicate sequences record a conflict and keep the first binding", () => {
+    const keymap = resolveKeymapWithOverrides("default", {
+      quit: "Space r",
+    });
+    const winners = keymap.bindings.filter((binding) => binding.sequence.join(" ") === "space r");
+
+    expect(keymap.conflicts[0]).toMatchObject({
+      sequence: ["space", "r"],
+      winner: "refresh",
+      loser: "quit",
+    });
+    expect(winners.map((binding) => binding.id)).toEqual(["refresh"]);
+  });
+
+  test("unknown override ids are ignored", () => {
+    const keymap = resolveKeymapWithOverrides("default", {
+      "not_real:thing": "Space nope",
+    });
+
+    expect(keymap.bindings.some((binding) => binding.sequence.join(" ") === "space nope")).toBe(
+      false,
+    );
   });
 });

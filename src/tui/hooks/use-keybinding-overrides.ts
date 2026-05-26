@@ -20,31 +20,20 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { useEffect, useState } from "react";
 import { z } from "zod";
+import {
+  isKeyBindingId,
+  KEY_BINDING_IDS,
+  type KeyBindingId,
+  type KeymapOverrides,
+} from "../keymap/keymap.js";
 
 /** Map from action name to custom key binding. */
-export type KeybindingOverrides = Readonly<Record<string, string>>;
+export type KeybindingOverrides = KeymapOverrides;
+
+export type RemappableAction = KeyBindingId;
 
 /** Known action names that can be remapped. */
-export const REMAPPABLE_ACTIONS = [
-  "quit",
-  "help",
-  "zoom_cycle",
-  "zoom_reset",
-  "broadcast",
-  "direct_message",
-  "search_start",
-  "terminal_input",
-  "compare_toggle",
-  "artifact_prev",
-  "artifact_next",
-  "artifact_diff",
-  "approve",
-  "deny",
-  "palette",
-  "refresh",
-] as const;
-
-export type RemappableAction = (typeof REMAPPABLE_ACTIONS)[number];
+export const REMAPPABLE_ACTIONS: readonly RemappableAction[] = KEY_BINDING_IDS;
 
 const KEYBINDINGS_PATH = ".grove/keybindings.json";
 
@@ -68,7 +57,7 @@ export async function loadKeybindings(): Promise<KeybindingOverrides> {
     const keyToActions = new Map<string, string[]>();
 
     for (const [action, key] of Object.entries(parsed.data)) {
-      if (!(REMAPPABLE_ACTIONS as readonly string[]).includes(action)) {
+      if (!isKeyBindingId(action)) {
         process.stderr.write(`[grove] keybindings.json: unknown action "${action}" — ignored\n`);
         continue;
       }
@@ -112,7 +101,7 @@ export function buildKeyActionMap(
 }
 
 /** Default key → action mappings (used when no override exists). */
-export const DEFAULT_KEY_ACTIONS: Readonly<Record<RemappableAction, string>> = {
+const LEGACY_DEFAULT_KEY_ACTIONS: Readonly<Partial<Record<RemappableAction, string>>> = {
   quit: "q",
   help: "?",
   zoom_cycle: "+",
@@ -130,6 +119,12 @@ export const DEFAULT_KEY_ACTIONS: Readonly<Record<RemappableAction, string>> = {
   palette: "m",
   refresh: "r",
 };
+
+export const DEFAULT_KEY_ACTIONS: Readonly<Record<RemappableAction, string>> = Object.freeze(
+  Object.fromEntries(
+    REMAPPABLE_ACTIONS.map((action) => [action, LEGACY_DEFAULT_KEY_ACTIONS[action] ?? action]),
+  ) as Record<RemappableAction, string>,
+);
 
 /** Hook to load keybinding overrides from .grove/keybindings.json. */
 export function useKeybindingOverrides(): KeybindingOverrides {

@@ -143,6 +143,20 @@ describe("createTuiConfigWatcher", () => {
     await watcher.stop();
   });
 
+  test("broadcasts parameterized panel hotkeys", async () => {
+    const { homeDir, projectRoot } = await makeFixture();
+    const hotkeysPath = join(homeDir, ".grove", "hotkeys.yaml");
+    await writeFile(hotkeysPath, '"toggle_panel:terminal": Space p x\n', "utf8");
+
+    const watcher = createTuiConfigWatcher({ homeDir, projectRoot, debounceMs: 20 });
+    await watcher.start();
+    await settleWatcher();
+
+    expect(watcher.current().hotkeys["toggle_panel:terminal"]).toBe("Space p x");
+
+    await watcher.stop();
+  });
+
   test("broadcasts theme.yaml changes as theme token overrides", async () => {
     const { homeDir, projectRoot } = await makeFixture();
     const themePath = join(homeDir, ".grove", "theme.yaml");

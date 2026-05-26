@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import type { RemappableAction } from "./hooks/use-keybinding-overrides.js";
+import type { KeymapOverrides, KeymapPresetName } from "./keymap/keymap.js";
 import type { ThemeColorTokens } from "./theme.js";
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,8 @@ import type { ThemeColorTokens } from "./theme.js";
 /** User-authored grove config (all fields optional — defaults always apply). */
 export interface GroveUserConfig {
   readonly theme: Partial<ThemeColorTokens>;
-  readonly keymap: Partial<Record<RemappableAction, string>>;
+  readonly keymap: KeymapOverrides;
+  readonly keymapPreset?: KeymapPresetName | undefined;
 }
 
 /** Empty config — returned when no config files are found. */
@@ -42,6 +43,7 @@ const ConfigSchema = z
   .object({
     theme: z.record(z.string(), z.string()).optional(),
     keymap: z.record(z.string(), z.string()).optional(),
+    keymapPreset: z.enum(["default", "power-user"]).optional(),
   })
   .strip();
 
@@ -61,6 +63,7 @@ export function mergeGroveConfig(
   return {
     theme: { ...global?.theme, ...project?.theme },
     keymap: { ...global?.keymap, ...project?.keymap },
+    keymapPreset: project?.keymapPreset ?? global?.keymapPreset,
   };
 }
 
@@ -79,7 +82,8 @@ async function loadConfigFile(filePath: string): Promise<Partial<GroveUserConfig
     }
     return {
       theme: (parsed.data.theme ?? {}) as Partial<ThemeColorTokens>,
-      keymap: (parsed.data.keymap ?? {}) as Partial<Record<RemappableAction, string>>,
+      keymap: (parsed.data.keymap ?? {}) as KeymapOverrides,
+      keymapPreset: parsed.data.keymapPreset,
     };
   } catch {
     // File not found or JSON parse error — gracefully skip

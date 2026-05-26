@@ -274,6 +274,13 @@ describe("loadKeybindings", () => {
     expect(result.help).toBe("F1");
   });
 
+  test("loads parameterized panel action ids", async () => {
+    await writeKeybindings({ "toggle_panel:terminal": "Space p x" });
+    const result = await loadKeybindings();
+
+    expect(result["toggle_panel:terminal"]).toBe("Space p x");
+  });
+
   test("silently ignores unknown action names", async () => {
     await writeKeybindings({ quit: "Q", nonexistent_action: "X" });
     const result = await loadKeybindings();
@@ -322,6 +329,12 @@ describe("buildKeyActionMap", () => {
     const map = buildKeyActionMap({ quit: "Q", help: "F1" });
     expect(map.get("Q")).toBe("quit");
     expect(map.get("F1")).toBe("help");
+  });
+
+  test("builds reverse map for parameterized panel ids", () => {
+    const map = buildKeyActionMap({ "toggle_panel:terminal": "Space p x" });
+
+    expect(map.get("Space p x")).toBe("toggle_panel:terminal");
   });
 
   test("first-win semantics when two actions share the same key", () => {

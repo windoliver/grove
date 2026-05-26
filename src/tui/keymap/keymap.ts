@@ -58,6 +58,62 @@ export type KeyBindingId = NonPanelTargetActionId | PanelTargetBindingId;
 
 export type KeyBindingContext = "global" | "navigation" | "panel" | "messaging";
 
+export const NON_PANEL_TARGET_ACTION_IDS: readonly NonPanelTargetActionId[] = [
+  "quit",
+  "help",
+  "palette",
+  "refresh",
+  "zoom_cycle",
+  "zoom_reset",
+  "layout_toggle",
+  "view_cycle",
+  "cycle_panel_next",
+  "cycle_panel_prev",
+  "search_start",
+  "terminal_input",
+  "compare_toggle",
+  "artifact_prev",
+  "artifact_next",
+  "artifact_diff",
+  "approve",
+  "deny",
+  "broadcast",
+  "direct_message",
+  "cursor_down",
+  "cursor_up",
+  "select",
+  "page_next",
+  "page_prev",
+  "vfs_navigate",
+  "terminal_scroll_up",
+  "terminal_scroll_down",
+  "terminal_scroll_bottom",
+  "frontier_tab_next",
+  "frontier_tab_prev",
+  "frontier_adopt",
+  "compare_select",
+  "compare_adopt_a",
+  "compare_adopt_b",
+] as const;
+
+export const KEY_BINDING_IDS: readonly KeyBindingId[] = Object.freeze([
+  ...NON_PANEL_TARGET_ACTION_IDS,
+  ...BUILT_IN_PANEL_IDS.flatMap((panelId) => [
+    `focus_panel:${panelId}` as const,
+    `toggle_panel:${panelId}` as const,
+  ]),
+]) as readonly KeyBindingId[];
+
+const KEY_BINDING_ID_SET: ReadonlySet<string> = new Set(KEY_BINDING_IDS);
+
+export function isKeyBindingId(id: string): id is KeyBindingId {
+  return KEY_BINDING_ID_SET.has(id);
+}
+
+function isPanelTargetBindingId(id: KeyBindingId): id is PanelTargetBindingId {
+  return id.startsWith("focus_panel:") || id.startsWith("toggle_panel:");
+}
+
 interface KeyBindingBase {
   readonly id: KeyBindingId;
   readonly action: TuiActionId;
@@ -93,6 +149,8 @@ export interface KeymapConflict {
   readonly winner: string;
   readonly loser: string;
 }
+
+export type KeymapOverrides = Readonly<Record<string, string>>;
 
 interface RawKeyBinding {
   readonly id: string;
@@ -342,6 +400,118 @@ export function resolveBuiltinKeymap(preset: KeymapPresetName): ResolvedKeymap {
     preset,
     bindings: Object.freeze(rawBindingsForPreset(preset).map(resolveRawBinding)),
     conflicts: EMPTY_KEYMAP_CONFLICTS,
+  });
+}
+
+function actionFromBindingId(id: KeyBindingId): TuiActionId {
+  if (id.startsWith("focus_panel:")) return "focus_panel";
+  if (id.startsWith("toggle_panel:")) return "toggle_panel";
+  return id as NonPanelTargetActionId;
+}
+
+function panelFromBindingId(id: KeyBindingId): PanelValue | undefined {
+  const [, rawPanelId] = id.split(":");
+  if (rawPanelId === undefined || !isPanelKeymapId(rawPanelId)) return undefined;
+  return PANEL_BY_KEYMAP_ID[rawPanelId];
+}
+
+function findTemplateBinding(
+  id: KeyBindingId,
+  bindings: readonly KeyBinding[],
+): KeyBinding | undefined {
+  return bindings.find((binding) => binding.id === id);
+}
+
+function conflictScope(binding: KeyBinding): string {
+  return binding.layer === "panel" ? `${binding.layer}:${binding.panel ?? ""}` : binding.layer;
+}
+
+function conflictKey(binding: KeyBinding): string {
+  return `${conflictScope(binding)}:${binding.sequence.join("\u0000")}`;
+}
+
+function dedupeConflicts(bindings: readonly KeyBinding[]): {
+  readonly bindings: readonly KeyBinding[];
+  readonly conflicts: readonly KeymapConflict[];
+} {
+  const seen = new Map<string, KeyBinding>();
+  const kept: KeyBinding[] = [];
+  const conflicts: KeymapConflict[] = [];
+  for (const binding of bindings) {
+    const key = conflictKey(binding);
+    const winner = seen.get(key);
+    if (winner !== undefined) {
+      conflicts.push({
+        sequence: binding.sequence,
+        winner: winner.id,
+        loser: binding.id,
+      });
+      continue;
+    }
+    seen.set(key, binding);
+    kept.push(binding);
+  }
+  return { bindings: Object.freeze(kept), conflicts: Object.freeze(conflicts) };
+}
+
+function resolveOverrideBinding(
+  id: KeyBindingId,
+  sequence: string,
+  base: readonly KeyBinding[],
+): KeyBinding {
+  const action = actionFromBindingId(id);
+  const template = findTemplateBinding(id, base);
+  const common = {
+    sequence: createKeySequence(sequence),
+    label: template?.label ?? id,
+    context: template?.context ?? "global",
+    layer: template?.layer ?? "normal",
+    preferred: true,
+  };
+
+  if (isPanelTargetBindingId(id)) {
+    const targetAction: PanelTargetActionId = id.startsWith("focus_panel:")
+      ? "focus_panel"
+      : "toggle_panel";
+    const panel = panelFromBindingId(id);
+    if (panel === undefined) {
+      throw new Error(`Panel target key binding "${id}" is missing a valid panel`);
+    }
+    return Object.freeze({
+      id,
+      action: targetAction,
+      ...common,
+      panel,
+    });
+  }
+
+  const panel = template?.panel;
+  const nonPanelAction = action as NonPanelTargetActionId;
+  return Object.freeze({
+    id,
+    action: nonPanelAction,
+    ...common,
+    ...(panel === undefined ? {} : { panel }),
+  });
+}
+
+export function resolveKeymapWithOverrides(
+  preset: KeymapPresetName,
+  overrides: KeymapOverrides,
+): ResolvedKeymap {
+  const base = resolveBuiltinKeymap(preset).bindings;
+  const validOverrideIds = Object.keys(overrides).filter(isKeyBindingId);
+  const overriddenIds = new Set<KeyBindingId>(validOverrideIds);
+  const retained = base.filter((binding) => !overriddenIds.has(binding.id));
+  const overrideBindings = validOverrideIds.map((id) =>
+    resolveOverrideBinding(id, overrides[id] ?? "", base),
+  );
+  const deduped = dedupeConflicts([...retained, ...overrideBindings]);
+
+  return Object.freeze({
+    preset,
+    bindings: deduped.bindings,
+    conflicts: deduped.conflicts,
   });
 }
 
