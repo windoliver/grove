@@ -62,7 +62,7 @@ export const FirstRun: React.NamedExoticComponent<FirstRunProps> = React.memo(fu
           }
           const preset = defaultPresetByMode[mode];
           if (!preset) return;
-          onSelect({ preset, name: defaultName, mode, keymap: "none" });
+          onSelect({ preset, name: defaultName, mode, keymap: "default" });
         }}
         onCustomize={(mode) => setStep({ kind: "customize", mode })}
         onConnect={onConnect}
