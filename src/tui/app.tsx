@@ -1085,7 +1085,7 @@ export function App({
           visible={panels.state.mode === InputMode.Help}
           isDetailView={nav.isDetailView}
           focusedPanel={panels.state.focused}
-          keybindingOverrides={keybindingOverrides}
+          resolvedKeymap={resolvedKeymap}
         />
         {paletteVisible && (
           <box

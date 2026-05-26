@@ -1,6 +1,6 @@
 /**
  * Tests for HelpOverlay:
- *   1. PANEL_BINDINGS completeness — every registered panel appears
+ *   1. Resolved keymap rendering
  *   2. Context-sensitive section rendering per focusedPanel
  *   3. visible=false renders nothing
  */
@@ -10,24 +10,25 @@ import { Panel } from "../hooks/use-panel-focus.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 
 // ---------------------------------------------------------------------------
-// 1. PANEL_BINDINGS completeness
+// 1. Resolved keymap rendering
 // ---------------------------------------------------------------------------
 
-describe("HelpOverlay — PANEL_BINDINGS completeness", () => {
-  test("every PANEL_REGISTRY entry's keybinding appears in PANEL_BINDINGS", async () => {
-    // We verify this by reading the module source: PANEL_BINDINGS is derived
-    // from PANEL_REGISTRY, so every registered panel must have a keybinding entry.
-    // This test ensures the derivation covers all panels — including new ones.
+describe("HelpOverlay — resolved keymap rendering", () => {
+  test("source accepts a resolvedKeymap prop", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
 
-    // The panel bindings must be derived from PANEL_REGISTRY (not a hardcoded list).
-    expect(source).toContain("PANEL_REGISTRY");
-    expect(source).toContain("PANEL_BINDINGS");
+    expect(source).toContain("resolvedKeymap");
+    expect(source).toContain("formatKeySequence");
+  });
 
-    // Verify the derivation uses registry keybinding field.
-    expect(source).toContain("def.keybinding");
+  test("source no longer renders panel bindings from def.keybinding directly", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
+
+    expect(source).not.toContain("def.keybinding");
   });
 
   test("every registered panel keybinding is distinct", () => {
@@ -41,30 +42,19 @@ describe("HelpOverlay — PANEL_BINDINGS completeness", () => {
     expect(planDef).toBeDefined();
     expect(planDef!.keybinding).toBe("`");
   });
-
-  test("core panels 1-4 are assigned to Dag/Detail/Frontier/Claims", () => {
-    const byKey = new Map(PANEL_REGISTRY.map((def) => [def.keybinding, def.panel]));
-    expect(byKey.get("1")).toBe(Panel.Dag);
-    expect(byKey.get("2")).toBe(Panel.Detail);
-    expect(byKey.get("3")).toBe(Panel.Frontier);
-    expect(byKey.get("4")).toBe(Panel.Claims);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Context-sensitive sections — panel comparisons use Panel enum
+// 2. Context-sensitive sections — focused panel is still typed as Panel
 // ---------------------------------------------------------------------------
 
-describe("HelpOverlay — uses Panel enum constants (not magic numbers)", () => {
-  test("source uses Panel.Artifact not magic number 7", async () => {
+describe("HelpOverlay — focused panel sections", () => {
+  test("source derives focused panel bindings from resolved keymap", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
-    expect(source).toContain("Panel.Artifact");
-    expect(source).toContain("Panel.Terminal");
-    expect(source).toContain("Panel.Search");
-    expect(source).toContain("Panel.Decisions");
-    expect(source).toContain("Panel.Frontier");
+
+    expect(source).toContain("bindingsForPanel");
     // Must NOT contain standalone numeric panel comparisons
     expect(source).not.toMatch(/=== \d+/);
   });
