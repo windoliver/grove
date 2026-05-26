@@ -99,6 +99,7 @@ describe("StatusBar keymap-driven hints", () => {
     expect(flat).toContain("Tab:cycle");
     expect(flat).toContain("j/k:nav");
     expect(flat).toContain("Enter:select");
+    expect(flat).toContain("Space ?:help");
     expect(flat).not.toContain("5-`:toggle");
     await unmountStatusBar(renderer);
   });
@@ -162,6 +163,27 @@ describe("StatusBar keymap-driven hints", () => {
     expect(flat).toContain("Space p ...");
     expect(flat).toContain("Esc:cancel");
     expect(flat).not.toContain("j/k:nav");
+    await unmountStatusBar(renderer);
+  });
+
+  test("renders inbox messaging hints from the keymap", async () => {
+    let renderer!: TestRendererTypes.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <StatusBar
+            mode={InputMode.Normal}
+            focusedPanel={Panel.Inbox}
+            resolvedKeymap={resolveBuiltinKeymap("default")}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    const flat = JSON.stringify(renderer.toJSON());
+
+    expect(flat).toContain("Space m b:broadcast");
+    expect(flat).toContain("Space m @:direct");
+    expect(flat).not.toContain("Space:leader");
     await unmountStatusBar(renderer);
   });
 });

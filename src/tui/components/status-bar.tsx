@@ -111,19 +111,6 @@ function actionKey(
   );
 }
 
-function normalActionKey(
-  keymap: ResolvedKeymap,
-  action: TuiActionId,
-  fallback?: string,
-): string | undefined {
-  return bindingKey(
-    compactBinding(
-      keymap.bindings.filter((binding) => binding.action === action && binding.layer === "normal"),
-    ),
-    fallback,
-  );
-}
-
 function panelKey(keymap: ResolvedKeymap, panel: Panel | undefined): string | undefined {
   if (panel === undefined) return undefined;
   return bindingKey(
@@ -168,7 +155,7 @@ function keymapHints(
     return joinHints([`${formatKeySequence(keymapPrefix)} ...`, "Esc:cancel"]);
   }
 
-  const help = normalActionKey(keymap, "help", "?");
+  const help = actionKey(keymap, "help", "?");
   const nav = actionPair(keymap, "cursor_down", "cursor_up", "j/k");
   const panelSwitch = panelKey(keymap, panel);
 
@@ -223,6 +210,14 @@ function keymapHints(
         panelSwitch === undefined ? undefined : `${panelSwitch}:panel`,
         `${actionKey(keymap, "approve", "a")}:approve`,
         `${actionKey(keymap, "deny", "d")}:deny`,
+        `${nav}:nav`,
+        `${help}:help`,
+      ]);
+    case Panel.Inbox:
+      return joinHints([
+        panelSwitch === undefined ? undefined : `${panelSwitch}:panel`,
+        `${actionKey(keymap, "broadcast", "b")}:broadcast`,
+        `${actionKey(keymap, "direct_message", "@")}:direct`,
         `${nav}:nav`,
         `${help}:help`,
       ]);
