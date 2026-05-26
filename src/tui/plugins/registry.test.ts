@@ -196,8 +196,13 @@ describe("TuiExtension collection", () => {
   });
 
   test("returns empty frozen arrays when extensions are absent", () => {
-    expect(collectTuiPanelRegistrations()).toEqual([]);
-    expect(collectTuiActionRegistrations()).toEqual([]);
+    const panels = collectTuiPanelRegistrations();
+    const actions = collectTuiActionRegistrations();
+
+    expect(panels).toEqual([]);
+    expect(Object.isFrozen(panels)).toBe(true);
+    expect(actions).toEqual([]);
+    expect(Object.isFrozen(actions)).toBe(true);
   });
 });
 
