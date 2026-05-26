@@ -3,9 +3,45 @@ import type { TuiDataProvider } from "../provider.js";
 import { runTuiActionRegistration } from "./actions.js";
 import type { TuiActionRegistration, TuiPluginContext } from "./types.js";
 
+function providerStub(): TuiDataProvider {
+  return {
+    capabilities: {
+      outcomes: false,
+      artifacts: false,
+      vfs: false,
+      messaging: false,
+      costTracking: false,
+      askUser: false,
+      github: false,
+      bounties: false,
+      gossip: false,
+      goals: false,
+      sessions: false,
+      handoffs: false,
+    },
+    getDashboard: async () => {
+      throw new Error("getDashboard not used");
+    },
+    getContributions: async () => [],
+    getContribution: async () => undefined,
+    getClaims: async () => [],
+    getFrontier: async () => ({
+      byMetric: {},
+      byAdoption: [],
+      byRecency: [],
+      byReviewScore: [],
+      byReproduction: [],
+    }),
+    getActivity: async () => [],
+    getDag: async () => ({ contributions: [] }),
+    getHotThreads: async () => [],
+    close: () => undefined,
+  };
+}
+
 function context(): TuiPluginContext {
   return {
-    provider: {} as TuiDataProvider,
+    provider: providerStub(),
     density: "comfortable",
     showMessage: () => undefined,
   };
