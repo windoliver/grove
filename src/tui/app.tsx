@@ -1169,6 +1169,8 @@ export function App({
           isDetailView={nav.isDetailView}
           error={lastError}
           focusedPanel={panels.state.focused}
+          resolvedKeymap={resolvedKeymap}
+          keymapPrefix={keymapPrefix}
           agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
           viewMode={panels.state.viewMode}
           costLabel={
