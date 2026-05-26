@@ -66,7 +66,10 @@ import {
   panelRowGroup,
   type ZoomLevel,
 } from "./panel-registry.js";
-import { getDefaultVisiblePluginPanelEntries } from "./plugin-panels.js";
+import {
+  getDefaultVisiblePluginPanelEntries,
+  shouldRenderDefaultVisiblePluginPanels,
+} from "./plugin-panels.js";
 
 // Re-export for backwards compatibility
 export type { ZoomLevel, LayoutMode };
@@ -215,6 +218,11 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     const focusedRowGroup = panelRowGroup(panelState.focused);
     const allowedPanels = getPresetPanels(presetName);
     const pluginPanelEntries = getDefaultVisiblePluginPanelEntries(registryEntries ?? []);
+    const showPluginPanels = shouldRenderDefaultVisiblePluginPanels({
+      layoutMode: effectiveMode,
+      zoomLevel: zoom,
+      isMedium,
+    });
 
     // If detail view is active, show it in the Detail panel
     const showDetail = nav.isDetailView && nav.detailCid;
@@ -559,7 +567,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
             </box>
           );
         })}
-        {pluginContext !== undefined
+        {pluginContext !== undefined && showPluginPanels
           ? pluginPanelEntries.map((entry) => {
               const Component = entry.registration?.component;
               if (Component === undefined) return null;

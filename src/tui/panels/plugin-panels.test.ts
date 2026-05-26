@@ -3,7 +3,10 @@ import type React from "react";
 import { Panel } from "../hooks/use-panel-focus.js";
 import type { TuiRegistryEntry } from "../plugins/registry.js";
 import type { TuiPluginContext, TuiSlot } from "../plugins/types.js";
-import { getDefaultVisiblePluginPanelEntries } from "./plugin-panels.js";
+import {
+  getDefaultVisiblePluginPanelEntries,
+  shouldRenderDefaultVisiblePluginPanels,
+} from "./plugin-panels.js";
 
 const NullPanel: React.ComponentType<TuiPluginContext> = () => null;
 
@@ -66,5 +69,47 @@ describe("getDefaultVisiblePluginPanelEntries", () => {
     ];
 
     expect(getDefaultVisiblePluginPanelEntries(entries)).toEqual([]);
+  });
+});
+
+describe("shouldRenderDefaultVisiblePluginPanels", () => {
+  test("renders only in unsuppressed grid layout", () => {
+    expect(
+      shouldRenderDefaultVisiblePluginPanels({
+        layoutMode: "grid",
+        zoomLevel: "normal",
+        isMedium: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not render in tab layout", () => {
+    expect(
+      shouldRenderDefaultVisiblePluginPanels({
+        layoutMode: "tab",
+        zoomLevel: "normal",
+        isMedium: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not render in full zoom", () => {
+    expect(
+      shouldRenderDefaultVisiblePluginPanels({
+        layoutMode: "grid",
+        zoomLevel: "full",
+        isMedium: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not render in medium layout", () => {
+    expect(
+      shouldRenderDefaultVisiblePluginPanels({
+        layoutMode: "grid",
+        zoomLevel: "normal",
+        isMedium: true,
+      }),
+    ).toBe(false);
   });
 });
