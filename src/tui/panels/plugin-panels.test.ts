@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type React from "react";
 import { Panel } from "../hooks/use-panel-focus.js";
 import type { TuiRegistryEntry } from "../plugins/registry.js";
-import type { TuiPluginContext } from "../plugins/types.js";
+import type { TuiPluginContext, TuiSlot } from "../plugins/types.js";
 import { getDefaultVisiblePluginPanelEntries } from "./plugin-panels.js";
 
 const NullPanel: React.ComponentType<TuiPluginContext> = () => null;
@@ -18,17 +18,21 @@ function builtInEntry(id: string, order: number, panel: Panel): TuiRegistryEntry
   };
 }
 
-function pluginEntry(id: string, defaultVisible?: boolean): TuiRegistryEntry {
+function pluginEntry(
+  id: string,
+  defaultVisible?: boolean,
+  slot: TuiSlot = "operator-panel",
+): TuiRegistryEntry {
   return {
     id,
     label: id,
-    slot: "operator-panel",
+    slot,
     order: 1000,
     source: "plugin",
     registration: {
       id,
       label: id,
-      slot: "operator-panel",
+      slot,
       ...(defaultVisible === undefined ? {} : { defaultVisible }),
       component: NullPanel,
     },
@@ -42,6 +46,7 @@ describe("getDefaultVisiblePluginPanelEntries", () => {
       pluginEntry("audit-panel", true),
       pluginEntry("hidden-panel", false),
       pluginEntry("implicit-hidden"),
+      pluginEntry("footer-panel", true, "footer"),
     ];
 
     expect(getDefaultVisiblePluginPanelEntries(entries).map((entry) => entry.id)).toEqual([
