@@ -30,6 +30,8 @@ import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { NavigationActions } from "../hooks/use-navigation.js";
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
+import type { TuiRegistryEntry } from "../plugins/registry.js";
+import type { TuiPluginContext } from "../plugins/types.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 import { ActivityPanelView } from "../views/activity-panel.js";
@@ -64,6 +66,7 @@ import {
   panelRowGroup,
   type ZoomLevel,
 } from "./panel-registry.js";
+import { getDefaultVisiblePluginPanelEntries } from "./plugin-panels.js";
 
 // Re-export for backwards compatibility
 export type { ZoomLevel, LayoutMode };
@@ -121,15 +124,19 @@ export interface PanelManagerProps {
   readonly layoutMode?: LayoutMode | undefined;
   /** Preset name — used for per-preset panel visibility filtering. */
   readonly presetName?: string | undefined;
+  /** Merged built-in and plugin panel entries. Defaults to built-ins only. */
+  readonly registryEntries?: readonly TuiRegistryEntry[] | undefined;
+  /** Context passed to trusted plugin panel components. */
+  readonly pluginContext?: TuiPluginContext | undefined;
 }
 
 /** Wraps a panel view with a titled border and focus indication. */
 function PanelChrome({
-  panel,
+  title,
   focused,
   children,
 }: {
-  readonly panel: Panel;
+  readonly title: string;
   readonly focused: boolean;
   readonly children: React.ReactNode;
 }): React.ReactNode {
@@ -147,7 +154,7 @@ function PanelChrome({
     >
       <box>
         <text color={titleColor} bold={focused}>
-          {` ${PANEL_LABELS[panel]} `}
+          {` ${title} `}
         </text>
       </box>
       {children}
@@ -188,6 +195,8 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     terminalBuffers,
     layoutMode,
     presetName,
+    registryEntries,
+    pluginContext,
   }: PanelManagerProps): React.ReactNode {
     const isFocused = (p: Panel) => panelState.focused === p;
     const zoom = zoomLevel ?? "normal";
@@ -205,6 +214,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
 
     const focusedRowGroup = panelRowGroup(panelState.focused);
     const allowedPanels = getPresetPanels(presetName);
+    const pluginPanelEntries = getDefaultVisiblePluginPanelEntries(registryEntries ?? []);
 
     // If detail view is active, show it in the Detail panel
     const showDetail = nav.isDetailView && nav.detailCid;
@@ -501,7 +511,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
           {height < 15 ? (
             <text color={theme.warning}>Terminal too small — resize for full view</text>
           ) : null}
-          <PanelChrome panel={panelState.focused} focused>
+          <PanelChrome title={PANEL_LABELS[panelState.focused]} focused>
             {renderPanel(panelState.focused)}
           </PanelChrome>
         </box>
@@ -538,13 +548,30 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               flexGrow={getRowFlex(rowGroup, focusedRowGroup, zoom, rowGroup === 0 ? 2 : 1)}
             >
               {visibleInRow.map((def) => (
-                <PanelChrome key={def.id} panel={def.panel} focused={isFocused(def.panel)}>
+                <PanelChrome
+                  key={def.id}
+                  title={PANEL_LABELS[def.panel]}
+                  focused={isFocused(def.panel)}
+                >
                   {renderPanel(def.panel)}
                 </PanelChrome>
               ))}
             </box>
           );
         })}
+        {pluginContext !== undefined
+          ? pluginPanelEntries.map((entry) => {
+              const Component = entry.registration?.component;
+              if (Component === undefined) return null;
+              return (
+                <box key={entry.id} flexDirection="row" flexGrow={1}>
+                  <PanelChrome title={entry.label} focused={false}>
+                    {React.createElement(Component, pluginContext)}
+                  </PanelChrome>
+                </box>
+              );
+            })
+          : null}
       </box>
     );
   },

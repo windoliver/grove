@@ -53,8 +53,14 @@ import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
+import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
 import { runTuiActionRegistration } from "./plugins/actions.js";
-import { collectTuiActionRegistrations, mergeTuiActionRegistrations } from "./plugins/registry.js";
+import {
+  collectTuiActionRegistrations,
+  collectTuiPanelRegistrations,
+  mergeTuiActionRegistrations,
+  mergeTuiRegistrations,
+} from "./plugins/registry.js";
 import type { TuiExtension, TuiPluginContext } from "./plugins/types.js";
 import {
   type DashboardData,
@@ -237,6 +243,18 @@ export function App({
       }),
     [pluginActionRegistrations],
   );
+  const pluginPanelRegistrations = useMemo(
+    () => collectTuiPanelRegistrations(extensions),
+    [extensions],
+  );
+  const mergedPanelRegistry = useMemo(
+    () =>
+      mergeTuiRegistrations({
+        builtIns: getBuiltInTuiRegistryEntries(),
+        plugins: pluginPanelRegistrations,
+      }),
+    [pluginPanelRegistrations],
+  );
   const pluginContext = useMemo<TuiPluginContext>(
     () => ({
       provider,
@@ -254,6 +272,12 @@ export function App({
       showError(diagnostic.message);
     }
   }, [mergedActionRegistry.diagnostics, showError]);
+
+  useEffect(() => {
+    for (const diagnostic of mergedPanelRegistry.diagnostics) {
+      showError(diagnostic.message);
+    }
+  }, [mergedPanelRegistry.diagnostics, showError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1199,6 +1223,8 @@ export function App({
           terminalBuffers={terminalBuffers ?? undefined}
           layoutMode={ks.layoutMode}
           presetName={presetName}
+          registryEntries={mergedPanelRegistry.entries}
+          pluginContext={pluginContext}
         />
         <StatusBar
           mode={panels.state.mode}
