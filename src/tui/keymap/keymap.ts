@@ -1,6 +1,11 @@
-import { Panel } from "../hooks/use-panel-focus.js";
+import { Panel, type Panel as PanelValue } from "../hooks/use-panel-focus.js";
 
 export type KeymapPresetName = "default" | "power-user";
+
+export type KeyToken = string;
+export type KeySequence = readonly KeyToken[];
+export type KeymapLayer = "normal" | "leader" | "panel";
+export type KeySequenceMatch = "exact" | "prefix" | "none";
 
 export type PanelKeymapId =
   | "dag"
@@ -44,7 +49,22 @@ export type TuiActionId =
   | "approve"
   | "deny"
   | "broadcast"
-  | "direct_message";
+  | "direct_message"
+  | "cursor_down"
+  | "cursor_up"
+  | "select"
+  | "page_next"
+  | "page_prev"
+  | "vfs_navigate"
+  | "terminal_scroll_up"
+  | "terminal_scroll_down"
+  | "terminal_scroll_bottom"
+  | "frontier_tab_next"
+  | "frontier_tab_prev"
+  | "frontier_adopt"
+  | "compare_select"
+  | "compare_adopt_a"
+  | "compare_adopt_b";
 
 export type KeyBindingId =
   | TuiActionId
@@ -54,12 +74,13 @@ export type KeyBindingId =
 export type KeyBindingContext = "global" | "navigation" | "panel" | "messaging";
 
 export interface KeyBinding {
-  readonly id: string;
+  readonly id: KeyBindingId;
   readonly action: TuiActionId;
-  readonly sequence: readonly string[];
+  readonly sequence: KeySequence;
   readonly label: string;
   readonly context: KeyBindingContext;
-  readonly panel?: Panel | undefined;
+  readonly layer: KeymapLayer;
+  readonly panel?: PanelValue | undefined;
   readonly preferred: boolean;
 }
 
@@ -76,16 +97,23 @@ export interface KeymapConflict {
 }
 
 export type KeymapResolution =
-  | { readonly kind: "pending"; readonly prefix: readonly string[] }
+  | { readonly kind: "pending"; readonly prefix: KeySequence }
   | { readonly kind: "match"; readonly binding: KeyBinding }
   | { readonly kind: "miss" };
+
+export type KeyDispatchResult = KeymapResolution;
 
 export interface KeyTokenEvent {
   readonly name?: string | undefined;
   readonly ctrl?: boolean | undefined;
+  readonly shift?: boolean | undefined;
 }
 
-export const PANEL_BY_KEYMAP_ID: Readonly<Record<PanelKeymapId, Panel>> = {
+export interface KeymapResolveOptions {
+  readonly focusedPanel?: PanelValue | undefined;
+}
+
+export const PANEL_BY_KEYMAP_ID: Readonly<Record<PanelKeymapId, PanelValue>> = {
   dag: Panel.Dag,
   detail: Panel.Detail,
   frontier: Panel.Frontier,
@@ -111,29 +139,42 @@ const DISPLAY_BY_TOKEN: Readonly<Record<string, string>> = {
   escape: "Esc",
   return: "Enter",
   tab: "Tab",
+  "shift+tab": "Shift+Tab",
 };
 
-export function normalizeKeyToken(token: string): string {
+export function normalizeKeyToken(token: string): KeyToken {
   const trimmed = token.trim();
   const lower = trimmed.toLowerCase();
   if (lower === "space") return "space";
   if (lower === "esc" || lower === "escape") return "escape";
   if (lower === "enter" || lower === "return") return "return";
   if (lower === "tab") return "tab";
+  if (lower === "shift+tab") return "shift+tab";
   if (lower.startsWith("ctrl+")) return `ctrl+${lower.slice("ctrl+".length)}`;
   return trimmed;
 }
 
-export function parseKeySequence(sequence: string): readonly string[] {
-  const tokens = sequence
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token.length > 0)
-    .map(normalizeKeyToken);
+export function createKeySequence(sequence: string | readonly string[]): KeySequence {
+  const source =
+    typeof sequence === "string"
+      ? sequence
+          .trim()
+          .split(/\s+/)
+          .filter((token) => token.length > 0)
+      : sequence;
+  const tokens = source.map(normalizeKeyToken);
   return Object.freeze(tokens);
 }
 
-export function formatKeySequence(sequence: readonly string[]): string {
+export function normalizeKeySequence(sequence: string | readonly string[]): KeySequence {
+  return createKeySequence(sequence);
+}
+
+export function parseKeySequence(sequence: string): KeySequence {
+  return createKeySequence(sequence);
+}
+
+export function formatKeySequence(sequence: KeySequence): string {
   return sequence
     .map((token) => {
       if (token.startsWith("ctrl+")) return `Ctrl+${token.slice("ctrl+".length).toUpperCase()}`;
@@ -142,31 +183,64 @@ export function formatKeySequence(sequence: readonly string[]): string {
     .join(" ");
 }
 
-export function keyEventToToken(event: KeyTokenEvent): string | undefined {
+export function keyEventToToken(event: KeyTokenEvent): KeyToken | undefined {
   const name = event.name;
   if (!name) return undefined;
+  if (event.shift === true && name === "tab") return "shift+tab";
   if (event.ctrl === true) return `ctrl+${name.toLowerCase()}`;
   return normalizeKeyToken(name);
 }
 
-function sequenceEquals(a: readonly string[], b: readonly string[]): boolean {
+function sequenceEquals(a: KeySequence, b: KeySequence): boolean {
   return a.length === b.length && a.every((token, index) => token === b[index]);
 }
 
-function sequenceStartsWith(sequence: readonly string[], prefix: readonly string[]): boolean {
+function sequenceStartsWith(sequence: KeySequence, prefix: KeySequence): boolean {
   return prefix.every((token, index) => sequence[index] === token);
+}
+
+export function matchesKeySequence(sequence: KeySequence, prefix: KeySequence): KeySequenceMatch {
+  if (!sequenceStartsWith(sequence, prefix)) return "none";
+  return sequence.length === prefix.length ? "exact" : "prefix";
+}
+
+function bindingApplies(binding: KeyBinding, options: KeymapResolveOptions): boolean {
+  if (binding.layer !== "panel") return true;
+  return options.focusedPanel !== undefined && binding.panel === options.focusedPanel;
+}
+
+function findExactBinding(
+  bindings: readonly KeyBinding[],
+  prefix: KeySequence,
+  options: KeymapResolveOptions,
+): KeyBinding | undefined {
+  const exact = bindings.filter(
+    (binding) => bindingApplies(binding, options) && sequenceEquals(binding.sequence, prefix),
+  );
+  return exact.find((binding) => binding.layer === "panel") ?? exact[0];
+}
+
+export function resolveKeyBinding(
+  bindings: readonly KeyBinding[],
+  prefix: KeySequence,
+  options: KeymapResolveOptions = {},
+): KeyDispatchResult {
+  const exact = findExactBinding(bindings, prefix, options);
+  if (exact !== undefined) return { kind: "match", binding: exact };
+  const hasChild = bindings.some(
+    (binding) =>
+      bindingApplies(binding, options) &&
+      binding.sequence.length > prefix.length &&
+      sequenceStartsWith(binding.sequence, prefix),
+  );
+  if (hasChild) return { kind: "pending", prefix: Object.freeze([...prefix]) };
+  return { kind: "miss" };
 }
 
 export function resolveKeySequence(
   bindings: readonly KeyBinding[],
-  prefix: readonly string[],
+  prefix: KeySequence,
+  options: KeymapResolveOptions = {},
 ): KeymapResolution {
-  const exact = bindings.find((binding) => sequenceEquals(binding.sequence, prefix));
-  if (exact !== undefined) return { kind: "match", binding: exact };
-  const hasChild = bindings.some(
-    (binding) =>
-      binding.sequence.length > prefix.length && sequenceStartsWith(binding.sequence, prefix),
-  );
-  if (hasChild) return { kind: "pending", prefix: Object.freeze([...prefix]) };
-  return { kind: "miss" };
+  return resolveKeyBinding(bindings, prefix, options);
 }

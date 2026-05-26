@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import { Panel } from "../hooks/use-panel-focus.js";
 import {
+  createKeySequence,
   formatKeySequence,
   type KeyBinding,
   keyEventToToken,
+  matchesKeySequence,
   normalizeKeyToken,
   parseKeySequence,
+  resolveKeyBinding,
   resolveKeySequence,
 } from "./keymap.js";
 
 function binding(
-  id: string,
-  sequence: readonly string[],
+  id: KeyBinding["id"],
+  sequence: KeyBinding["sequence"],
   action: KeyBinding["action"] = "help",
 ): KeyBinding {
   return {
@@ -19,6 +23,7 @@ function binding(
     sequence,
     label: id,
     context: "global",
+    layer: "normal",
     preferred: true,
   };
 }
@@ -38,6 +43,18 @@ describe("key token normalization", () => {
     expect(formatKeySequence(["return"])).toBe("Enter");
   });
 
+  test("creates immutable normalized key sequences", () => {
+    const sequence = createKeySequence("Space p t");
+    expect(sequence).toEqual(["space", "p", "t"]);
+    expect(Object.isFrozen(sequence)).toBe(true);
+  });
+
+  test("distinguishes exact, prefix, and unmatched sequences", () => {
+    expect(matchesKeySequence(["space", "p"], ["space", "p"])).toBe("exact");
+    expect(matchesKeySequence(["space", "p", "t"], ["space", "p"])).toBe("prefix");
+    expect(matchesKeySequence(["space", "p"], ["space", "x"])).toBe("none");
+  });
+
   test("normalizes individual tokens", () => {
     expect(normalizeKeyToken("Space")).toBe("space");
     expect(normalizeKeyToken("escape")).toBe("escape");
@@ -53,8 +70,8 @@ describe("key token normalization", () => {
 
 describe("resolveKeySequence", () => {
   const bindings: readonly KeyBinding[] = [
-    binding("help", ["space", "?"]),
-    binding("toggle_panel:terminal", ["space", "p", "t"], "toggle_panel"),
+    { ...binding("help", ["space", "?"]), layer: "leader" },
+    { ...binding("toggle_panel:terminal", ["space", "p", "t"], "toggle_panel"), layer: "leader" },
     binding("refresh", ["r"], "refresh"),
   ];
 
@@ -76,6 +93,38 @@ describe("resolveKeySequence", () => {
     const result = resolveKeySequence(bindings, ["space", "p", "t"]);
     expect(result.kind).toBe("match");
     if (result.kind === "match") expect(result.binding.id).toBe("toggle_panel:terminal");
+  });
+
+  test("exact match wins over a longer prefix candidate", () => {
+    const ambiguous: readonly KeyBinding[] = [
+      { ...binding("palette", ["space", "p"], "palette"), layer: "leader" },
+      { ...binding("toggle_panel:terminal", ["space", "p", "t"], "toggle_panel"), layer: "leader" },
+    ];
+
+    const result = resolveKeyBinding(ambiguous, ["space", "p"]);
+
+    expect(result.kind).toBe("match");
+    if (result.kind === "match") expect(result.binding.id).toBe("palette");
+  });
+
+  test("panel-scoped bindings only match for the focused panel", () => {
+    const scoped: readonly KeyBinding[] = [
+      {
+        ...binding("terminal_input", ["i"], "terminal_input"),
+        context: "panel",
+        layer: "panel",
+        panel: Panel.Terminal,
+      },
+      binding("refresh", ["i"], "refresh"),
+    ];
+
+    const terminalResult = resolveKeyBinding(scoped, ["i"], { focusedPanel: Panel.Terminal });
+    const dagResult = resolveKeyBinding(scoped, ["i"], { focusedPanel: Panel.Dag });
+
+    expect(terminalResult.kind).toBe("match");
+    if (terminalResult.kind === "match") expect(terminalResult.binding.id).toBe("terminal_input");
+    expect(dagResult.kind).toBe("match");
+    if (dagResult.kind === "match") expect(dagResult.binding.id).toBe("refresh");
   });
 
   test("direct sequence returns match", () => {
