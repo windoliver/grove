@@ -1,4 +1,7 @@
-import { Panel, type Panel as PanelValue } from "../hooks/use-panel-focus.js";
+import type { Panel as PanelValue } from "../hooks/use-panel-focus.js";
+import defaultKeymapRaw from "../keymaps/default.json" with { type: "json" };
+import powerUserKeymapRaw from "../keymaps/power-user.json" with { type: "json" };
+import { BUILT_IN_PANEL_IDS, type BuiltInPanelId, idToPanel } from "../panels/panel-ids.js";
 
 export type KeymapPresetName = "default" | "power-user";
 
@@ -7,25 +10,7 @@ export type KeySequence = readonly KeyToken[];
 export type KeymapLayer = "normal" | "leader" | "panel";
 export type KeySequenceMatch = "exact" | "prefix" | "none";
 
-export type PanelKeymapId =
-  | "dag"
-  | "detail"
-  | "frontier"
-  | "claims"
-  | "agents"
-  | "terminal"
-  | "artifact"
-  | "vfs"
-  | "activity"
-  | "search"
-  | "threads"
-  | "outcomes"
-  | "bounties"
-  | "gossip"
-  | "inbox"
-  | "decisions"
-  | "github"
-  | "plan";
+export type PanelKeymapId = BuiltInPanelId;
 
 export type TuiActionId =
   | "quit"
@@ -109,6 +94,22 @@ export interface KeymapConflict {
   readonly loser: string;
 }
 
+interface RawKeyBinding {
+  readonly id: string;
+  readonly action: TuiActionId;
+  readonly sequence: string | readonly string[];
+  readonly label: string;
+  readonly context: KeyBindingContext;
+  readonly layer: KeymapLayer;
+  readonly panel?: string | undefined;
+  readonly preferred?: boolean | undefined;
+}
+
+interface RawBuiltinKeymap {
+  readonly extends?: KeymapPresetName | undefined;
+  readonly bindings: readonly RawKeyBinding[];
+}
+
 export type KeymapResolution =
   | { readonly kind: "pending"; readonly prefix: KeySequence }
   | { readonly kind: "match"; readonly binding: KeyBinding }
@@ -128,26 +129,31 @@ export interface KeymapResolveOptions {
   readonly focusedPanel?: PanelValue | undefined;
 }
 
-export const PANEL_BY_KEYMAP_ID: Readonly<Record<PanelKeymapId, PanelValue>> = {
-  dag: Panel.Dag,
-  detail: Panel.Detail,
-  frontier: Panel.Frontier,
-  claims: Panel.Claims,
-  agents: Panel.AgentList,
-  terminal: Panel.Terminal,
-  artifact: Panel.Artifact,
-  vfs: Panel.Vfs,
-  activity: Panel.Activity,
-  search: Panel.Search,
-  threads: Panel.Threads,
-  outcomes: Panel.Outcomes,
-  bounties: Panel.Bounties,
-  gossip: Panel.Gossip,
-  inbox: Panel.Inbox,
-  decisions: Panel.Decisions,
-  github: Panel.GitHub,
-  plan: Panel.Plan,
+const PANEL_KEYMAP_IDS: ReadonlySet<string> = new Set(BUILT_IN_PANEL_IDS);
+
+function isPanelKeymapId(id: string): id is PanelKeymapId {
+  return PANEL_KEYMAP_IDS.has(id);
+}
+
+function panelForKeymapId(id: PanelKeymapId): PanelValue {
+  const panel = idToPanel(id);
+  if (panel === undefined) throw new Error(`Unknown built-in panel id: ${id}`);
+  return panel;
+}
+
+export const PANEL_BY_KEYMAP_ID: Readonly<Record<PanelKeymapId, PanelValue>> = Object.freeze(
+  Object.fromEntries(BUILT_IN_PANEL_IDS.map((id) => [id, panelForKeymapId(id)])) as Record<
+    PanelKeymapId,
+    PanelValue
+  >,
+);
+
+const BUILTIN_KEYMAPS: Readonly<Record<KeymapPresetName, RawBuiltinKeymap>> = {
+  default: defaultKeymapRaw as RawBuiltinKeymap,
+  "power-user": powerUserKeymapRaw as RawBuiltinKeymap,
 };
+
+const EMPTY_KEYMAP_CONFLICTS: readonly KeymapConflict[] = Object.freeze([]);
 
 const DISPLAY_BY_TOKEN: Readonly<Record<string, string>> = {
   space: "Space",
@@ -256,6 +262,87 @@ export function matchesKeySequence(sequence: KeySequence, prefix: KeySequence): 
 function bindingApplies(binding: KeyBinding, options: KeymapResolveOptions): boolean {
   if (binding.layer !== "panel") return true;
   return options.focusedPanel !== undefined && binding.panel === options.focusedPanel;
+}
+
+function rawBindingsForPreset(preset: KeymapPresetName): readonly RawKeyBinding[] {
+  const raw = BUILTIN_KEYMAPS[preset];
+  if (raw.extends === undefined) return raw.bindings;
+  return [...rawBindingsForPreset(raw.extends), ...raw.bindings];
+}
+
+function resolveRawPanel(raw: RawKeyBinding): PanelValue | undefined {
+  const panelId = raw.panel;
+  if (panelId === undefined) return undefined;
+  if (!isPanelKeymapId(panelId)) {
+    throw new Error(`Key binding "${raw.id}" references unknown panel id "${panelId}"`);
+  }
+  return PANEL_BY_KEYMAP_ID[panelId];
+}
+
+function resolvePanelTargetBinding(
+  raw: RawKeyBinding,
+  action: PanelTargetActionId,
+): PanelTargetKeyBinding {
+  const panelId = raw.panel;
+  if (panelId === undefined) {
+    throw new Error(`Panel target key binding "${raw.id}" is missing a panel`);
+  }
+  if (!isPanelKeymapId(panelId)) {
+    throw new Error(`Panel target key binding "${raw.id}" references unknown panel "${panelId}"`);
+  }
+
+  const id = `${action}:${panelId}` as PanelTargetBindingId;
+  if (raw.id !== id) {
+    throw new Error(`Panel target key binding "${raw.id}" must use id "${id}"`);
+  }
+
+  return Object.freeze({
+    id,
+    action,
+    sequence: createKeySequence(raw.sequence),
+    label: raw.label,
+    context: raw.context,
+    layer: raw.layer,
+    panel: PANEL_BY_KEYMAP_ID[panelId],
+    preferred: raw.preferred ?? true,
+  });
+}
+
+function resolveActionBinding(
+  raw: RawKeyBinding,
+  action: NonPanelTargetActionId,
+): ActionKeyBinding {
+  if (raw.id !== action) {
+    throw new Error(`Key binding "${raw.id}" must match non-panel action "${action}"`);
+  }
+
+  const panel = resolveRawPanel(raw);
+  const binding = {
+    id: action,
+    action,
+    sequence: createKeySequence(raw.sequence),
+    label: raw.label,
+    context: raw.context,
+    layer: raw.layer,
+    preferred: raw.preferred ?? true,
+    ...(panel === undefined ? {} : { panel }),
+  };
+  return Object.freeze(binding);
+}
+
+function resolveRawBinding(raw: RawKeyBinding): KeyBinding {
+  if (raw.action === "focus_panel" || raw.action === "toggle_panel") {
+    return resolvePanelTargetBinding(raw, raw.action);
+  }
+  return resolveActionBinding(raw, raw.action);
+}
+
+export function resolveBuiltinKeymap(preset: KeymapPresetName): ResolvedKeymap {
+  return Object.freeze({
+    preset,
+    bindings: Object.freeze(rawBindingsForPreset(preset).map(resolveRawBinding)),
+    conflicts: EMPTY_KEYMAP_CONFLICTS,
+  });
 }
 
 function findExactBinding(

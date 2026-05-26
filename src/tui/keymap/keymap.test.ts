@@ -9,6 +9,7 @@ import {
   matchesKeySequence,
   normalizeKeyToken,
   parseKeySequence,
+  resolveBuiltinKeymap,
   resolveKeyBinding,
   resolveKeySequence,
 } from "./keymap.js";
@@ -159,5 +160,139 @@ describe("resolveKeySequence", () => {
 
   test("unknown sequence returns miss", () => {
     expect(resolveKeySequence(bindings, ["space", "x"])).toEqual({ kind: "miss" });
+  });
+});
+
+describe("resolveBuiltinKeymap", () => {
+  test("default preset follows the approved leader grammar", () => {
+    const keymap = resolveBuiltinKeymap("default");
+
+    expect(
+      keymap.bindings.find((binding) => binding.id === "help" && binding.preferred)?.sequence,
+    ).toEqual(["space", "?"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "palette" && binding.preferred)?.sequence,
+    ).toEqual(["space", "c", "p"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "zoom_reset" && binding.preferred)?.sequence,
+    ).toEqual(["space", "Z"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "view_cycle" && binding.preferred)?.sequence,
+    ).toEqual(["space", "V"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "direct_message" && binding.preferred)
+        ?.sequence,
+    ).toEqual(["space", "m", "@"]);
+  });
+
+  test("default preset keeps essential direct navigation", () => {
+    const keymap = resolveBuiltinKeymap("default");
+
+    expect(keymap.bindings.find((binding) => binding.id === "cursor_down")?.sequence).toEqual([
+      "j",
+    ]);
+    expect(keymap.bindings.find((binding) => binding.id === "cursor_up")?.sequence).toEqual(["k"]);
+    expect(keymap.bindings.find((binding) => binding.id === "select")?.sequence).toEqual([
+      "return",
+    ]);
+    expect(keymap.bindings.find((binding) => binding.id === "cycle_panel_next")?.sequence).toEqual([
+      "tab",
+    ]);
+  });
+
+  test("default preset focuses core panels with leader-number sequences", () => {
+    const keymap = resolveBuiltinKeymap("default");
+
+    expect(keymap.bindings.find((binding) => binding.id === "focus_panel:dag")?.sequence).toEqual([
+      "space",
+      "p",
+      "1",
+    ]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "focus_panel:detail")?.sequence,
+    ).toEqual(["space", "p", "2"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "focus_panel:frontier")?.sequence,
+    ).toEqual(["space", "p", "3"]);
+    expect(
+      keymap.bindings.find((binding) => binding.id === "focus_panel:claims")?.sequence,
+    ).toEqual(["space", "p", "4"]);
+  });
+
+  test("default exposes leader-key terminal toggle", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const binding = keymap.bindings.find(
+      (candidate) => candidate.id === "toggle_panel:terminal" && candidate.preferred,
+    );
+
+    expect(binding).toBeDefined();
+    expect(binding?.action).toBe("toggle_panel");
+    expect(binding?.panel).toBe(Panel.Terminal);
+    expect(binding?.sequence).toEqual(["space", "p", "t"]);
+  });
+
+  test("default does not bind terminal direct alias", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const result = resolveKeySequence(keymap.bindings, ["6"]);
+
+    expect(result).toEqual({ kind: "miss" });
+  });
+
+  test("power-user includes leader and direct terminal bindings", () => {
+    const keymap = resolveBuiltinKeymap("power-user");
+    const leader = keymap.bindings.find(
+      (candidate) => candidate.id === "toggle_panel:terminal" && candidate.preferred,
+    );
+    const direct = keymap.bindings.find(
+      (candidate) =>
+        candidate.id === "toggle_panel:terminal" &&
+        candidate.sequence.length === 1 &&
+        candidate.sequence[0] === "6",
+    );
+
+    expect(leader?.sequence).toEqual(["space", "p", "t"]);
+    expect(direct?.sequence).toEqual(["6"]);
+    expect(direct?.panel).toBe(Panel.Terminal);
+  });
+
+  test("power-user direct aliases are not preferred over leader bindings", () => {
+    const keymap = resolveBuiltinKeymap("power-user");
+    const leader = keymap.bindings.find(
+      (candidate) => candidate.id === "toggle_panel:terminal" && candidate.preferred,
+    );
+    const direct = keymap.bindings.find(
+      (candidate) =>
+        candidate.id === "toggle_panel:terminal" &&
+        candidate.sequence.length === 1 &&
+        candidate.sequence[0] === "6",
+    );
+
+    expect(leader?.preferred).toBe(true);
+    expect(direct?.preferred).toBe(false);
+  });
+
+  test("imported preset bindings use frozen normalized sequences and canonical panels", () => {
+    const keymap = resolveBuiltinKeymap("power-user");
+    const terminalBindings = keymap.bindings.filter(
+      (binding) => binding.id === "toggle_panel:terminal",
+    );
+
+    expect(keymap.conflicts).toEqual([]);
+    expect(terminalBindings.length).toBeGreaterThan(0);
+    for (const binding of keymap.bindings) {
+      expect(Object.isFrozen(binding.sequence)).toBe(true);
+    }
+    expect(terminalBindings.every((binding) => binding.panel === Panel.Terminal)).toBe(true);
+  });
+
+  test("power-user does not duplicate inherited bindings", () => {
+    const keymap = resolveBuiltinKeymap("power-user");
+    const seen = new Set<string>();
+
+    for (const binding of keymap.bindings) {
+      const key = `${binding.id}:${binding.sequence.join(" ")}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
   });
 });
