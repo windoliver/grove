@@ -641,7 +641,9 @@ export function bindRecipeParameters(
   const boundParameters: Record<string, JsonValue> = {};
   for (const [name, parameter] of Object.entries(parameterDefinitions)) {
     const override = overrides[name];
-    const value = override !== undefined ? override : parameter.default;
+    const rawValue = override !== undefined ? override : parameter.default;
+    const value =
+      rawValue === undefined ? undefined : coerceParameterValue(name, parameter, rawValue);
     if (value === undefined) {
       if (parameter.required === true) {
         throw new Error(`missing required recipe parameter '${name}'`);
@@ -663,6 +665,36 @@ export function bindRecipeParameters(
     parameters: boundParameters,
     renderedInstructions,
   };
+}
+
+function coerceParameterValue(
+  name: string,
+  definition: RecipeParameter,
+  value: JsonValue,
+): JsonValue {
+  if (typeof value !== "string") return value;
+  if (definition.type === "integer") {
+    if (!/^-?\d+$/.test(value)) throw new Error(`Parameter ${name} must be an integer`);
+    return Number(value);
+  }
+  if (definition.type === "number") {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) throw new Error(`Parameter ${name} must be a number`);
+    return parsed;
+  }
+  if (definition.type === "boolean") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error(`Parameter ${name} must be true or false`);
+  }
+  if (definition.type === "json") {
+    try {
+      return JSON.parse(value) as JsonValue;
+    } catch {
+      throw new Error(`Parameter ${name} must be valid JSON`);
+    }
+  }
+  return value;
 }
 
 export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecipe {

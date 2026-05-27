@@ -123,13 +123,13 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     );
     return;
   }
+  if (!command.dryRun) {
+    throw new UsageError("recipe run currently requires --dry-run");
+  }
   const content = await readFile(resolveRecipePath(command.path, deps.cwd), "utf-8");
   const recipe = parseGroveRecipe(content);
   const bound = bindRecipeParameters(recipe, command.params);
   const materialized = materializeRecipeContract(bound);
-  if (!command.dryRun) {
-    throw new UsageError("recipe run currently requires --dry-run");
-  }
   const payload = {
     recipe: { name: recipe.name, version: recipe.version },
     recipeDigest: bound.recipeDigest,

@@ -284,6 +284,25 @@ describe("recipe digests", () => {
 });
 
 describe("bindRecipeParameters", () => {
+  test("coerces CLI string values to declared parameter types", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: typed-params
+version: 1.0.0
+parameters:
+  max_rounds:
+    type: integer
+    required: true
+  enabled:
+    type: boolean
+    required: true
+`);
+    const bound = bindRecipeParameters(recipe, { max_rounds: "4", enabled: "true" });
+    expect(bound.parameters.max_rounds).toBe(4);
+    expect(bound.parameters.enabled).toBe(true);
+  });
+
   test("rejects unknown parameter overrides", () => {
     const recipe = parseGroveRecipe(FULL_RECIPE);
     expect(() => bindRecipeParameters(recipe, { target_path: "src/core", extra: true })).toThrow(

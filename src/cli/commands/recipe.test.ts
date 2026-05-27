@@ -88,6 +88,59 @@ describe("recipe command", () => {
     }
   });
 
+  test("run --dry-run binds parameters and renders instructions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-"));
+    try {
+      const recipePath = join(dir, "review.yaml");
+      await writeFile(
+        recipePath,
+        [
+          "kind: recipe",
+          "recipe_version: 1",
+          "name: review-loop",
+          "version: 1.0.0",
+          "parameters:",
+          "  target_path:",
+          "    type: path",
+          "    required: true",
+          "instructions: |",
+          "  Review $" + "{parameters.target_path}.",
+          "",
+        ].join("\n"),
+      );
+      const { lines, writer } = createWriter();
+      await runRecipe(
+        parseRecipeArgs(["run", recipePath, "--dry-run", "--param", "target_path=src/core"]),
+        {
+          cwd: dir,
+          writer,
+        },
+      );
+      const output = lines.join("\n");
+      expect(output).toContain("Recipe dry-run: review-loop@1.0.0");
+      expect(output).toContain("src/core");
+      expect(output).toContain("Bound digest:");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("run without --dry-run is rejected in the first implementation slice", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-required-dry-"));
+    try {
+      const recipePath = join(dir, "review.yaml");
+      await writeFile(
+        recipePath,
+        "kind: recipe\nrecipe_version: 1\nname: review-loop\nversion: 1.0.0\n",
+      );
+      await expect(
+        runRecipe(parseRecipeArgs(["run", recipePath]), { cwd: dir, writer: () => undefined }),
+      ).rejects.toThrow(/requires --dry-run/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("validate --json emits parseable JSON", async () => {
     const dir = await mkdtemp(join(tmpdir(), "grove-recipe-cli-json-"));
     try {
