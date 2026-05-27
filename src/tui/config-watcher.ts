@@ -6,11 +6,8 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { type AliasMap, DEFAULT_ALIASES } from "./data/aliases.js";
 import { loadAliases } from "./data/aliases-loader.js";
-import {
-  type KeybindingOverrides,
-  REMAPPABLE_ACTIONS,
-  type RemappableAction,
-} from "./hooks/use-keybinding-overrides.js";
+import type { KeybindingOverrides, RemappableAction } from "./hooks/use-keybinding-overrides.js";
+import { isKeyBindingId } from "./keymap/keymap.js";
 import type { ThemeColorTokens } from "./theme.js";
 
 export type ConfigFileKind = "aliases" | "hotkeys" | "theme";
@@ -60,7 +57,6 @@ const EMPTY_SNAPSHOT: TuiConfigSnapshot = {
 };
 
 const HOTKEY_SCHEMA = z.record(z.string(), z.string().min(1));
-const REMAPPABLE_ACTION_SET: ReadonlySet<string> = new Set(REMAPPABLE_ACTIONS);
 
 const THEME_KEYS = [
   "focus",
@@ -98,7 +94,7 @@ const THEME_KEY_SET: ReadonlySet<string> = new Set(THEME_KEYS);
 const THEME_SCHEMA = z.record(z.string(), z.string().min(1));
 
 function isRemappableAction(action: string): action is RemappableAction {
-  return REMAPPABLE_ACTION_SET.has(action);
+  return isKeyBindingId(action);
 }
 
 function isThemeKey(key: string): key is keyof ThemeColorTokens {

@@ -1,0 +1,275 @@
+{
+  "extends": "default",
+  "bindings": [
+    {
+      "id": "quit",
+      "action": "quit",
+      "sequence": "q",
+      "label": "Quit",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "help",
+      "action": "help",
+      "sequence": "?",
+      "label": "Help",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "refresh",
+      "action": "refresh",
+      "sequence": "r",
+      "label": "Refresh",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "zoom_cycle",
+      "action": "zoom_cycle",
+      "sequence": "+",
+      "label": "Zoom cycle",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "zoom_reset",
+      "action": "zoom_reset",
+      "sequence": "Esc",
+      "label": "Zoom reset",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "view_cycle",
+      "action": "view_cycle",
+      "sequence": "V",
+      "label": "Cycle view",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "palette",
+      "action": "palette",
+      "sequence": "m",
+      "label": "Command palette",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "palette",
+      "action": "palette",
+      "sequence": "Ctrl+P",
+      "label": "Command palette",
+      "context": "global",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "focus_panel:dag",
+      "action": "focus_panel",
+      "sequence": "1",
+      "label": "Focus DAG panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "dag",
+      "preferred": false
+    },
+    {
+      "id": "focus_panel:detail",
+      "action": "focus_panel",
+      "sequence": "2",
+      "label": "Focus Detail panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "detail",
+      "preferred": false
+    },
+    {
+      "id": "focus_panel:frontier",
+      "action": "focus_panel",
+      "sequence": "3",
+      "label": "Focus Frontier panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "frontier",
+      "preferred": false
+    },
+    {
+      "id": "focus_panel:claims",
+      "action": "focus_panel",
+      "sequence": "4",
+      "label": "Focus Claims panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "claims",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:agents",
+      "action": "toggle_panel",
+      "sequence": "5",
+      "label": "Toggle Agents panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "agents",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:terminal",
+      "action": "toggle_panel",
+      "sequence": "6",
+      "label": "Toggle Terminal panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "terminal",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:artifact",
+      "action": "toggle_panel",
+      "sequence": "7",
+      "label": "Toggle Artifact panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "artifact",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:vfs",
+      "action": "toggle_panel",
+      "sequence": "8",
+      "label": "Toggle VFS panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "vfs",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:activity",
+      "action": "toggle_panel",
+      "sequence": "9",
+      "label": "Toggle Activity panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "activity",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:search",
+      "action": "toggle_panel",
+      "sequence": "0",
+      "label": "Toggle Search panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "search",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:threads",
+      "action": "toggle_panel",
+      "sequence": "-",
+      "label": "Toggle Threads panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "threads",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:outcomes",
+      "action": "toggle_panel",
+      "sequence": "=",
+      "label": "Toggle Outcomes panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "outcomes",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:bounties",
+      "action": "toggle_panel",
+      "sequence": "[",
+      "label": "Toggle Bounties panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "bounties",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:gossip",
+      "action": "toggle_panel",
+      "sequence": "]",
+      "label": "Toggle Gossip panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "gossip",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:inbox",
+      "action": "toggle_panel",
+      "sequence": "\\",
+      "label": "Toggle Inbox panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "inbox",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:decisions",
+      "action": "toggle_panel",
+      "sequence": ";",
+      "label": "Toggle Decisions panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "decisions",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:github",
+      "action": "toggle_panel",
+      "sequence": "'",
+      "label": "Toggle GitHub panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "github",
+      "preferred": false
+    },
+    {
+      "id": "toggle_panel:plan",
+      "action": "toggle_panel",
+      "sequence": "`",
+      "label": "Toggle Plan panel",
+      "context": "panel",
+      "layer": "normal",
+      "panel": "plan",
+      "preferred": false
+    },
+    {
+      "id": "broadcast",
+      "action": "broadcast",
+      "sequence": "b",
+      "label": "Broadcast message",
+      "context": "messaging",
+      "layer": "normal",
+      "preferred": false
+    },
+    {
+      "id": "direct_message",
+      "action": "direct_message",
+      "sequence": "@",
+      "label": "Direct message",
+      "context": "messaging",
+      "layer": "normal",
+      "preferred": false
+    }
+  ]
+}
