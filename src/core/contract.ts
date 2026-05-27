@@ -182,10 +182,128 @@ const AgentConstraintsSchema = z
   .strict();
 
 const MetricNamePattern = /^[a-z][a-z0-9_]*$/;
+const AdmissionRuleNamePattern = /^[a-z][a-z0-9_-]*$/;
 
 const MetricsSchema = z
   .record(z.string().regex(MetricNamePattern).min(1).max(64), MetricDefinitionSchema)
   .refine((m) => Object.keys(m).length <= 50, { message: "max 50 metrics" });
+
+const AdmissionRuleNameSchema = z.string().regex(AdmissionRuleNamePattern).max(128);
+
+const ShellAdmissionRuleSchema = z
+  .object({
+    type: z.literal("shell"),
+    name: AdmissionRuleNameSchema,
+    command: z.string().min(1).max(4096),
+    timeout: z.number().int().positive().optional(),
+    on_fail: z.enum(["reject", "warn"]).optional(),
+  })
+  .strict();
+
+const MetricCheckAdmissionRuleSchema = z
+  .object({
+    type: z.literal("metric_check"),
+    name: AdmissionRuleNameSchema,
+    metric: z.string().regex(MetricNamePattern).max(64),
+    direction: z.enum(["minimize", "maximize"]).optional(),
+    min_value: z.number().optional(),
+    max_value: z.number().optional(),
+  })
+  .strict();
+
+const ArtifactRequiredAdmissionRuleSchema = z
+  .object({
+    type: z.literal("artifact_required"),
+    name: AdmissionRuleNameSchema,
+    artifact: z.string().min(1).max(256),
+  })
+  .strict();
+
+const RelationRequiredAdmissionRuleSchema = z
+  .object({
+    type: z.literal("relation_required"),
+    name: AdmissionRuleNameSchema,
+    relation_type: z.enum(["derives_from", "responds_to", "reviews", "reproduces", "adopts"]),
+  })
+  .strict();
+
+const BlueprintHashAdmissionRuleSchema = z
+  .object({
+    type: z.literal("blueprint_hash"),
+    name: AdmissionRuleNameSchema,
+    blueprint: z.string().min(1).max(1024),
+    expected_hash: z.string().min(1).max(256).optional(),
+    on_mismatch: z.literal("reject").optional(),
+  })
+  .strict();
+
+const ArtifactSignatureAdmissionRuleSchema = z
+  .object({
+    type: z.literal("artifact_signature"),
+    name: AdmissionRuleNameSchema,
+    artifact: z.string().min(1).max(256).optional(),
+    require_signer_in: z.array(z.string().min(1).max(1024)).min(1).max(20),
+  })
+  .strict();
+
+const RebacPermissionAdmissionRuleSchema = z
+  .object({
+    type: z.literal("rebac_permission"),
+    name: AdmissionRuleNameSchema,
+    permission: z.string().min(1).max(128),
+    object_type: z.string().min(1).max(128),
+    object_id_context_key: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+
+const GovernancePolicyAdmissionRuleSchema = z
+  .object({
+    type: z.literal("governance_policy"),
+    name: AdmissionRuleNameSchema,
+    policy: z.enum(["constraint_check", "fraud_score_below", "governance_status_clean"]),
+    max_score: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+
+const AdmissionRuleSchema = z
+  .discriminatedUnion("type", [
+    ShellAdmissionRuleSchema,
+    MetricCheckAdmissionRuleSchema,
+    ArtifactRequiredAdmissionRuleSchema,
+    RelationRequiredAdmissionRuleSchema,
+    BlueprintHashAdmissionRuleSchema,
+    ArtifactSignatureAdmissionRuleSchema,
+    RebacPermissionAdmissionRuleSchema,
+    GovernancePolicyAdmissionRuleSchema,
+  ])
+  .superRefine((rule, ctx) => {
+    if (
+      rule.type === "metric_check" &&
+      rule.min_value === undefined &&
+      rule.max_value === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "metric_check admission rule requires at least one of min_value or max_value",
+      });
+    }
+  });
+
+const AdmissionSchema = z
+  .array(AdmissionRuleSchema)
+  .max(50)
+  .superRefine((rules, ctx) => {
+    const seen = new Set<string>();
+    for (const rule of rules) {
+      if (seen.has(rule.name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate admission rule name '${rule.name}'`,
+        });
+      }
+      seen.add(rule.name);
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // V1 Schema (legacy — claim_policy)
@@ -347,6 +465,7 @@ const GroveContractV2Schema = z
     evaluation: EvaluationSchema.optional(),
     hooks: HooksSchema.optional(),
     topology: AgentTopologySchema.optional(),
+    admission: AdmissionSchema.optional(),
   })
   .strict();
 
@@ -374,6 +493,7 @@ const GroveContractV3Schema = z
     evaluation: EvaluationSchema.optional(),
     hooks: HooksSchema.optional(),
     agent_topology: AgentTopologySchema.optional(),
+    admission: AdmissionSchema.optional(),
   })
   .strict();
 
@@ -405,6 +525,84 @@ export interface Gate {
   readonly relationType?: RelationType | undefined;
   readonly count?: number | undefined;
   readonly threshold?: number | undefined;
+}
+
+/** Explicit admission rules for contribution validation. */
+export type AdmissionRule =
+  | ShellAdmissionRule
+  | MetricCheckAdmissionRule
+  | ArtifactRequiredAdmissionRule
+  | RelationRequiredAdmissionRule
+  | BlueprintHashAdmissionRule
+  | ArtifactSignatureAdmissionRule
+  | RebacPermissionAdmissionRule
+  | GovernancePolicyAdmissionRule;
+
+/** Run a shell command as an admission rule. */
+export interface ShellAdmissionRule {
+  readonly type: "shell";
+  readonly name: string;
+  readonly command: string;
+  readonly timeout?: number | undefined;
+  readonly onFail?: "reject" | "warn" | undefined;
+}
+
+/** Check a metric value against an admission threshold. */
+export interface MetricCheckAdmissionRule {
+  readonly type: "metric_check";
+  readonly name: string;
+  readonly metric: string;
+  readonly direction?: ScoreDirection | undefined;
+  readonly minValue?: number | undefined;
+  readonly maxValue?: number | undefined;
+}
+
+/** Require an artifact by name. */
+export interface ArtifactRequiredAdmissionRule {
+  readonly type: "artifact_required";
+  readonly name: string;
+  readonly artifact: string;
+}
+
+/** Require a relation type. */
+export interface RelationRequiredAdmissionRule {
+  readonly type: "relation_required";
+  readonly name: string;
+  readonly relationType: RelationType;
+}
+
+/** Check a blueprint file hash. */
+export interface BlueprintHashAdmissionRule {
+  readonly type: "blueprint_hash";
+  readonly name: string;
+  readonly blueprint: string;
+  readonly expectedHash?: string | undefined;
+  readonly onMismatch?: "reject" | undefined;
+}
+
+/** Require an artifact signature from configured signer lists. */
+export interface ArtifactSignatureAdmissionRule {
+  readonly type: "artifact_signature";
+  readonly name: string;
+  readonly artifact?: string | undefined;
+  readonly requireSignerIn: readonly string[];
+}
+
+/** Check a ReBAC permission for the contribution context. */
+export interface RebacPermissionAdmissionRule {
+  readonly type: "rebac_permission";
+  readonly name: string;
+  readonly permission: string;
+  readonly objectType: string;
+  readonly objectIdContextKey?: string | undefined;
+}
+
+/** Check a governance policy status. */
+export interface GovernancePolicyAdmissionRule {
+  readonly type: "governance_policy";
+  readonly name: string;
+  readonly policy: "constraint_check" | "fraud_score_below" | "governance_status_clean";
+  readonly maxScore?: number | undefined;
 }
 
 /** Target metric stop condition. */
@@ -543,6 +741,7 @@ export interface GroveContract {
   readonly seed?: string | undefined;
   readonly metrics?: Readonly<Record<string, MetricDefinition>> | undefined;
   readonly gates?: readonly Gate[] | undefined;
+  readonly admission?: readonly AdmissionRule[] | undefined;
   readonly stopConditions?: StopConditions | undefined;
   readonly agentConstraints?: AgentConstraints | undefined;
   /** @deprecated V1 only. Use concurrency + execution instead. Populated when parsing V1 contracts. */
@@ -561,6 +760,8 @@ export interface GroveContract {
 // ---------------------------------------------------------------------------
 // Wire format conversion (snake_case ↔ camelCase)
 // ---------------------------------------------------------------------------
+
+type WireAdmissionRule = z.infer<typeof AdmissionRuleSchema>;
 
 /** Convert a validated V1 snake_case wire object to a camelCase GroveContract. */
 function wireV1ToContract(wire: z.infer<typeof GroveContractV1Schema>): GroveContract {
@@ -631,6 +832,9 @@ function wireVxToContract(
     ...(wire.hooks !== undefined && { hooks: wire.hooks }),
     ...(rawTopology !== undefined && {
       topology: wireToTopology(rawTopology),
+    }),
+    ...(wire.admission !== undefined && {
+      admission: wire.admission.map(wireToAdmissionRule),
     }),
   };
 }
@@ -737,6 +941,72 @@ function wireToAgentConstraints(
       >,
     }),
   };
+}
+
+function wireToAdmissionRule(wire: WireAdmissionRule): AdmissionRule {
+  switch (wire.type) {
+    case "shell":
+      return {
+        type: "shell",
+        name: wire.name,
+        command: wire.command,
+        ...(wire.timeout !== undefined && { timeout: wire.timeout }),
+        ...(wire.on_fail !== undefined && { onFail: wire.on_fail }),
+      };
+    case "metric_check":
+      return {
+        type: "metric_check",
+        name: wire.name,
+        metric: wire.metric,
+        ...(wire.direction !== undefined && { direction: wire.direction }),
+        ...(wire.min_value !== undefined && { minValue: wire.min_value }),
+        ...(wire.max_value !== undefined && { maxValue: wire.max_value }),
+      };
+    case "artifact_required":
+      return {
+        type: "artifact_required",
+        name: wire.name,
+        artifact: wire.artifact,
+      };
+    case "relation_required":
+      return {
+        type: "relation_required",
+        name: wire.name,
+        relationType: wire.relation_type,
+      };
+    case "blueprint_hash":
+      return {
+        type: "blueprint_hash",
+        name: wire.name,
+        blueprint: wire.blueprint,
+        ...(wire.expected_hash !== undefined && { expectedHash: wire.expected_hash }),
+        ...(wire.on_mismatch !== undefined && { onMismatch: wire.on_mismatch }),
+      };
+    case "artifact_signature":
+      return {
+        type: "artifact_signature",
+        name: wire.name,
+        ...(wire.artifact !== undefined && { artifact: wire.artifact }),
+        requireSignerIn: wire.require_signer_in,
+      };
+    case "rebac_permission":
+      return {
+        type: "rebac_permission",
+        name: wire.name,
+        permission: wire.permission,
+        objectType: wire.object_type,
+        ...(wire.object_id_context_key !== undefined && {
+          objectIdContextKey: wire.object_id_context_key,
+        }),
+      };
+    case "governance_policy":
+      return {
+        type: "governance_policy",
+        name: wire.name,
+        policy: wire.policy,
+        ...(wire.max_score !== undefined && { maxScore: wire.max_score }),
+      };
+  }
 }
 
 function wireToClaimPolicy(
@@ -904,6 +1174,14 @@ function validateMetricReferences(contract: GroveContract): void {
         !metricNames.has(gate.metric)
       ) {
         errors.push(`gate references undefined metric '${gate.metric}'`);
+      }
+    }
+  }
+
+  if (contract.admission !== undefined) {
+    for (const rule of contract.admission) {
+      if (rule.type === "metric_check" && !metricNames.has(rule.metric)) {
+        errors.push(`admission rule '${rule.name}' references undefined metric '${rule.metric}'`);
       }
     }
   }

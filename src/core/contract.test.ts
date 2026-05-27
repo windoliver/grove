@@ -414,6 +414,34 @@ retry:
     expect(contract.retry).toBeUndefined();
   });
 
+  test("parses V2 admission rules", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "v2-admission",
+      metrics: {
+        coverage: { direction: "maximize" },
+      },
+      admission: [
+        {
+          type: "metric_check",
+          name: "coverage_floor",
+          metric: "coverage",
+          min_value: 0.8,
+        },
+      ],
+    });
+
+    expect(contract.contractVersion).toBe(2);
+    expect(contract.admission).toEqual([
+      {
+        type: "metric_check",
+        name: "coverage_floor",
+        metric: "coverage",
+        minValue: 0.8,
+      },
+    ]);
+  });
+
   test("rejects unsupported contract_version with supported list", () => {
     expect(() => parseGroveContractObject({ contract_version: 99, name: "bad" })).toThrow(
       "supported: 1, 2, 3",
@@ -1102,6 +1130,181 @@ agent_topology:
     expect(contract.retry?.maxAttempts).toBe(3);
     expect(contract.gossip?.intervalSeconds).toBe(30);
     expect(contract.outcomePolicy?.requireManualReview).toBe(true);
+  });
+
+  test("parses v3 admission rules", () => {
+    const contract = parseGroveContract(`---
+contract_version: 3
+name: admission-test
+metrics:
+  coverage:
+    direction: maximize
+admission:
+  - type: shell
+    name: lint
+    command: "bun run lint"
+    timeout: 120000
+    on_fail: reject
+  - type: metric_check
+    name: coverage_floor
+    metric: coverage
+    direction: maximize
+    min_value: 0.8
+  - type: artifact_required
+    name: has_report
+    artifact: report.json
+  - type: relation_required
+    name: derives_from_parent
+    relation_type: derives_from
+  - type: blueprint_hash
+    name: coder_blueprint
+    blueprint: ./blueprints/coder.yaml
+    expected_hash: blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    on_mismatch: reject
+  - type: artifact_signature
+    name: signed_report
+    artifact: report.json
+    require_signer_in:
+      - .grove/allowed-signers
+  - type: rebac_permission
+    name: reviewer_can_review
+    permission: review
+    object_type: contribution
+  - type: governance_policy
+    name: fraud_status
+    policy: fraud_score_below
+    max_score: 0.75
+---
+# Admission Test
+`);
+
+    expect(contract.admission).toEqual([
+      {
+        type: "shell",
+        name: "lint",
+        command: "bun run lint",
+        timeout: 120000,
+        onFail: "reject",
+      },
+      {
+        type: "metric_check",
+        name: "coverage_floor",
+        metric: "coverage",
+        direction: "maximize",
+        minValue: 0.8,
+      },
+      { type: "artifact_required", name: "has_report", artifact: "report.json" },
+      { type: "relation_required", name: "derives_from_parent", relationType: "derives_from" },
+      {
+        type: "blueprint_hash",
+        name: "coder_blueprint",
+        blueprint: "./blueprints/coder.yaml",
+        expectedHash: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        onMismatch: "reject",
+      },
+      {
+        type: "artifact_signature",
+        name: "signed_report",
+        artifact: "report.json",
+        requireSignerIn: [".grove/allowed-signers"],
+      },
+      {
+        type: "rebac_permission",
+        name: "reviewer_can_review",
+        permission: "review",
+        objectType: "contribution",
+      },
+      {
+        type: "governance_policy",
+        name: "fraud_status",
+        policy: "fraud_score_below",
+        maxScore: 0.75,
+      },
+    ]);
+  });
+
+  test("omits optional admission failure handlers when unset", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 3,
+      name: "optional-admission-handlers",
+      admission: [
+        {
+          type: "shell",
+          name: "lint",
+          command: "bun run check",
+        },
+        {
+          type: "blueprint_hash",
+          name: "coder_blueprint",
+          blueprint: "./blueprints/coder.yaml",
+        },
+      ],
+    });
+
+    expect(contract.admission).toEqual([
+      {
+        type: "shell",
+        name: "lint",
+        command: "bun run check",
+      },
+      {
+        type: "blueprint_hash",
+        name: "coder_blueprint",
+        blueprint: "./blueprints/coder.yaml",
+      },
+    ]);
+  });
+
+  test("rejects duplicate admission rule names", () => {
+    expect(() =>
+      parseGroveContract(`---
+contract_version: 3
+name: duplicate-admission
+admission:
+  - type: shell
+    name: lint
+    command: "bun run lint"
+  - type: metric_check
+    name: lint
+    metric: coverage
+    min_value: 0.8
+---
+`),
+    ).toThrow("duplicate admission rule name 'lint'");
+  });
+
+  test("rejects admission metric references not defined in metrics", () => {
+    expect(() =>
+      parseGroveContract(`---
+contract_version: 3
+name: bad-admission-metric
+admission:
+  - type: metric_check
+    name: coverage_floor
+    metric: coverage
+    min_value: 0.8
+---
+`),
+    ).toThrow("admission rule 'coverage_floor' references undefined metric 'coverage'");
+  });
+
+  test("rejects metric_check admission rule without min or max value", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 3,
+        name: "bad-admission-threshold",
+        metrics: {
+          coverage: { direction: "maximize" },
+        },
+        admission: [
+          {
+            type: "metric_check",
+            name: "coverage_floor",
+            metric: "coverage",
+          },
+        ],
+      }),
+    ).toThrow("metric_check admission rule requires at least one of min_value or max_value");
   });
 
   test("V3 rejects old 'topology' field (strict mode)", () => {
