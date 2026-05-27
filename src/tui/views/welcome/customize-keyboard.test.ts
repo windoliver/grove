@@ -18,8 +18,8 @@ function keyEvent(name: string, seq?: string): KeyEvent {
     sequence: seq ?? name,
     raw: name,
     eventType: "keypress",
-    preventDefault: () => {},
-    stopPropagation: () => {},
+    preventDefault: () => undefined,
+    stopPropagation: () => undefined,
   } as unknown as KeyEvent;
 }
 
@@ -45,7 +45,7 @@ function state(over: Partial<CustomizeState> = {}): CustomizeState {
     presetCursor: 0,
     presetCount: 3,
     nameIsEmpty: false,
-    keymap: "vim" as KeymapChoice,
+    keymap: "default" as KeymapChoice,
     presetDetailOpen: false,
     ...over,
   };
@@ -172,10 +172,10 @@ describe("routeCustomizeKey (preset detail overlay)", () => {
 describe("routeCustomizeKey (keymap field)", () => {
   test("h/l cycles choice", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "vim" }), actions);
-    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "emacs" }), actions);
+    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "default" }), actions);
+    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "power-user" }), actions);
     routeCustomizeKey(keyEvent("h"), state({ field: "keymap", keymap: "none" }), actions);
-    expect(calls.map((c) => c.args[0])).toEqual(["emacs", "none", "emacs"]);
+    expect(calls.map((c) => c.args[0])).toEqual(["power-user", "none", "power-user"]);
   });
 
   test("1/2/3 set choice directly", () => {
@@ -183,7 +183,7 @@ describe("routeCustomizeKey (keymap field)", () => {
     routeCustomizeKey(keyEvent("1"), state({ field: "keymap" }), actions);
     routeCustomizeKey(keyEvent("2"), state({ field: "keymap" }), actions);
     routeCustomizeKey(keyEvent("3"), state({ field: "keymap" }), actions);
-    expect(calls.map((c) => c.args[0])).toEqual(["vim", "emacs", "none"]);
+    expect(calls.map((c) => c.args[0])).toEqual(["default", "power-user", "none"]);
   });
 
   test("Enter launches", () => {
@@ -221,18 +221,30 @@ describe("routeCustomizeKey (rapid bursts)", () => {
         actions.setField(f);
       },
     };
-    routeCustomizeKey(keyEvent("tab"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
+    routeCustomizeKey(
+      keyEvent("tab"),
+      state({ field: fieldHolder.value, keymap: "default" }),
+      wrapped,
+    );
     // Second Tab from name → keymap
-    routeCustomizeKey(keyEvent("tab"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
-    routeCustomizeKey(keyEvent("l"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
+    routeCustomizeKey(
+      keyEvent("tab"),
+      state({ field: fieldHolder.value, keymap: "default" }),
+      wrapped,
+    );
+    routeCustomizeKey(
+      keyEvent("l"),
+      state({ field: fieldHolder.value, keymap: "default" }),
+      wrapped,
+    );
     expect(calls.map((c) => c.name)).toEqual(["setField", "setField", "setKeymap"]);
     expect<"preset" | "name" | "keymap">(fieldHolder.value).toBe("keymap");
-    expect(calls.at(-1)?.args).toEqual(["emacs"]);
+    expect(calls.at(-1)?.args).toEqual(["power-user"]);
   });
 
   test("h then Enter in keymap: Enter reads the flipped keymap ref", () => {
     const { calls, actions } = tracker();
-    const keymapHolder: { value: KeymapChoice } = { value: "vim" };
+    const keymapHolder: { value: KeymapChoice } = { value: "default" };
     const wrapped: CustomizeActions = {
       ...actions,
       setKeymap: (c) => {
@@ -251,7 +263,7 @@ describe("routeCustomizeKey (rapid bursts)", () => {
       wrapped,
     );
     expect(calls.map((c) => c.name)).toEqual(["setKeymap", "launch"]);
-    // vim → none (h wraps left).
+    // default → none (h wraps left).
     expect<KeymapChoice>(keymapHolder.value).toBe("none");
   });
 

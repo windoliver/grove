@@ -42,7 +42,6 @@ import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import {
-  buildKeyActionMap,
   type KeybindingOverrides,
   useKeybindingOverrides,
 } from "./hooks/use-keybinding-overrides.js";
@@ -51,6 +50,7 @@ import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
+import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
@@ -153,8 +153,19 @@ export function App({
     () => ({ ...userConfig?.keymap, ...hotkeyOverrides, ...fileOverrides }),
     [userConfig?.keymap, hotkeyOverrides, fileOverrides],
   );
-  const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
+  const resolvedKeymap = useMemo(
+    () => resolveKeymapWithOverrides(userConfig?.keymapPreset ?? "default", keybindingOverrides),
+    [userConfig?.keymapPreset, keybindingOverrides],
+  );
+  const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
+  const resolvedKeymapRef = useRef(resolvedKeymap);
+
+  useEffect(() => {
+    if (resolvedKeymapRef.current === resolvedKeymap) return;
+    resolvedKeymapRef.current = resolvedKeymap;
+    setKeymapPrefix([]);
+  }, [resolvedKeymap]);
 
   // Restore persisted state on first load.
   // restoredRef gates both restore AND save — save must not run before restore.
@@ -1056,8 +1067,9 @@ export function App({
       frontierCids: () => frontierCidsRef.current,
       selectedSession,
       hasTmux: tmux !== undefined,
-      keybindingOverrides,
-      keyActionMap,
+      resolvedKeymap,
+      keymapPrefix,
+      onKeymapPrefixChange: setKeymapPrefix,
       // Slice nav also resets the global cursor to 0 AND synchronously
       // clears the entries/cids refs. Without the cursor reset, switching
       // from a long slice (cursor=9) to a short slice (2 rows) leaves the
@@ -1118,8 +1130,8 @@ export function App({
       topology,
       paletteParentId,
       pluginContext,
-      keybindingOverrides,
-      keyActionMap,
+      resolvedKeymap,
+      keymapPrefix,
       refreshAll,
       provider,
       spawnManager,
@@ -1146,7 +1158,7 @@ export function App({
           visible={panels.state.mode === InputMode.Help}
           isDetailView={nav.isDetailView}
           focusedPanel={panels.state.focused}
-          keybindingOverrides={keybindingOverrides}
+          resolvedKeymap={resolvedKeymap}
         />
         {paletteVisible && (
           <box
@@ -1232,6 +1244,8 @@ export function App({
           isDetailView={nav.isDetailView}
           error={lastError}
           focusedPanel={panels.state.focused}
+          resolvedKeymap={resolvedKeymap}
+          keymapPrefix={keymapPrefix}
           agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
           viewMode={panels.state.viewMode}
           costLabel={

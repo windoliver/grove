@@ -14,6 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { resolveBuiltinKeymap, resolveKeymapWithOverrides } from "../keymap/keymap.js";
 import {
   collapsePanel,
   expandPanel,
@@ -154,6 +155,7 @@ function mockActions(overrides?: {
     feedLength: overrides?.feedLength ?? 10,
     hasAskUser: overrides?.hasAskUser ?? false,
     logViewActive: overrides?.logViewActive ?? false,
+    onKeymapPrefixChange: (prefix) => record("onKeymapPrefixChange", prefix),
   };
 
   return { actions, log };
@@ -379,6 +381,78 @@ describe("routeRunningKey — f key fullscreen", () => {
 // ===========================================================================
 
 describe("routeRunningKey — normal mode misc", () => {
+  test("Space q shows quit dialog from the default keymap", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const first = mockActions();
+    routeRunningKey(keyEvent("space"), defaultState({ resolvedKeymap: keymap }), first.actions);
+    const second = mockActions();
+    const handled = routeRunningKey(
+      keyEvent("q"),
+      defaultState({ resolvedKeymap: keymap, keymapPrefix: ["space"] }),
+      second.actions,
+    );
+
+    expect(first.log.args.onKeymapPrefixChange).toEqual([["space"]]);
+    expect(handled).toBe(true);
+    expect(second.log.calls).toContain("showQuitDialog");
+  });
+
+  test("default keymap does not fall through to direct q quit", () => {
+    const { actions, log } = mockActions();
+    const handled = routeRunningKey(
+      keyEvent("q"),
+      defaultState({ resolvedKeymap: resolveBuiltinKeymap("default") }),
+      actions,
+    );
+
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("showQuitDialog");
+  });
+
+  test("overridden quit key removes the old direct key", () => {
+    const keymap = resolveKeymapWithOverrides("default", { quit: "Space x" });
+    const oldKey = mockActions();
+    const handledOld = routeRunningKey(
+      keyEvent("q"),
+      defaultState({ resolvedKeymap: keymap }),
+      oldKey.actions,
+    );
+    const remapped = mockActions();
+    const handledRemapped = routeRunningKey(
+      keyEvent("x"),
+      defaultState({ resolvedKeymap: keymap, keymapPrefix: ["space"] }),
+      remapped.actions,
+    );
+
+    expect(handledOld).toBe(false);
+    expect(oldKey.log.calls).not.toContain("showQuitDialog");
+    expect(handledRemapped).toBe(true);
+    expect(remapped.log.calls).toContain("showQuitDialog");
+  });
+
+  test("Space p t expands the Terminal panel from the default keymap", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const first = mockActions();
+    routeRunningKey(keyEvent("space"), defaultState({ resolvedKeymap: keymap }), first.actions);
+    const second = mockActions();
+    routeRunningKey(
+      keyEvent("p"),
+      defaultState({ resolvedKeymap: keymap, keymapPrefix: ["space"] }),
+      second.actions,
+    );
+    const third = mockActions();
+    const handled = routeRunningKey(
+      keyEvent("t"),
+      defaultState({ resolvedKeymap: keymap, keymapPrefix: ["space", "p"] }),
+      third.actions,
+    );
+
+    expect(first.log.args.onKeymapPrefixChange).toEqual([["space"]]);
+    expect(second.log.args.onKeymapPrefixChange).toEqual([["space", "p"]]);
+    expect(handled).toBe(true);
+    expect(third.log.args.expandPanel).toEqual([RunningPanel.Terminal]);
+  });
+
   test("q shows quit dialog", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("q"), defaultState(), actions);

@@ -1115,6 +1115,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
+            userConfig={appProps.userConfig}
             logBuffers={reconcileVersion >= 0 ? spawnManager.getLogBuffers() : undefined}
             agentFailures={agentFailureVersion >= 0 ? spawnManager.getAgentFailures() : undefined}
             onNewContribution={(c) => {

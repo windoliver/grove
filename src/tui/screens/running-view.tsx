@@ -35,6 +35,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { FlashBar } from "../components/flash-bar.js";
 import { ProgressBar } from "../components/progress-bar.js";
 import { Prompt } from "../components/prompt.js";
+import type { GroveUserConfig } from "../config-loader.js";
 import { createTuiConfigWatcher } from "../config-watcher.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { type AliasMap, DEFAULT_ALIASES, matchAliases, resolveAlias } from "../data/aliases.js";
@@ -45,9 +46,19 @@ import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
+import {
+  type KeybindingOverrides,
+  useKeybindingOverrides,
+} from "../hooks/use-keybinding-overrides.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePagesStoreFromContext, useScreenStack } from "../hooks/use-screen-stack.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
+import {
+  formatKeySequence,
+  type KeyBinding,
+  type ResolvedKeymap,
+  resolveKeymapWithOverrides,
+} from "../keymap/keymap.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { useConfirmAndMutateOpen } from "../safety/index.js";
@@ -162,6 +173,7 @@ export interface RunningViewProps {
   readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   /** Suppress side effects for the first loaded feed, used when resuming historical sessions. */
   readonly suppressInitialFeedSideEffects?: boolean | undefined;
+  readonly userConfig?: GroveUserConfig | undefined;
   readonly onEnterInspect: () => void;
   /** Open the Pulse dashboard page (#308). */
   readonly onOpenPulse?: (() => void) | undefined;
@@ -240,6 +252,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     logBuffers,
     agentFailures,
     suppressInitialFeedSideEffects = false,
+    userConfig,
     onEnterInspect,
     onOpenPulse,
     onComplete: _onComplete,
@@ -313,6 +326,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }, []);
 
     const [aliases, setAliases] = useState<AliasMap>(DEFAULT_ALIASES);
+    const [hotkeyOverrides, setHotkeyOverrides] = useState<KeybindingOverrides>({});
+    const fileOverrides = useKeybindingOverrides();
+    const keybindingOverrides = useMemo(
+      () => ({ ...userConfig?.keymap, ...hotkeyOverrides, ...fileOverrides }),
+      [userConfig?.keymap, hotkeyOverrides, fileOverrides],
+    );
+    const resolvedKeymap = useMemo(
+      () => resolveKeymapWithOverrides(userConfig?.keymapPreset ?? "default", keybindingOverrides),
+      [userConfig?.keymapPreset, keybindingOverrides],
+    );
+    const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
     const [flashError, setFlashError] = useState<string | null>(null);
 
     const [filterQuery, setFilterQueryRaw] = useState<string>("");
@@ -339,6 +363,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setAliases(event.config.aliases);
           return;
         }
+        if (event.type === "ConfigChanged" && event.changed === "hotkeys") {
+          setHotkeyOverrides(event.config.hotkeys);
+          return;
+        }
         if (event.type === "ConfigError") {
           flash(event.message);
         }
@@ -346,7 +374,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       void watcher
         .start()
         .then(() => {
-          if (!cancelled) setAliases(watcher.current().aliases);
+          if (!cancelled) {
+            const current = watcher.current();
+            setAliases(current.aliases);
+            setHotkeyOverrides(current.hotkeys);
+          }
         })
         .catch((err) => {
           if (!cancelled) flash(err instanceof Error ? err.message : "config watcher failed");
@@ -905,6 +937,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdText: cmdState.text,
         filterQuery,
         confirmModalOpen,
+        resolvedKeymap,
+        keymapPrefix,
         logFilterMode,
       }),
       [
@@ -919,6 +953,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         cmdState.text,
         filterQuery,
         confirmModalOpen,
+        resolvedKeymap,
+        keymapPrefix,
         logFilterMode,
       ],
     );
@@ -985,6 +1021,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         },
         toggleHelp: () => setShowHelp((v) => !v),
         dismissHelp: () => setShowHelp(false),
+        onKeymapPrefixChange: (prefix: readonly string[]) => setKeymapPrefix(prefix),
         toggleVfs: () => setShowVfs((v) => !v),
         dismissVfs: () => setShowVfs(false),
         setConfirmQuit: (v: boolean) => setConfirmQuit(v),
@@ -1282,6 +1319,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             cmdText: cmdStateRef.current.text,
             filterQuery: filterQueryRef.current,
             confirmModalOpen,
+            resolvedKeymap,
+            keymapPrefix,
             logFilterMode: logFilterModeRef.current,
           };
           // #193: supervision body owns the keyboard when the flag is on and
@@ -1375,6 +1414,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           tmux,
           activeRoles,
           flash,
+          resolvedKeymap,
+          keymapPrefix,
           // #310: logFilterMode read via logFilterModeRef (synchronous) so a
           // same-tick burst sees the latest mode. keyboardState already lists
           // logFilterMode in its memo deps for rendering, so committed state
@@ -1533,6 +1574,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             activeRoles,
             !!pendingAskUser,
             pollHealth,
+            resolvedKeymap,
+            keymapPrefix,
           )}
         </box>
       );
@@ -1637,6 +1680,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             activeRoles,
             !!pendingAskUser,
             pollHealth,
+            resolvedKeymap,
+            keymapPrefix,
           )}
         </box>
       );
@@ -1719,7 +1764,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         )}
 
         {/* Help overlay */}
-        {showHelp ? renderHelpOverlay() : null}
+        {showHelp ? renderHelpOverlay(resolvedKeymap) : null}
 
         {/* Status bar */}
         {renderStatusBar(
@@ -1731,6 +1776,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           activeRoles,
           !!pendingAskUser,
           pollHealth,
+          resolvedKeymap,
+          keymapPrefix,
         )}
       </box>
     );
@@ -2237,8 +2284,43 @@ function renderBottomChrome(
   );
 }
 
+function preferredBinding(
+  keymap: ResolvedKeymap | undefined,
+  predicate: (binding: KeyBinding) => boolean,
+): KeyBinding | undefined {
+  const matches = keymap?.bindings.filter(predicate) ?? [];
+  return matches.find((binding) => binding.preferred) ?? matches[0];
+}
+
+function keyForAction(
+  keymap: ResolvedKeymap | undefined,
+  action: KeyBinding["action"],
+): string | undefined {
+  const binding = preferredBinding(keymap, (candidate) => candidate.action === action);
+  return binding === undefined ? undefined : formatKeySequence(binding.sequence);
+}
+
+function keyForBindingId(keymap: ResolvedKeymap | undefined, id: string): string | undefined {
+  const binding = preferredBinding(keymap, (candidate) => candidate.id === id);
+  return binding === undefined ? undefined : formatKeySequence(binding.sequence);
+}
+
+function leaderHint(keymap: ResolvedKeymap | undefined): string | undefined {
+  const binding = preferredBinding(
+    keymap,
+    (candidate) => candidate.layer === "leader" && candidate.sequence.length > 0,
+  );
+  const leader = binding?.sequence[0];
+  return leader === undefined ? undefined : `${formatKeySequence([leader])}:leader`;
+}
+
 /** Render the help overlay. */
-function renderHelpOverlay(): React.ReactNode {
+function renderHelpOverlay(resolvedKeymap: ResolvedKeymap | undefined): React.ReactNode {
+  const helpKey = keyForAction(resolvedKeymap, "help") ?? "?";
+  const quitKey = keyForAction(resolvedKeymap, "quit") ?? "q";
+  const terminalKey = keyForBindingId(resolvedKeymap, "toggle_panel:terminal") ?? "4";
+  const vfsKey = keyForBindingId(resolvedKeymap, "toggle_panel:vfs") ?? "Ctrl+F";
+  const messageKey = keyForAction(resolvedKeymap, "broadcast") ?? "m";
   return (
     <box
       flexDirection="column"
@@ -2251,22 +2333,23 @@ function renderHelpOverlay(): React.ReactNode {
         Keyboard Shortcuts
       </text>
       <text color={theme.text}> 1-4 Expand panel (Feed/Agents/DAG/Terminal)</text>
+      <text color={theme.text}> {terminalKey} Open Terminal panel</text>
       <text color={theme.text}> f Toggle fullscreen (when panel expanded)</text>
       <text color={theme.text}> e Open trace viewer (split-pane agent output)</text>
       <text color={theme.text}> j/k Navigate (feed or trace agent list)</text>
       <text color={theme.text}> J/K Scroll trace output (when trace open)</text>
       <text color={theme.text}> G/g Jump to bottom/top of trace</text>
-      <text color={theme.text}> m Send message to agent</text>
+      <text color={theme.text}> {messageKey} Send message to agent</text>
       <text color={theme.text}> Handoffs: s resend, r reroute, x cancel, v resolve</text>
       <text color={theme.text}> : Goto / command (alias chain)</text>
       <text color={theme.text}> / Filter current view</text>
       <text color={theme.text}> r Jump to ask_user question</text>
-      <text color={theme.text}> Ctrl+F File browser (VFS)</text>
+      <text color={theme.text}> {vfsKey} File browser (VFS)</text>
       <text color={theme.text}> Ctrl+G Inspect overlay (Ctrl+G to return)</text>
       <text color={theme.text}> y/n Approve/deny permission</text>
-      <text color={theme.text}> ? Toggle this help</text>
+      <text color={theme.text}> {helpKey} Toggle this help</text>
       <text color={theme.text}> Esc Collapse panel / close overlay</text>
-      <text color={theme.text}> q Quit (with confirmation)</text>
+      <text color={theme.text}> {quitKey} Quit (with confirmation)</text>
       <text> </text>
       <text color={theme.focus} bold>
         Supervision (GROVE_SUPERVISION=1)
@@ -2290,8 +2373,16 @@ function contextualHints(
   zoomLevel: "normal" | "half" | "full",
   activeRoles: readonly string[] | undefined,
   hasAskUser: boolean,
+  resolvedKeymap: ResolvedKeymap | undefined,
+  keymapPrefix: readonly string[] | undefined,
 ): string {
+  if (keymapPrefix !== undefined && keymapPrefix.length > 0) {
+    return `${formatKeySequence(keymapPrefix)} ... Esc:cancel`;
+  }
+
   const hints: string[] = [];
+  const leader = leaderHint(resolvedKeymap);
+  if (leader !== undefined) hints.push(leader);
 
   if (expandedPanel === null) {
     // Default feed view
@@ -2311,9 +2402,12 @@ function contextualHints(
     hints.push("Esc:close");
   }
 
-  if ((activeRoles ?? []).length > 0) hints.push("m:msg");
+  if ((activeRoles ?? []).length > 0) {
+    hints.push(`${keyForAction(resolvedKeymap, "broadcast") ?? "m"}:msg`);
+  }
   if (hasAskUser) hints.push("r:respond");
-  hints.push("?:help", "q:quit");
+  hints.push(`${keyForAction(resolvedKeymap, "help") ?? "?"}:help`);
+  hints.push(`${keyForAction(resolvedKeymap, "quit") ?? "q"}:quit`);
 
   return hints.join(" ");
 }
@@ -2334,6 +2428,8 @@ function renderStatusBar(
   activeRoles: readonly string[] | undefined,
   hasAskUser: boolean,
   pollHealth?: PollHealth,
+  resolvedKeymap?: ResolvedKeymap | undefined,
+  keymapPrefix?: readonly string[] | undefined,
 ): React.ReactNode {
   const panelIndicator =
     expandedPanel !== null
@@ -2355,7 +2451,14 @@ function renderStatusBar(
       ) : null}
       <text color={theme.secondary}>
         {" "}
-        {contextualHints(expandedPanel, zoomLevel, activeRoles, hasAskUser)}
+        {contextualHints(
+          expandedPanel,
+          zoomLevel,
+          activeRoles,
+          hasAskUser,
+          resolvedKeymap,
+          keymapPrefix,
+        )}
       </text>
     </box>
   );
