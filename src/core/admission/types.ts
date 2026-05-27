@@ -51,12 +51,14 @@ export interface AdmissionAttributes {
 
 export interface AdmissionMutator {
   readonly name: string;
+  readonly ruleType?: NormalizedAdmissionRule["type"] | undefined;
   handles(op: AdmissionOp): boolean;
   mutate(attrs: AdmissionAttributes): Promise<void>;
 }
 
 export interface AdmissionValidator {
   readonly name: string;
+  readonly ruleType?: NormalizedAdmissionRule["type"] | undefined;
   handles(op: AdmissionOp): boolean;
   validate(attrs: AdmissionAttributes): Promise<void>;
 }
