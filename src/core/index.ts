@@ -299,6 +299,28 @@ export { PolicyEnforcer } from "./policy-enforcer.js";
 export type { CorePresetConfig } from "./presets.js";
 export { getPresetTopologyRegistry, listPresetNames, lookupPresetTopology } from "./presets.js";
 export type {
+  BoundRecipe,
+  GroveRecipe,
+  MaterializedRecipe,
+  RecipeActivity,
+  RecipeExtension,
+  RecipeLibraryMetadata,
+  RecipeParameter,
+  RecipeParameterType,
+  RecipeProvenance,
+  RecipeRunPolicy,
+  RecipeSubRecipe,
+} from "./recipe.js";
+export {
+  bindRecipeParameters,
+  computeBoundRecipeDigest,
+  computeRecipeDigest,
+  materializeRecipeContract,
+  parseGroveRecipe,
+  parseGroveRecipeObject,
+  renderRecipeTemplate,
+} from "./recipe.js";
+export type {
   ReconcileResult,
   Reconciler,
   ReconcilerConfig,
