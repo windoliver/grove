@@ -641,9 +641,8 @@ export function bindRecipeParameters(
   const boundParameters: Record<string, JsonValue> = {};
   for (const [name, parameter] of Object.entries(parameterDefinitions)) {
     const override = overrides[name];
-    const rawValue = override !== undefined ? override : parameter.default;
     const value =
-      rawValue === undefined ? undefined : coerceParameterValue(name, parameter, rawValue);
+      override !== undefined ? coerceParameterValue(name, parameter, override) : parameter.default;
     if (value === undefined) {
       if (parameter.required === true) {
         throw new Error(`missing required recipe parameter '${name}'`);
@@ -674,10 +673,13 @@ function coerceParameterValue(
 ): JsonValue {
   if (typeof value !== "string") return value;
   if (definition.type === "integer") {
-    if (!/^-?\d+$/.test(value)) throw new Error(`Parameter ${name} must be an integer`);
+    if (value.trim() === "" || !/^-?\d+$/.test(value)) {
+      throw new Error(`Parameter ${name} must be an integer`);
+    }
     return Number(value);
   }
   if (definition.type === "number") {
+    if (value.trim() === "") throw new Error(`Parameter ${name} must be a number`);
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) throw new Error(`Parameter ${name} must be a number`);
     return parsed;
@@ -688,6 +690,7 @@ function coerceParameterValue(
     throw new Error(`Parameter ${name} must be true or false`);
   }
   if (definition.type === "json") {
+    if (!looksLikeJsonSource(value)) return value;
     try {
       return JSON.parse(value) as JsonValue;
     } catch {
@@ -695,6 +698,19 @@ function coerceParameterValue(
     }
   }
   return value;
+}
+
+function looksLikeJsonSource(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[") ||
+    trimmed.startsWith('"') ||
+    trimmed === "true" ||
+    trimmed === "false" ||
+    trimmed === "null" ||
+    /^-?\d/.test(trimmed)
+  );
 }
 
 export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecipe {

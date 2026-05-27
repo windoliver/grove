@@ -303,6 +303,89 @@ parameters:
     expect(bound.parameters.enabled).toBe(true);
   });
 
+  test("preserves plain string JSON parameter defaults", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: json-default
+version: 1.0.0
+parameters:
+  message:
+    type: json
+    default: hello
+`);
+    const bound = bindRecipeParameters(recipe, {});
+    expect(bound.parameters.message).toBe("hello");
+  });
+
+  test("parses JSON object CLI string overrides", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: json-override
+version: 1.0.0
+parameters:
+  config:
+    type: json
+    required: true
+`);
+    const bound = bindRecipeParameters(recipe, { config: '{"enabled":true,"rounds":2}' });
+    expect(bound.parameters.config).toEqual({ enabled: true, rounds: 2 });
+  });
+
+  test("preserves plain string JSON CLI overrides", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: plain-json-override
+version: 1.0.0
+parameters:
+  message:
+    type: json
+    required: true
+`);
+    const bound = bindRecipeParameters(recipe, { message: "hello" });
+    expect(bound.parameters.message).toBe("hello");
+  });
+
+  test("rejects invalid JSON-looking CLI overrides", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: invalid-json-override
+version: 1.0.0
+parameters:
+  config:
+    type: json
+    required: true
+`);
+    expect(() => bindRecipeParameters(recipe, { config: "{bad" })).toThrow(
+      /Parameter config must be valid JSON/,
+    );
+  });
+
+  test("rejects empty numeric CLI string overrides", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: empty-numeric-overrides
+version: 1.0.0
+parameters:
+  max_rounds:
+    type: integer
+    required: true
+  threshold:
+    type: number
+    required: true
+`);
+    expect(() => bindRecipeParameters(recipe, { max_rounds: "", threshold: 0 })).toThrow(
+      /Parameter max_rounds must be an integer/,
+    );
+    expect(() => bindRecipeParameters(recipe, { max_rounds: 1, threshold: "   " })).toThrow(
+      /Parameter threshold must be a number/,
+    );
+  });
+
   test("rejects unknown parameter overrides", () => {
     const recipe = parseGroveRecipe(FULL_RECIPE);
     expect(() => bindRecipeParameters(recipe, { target_path: "src/core", extra: true })).toThrow(
