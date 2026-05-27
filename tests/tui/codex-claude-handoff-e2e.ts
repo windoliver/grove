@@ -21,6 +21,7 @@
 
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -206,6 +207,25 @@ async function waitForPane(predicate: (pane: string) => boolean, phase: string, 
   throw new Error(`[${phase}] predicate did not match within ${maxMs}ms`);
 }
 
+async function findFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("unable to allocate free TCP port")));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+  });
+}
+
 // ─── main ─────────────────────────────────────────────────────────────
 const workDir = mkdtempSync(join(tmpdir(), "grove-acp-e2e-"));
 const repoDir = join(workDir, "repo");
@@ -239,21 +259,9 @@ async function main() {
     /* already dead */
   }
 
-  // 1b. Free the default grove ports (4515 HTTP, 4015 MCP) from any orphan
-  //     listener — the new TUI's per-service identity gate refuses to adopt a
-  //     port held by a process this run did not spawn, which is correct but
-  //     fatal for the harness.
-  for (const port of [4515, 4015]) {
-    try {
-      execSync(
-        `lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null | xargs -r kill -TERM 2>/dev/null; sleep 0.3; ` +
-          `lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null | xargs -r kill -KILL 2>/dev/null`,
-        { stdio: "ignore", shell: "/bin/sh" } as Parameters<typeof execSync>[1],
-      );
-    } catch {
-      /* nothing to kill */
-    }
-  }
+  const serverPort = await findFreePort();
+  const mcpPort = await findFreePort();
+  console.log(`[setup] allocated ports: server=${serverPort} mcp=${mcpPort}`);
 
   // 2. Create a bare repo the coder can work inside.
   execSync(`git init -q ${repoDir} && cd ${repoDir} && git commit --allow-empty -q -m init`, {
@@ -304,7 +312,7 @@ async function main() {
   // the coder cannot write hello.txt and the loop never produces a contribution.
   const launchCmd = [
     `cd ${repoDir}`,
-    `${nexusImageEnv}GROVE_SERVICE_HEALTH_TIMEOUT_MS=${healthTimeoutMs} GROVE_ALLOW_ALL_PERMISSIONS=1 GROVE_DEBUG_LOG=${debugPath} bun run ${PROJECT_ROOT}/src/cli/main.ts up --grove ${groveDir}${nexusSourceArgs} 2>&1 | tee ${stdoutLog}`,
+    `${nexusImageEnv}GROVE_SERVICE_HEALTH_TIMEOUT_MS=${healthTimeoutMs} GROVE_ALLOW_ALL_PERMISSIONS=1 GROVE_DEBUG_LOG=${debugPath} GROVE_SERVER_PORT=${serverPort} MCP_PORT=${mcpPort} bun run ${PROJECT_ROOT}/src/cli/main.ts up --grove ${groveDir}${nexusSourceArgs} 2>&1 | tee ${stdoutLog}`,
     `echo [EXIT $?]`,
     `cat`, // keep pane alive
   ].join(" ; ");
