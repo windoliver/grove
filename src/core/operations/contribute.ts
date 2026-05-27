@@ -9,7 +9,18 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
-import { computeContributionContentHash } from "../content-dedup.js";
+import {
+  type AdmissionAudit,
+  AdmissionChain,
+  AdmissionOp,
+  AdmissionRejectError,
+  type AdmissionResult,
+  createAdmissionValidators,
+  type NormalizedAdmissionRule,
+  normalizeAdmissionRules,
+} from "../admission/index.js";
+import { computeContributionContentHash, withContributionContentHash } from "../content-dedup.js";
+import type { Gate } from "../contract.js";
 import { contributionToEntity, workBlockToEntity } from "../entity.js";
 import { PolicyViolationError } from "../errors.js";
 import type { EventBus, GroveEvent, PublishResult } from "../event-bus.js";
@@ -266,6 +277,22 @@ function withRuntimeRoutingSignature(input: ContributionInput): ContributionInpu
   const routingToken = process.env.GROVE_ROUTING_TOKEN;
   if (routingToken === undefined) return input;
   return attachRoutingSignatureToInput(input, routingToken);
+}
+
+function admissionAuditToJsonValue(audit: AdmissionAudit): JsonValue {
+  return {
+    version: audit.version,
+    accepted: audit.accepted,
+    evaluatedAt: audit.evaluatedAt,
+    rules: audit.rules.map((rule) => ({
+      name: rule.name,
+      type: rule.type,
+      accepted: rule.accepted,
+      ...(rule.reason !== undefined ? { reason: rule.reason } : {}),
+      ...(rule.evidence !== undefined ? { evidence: { ...rule.evidence } } : {}),
+    })),
+    annotations: { ...audit.annotations },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +639,79 @@ async function findStoredDuplicateByContentHash(
     // validation/write path so callers receive the original error surface.
     return undefined;
   }
+}
+
+function isLegacyGateAdmissionReject(
+  error: unknown,
+  rules: readonly NormalizedAdmissionRule[],
+): error is AdmissionRejectError {
+  return (
+    error instanceof AdmissionRejectError &&
+    rules.some(
+      (rule) =>
+        rule.source === "legacy_gate" &&
+        rule.name === error.ruleName &&
+        rule.type === error.ruleType,
+    )
+  );
+}
+
+function legacyGateIdentity(gate: Gate): string | undefined {
+  switch (gate.type) {
+    case "metric_improves":
+      return gate.metric === undefined ? undefined : `metric_improves:${gate.metric}`;
+    case "has_artifact":
+      return gate.name === undefined ? undefined : `has_artifact:${gate.name}`;
+    case "has_relation":
+      return gate.relationType === undefined ? undefined : `has_relation:${gate.relationType}`;
+    case "min_score":
+      return gate.metric === undefined || gate.threshold === undefined
+        ? undefined
+        : `min_score:${gate.metric}:${gate.threshold}`;
+    case "min_reviews":
+      return undefined;
+  }
+}
+
+function legacyAdmissionRuleIdentity(rule: NormalizedAdmissionRule): string | undefined {
+  if (rule.source !== "legacy_gate") return undefined;
+
+  switch (rule.type) {
+    case "metric_improves":
+      return `metric_improves:${rule.metric}`;
+    case "artifact_required":
+      return `has_artifact:${rule.artifact}`;
+    case "relation_required":
+      return `has_relation:${rule.relationType}`;
+    case "metric_check":
+      return rule.minValue === undefined ? undefined : `min_score:${rule.metric}:${rule.minValue}`;
+    default:
+      return undefined;
+  }
+}
+
+function shouldSkipPolicyGateEnforcement(
+  gates: readonly Gate[] | undefined,
+  rules: readonly NormalizedAdmissionRule[],
+): boolean {
+  const gateIdentities = new Set<string>();
+  for (const gate of gates ?? []) {
+    const identity = legacyGateIdentity(gate);
+    if (identity !== undefined) {
+      gateIdentities.add(identity);
+    }
+  }
+  if (gateIdentities.size === 0) return false;
+
+  const admissionIdentities = new Set<string>();
+  for (const rule of rules) {
+    const identity = legacyAdmissionRuleIdentity(rule);
+    if (identity !== undefined) {
+      admissionIdentities.add(identity);
+    }
+  }
+
+  return [...gateIdentities].every((identity) => admissionIdentities.has(identity));
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,24 +1251,6 @@ export async function contributeOperation(
       ownsDurableReservation = true;
     }
 
-    const unsignedContributionInput: ContributionInput = {
-      kind: input.kind,
-      mode,
-      summary: input.summary,
-      ...(input.description !== undefined ? { description: input.description } : {}),
-      artifacts,
-      ...(input.commitHash !== undefined ? { commitHash: input.commitHash } : {}),
-      relations,
-      ...(input.scores !== undefined ? { scores: input.scores } : {}),
-      tags: [...tags],
-      ...(input.context !== undefined ? { context: input.context } : {}),
-      agent,
-      createdAt,
-    };
-    const contributionInput = withRuntimeRoutingSignature(unsignedContributionInput);
-
-    const contribution = createContribution(contributionInput);
-
     const returnDuplicate = (
       storedContribution: Contribution,
     ): OperationResult<ContributeResult> => {
@@ -1197,6 +1279,92 @@ export async function contributeOperation(
       }
       return duplicateOk;
     };
+
+    const unsignedContributionInput: ContributionInput = {
+      kind: input.kind,
+      mode,
+      summary: input.summary,
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      artifacts,
+      ...(input.commitHash !== undefined ? { commitHash: input.commitHash } : {}),
+      relations,
+      ...(input.scores !== undefined ? { scores: input.scores } : {}),
+      tags: [...tags],
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      agent,
+      createdAt,
+    };
+    let admittedContributionInput = unsignedContributionInput;
+    let admissionAudit: AdmissionAudit | undefined;
+    const admissionRules = normalizeAdmissionRules(deps.contract);
+    const hasAdmissionRules = admissionRules.length > 0;
+    const skipPolicyGateEnforcement = shouldSkipPolicyGateEnforcement(
+      deps.contract?.gates,
+      admissionRules,
+    );
+    if (hasAdmissionRules) {
+      const annotations = new Map<string, string>();
+      const chain = new AdmissionChain({
+        mutators: [],
+        validators: createAdmissionValidators(admissionRules),
+      });
+      const attrs = {
+        op: AdmissionOp.Contribute,
+        object: admittedContributionInput,
+        originalObject: unsignedContributionInput,
+        contract: deps.contract,
+        annotations,
+        deps: {
+          contributionStore: deps.contributionStore,
+          hookRunner: deps.hookRunner,
+          hookCwd: deps.hookCwd,
+          permissionResolver: deps.admissionPermissionResolver,
+          governanceEvaluator: deps.admissionGovernanceEvaluator,
+          blueprintHashSource: deps.blueprintHashSource,
+          artifactSignatureVerifier: deps.artifactSignatureVerifier,
+          zoneId: deps.zoneId ?? deps.namespace,
+        },
+      };
+      let admissionResult: AdmissionResult;
+      try {
+        admissionResult = await chain.admit(attrs);
+      } catch (admissionErr) {
+        if (isLegacyGateAdmissionReject(admissionErr, admissionRules)) {
+          const duplicate = await findStoredDuplicateByContentHash(
+            deps.contributionStore,
+            createContribution(withRuntimeRoutingSignature(unsignedContributionInput)),
+          );
+          if (duplicate !== undefined) return returnDuplicate(duplicate);
+        }
+        throw admissionErr;
+      }
+      admissionAudit = admissionResult.audit;
+      admittedContributionInput = attrs.object;
+    }
+
+    const logicalContributionInput = withRuntimeRoutingSignature(admittedContributionInput);
+    const contributionContext =
+      admissionAudit === undefined
+        ? admittedContributionInput.context
+        : {
+            ...(admittedContributionInput.context ?? {}),
+            admission: admissionAuditToJsonValue(admissionAudit),
+          };
+    const contributionInput =
+      admissionAudit === undefined
+        ? logicalContributionInput
+        : withRuntimeRoutingSignature({
+            ...admittedContributionInput,
+            ...(contributionContext !== undefined ? { context: contributionContext } : {}),
+          });
+    const contributionWithoutContentHash = createContribution(contributionInput);
+    const contribution =
+      admissionAudit === undefined
+        ? contributionWithoutContentHash
+        : withContributionContentHash(
+            contributionWithoutContentHash,
+            computeContributionContentHash(createContribution(logicalContributionInput)),
+          );
 
     const existingDuplicate = await findStoredDuplicateByContentHash(
       deps.contributionStore,
@@ -1248,7 +1416,9 @@ export async function contributeOperation(
     let policyResult: PolicyEnforcementResult | undefined;
     let enforcer: PolicyEnforcer | undefined;
     if (deps.contract !== undefined && deps.contributionStore !== undefined) {
-      enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
+      enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore, {
+        skipGateEnforcement: skipPolicyGateEnforcement,
+      });
 
       // Register per-CID preWriteHook for atomic enforce+put (TOCTOU-safe).
       // Keyed by CID so concurrent contributes don't overwrite each other's hooks.
@@ -1276,6 +1446,9 @@ export async function contributeOperation(
           throw policyErr;
         }
       }
+    }
+    if (policyResult === undefined && deps.contract !== undefined) {
+      policyResult = { passed: true, violations: [] };
     }
 
     // --- Pre-write: determine routing targets synchronously (no I/O) ---

@@ -11,9 +11,14 @@ import type { Contribution } from "./models.js";
 import type { OutcomeInput, OutcomeRecord } from "./outcome.js";
 
 const BOUNTY_CONTENT_HASH_PROPERTY = "__groveContentHash";
+const CONTRIBUTION_CONTENT_HASH_PROPERTY = "__groveContributionContentHash";
 
 type BountyWithProvidedContentHash = Bounty & {
   readonly [BOUNTY_CONTENT_HASH_PROPERTY]?: string | undefined;
+};
+
+type ContributionWithProvidedContentHash = Contribution & {
+  readonly [CONTRIBUTION_CONTENT_HASH_PROPERTY]?: string | undefined;
 };
 
 function canonicalize(value: unknown): string {
@@ -70,6 +75,11 @@ function sortedRelations(contribution: Contribution): readonly unknown[] {
 
 /** Compute the implicit dedup key for a contribution payload. */
 export function computeContributionContentHash(contribution: Contribution): string {
+  const provided = (contribution as ContributionWithProvidedContentHash)[
+    CONTRIBUTION_CONTENT_HASH_PROPERTY
+  ];
+  if (provided !== undefined) return provided;
+
   return sha256Canonical({
     entity: "contribution",
     user: contribution.agent.agentId,
@@ -86,6 +96,19 @@ export function computeContributionContentHash(contribution: Contribution): stri
       context: contribution.context,
     },
   });
+}
+
+/** Attach a non-serialized contribution payload hash for store-boundary deduplication. */
+export function withContributionContentHash(
+  contribution: Contribution,
+  contentHash: string = computeContributionContentHash(contribution),
+): Contribution {
+  const marked = { ...contribution };
+  Object.defineProperty(marked, CONTRIBUTION_CONTENT_HASH_PROPERTY, {
+    value: contentHash,
+    enumerable: false,
+  });
+  return Object.freeze(marked);
 }
 
 /** Compute the implicit dedup key for a bounty create payload. */

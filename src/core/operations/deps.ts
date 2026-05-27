@@ -5,6 +5,12 @@
  * making them independent of any specific surface (CLI, MCP, HTTP).
  */
 
+import type {
+  AdmissionGovernanceEvaluator,
+  AdmissionPermissionResolver,
+  ArtifactSignatureVerifier,
+  BlueprintHashSource,
+} from "../admission/types.js";
 import type { BountyStore } from "../bounty-store.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
@@ -113,4 +119,9 @@ export interface OperationDeps {
   readonly idempotencyStore?: IdempotencyStore | undefined;
   /** Optional deadline watcher for proactive overdue detection. */
   readonly deadlineWatcher?: DeadlineWatcher | undefined;
+  readonly admissionPermissionResolver?: AdmissionPermissionResolver | undefined;
+  readonly admissionGovernanceEvaluator?: AdmissionGovernanceEvaluator | undefined;
+  readonly blueprintHashSource?: BlueprintHashSource | undefined;
+  readonly artifactSignatureVerifier?: ArtifactSignatureVerifier | undefined;
+  readonly zoneId?: string | undefined;
 }

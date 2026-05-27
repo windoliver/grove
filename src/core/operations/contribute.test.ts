@@ -4,9 +4,10 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
+import { EnforcingContributionStore } from "../enforcing-store.js";
 import { FrontierRewardService } from "../frontier-reward-service.js";
 import { LocalEventBus } from "../local-event-bus.js";
-import type { Contribution } from "../models.js";
+import { type Contribution, ContributionKind } from "../models.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
 import {
   TimelineEventType,
@@ -1001,6 +1002,372 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(second.value.accepted).toBe(0);
     expect(second.value.duplicate).toBe(1);
     expect(second.value.cid).toBe(first.value.cid);
+  });
+
+  test("identical passing legacy gated payloads dedup despite admission audit timestamps", async () => {
+    const gatedDeps: OperationDeps = {
+      ...deps,
+      contract: {
+        contractVersion: 3,
+        name: "gated",
+        mode: "evaluation",
+        metrics: { quality: { direction: "maximize" } },
+        gates: [{ type: "min_score", metric: "quality", threshold: 0.8 }],
+      },
+    };
+    const input = {
+      kind: "work" as const,
+      summary: "passing gated duplicate",
+      scores: { quality: { value: 0.9, direction: "maximize" as const } },
+      agent: { agentId: "a1" },
+    };
+
+    const first = await contributeOperation(input, gatedDeps);
+    const second = await contributeOperation(input, gatedDeps);
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(second.value.cid).toBe(first.value.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "passing gated duplicate");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("concurrent admission-audited payloads dedup at the store boundary", async () => {
+    const callerCount = 5;
+    let startedCount = 0;
+    let releaseHooks: (() => void) | undefined;
+    let markAllHooksStarted: (() => void) | undefined;
+    const allHooksStarted = new Promise<void>((resolve) => {
+      markAllHooksStarted = resolve;
+    });
+    const releaseHookResults = new Promise<void>((resolve) => {
+      releaseHooks = resolve;
+    });
+    const hookRunner: NonNullable<OperationDeps["hookRunner"]> = {
+      run: async (entry) => {
+        startedCount += 1;
+        const durationMs = startedCount;
+        if (startedCount === callerCount) {
+          markAllHooksStarted?.();
+        }
+        await releaseHookResults;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          command: typeof entry === "string" ? entry : entry.cmd,
+          durationMs,
+        };
+      },
+    };
+    const contract = {
+      contractVersion: 3,
+      name: "admission",
+      mode: "evaluation" as const,
+      admission: [{ type: "shell" as const, name: "delay", command: "delay" }],
+    };
+    const input = {
+      kind: "work" as const,
+      summary: "concurrent audited duplicate",
+      agent: { agentId: "a1" },
+    };
+
+    const pending = Array.from({ length: callerCount }, () =>
+      contributeOperation(input, {
+        ...deps,
+        contract,
+        hookRunner,
+        hookCwd: testDeps.tempDir,
+      }),
+    );
+    await allHooksStarted;
+    const release = releaseHooks;
+    if (release === undefined) throw new Error("hook release was not initialized");
+    release();
+    const results = await Promise.all(pending);
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    const values = results.flatMap((result) => (result.ok ? [result.value] : []));
+    expect(values.filter((value) => value.accepted === 1)).toHaveLength(1);
+    expect(values.filter((value) => value.duplicate === 1)).toHaveLength(callerCount - 1);
+    expect(new Set(values.map((value) => value.cid)).size).toBe(1);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "concurrent audited duplicate");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("concurrent admission-audited duplicates bypass enforcing wrapper rate limits", async () => {
+    const callerCount = 2;
+    let startedCount = 0;
+    let releaseHooks: (() => void) | undefined;
+    let markAllHooksStarted: (() => void) | undefined;
+    const allHooksStarted = new Promise<void>((resolve) => {
+      markAllHooksStarted = resolve;
+    });
+    const releaseHookResults = new Promise<void>((resolve) => {
+      releaseHooks = resolve;
+    });
+    const hookRunner: NonNullable<OperationDeps["hookRunner"]> = {
+      run: async (entry) => {
+        startedCount += 1;
+        const durationMs = startedCount;
+        if (startedCount === callerCount) {
+          markAllHooksStarted?.();
+        }
+        await releaseHookResults;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          command: typeof entry === "string" ? entry : entry.cmd,
+          durationMs,
+        };
+      },
+    };
+    const contract = {
+      contractVersion: 3,
+      name: "admission-rate-limit",
+      mode: "evaluation" as const,
+      rateLimits: { maxContributionsPerAgentPerHour: 1 },
+      admission: [{ type: "shell" as const, name: "delay", command: "delay" }],
+    };
+    const enforcingStore = new EnforcingContributionStore(deps.contributionStore, contract);
+    const input = {
+      kind: "work" as const,
+      summary: "rate limited audited duplicate",
+      agent: { agentId: "a1" },
+    };
+
+    const pending = Array.from({ length: callerCount }, () =>
+      contributeOperation(input, {
+        ...deps,
+        contributionStore: enforcingStore,
+        contract,
+        hookRunner,
+        hookCwd: testDeps.tempDir,
+      }),
+    );
+    await allHooksStarted;
+    const release = releaseHooks;
+    if (release === undefined) throw new Error("hook release was not initialized");
+    release();
+    const results = await Promise.all(pending);
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    const values = results.flatMap((result) => (result.ok ? [result.value] : []));
+    expect(values.filter((value) => value.accepted === 1)).toHaveLength(1);
+    expect(values.filter((value) => value.duplicate === 1)).toHaveLength(1);
+    expect(new Set(values.map((value) => value.cid)).size).toBe(1);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "rate limited audited duplicate");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("explicit admission still preserves non-gate policy enforcement", async () => {
+    const result = await contributeOperation(
+      {
+        kind: ContributionKind.Work,
+        summary: "disallowed admitted work",
+        scores: { coverage: { value: 0.9, direction: "maximize" } },
+        agent: { agentId: "agent-1" },
+      },
+      {
+        ...deps,
+        contract: {
+          contractVersion: 3,
+          name: "admission-policy",
+          mode: "evaluation",
+          metrics: { coverage: { direction: "maximize" } },
+          agentConstraints: { allowedKinds: [ContributionKind.Review] },
+          admission: [
+            {
+              type: "metric_check",
+              name: "coverage_floor",
+              metric: "coverage",
+              minValue: 0.8,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("POLICY_VIOLATION");
+    expect(result.error.details).toMatchObject({ violationType: "role_kind" });
+    expect(await deps.contributionStore.count()).toBe(0);
+  });
+
+  test("shadowed legacy gate is still enforced by policy enforcer", async () => {
+    const result = await contributeOperation(
+      {
+        kind: ContributionKind.Work,
+        summary: "missing shadowed artifact",
+        scores: { quality: { value: 0.9, direction: "maximize" } },
+        agent: { agentId: "agent-1" },
+      },
+      {
+        ...deps,
+        contract: {
+          contractVersion: 3,
+          name: "mixed-admission-gates",
+          mode: "evaluation",
+          metrics: { quality: { direction: "maximize" } },
+          admission: [
+            {
+              type: "metric_check",
+              name: "gate_has_artifact_report_json",
+              metric: "quality",
+              minValue: 0.1,
+            },
+          ],
+          gates: [
+            { type: "has_artifact", name: "report.json" },
+            { type: "min_score", metric: "quality", threshold: 0.8 },
+          ],
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("POLICY_VIOLATION");
+    expect(result.error.details).toMatchObject({
+      violationType: "gate_failed",
+      gate: "has_artifact",
+      requiredArtifact: "report.json",
+    });
+    expect(await deps.contributionStore.count()).toBe(0);
+  });
+
+  test("caller-provided context admission remains part of logical dedup", async () => {
+    const first = await contributeOperation(
+      {
+        kind: ContributionKind.Work,
+        summary: "caller admission context",
+        context: { admission: { caller: "first" } },
+        agent: { agentId: "agent-1" },
+      },
+      deps,
+    );
+    const second = await contributeOperation(
+      {
+        kind: ContributionKind.Work,
+        summary: "caller admission context",
+        context: { admission: { caller: "second" } },
+        agent: { agentId: "agent-1" },
+      },
+      deps,
+    );
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(1);
+    expect(second.value.duplicate).toBe(0);
+    expect(second.value.cid).not.toBe(first.value.cid);
+    expect(await deps.contributionStore.count()).toBe(2);
+  });
+
+  test("attaches admission audit metadata before computing CID", async () => {
+    const { deps, cleanup } = await createTestOperationDeps();
+    try {
+      const result = await contributeOperation(
+        {
+          kind: ContributionKind.Work,
+          summary: "audited work",
+          scores: { coverage: { value: 0.9, direction: "maximize" } },
+          agent: { agentId: "agent-1" },
+        },
+        {
+          ...deps,
+          contract: {
+            contractVersion: 3,
+            name: "admission",
+            metrics: { coverage: { direction: "maximize" as const } },
+            admission: [
+              {
+                type: "metric_check",
+                name: "coverage_floor",
+                metric: "coverage",
+                minValue: 0.8,
+              },
+            ],
+          },
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const stored = await deps.contributionStore.get(result.value.cid);
+      expect(stored?.context?.admission).toBeDefined();
+      expect(stored?.context?.admission).toMatchObject({
+        version: 1,
+        accepted: true,
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("admission rejection prevents storing contribution and releases idempotency key", async () => {
+    const { deps, cleanup } = await createTestOperationDeps();
+    try {
+      const contract = {
+        contractVersion: 3,
+        name: "admission",
+        metrics: { coverage: { direction: "maximize" as const } },
+        admission: [
+          {
+            type: "metric_check" as const,
+            name: "coverage_floor",
+            metric: "coverage",
+            minValue: 0.8,
+          },
+        ],
+      };
+
+      const rejected = await contributeOperation(
+        {
+          kind: ContributionKind.Work,
+          summary: "bad work",
+          scores: { coverage: { value: 0.3, direction: "maximize" } },
+          agent: { agentId: "agent-1" },
+          idempotencyKey: "retry-key",
+        },
+        { ...deps, contract },
+      );
+
+      expect(rejected.ok).toBe(false);
+      expect(await deps.contributionStore.count()).toBe(0);
+
+      const accepted = await contributeOperation(
+        {
+          kind: ContributionKind.Work,
+          summary: "bad work",
+          scores: { coverage: { value: 0.9, direction: "maximize" } },
+          agent: { agentId: "agent-1" },
+          idempotencyKey: "retry-key",
+        },
+        { ...deps, contract },
+      );
+
+      expect(accepted.ok).toBe(true);
+      expect(await deps.contributionStore.count()).toBe(1);
+    } finally {
+      await cleanup();
+    }
   });
 });
 

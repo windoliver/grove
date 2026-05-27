@@ -176,6 +176,17 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     hookRunner: undefined as unknown as NonNullable<OperationDeps["hookRunner"]>,
     hookCwd: undefined as unknown as string,
     deadlineWatcher: undefined as unknown as NonNullable<OperationDeps["deadlineWatcher"]>,
+    admissionPermissionResolver: undefined as unknown as NonNullable<
+      OperationDeps["admissionPermissionResolver"]
+    >,
+    admissionGovernanceEvaluator: undefined as unknown as NonNullable<
+      OperationDeps["admissionGovernanceEvaluator"]
+    >,
+    blueprintHashSource: undefined as unknown as NonNullable<OperationDeps["blueprintHashSource"]>,
+    artifactSignatureVerifier: undefined as unknown as NonNullable<
+      OperationDeps["artifactSignatureVerifier"]
+    >,
+    zoneId: undefined as unknown as string,
   };
 
   return {
