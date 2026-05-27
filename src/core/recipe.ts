@@ -723,7 +723,7 @@ export async function discoverRecipes(
     if (sourceRank !== 0) {
       return sourceRank;
     }
-    return a.path.localeCompare(b.path) || a.recipe.name.localeCompare(b.recipe.name);
+    return compareCodeUnits(a.path, b.path) || compareCodeUnits(a.recipe.name, b.recipe.name);
   });
 }
 
@@ -740,7 +740,7 @@ async function listYamlFiles(dir: string): Promise<readonly string[]> {
         files.push(path);
       }
     }
-    return files.sort();
+    return files.sort(compareCodeUnits);
   } catch (error) {
     const code =
       typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
@@ -759,4 +759,14 @@ function sourceOrder(source: RecipeSource): number {
     return 1;
   }
   return 2;
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
 }

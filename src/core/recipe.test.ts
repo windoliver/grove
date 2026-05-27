@@ -429,4 +429,29 @@ describe("discoverRecipes", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("sorts recipe paths by deterministic code-unit order", async () => {
+    const root = await mkdtemp(join(tmpdir(), "grove-recipe-discovery-"));
+    try {
+      const recipesDir = join(root, "recipes");
+      await mkdir(recipesDir, { recursive: true });
+      await writeFile(
+        join(recipesDir, "z.yaml"),
+        "kind: recipe\nrecipe_version: 1\nname: z-recipe\nversion: 1.0.0\n",
+      );
+      await writeFile(
+        join(recipesDir, `${String.fromCharCode(0xe4)}.yaml`),
+        "kind: recipe\nrecipe_version: 1\nname: accent-recipe\nversion: 1.0.0\n",
+      );
+
+      const discovered = await discoverRecipes({
+        cwd: root,
+        homeConfigDir: join(root, "home-recipes-missing"),
+      });
+
+      expect(discovered.map((entry) => entry.recipe.name)).toEqual(["z-recipe", "accent-recipe"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
