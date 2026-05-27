@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { JsonValue } from "../../core/models.js";
@@ -40,6 +41,7 @@ export function parseRecipeArgs(argv: readonly string[]): RecipeCommand {
     });
     const path = parsed.positionals[0];
     if (path === undefined) throw new UsageError("recipe validate requires <path>");
+    if (parsed.positionals.length > 1) throw new UsageError("recipe validate accepts one <path>");
     return { command: "validate", path, json: parsed.values.json ?? false };
   }
   if (subcommand === "list") {
@@ -64,6 +66,7 @@ export function parseRecipeArgs(argv: readonly string[]): RecipeCommand {
     });
     const path = parsed.positionals[0];
     if (path === undefined) throw new UsageError("recipe run requires <path>");
+    if (parsed.positionals.length > 1) throw new UsageError("recipe run accepts one <path>");
     return {
       command: "run",
       path,
@@ -84,7 +87,7 @@ export async function handleRecipe(
 
 export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promise<void> {
   if (command.command === "validate") {
-    const content = await readFile(command.path, "utf-8");
+    const content = await readFile(resolveRecipePath(command.path, deps.cwd), "utf-8");
     const recipe = parseGroveRecipe(content);
     const digest = computeRecipeDigest(recipe);
     if (command.json) {
@@ -116,7 +119,7 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     );
     return;
   }
-  const content = await readFile(command.path, "utf-8");
+  const content = await readFile(resolveRecipePath(command.path, deps.cwd), "utf-8");
   const recipe = parseGroveRecipe(content);
   const bound = bindRecipeParameters(recipe, command.params);
   const materialized = materializeRecipeContract(bound);
@@ -133,6 +136,10 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     provenance: materialized.provenance,
   };
   deps.writer(command.json ? JSON.stringify(payload, null, 2) : formatDryRun(payload));
+}
+
+function resolveRecipePath(path: string, cwd: string): string {
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 function parseParamFlags(flags: readonly string[]): Readonly<Record<string, string>> {
