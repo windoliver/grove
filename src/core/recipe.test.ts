@@ -362,6 +362,22 @@ describe("bindRecipeParameters", () => {
     });
     expect(bound.renderedInstructions).toBe("Use src/core.");
   });
+
+  test("preserves literal braces outside template markers", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "literal-braces-template",
+      version: "1.0.0",
+      parameters: {
+        target_path: { type: "path", required: true },
+      },
+      instructions: 'Return {"ok": true} for $' + "{parameters.target_path}.",
+    });
+
+    const bound = bindRecipeParameters(recipe, { target_path: "src/core" });
+    expect(bound.renderedInstructions).toBe('Return {"ok": true} for src/core.');
+  });
 });
 
 describe("materializeRecipeContract", () => {

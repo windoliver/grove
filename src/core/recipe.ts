@@ -285,7 +285,7 @@ export interface GroveRecipe {
     | undefined;
   readonly subRecipes?: readonly RecipeSubRecipe[] | undefined;
   readonly response?:
-    | { readonly schema?: Readonly<Record<string, unknown>> | undefined }
+    | { readonly schema?: Readonly<Record<string, JsonValue>> | undefined }
     | undefined;
   readonly runPolicy?: RecipeRunPolicy | undefined;
   readonly library?: RecipeLibraryMetadata | undefined;
@@ -585,18 +585,11 @@ export function renderRecipeTemplate(
   while (cursor < template.length) {
     const markerStart = template.indexOf("${", cursor);
     if (markerStart === -1) {
-      const remainder = template.slice(cursor);
-      if (remainder.includes("}")) {
-        throw new Error("malformed recipe template syntax");
-      }
-      rendered += remainder;
+      rendered += template.slice(cursor);
       break;
     }
 
     const literal = template.slice(cursor, markerStart);
-    if (literal.includes("}")) {
-      throw new Error("malformed recipe template syntax");
-    }
     rendered += literal;
 
     const markerEnd = template.indexOf("}", markerStart + 2);
