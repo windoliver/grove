@@ -18,7 +18,13 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
-import { buildPaletteItems, CommandPalette, fuzzyMatch } from "./components/command-palette.js";
+import {
+  buildPaletteItems,
+  buildPluginPaletteItems,
+  CommandPalette,
+  fuzzyMatch,
+  getBuiltInPaletteActionRegistryEntries,
+} from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
@@ -47,6 +53,15 @@ import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
+import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
+import { runTuiActionRegistration } from "./plugins/actions.js";
+import {
+  collectTuiActionRegistrations,
+  collectTuiPanelRegistrations,
+  mergeTuiActionRegistrations,
+  mergeTuiRegistrations,
+} from "./plugins/registry.js";
+import type { TuiExtension, TuiPluginContext } from "./plugins/types.js";
 import {
   type DashboardData,
   type GitHubPRSummary,
@@ -85,6 +100,8 @@ export interface AppProps {
   readonly newSessionPreset?: string | undefined;
   /** Pre-fetched dashboard data — populates the first render before polling hooks fire. */
   readonly initialDashboard?: import("./provider.js").DashboardData | undefined;
+  /** Trusted local-code TUI extensions. Grove does not dynamically load these. */
+  readonly extensions?: readonly TuiExtension[] | undefined;
   /**
    * Which top-level screen is active. Drives the StatusBar `[INSPECT]` chip
    * so users always know whether the inspect overlay is on screen (#191).
@@ -116,6 +133,7 @@ export function App({
   userConfig,
   eventBus,
   screenContext,
+  extensions,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -223,6 +241,54 @@ export function App({
     setLastError(message);
     errorTimerRef.current = setTimeout(() => setLastError(undefined), 5_000);
   }, []);
+
+  const pluginActionRegistrations = useMemo(
+    () => collectTuiActionRegistrations(extensions),
+    [extensions],
+  );
+  const mergedActionRegistry = useMemo(
+    () =>
+      mergeTuiActionRegistrations({
+        builtIns: getBuiltInPaletteActionRegistryEntries(),
+        plugins: pluginActionRegistrations,
+      }),
+    [pluginActionRegistrations],
+  );
+  const pluginPanelRegistrations = useMemo(
+    () => collectTuiPanelRegistrations(extensions),
+    [extensions],
+  );
+  const mergedPanelRegistry = useMemo(
+    () =>
+      mergeTuiRegistrations({
+        builtIns: getBuiltInTuiRegistryEntries(),
+        plugins: pluginPanelRegistrations,
+      }),
+    [pluginPanelRegistrations],
+  );
+  const pluginContext = useMemo<TuiPluginContext>(
+    () => ({
+      provider,
+      topology,
+      selectedSession,
+      selectedCid: nav.detailCid,
+      density: ks.layoutMode === "tab" ? "compact" : "comfortable",
+      showMessage: showError,
+    }),
+    [provider, topology, selectedSession, nav.detailCid, ks.layoutMode, showError],
+  );
+
+  useEffect(() => {
+    for (const diagnostic of mergedActionRegistry.diagnostics) {
+      showError(diagnostic.message);
+    }
+  }, [mergedActionRegistry.diagnostics, showError]);
+
+  useEffect(() => {
+    for (const diagnostic of mergedPanelRegistry.diagnostics) {
+      showError(diagnostic.message);
+    }
+  }, [mergedPanelRegistry.diagnostics, showError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -521,7 +587,7 @@ export function App({
   }, [eventBus, topology, provider, triggerGlobalRefresh]);
 
   const hasGoals = isGoalProvider(provider);
-  const paletteItems = useMemo(
+  const corePaletteItems = useMemo(
     () =>
       buildPaletteItems(
         topology,
@@ -547,6 +613,14 @@ export function App({
       agentProfiles,
       hasGoals,
     ],
+  );
+  const pluginPaletteItems = useMemo(
+    () => buildPluginPaletteItems(mergedActionRegistry.entries, pluginContext),
+    [mergedActionRegistry.entries, pluginContext],
+  );
+  const paletteItems = useMemo(
+    () => [...corePaletteItems, ...pluginPaletteItems],
+    [corePaletteItems, pluginPaletteItems],
   );
 
   // Filtered + ranked palette items — matches CommandPalette's rendering order
@@ -972,6 +1046,10 @@ export function App({
           })();
         } else if (item.kind === "delegate") {
           void handleDelegate(item.id);
+        } else if (item.kind === "plugin-action" && item.pluginAction !== undefined) {
+          void runTuiActionRegistration(item.pluginAction, pluginContext).catch((err: unknown) => {
+            showError(err instanceof Error ? err.message : "Plugin action failed");
+          });
         } else if (item.kind === "goal") {
           panels.setMode(InputMode.GoalInput);
           dispatch({ type: "GOAL_INPUT_MODE" });
@@ -1051,6 +1129,7 @@ export function App({
       agentProfiles,
       topology,
       paletteParentId,
+      pluginContext,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
@@ -1156,6 +1235,8 @@ export function App({
           terminalBuffers={terminalBuffers ?? undefined}
           layoutMode={ks.layoutMode}
           presetName={presetName}
+          registryEntries={mergedPanelRegistry.entries}
+          pluginContext={pluginContext}
         />
         <StatusBar
           mode={panels.state.mode}

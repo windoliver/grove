@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Panel } from "../hooks/use-panel-focus.js";
-import { mergeTuiRegistrations, type TuiRegistryEntry } from "./registry.js";
-import type { TuiPanelRegistration } from "./types.js";
+import {
+  collectTuiActionRegistrations,
+  collectTuiPanelRegistrations,
+  mergeTuiActionRegistrations,
+  mergeTuiRegistrations,
+  type TuiActionRegistryEntry,
+  type TuiRegistryEntry,
+} from "./registry.js";
+import type { TuiActionRegistration, TuiExtension, TuiPanelRegistration } from "./types.js";
 
 const NullPanel = () => null;
 
@@ -23,6 +30,27 @@ function plugin(id: string, order?: number): TuiPanelRegistration {
     slot: "operator-panel",
     ...(order === undefined ? {} : { order }),
     component: NullPanel,
+  };
+}
+
+function builtInAction(id: string, order: number): TuiActionRegistryEntry {
+  return {
+    id,
+    label: id,
+    detail: `${id} detail`,
+    order,
+    source: "builtin",
+    builtInAction: id,
+  };
+}
+
+function action(id: string, order?: number): TuiActionRegistration {
+  return {
+    id,
+    label: id,
+    detail: `${id} detail`,
+    ...(order === undefined ? {} : { order }),
+    run: () => undefined,
   };
 }
 
@@ -148,5 +176,140 @@ describe("mergeTuiRegistrations", () => {
         builtIns: [builtIn("dag", 10, Panel.Dag), builtIn("dag", 20, Panel.Claims)],
       }),
     ).toThrow("Built-in TUI panel id is duplicated: dag");
+  });
+});
+
+describe("TuiExtension collection", () => {
+  test("flattens panel and action registrations from extensions", () => {
+    const panel = plugin("audit-panel", 20);
+    const refresh = action("audit-refresh", 30);
+    const extension: TuiExtension = {
+      id: "audit",
+      name: "Audit",
+      version: "1.0.0",
+      panels: [panel],
+      actions: [refresh],
+    };
+
+    expect(collectTuiPanelRegistrations([extension])).toEqual([panel]);
+    expect(collectTuiActionRegistrations([extension])).toEqual([refresh]);
+  });
+
+  test("returns empty frozen arrays when extensions are absent", () => {
+    const panels = collectTuiPanelRegistrations();
+    const actions = collectTuiActionRegistrations();
+
+    expect(panels).toEqual([]);
+    expect(Object.isFrozen(panels)).toBe(true);
+    expect(actions).toEqual([]);
+    expect(Object.isFrozen(actions)).toBe(true);
+  });
+});
+
+describe("mergeTuiActionRegistrations", () => {
+  test("orders built-in and plugin action entries by order then id", () => {
+    const result = mergeTuiActionRegistrations({
+      builtIns: [builtInAction("register-agent", 10), builtInAction("set-goal", 30)],
+      plugins: [action("audit-refresh", 20), action("audit-export", 20)],
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.entries.map((entry) => entry.id)).toEqual([
+      "register-agent",
+      "audit-export",
+      "audit-refresh",
+      "set-goal",
+    ]);
+  });
+
+  test("skips plugin actions that duplicate built-in action IDs", () => {
+    const result = mergeTuiActionRegistrations({
+      builtIns: [builtInAction("register-agent", 10)],
+      plugins: [action("register-agent", 20)],
+    });
+
+    expect(result.entries.map((entry) => entry.id)).toEqual(["register-agent"]);
+    expect(result.diagnostics).toEqual([
+      {
+        id: "register-agent",
+        severity: "error",
+        message: "Duplicate TUI action id: register-agent",
+      },
+    ]);
+  });
+
+  test("skips plugin actions with unsafe IDs", () => {
+    const result = mergeTuiActionRegistrations({
+      builtIns: [builtInAction("register-agent", 10)],
+      plugins: [action("bad/id", 20), action("UpperCase", 30)],
+    });
+
+    expect(result.entries.map((entry) => entry.id)).toEqual(["register-agent"]);
+    expect(result.diagnostics).toEqual([
+      {
+        id: "bad/id",
+        severity: "error",
+        message: "Invalid TUI action id: bad/id",
+      },
+      {
+        id: "UpperCase",
+        severity: "error",
+        message: "Invalid TUI action id: UpperCase",
+      },
+    ]);
+  });
+
+  test("uses default plugin action order 1000 when order is omitted", () => {
+    const result = mergeTuiActionRegistrations({
+      builtIns: [builtInAction("register-agent", 10)],
+      plugins: [action("audit-refresh")],
+    });
+
+    expect(result.entries.map((entry) => [entry.id, entry.order])).toEqual([
+      ["register-agent", 10],
+      ["audit-refresh", 1000],
+    ]);
+  });
+
+  test("uses default action order and reports diagnostics for invalid orders", () => {
+    const result = mergeTuiActionRegistrations({
+      builtIns: [builtInAction("register-agent", 10)],
+      plugins: [
+        action("nan-action", Number.NaN),
+        action("infinite-action", Number.POSITIVE_INFINITY),
+      ],
+    });
+
+    expect(result.entries.map((entry) => [entry.id, entry.order])).toEqual([
+      ["register-agent", 10],
+      ["infinite-action", 1000],
+      ["nan-action", 1000],
+    ]);
+    expect(result.diagnostics).toEqual([
+      {
+        id: "nan-action",
+        severity: "error",
+        message: "Invalid TUI action order for nan-action; using default order 1000",
+      },
+      {
+        id: "infinite-action",
+        severity: "error",
+        message: "Invalid TUI action order for infinite-action; using default order 1000",
+      },
+    ]);
+  });
+
+  test("throws when built-in action IDs are unsafe or duplicated", () => {
+    expect(() =>
+      mergeTuiActionRegistrations({
+        builtIns: [builtInAction("bad/id", 10)],
+      }),
+    ).toThrow("Built-in TUI action has invalid id: bad/id");
+
+    expect(() =>
+      mergeTuiActionRegistrations({
+        builtIns: [builtInAction("register-agent", 10), builtInAction("register-agent", 20)],
+      }),
+    ).toThrow("Built-in TUI action id is duplicated: register-agent");
   });
 });

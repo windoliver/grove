@@ -22,6 +22,7 @@ export interface TuiPluginContext {
   readonly selectedSession?: string | undefined;
   readonly selectedCid?: string | undefined;
   readonly density: "comfortable" | "compact";
+  readonly showMessage: (message: string) => void;
 }
 
 export interface TuiPanelRegistration {
@@ -31,4 +32,21 @@ export interface TuiPanelRegistration {
   readonly defaultVisible?: boolean | undefined;
   readonly order?: number | undefined;
   readonly component: React.ComponentType<TuiPluginContext>;
+}
+
+export interface TuiActionRegistration {
+  readonly id: string;
+  readonly label: string;
+  readonly detail: string;
+  readonly order?: number | undefined;
+  readonly enabled?: ((context: TuiPluginContext) => boolean) | undefined;
+  readonly run: (context: TuiPluginContext) => void | Promise<void>;
+}
+
+export interface TuiExtension {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly panels?: readonly TuiPanelRegistration[] | undefined;
+  readonly actions?: readonly TuiActionRegistration[] | undefined;
 }

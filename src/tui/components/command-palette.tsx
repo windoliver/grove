@@ -14,6 +14,8 @@ import type { Claim } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { checkSpawn } from "../agents/spawn-validator.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
+import type { TuiActionRegistryEntry } from "../plugins/registry.js";
+import type { TuiActionRegistration, TuiPluginContext } from "../plugins/types.js";
 import { theme } from "../theme.js";
 
 // ---------------------------------------------------------------------------
@@ -101,12 +103,13 @@ function renderHighlighted(
 
 /** A single actionable entry in the palette. */
 export interface PaletteItem {
-  readonly kind: "spawn" | "kill" | "register" | "delegate" | "goal";
-  /** For spawn: role name. For kill: session name. For delegate: peerId. Optional for goal. */
+  readonly kind: "spawn" | "kill" | "register" | "delegate" | "goal" | "plugin-action";
+  /** For spawn: role name. For kill: session name. For delegate: peer address. For plugin-action: action id. */
   readonly id: string;
   readonly label: string;
   readonly enabled: boolean;
   readonly detail: string;
+  readonly pluginAction?: TuiActionRegistration | undefined;
 }
 
 /** Props for the CommandPalette component. */
@@ -144,6 +147,49 @@ export interface LoadedProfile {
   readonly role: string;
   readonly platform: string;
   readonly command?: string | undefined;
+}
+
+const BUILT_IN_PALETTE_ACTIONS: readonly TuiActionRegistryEntry[] = Object.freeze([
+  Object.freeze({
+    id: "set-goal",
+    label: "Set goal",
+    detail: "Set or update the session goal for all agents",
+    order: 0,
+    source: "builtin" as const,
+    builtInAction: "goal",
+  }),
+  Object.freeze({
+    id: "register-agent",
+    label: "[r] Register new agent profile",
+    detail: "agents.json",
+    order: 10,
+    source: "builtin" as const,
+    builtInAction: "register",
+  }),
+]);
+
+export function getBuiltInPaletteActionRegistryEntries(): readonly TuiActionRegistryEntry[] {
+  return BUILT_IN_PALETTE_ACTIONS;
+}
+
+export function buildPluginPaletteItems(
+  entries: readonly TuiActionRegistryEntry[],
+  context: TuiPluginContext,
+): readonly PaletteItem[] {
+  const items: PaletteItem[] = [];
+  for (const entry of entries) {
+    if (entry.source !== "plugin" || entry.registration === undefined) continue;
+    const enabled = entry.registration.enabled?.(context) ?? true;
+    items.push({
+      kind: "plugin-action",
+      id: entry.id,
+      label: entry.label,
+      detail: entry.detail,
+      enabled,
+      pluginAction: entry.registration,
+    });
+  }
+  return Object.freeze(items);
 }
 
 /** Build the unified list of palette items from topology roles and tmux sessions. */
