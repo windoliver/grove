@@ -104,6 +104,20 @@ describe("parseGroveRecipe", () => {
     ).toThrow(/enum parameter default must be in enum values/);
   });
 
+  test("rejects non-JSON response schema values", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "response-schema-json",
+        version: "1.0.0",
+        response: {
+          schema: { transform: () => undefined },
+        },
+      }),
+    ).toThrow(/JSON|Invalid input/);
+  });
+
   test("parses complete topology role and spawning fields", () => {
     const recipe = parseGroveRecipeObject({
       kind: "recipe",
@@ -262,6 +276,91 @@ describe("recipe digests", () => {
     const first = bindRecipeParameters(recipe, { target_path: "src/core" });
     const second = bindRecipeParameters(recipe, { target_path: "src/cli" });
     expect(computeBoundRecipeDigest(first)).not.toBe(computeBoundRecipeDigest(second));
+  });
+});
+
+describe("bindRecipeParameters", () => {
+  test("rejects unknown parameter overrides", () => {
+    const recipe = parseGroveRecipe(FULL_RECIPE);
+    expect(() => bindRecipeParameters(recipe, { target_path: "src/core", extra: true })).toThrow(
+      /unknown recipe parameter/,
+    );
+  });
+
+  test("rejects missing required parameters", () => {
+    const recipe = parseGroveRecipe(FULL_RECIPE);
+    expect(() => bindRecipeParameters(recipe, {})).toThrow(/missing required recipe parameter/);
+  });
+
+  test("rejects wrong bound parameter types", () => {
+    const recipe = parseGroveRecipe(FULL_RECIPE);
+    expect(() => bindRecipeParameters(recipe, { target_path: 123 })).toThrow(/must be a string/);
+  });
+
+  test("rejects enum overrides outside the declared enum", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "enum-override-test",
+      version: "1.0.0",
+      parameters: {
+        mode: { type: "enum", enum: ["fast", "safe"] },
+      },
+    });
+
+    expect(() => bindRecipeParameters(recipe, { mode: "slow" })).toThrow(/enum values/);
+  });
+
+  test("rejects missing template paths", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "missing-template-path",
+      version: "1.0.0",
+      parameters: {
+        target_path: { type: "path", required: true },
+      },
+      instructions: "Work on $" + "{parameters.other_path}.",
+    });
+
+    expect(() => bindRecipeParameters(recipe, { target_path: "src/core" })).toThrow(
+      /missing recipe template parameter/,
+    );
+  });
+
+  test("rejects malformed template syntax", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "malformed-template",
+      version: "1.0.0",
+      parameters: {
+        target_path: { type: "path", required: true },
+      },
+      instructions: "Work on ${parameters.target_path.",
+    });
+
+    expect(() => bindRecipeParameters(recipe, { target_path: "src/core" })).toThrow(
+      /malformed recipe template syntax/,
+    );
+  });
+
+  test("renders nested JSON parameter paths", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "json-template-path",
+      version: "1.0.0",
+      parameters: {
+        config: { type: "json", required: true },
+      },
+      instructions: "Use $" + "{parameters.config.paths.target}.",
+    });
+
+    const bound = bindRecipeParameters(recipe, {
+      config: { paths: { target: "src/core" } },
+    });
+    expect(bound.renderedInstructions).toBe("Use src/core.");
   });
 });
 

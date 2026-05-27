@@ -28,6 +28,11 @@ const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   ]),
 );
 
+const JsonObjectSchema: z.ZodType<Readonly<Record<string, JsonValue>>> = z.record(
+  z.string(),
+  JsonValueSchema,
+);
+
 export type RecipeParameterType =
   | "string"
   | "integer"
@@ -151,7 +156,7 @@ const RecipeSubRecipeSchema = z
 
 const ResponseSchema = z
   .object({
-    schema: z.record(z.string(), z.unknown()).optional(),
+    schema: JsonObjectSchema.optional(),
   })
   .strict();
 
@@ -309,6 +314,15 @@ export interface MaterializedRecipe {
 }
 
 function canonicalize(value: unknown): string {
+  if (
+    value === undefined ||
+    typeof value === "function" ||
+    typeof value === "symbol" ||
+    typeof value === "bigint"
+  ) {
+    throw new Error(`Unsupported value in canonical JSON: ${typeof value}`);
+  }
+
   if (typeof value === "number") {
     if (Number.isNaN(value)) {
       throw new Error("NaN is not allowed in canonical JSON");
@@ -324,8 +338,13 @@ function canonicalize(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
-    const items = value.map((item) => canonicalize(item === undefined ? null : item));
+    const items = value.map((item) => canonicalize(item));
     return `[${items.join(",")}]`;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("Unsupported non-plain object in canonical JSON");
   }
 
   const obj = value as Record<string, unknown>;
@@ -333,7 +352,10 @@ function canonicalize(value: unknown): string {
     .sort()
     .reduce<string[]>((acc, key) => {
       const v = obj[key];
-      if (v !== undefined && typeof v !== "symbol") {
+      if (v !== undefined) {
+        if (typeof v === "function" || typeof v === "symbol" || typeof v === "bigint") {
+          throw new Error(`Unsupported value in canonical JSON at key '${key}'`);
+        }
         acc.push(`${JSON.stringify(key)}:${canonicalize(v)}`);
       }
       return acc;
@@ -557,9 +579,42 @@ export function renderRecipeTemplate(
   parameters: Readonly<Record<string, JsonValue>>,
   parameterDefinitions?: Readonly<Record<string, RecipeParameter>>,
 ): string {
-  return template.replace(/\$\{([^}]+)\}/g, (_match, expression: string) =>
-    stringifyTemplateValue(lookupTemplateValue(parameters, parameterDefinitions, expression)),
-  );
+  let rendered = "";
+  let cursor = 0;
+
+  while (cursor < template.length) {
+    const markerStart = template.indexOf("${", cursor);
+    if (markerStart === -1) {
+      const remainder = template.slice(cursor);
+      if (remainder.includes("}")) {
+        throw new Error("malformed recipe template syntax");
+      }
+      rendered += remainder;
+      break;
+    }
+
+    const literal = template.slice(cursor, markerStart);
+    if (literal.includes("}")) {
+      throw new Error("malformed recipe template syntax");
+    }
+    rendered += literal;
+
+    const markerEnd = template.indexOf("}", markerStart + 2);
+    if (markerEnd === -1) {
+      throw new Error("malformed recipe template syntax");
+    }
+
+    const expression = template.slice(markerStart + 2, markerEnd);
+    if (expression.trim() === "") {
+      throw new Error("malformed recipe template syntax");
+    }
+    rendered += stringifyTemplateValue(
+      lookupTemplateValue(parameters, parameterDefinitions, expression),
+    );
+    cursor = markerEnd + 1;
+  }
+
+  return rendered;
 }
 
 export function bindRecipeParameters(
