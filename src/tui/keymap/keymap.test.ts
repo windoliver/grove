@@ -331,6 +331,19 @@ describe("resolveKeymapWithOverrides", () => {
     expect(winners.map((binding) => binding.id)).toEqual(["refresh"]);
   });
 
+  test("prefix collisions record a conflict and keep the first binding", () => {
+    const keymap = resolveKeymapWithOverrides("default", {
+      refresh: "Space p",
+    });
+
+    expect(keymap.bindings.some((binding) => binding.id === "refresh")).toBe(false);
+    expect(keymap.conflicts[0]).toMatchObject({
+      sequence: ["space", "p"],
+      winner: "focus_panel:dag",
+      loser: "refresh",
+    });
+  });
+
   test("unknown override ids are ignored", () => {
     const keymap = resolveKeymapWithOverrides("default", {
       "not_real:thing": "Space nope",

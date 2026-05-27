@@ -430,6 +430,13 @@ function conflictKey(binding: KeyBinding): string {
   return `${conflictScope(binding)}:${binding.sequence.join("\u0000")}`;
 }
 
+function bindingsConflict(a: KeyBinding, b: KeyBinding): boolean {
+  return (
+    conflictScope(a) === conflictScope(b) &&
+    (sequenceStartsWith(a.sequence, b.sequence) || sequenceStartsWith(b.sequence, a.sequence))
+  );
+}
+
 function dedupeConflicts(bindings: readonly KeyBinding[]): {
   readonly bindings: readonly KeyBinding[];
   readonly conflicts: readonly KeymapConflict[];
@@ -439,7 +446,7 @@ function dedupeConflicts(bindings: readonly KeyBinding[]): {
   const conflicts: KeymapConflict[] = [];
   for (const binding of bindings) {
     const key = conflictKey(binding);
-    const winner = seen.get(key);
+    const winner = seen.get(key) ?? kept.find((candidate) => bindingsConflict(candidate, binding));
     if (winner !== undefined) {
       conflicts.push({
         sequence: binding.sequence,

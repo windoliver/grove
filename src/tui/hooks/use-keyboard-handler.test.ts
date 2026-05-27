@@ -261,6 +261,31 @@ describe("routeKey — leader keymap", () => {
     expect(handled).toBe(true);
     expect(log.calls).toContain("onQuit");
   });
+
+  test("default keymap does not fall through to legacy direct quit", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("q"), actions);
+
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("onQuit");
+  });
+
+  test("overridden quit key removes the old direct key", () => {
+    const keymap = resolveKeymapWithOverrides("default", { quit: "Space x" });
+    const oldKey = mockActions({ resolvedKeymap: keymap });
+    const handledOld = routeKey(keyEvent("q"), oldKey.actions);
+    const leader = mockActions({ resolvedKeymap: keymap });
+    routeKey(keyEvent("space"), leader.actions);
+    const remapped = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space"] });
+    const handledRemapped = routeKey(keyEvent("x"), remapped.actions);
+
+    expect(handledOld).toBe(false);
+    expect(oldKey.log.calls).not.toContain("onQuit");
+    expect(handledRemapped).toBe(true);
+    expect(remapped.log.calls).toContain("onQuit");
+  });
 });
 
 // ---------------------------------------------------------------------------

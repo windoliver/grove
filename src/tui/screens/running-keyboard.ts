@@ -8,6 +8,12 @@
 
 import type { KeyEvent } from "@opentui/core";
 import { isHelpToggleKey } from "../hooks/shared-keyboard-core.js";
+import {
+  type KeyBinding,
+  keyEventToToken,
+  type ResolvedKeymap,
+  resolveKeySequence,
+} from "../keymap/keymap.js";
 import type { ZoomLevel } from "../panels/panel-registry.js";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +80,10 @@ export interface RunningKeyboardState {
    * approve/deny a pending tmux permission prompt.
    */
   readonly confirmModalOpen: boolean;
+  /** Active keymap for normal-mode leader sequences. */
+  readonly resolvedKeymap?: ResolvedKeymap | undefined;
+  /** Pending keymap prefix, if the operator is entering a leader sequence. */
+  readonly keymapPrefix?: readonly string[] | undefined;
   /**
    * #310: LogView filter-input mode. When true, the dispatcher swallows
    * printable keys into the LogView filter buffer instead of routing them
@@ -160,6 +170,7 @@ export interface RunningKeyboardActions {
   readonly logCancelFilter: () => void;
   readonly logFilterAppend: (ch: string) => void;
   readonly logFilterBackspace: () => void;
+  readonly onKeymapPrefixChange?: ((prefix: readonly string[]) => void) | undefined;
   // Context flags (not actions, just state the handler needs to make decisions)
   readonly hasPermissions: boolean;
   readonly hasActiveRoles: boolean;
@@ -208,6 +219,89 @@ export function toggleFullscreen(
 /** Collapse the expanded panel back to feed-only view. */
 export function collapsePanel(): { expandedPanel: RunningPanel | null; zoomLevel: ZoomLevel } {
   return { expandedPanel: null, zoomLevel: "normal" };
+}
+
+function runningPanelForKeyBinding(binding: KeyBinding): RunningPanel | undefined {
+  const [, panelId] = binding.id.split(":");
+  switch (panelId) {
+    case "agents":
+      return RunningPanel.Agents;
+    case "dag":
+      return RunningPanel.Dag;
+    case "terminal":
+      return RunningPanel.Terminal;
+    default:
+      return undefined;
+  }
+}
+
+function executeRunningKeymapAction(
+  binding: KeyBinding,
+  state: RunningKeyboardState,
+  actions: RunningKeyboardActions,
+): boolean {
+  switch (binding.action) {
+    case "quit":
+      if (state.showVfs) actions.dismissVfs();
+      else actions.showQuitDialog();
+      return true;
+    case "help":
+      actions.toggleHelp();
+      return true;
+    case "focus_panel":
+    case "toggle_panel": {
+      if (binding.id === "toggle_panel:vfs") {
+        actions.toggleVfs();
+        return true;
+      }
+      const panel = runningPanelForKeyBinding(binding);
+      if (panel === undefined) return false;
+      actions.expandPanel(panel);
+      return true;
+    }
+    case "zoom_cycle":
+      if (state.expandedPanel === null) return false;
+      actions.toggleFullscreen();
+      return true;
+    case "cursor_down":
+      if (state.expandedPanel === RunningPanel.Trace) actions.traceSelectDown();
+      else if (state.expandedPanel === RunningPanel.Handoffs) actions.handoffCursorDown();
+      else actions.feedCursorDown();
+      return true;
+    case "cursor_up":
+      if (state.expandedPanel === RunningPanel.Trace) actions.traceSelectUp();
+      else if (state.expandedPanel === RunningPanel.Handoffs) actions.handoffCursorUp();
+      else actions.feedCursorUp();
+      return true;
+    case "search_start":
+      actions.enterFilterMode();
+      return true;
+    case "broadcast":
+    case "direct_message":
+      if (!(actions.hasSendToAgent && actions.hasActiveRoles)) return false;
+      actions.enterPromptMode();
+      return true;
+    case "approve":
+      if (!(actions.hasPermissions && !state.confirmModalOpen)) return false;
+      actions.approvePermission();
+      return true;
+    case "deny":
+      if (!(actions.hasPermissions && !state.confirmModalOpen)) return false;
+      actions.denyPermission();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function shouldSuppressLegacyRunningKey(
+  key: KeyEvent,
+  token: string,
+  keymap: ResolvedKeymap,
+): boolean {
+  if (token === "q") return keymap.bindings.some((binding) => binding.action === "quit");
+  if (isHelpToggleKey(key)) return keymap.bindings.some((binding) => binding.action === "help");
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +444,33 @@ export function routeRunningKey(
       return true;
     }
     // Unmatched keys fall through to global handlers.
+  }
+
+  const resolvedKeymap = state.resolvedKeymap;
+  const keymapPrefix = state.keymapPrefix ?? [];
+  if (resolvedKeymap !== undefined) {
+    const token = keyEventToToken(key);
+    if (token !== undefined) {
+      const nextPrefix = Object.freeze([...keymapPrefix, token]);
+      const result = resolveKeySequence(resolvedKeymap.bindings, nextPrefix);
+      switch (result.kind) {
+        case "pending":
+          actions.onKeymapPrefixChange?.(result.prefix);
+          return true;
+        case "match":
+          actions.onKeymapPrefixChange?.([]);
+          if (executeRunningKeymapAction(result.binding, state, actions)) return true;
+          if (keymapPrefix.length > 0) return true;
+          break;
+        case "miss":
+          if (keymapPrefix.length > 0) {
+            actions.onKeymapPrefixChange?.([]);
+            return true;
+          }
+          if (shouldSuppressLegacyRunningKey(key, token, resolvedKeymap)) return false;
+          break;
+      }
+    }
   }
 
   // ─── Normal mode ───

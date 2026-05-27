@@ -347,7 +347,7 @@ describe("routeKey — keybinding override integration", () => {
     expect(quitCalled).toBe(true);
   });
 
-  test("non-overridden key falls through to default handler", () => {
+  test("non-overridden legacy key does not bypass the active keymap", () => {
     let quitCalled = false;
     const actions: KeyboardActions = {
       ...mockActions(),
@@ -357,9 +357,8 @@ describe("routeKey — keybinding override integration", () => {
       resolvedKeymap: resolveKeymapWithOverrides("default", {}),
     };
 
-    // No override for "q" — the default hardcoded "q" handler runs
     const handled = routeKey(keyEvent("q"), actions);
-    expect(handled).toBe(true);
-    expect(quitCalled).toBe(true);
+    expect(handled).toBe(false);
+    expect(quitCalled).toBe(false);
   });
 });

@@ -434,7 +434,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
             actions.onKeymapPrefixChange?.([]);
             return true;
           }
-          break;
+          return false;
       }
     }
   }
