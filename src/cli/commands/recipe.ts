@@ -110,12 +110,16 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
       deps.writer(JSON.stringify(entries, null, 2));
       return;
     }
+    if (entries.length === 0) {
+      deps.writer("No recipes found.");
+      return;
+    }
     deps.writer(
-      entries.length === 0
-        ? "No recipes found."
-        : entries
-            .map((entry) => `${entry.recipe.name}@${entry.recipe.version} ${entry.path}`)
-            .join("\n"),
+      entries
+        .map(
+          (entry) => `${entry.recipe.name}@${entry.recipe.version} ${entry.source} ${entry.path}`,
+        )
+        .join("\n"),
     );
     return;
   }

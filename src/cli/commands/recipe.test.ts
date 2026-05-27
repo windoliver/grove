@@ -112,4 +112,39 @@ describe("recipe command", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("list prints discovered recipes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-list-"));
+    try {
+      const recipesDir = join(dir, "recipes");
+      await mkdir(recipesDir, { recursive: true });
+      await writeFile(
+        join(recipesDir, "review.yaml"),
+        "kind: recipe\nrecipe_version: 1\nname: review-loop\nversion: 1.0.0\n",
+      );
+      const { lines, writer } = createWriter();
+      await runRecipe(parseRecipeArgs(["list", "--dir", dir]), { cwd: dir, writer });
+      expect(lines.join("\n")).toContain("review-loop@1.0.0");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("list --json emits discovered recipes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-list-json-"));
+    try {
+      const recipesDir = join(dir, "recipes");
+      await mkdir(recipesDir, { recursive: true });
+      await writeFile(
+        join(recipesDir, "review.yaml"),
+        "kind: recipe\nrecipe_version: 1\nname: review-loop\nversion: 1.0.0\n",
+      );
+      const { lines, writer } = createWriter();
+      await runRecipe(parseRecipeArgs(["list", "--dir", dir, "--json"]), { cwd: dir, writer });
+      const parsed = JSON.parse(lines.join("\n")) as Array<{ recipe: { name: string } }>;
+      expect(parsed[0]?.recipe.name).toBe("review-loop");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
