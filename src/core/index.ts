@@ -300,6 +300,8 @@ export type { CorePresetConfig } from "./presets.js";
 export { getPresetTopologyRegistry, listPresetNames, lookupPresetTopology } from "./presets.js";
 export type {
   BoundRecipe,
+  DiscoveredRecipe,
+  DiscoverRecipesOptions,
   GroveRecipe,
   MaterializedRecipe,
   RecipeActivity,
@@ -309,12 +311,14 @@ export type {
   RecipeParameterType,
   RecipeProvenance,
   RecipeRunPolicy,
+  RecipeSource,
   RecipeSubRecipe,
 } from "./recipe.js";
 export {
   bindRecipeParameters,
   computeBoundRecipeDigest,
   computeRecipeDigest,
+  discoverRecipes,
   materializeRecipeContract,
   parseGroveRecipe,
   parseGroveRecipeObject,

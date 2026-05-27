@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   bindRecipeParameters,
   computeBoundRecipeDigest,
   computeRecipeDigest,
+  discoverRecipes,
   materializeRecipeContract,
   parseGroveRecipe,
   parseGroveRecipeObject,
@@ -390,5 +394,39 @@ describe("materializeRecipeContract", () => {
     expect(materialized.contract.topology?.roles[0]?.name).toBe("coder");
     expect(materialized.provenance.recipeName).toBe("code-review-loop");
     expect(materialized.renderedInstructions).toContain("src/core");
+  });
+});
+
+describe("discoverRecipes", () => {
+  test("discovers recipes from configured directories in deterministic order", async () => {
+    const root = await mkdtemp(join(tmpdir(), "grove-recipe-discovery-"));
+    try {
+      const recipesDir = join(root, "recipes");
+      const groveRecipesDir = join(root, ".grove", "recipes");
+      await mkdir(recipesDir, { recursive: true });
+      await mkdir(groveRecipesDir, { recursive: true });
+      await writeFile(
+        join(groveRecipesDir, "workspace.yaml"),
+        "kind: recipe\nrecipe_version: 1\nname: workspace-recipe\nversion: 1.0.0\n",
+      );
+      await writeFile(
+        join(recipesDir, "project.yaml"),
+        "kind: recipe\nrecipe_version: 1\nname: project-recipe\nversion: 1.0.0\n",
+      );
+
+      const discovered = await discoverRecipes({
+        cwd: root,
+        homeConfigDir: join(root, "home-recipes-missing"),
+      });
+
+      expect(discovered.map((entry) => entry.recipe.name)).toEqual([
+        "project-recipe",
+        "workspace-recipe",
+      ]);
+      expect(discovered[0]?.source).toBe("project");
+      expect(discovered[1]?.source).toBe("workspace");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

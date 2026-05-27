@@ -4,6 +4,9 @@
  * Wire format uses snake_case YAML. TypeScript types use camelCase.
  */
 
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { hash } from "blake3";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -311,6 +314,20 @@ export interface MaterializedRecipe {
   readonly contract: GroveContract;
   readonly provenance: RecipeProvenance;
   readonly renderedInstructions: string;
+}
+
+export type RecipeSource = "project" | "workspace" | "user";
+
+export interface DiscoveredRecipe {
+  readonly path: string;
+  readonly source: RecipeSource;
+  readonly recipe: GroveRecipe;
+  readonly digest: string;
+}
+
+export interface DiscoverRecipesOptions {
+  readonly cwd: string;
+  readonly homeConfigDir?: string | undefined;
 }
 
 function canonicalize(value: unknown): string {
@@ -675,4 +692,71 @@ export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecip
     },
     renderedInstructions: bound.renderedInstructions,
   };
+}
+
+export async function discoverRecipes(
+  options: DiscoverRecipesOptions,
+): Promise<readonly DiscoveredRecipe[]> {
+  const roots: readonly { readonly source: RecipeSource; readonly dir: string }[] = [
+    { source: "project", dir: join(options.cwd, "recipes") },
+    { source: "workspace", dir: join(options.cwd, ".grove", "recipes") },
+    {
+      source: "user",
+      dir: options.homeConfigDir ?? join(process.env.HOME ?? "", ".config", "grove", "recipes"),
+    },
+  ];
+  const discovered: DiscoveredRecipe[] = [];
+  for (const root of roots) {
+    for (const path of await listYamlFiles(root.dir)) {
+      const content = await readFile(path, "utf-8");
+      const recipe = parseGroveRecipe(content);
+      discovered.push({
+        path,
+        source: root.source,
+        recipe,
+        digest: computeRecipeDigest(recipe),
+      });
+    }
+  }
+  return discovered.sort((a, b) => {
+    const sourceRank = sourceOrder(a.source) - sourceOrder(b.source);
+    if (sourceRank !== 0) {
+      return sourceRank;
+    }
+    return a.path.localeCompare(b.path) || a.recipe.name.localeCompare(b.recipe.name);
+  });
+}
+
+async function listYamlFiles(dir: string): Promise<readonly string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...(await listYamlFiles(path)));
+      }
+      if (entry.isFile() && (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml"))) {
+        files.push(path);
+      }
+    }
+    return files.sort();
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    if (code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function sourceOrder(source: RecipeSource): number {
+  if (source === "project") {
+    return 0;
+  }
+  if (source === "workspace") {
+    return 1;
+  }
+  return 2;
 }

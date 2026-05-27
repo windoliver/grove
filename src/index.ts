@@ -92,6 +92,8 @@ export type {
 } from "./core/models.js";
 export type {
   BoundRecipe,
+  DiscoveredRecipe,
+  DiscoverRecipesOptions,
   GroveRecipe,
   MaterializedRecipe,
   RecipeActivity,
@@ -101,12 +103,14 @@ export type {
   RecipeParameterType,
   RecipeProvenance,
   RecipeRunPolicy,
+  RecipeSource,
   RecipeSubRecipe,
 } from "./core/recipe.js";
 export {
   bindRecipeParameters,
   computeBoundRecipeDigest,
   computeRecipeDigest,
+  discoverRecipes,
   materializeRecipeContract,
   parseGroveRecipe,
   parseGroveRecipeObject,
