@@ -19,6 +19,7 @@ const DIGEST_PREFIX = "blake3:";
 const NamePattern = /^[a-z][a-z0-9_-]*$/;
 const ParameterNamePattern = /^[a-z][a-z0-9_]*$/;
 const SemverPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
+const JsonNumberLiteralPattern = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
 const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -314,6 +315,8 @@ export interface MaterializedRecipe {
   readonly contract: GroveContract;
   readonly provenance: RecipeProvenance;
   readonly renderedInstructions: string;
+  readonly extensions: readonly RecipeExtension[];
+  readonly subRecipes: readonly RecipeSubRecipe[];
 }
 
 export type RecipeSource = "project" | "workspace" | "user";
@@ -329,6 +332,10 @@ export interface DiscoverRecipesOptions {
   readonly cwd: string;
   readonly homeConfigDir?: string | undefined;
 }
+
+type RecipeTemplateToken =
+  | Readonly<{ kind: "literal"; value: string }>
+  | Readonly<{ kind: "expression"; value: string }>;
 
 function canonicalize(value: unknown): string {
   if (
@@ -511,11 +518,7 @@ function validateBoundValue(name: string, parameter: RecipeParameter, value: Jso
   JsonValueSchema.parse(value);
 }
 
-function lookupTemplateValue(
-  parameters: Readonly<Record<string, JsonValue>>,
-  parameterDefinitions: Readonly<Record<string, RecipeParameter>> | undefined,
-  expression: string,
-): JsonValue {
+function parseTemplateExpressionPath(expression: string): readonly string[] {
   const path = expression.trim().split(".");
   if (path.length < 2 || path[0] !== "parameters") {
     throw new Error(`unsupported recipe template expression '${expression}'`);
@@ -523,6 +526,46 @@ function lookupTemplateValue(
 
   const parameterName = path[1];
   if (parameterName === undefined || !ParameterNamePattern.test(parameterName)) {
+    throw new Error(`invalid recipe template parameter reference '${expression}'`);
+  }
+
+  for (const segment of path.slice(2)) {
+    if (!ParameterNamePattern.test(segment)) {
+      throw new Error(`invalid recipe template path segment '${segment}'`);
+    }
+  }
+
+  return path;
+}
+
+function validateTemplateExpressionShape(
+  expression: string,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): void {
+  const path = parseTemplateExpressionPath(expression);
+  const parameterName = path[1];
+  if (parameterName === undefined) {
+    throw new Error(`invalid recipe template parameter reference '${expression}'`);
+  }
+
+  const definition = parameterDefinitions[parameterName];
+  if (definition === undefined) {
+    throw new Error(`unknown recipe template parameter '${parameterName}'`);
+  }
+
+  if (path.length > 2 && definition.type !== "json") {
+    throw new Error(`nested recipe template paths require json parameter '${parameterName}'`);
+  }
+}
+
+function lookupTemplateValue(
+  parameters: Readonly<Record<string, JsonValue>>,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>> | undefined,
+  expression: string,
+): JsonValue {
+  const path = parseTemplateExpressionPath(expression);
+  const parameterName = path[1];
+  if (parameterName === undefined) {
     throw new Error(`invalid recipe template parameter reference '${expression}'`);
   }
 
@@ -537,9 +580,6 @@ function lookupTemplateValue(
 
   let value: JsonValue = initialValue;
   for (const segment of path.slice(2)) {
-    if (!ParameterNamePattern.test(segment)) {
-      throw new Error(`invalid recipe template path segment '${segment}'`);
-    }
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(`recipe template path '${expression}' does not resolve to an object`);
     }
@@ -563,6 +603,93 @@ function stringifyTemplateValue(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+function readRecipeTemplateTokens(template: string): readonly RecipeTemplateToken[] {
+  const tokens: RecipeTemplateToken[] = [];
+  let cursor = 0;
+
+  while (cursor < template.length) {
+    const markerStart = template.indexOf("${", cursor);
+    if (markerStart === -1) {
+      const literal = template.slice(cursor);
+      if (literal !== "") tokens.push({ kind: "literal", value: literal });
+      break;
+    }
+
+    const literal = template.slice(cursor, markerStart);
+    if (literal !== "") tokens.push({ kind: "literal", value: literal });
+
+    const markerEnd = template.indexOf("}", markerStart + 2);
+    if (markerEnd === -1) {
+      throw new Error("malformed recipe template syntax");
+    }
+
+    const expression = template.slice(markerStart + 2, markerEnd);
+    if (expression.trim() === "") {
+      throw new Error("malformed recipe template syntax");
+    }
+    tokens.push({ kind: "expression", value: expression });
+    cursor = markerEnd + 1;
+  }
+
+  return tokens;
+}
+
+function validateRecipeTemplateString(
+  template: string,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): void {
+  for (const token of readRecipeTemplateTokens(template)) {
+    if (token.kind === "expression") {
+      validateTemplateExpressionShape(token.value, parameterDefinitions);
+    }
+  }
+}
+
+function validateRecipeTemplateJsonLeaves(
+  value: JsonValue,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): void {
+  if (typeof value === "string") {
+    validateRecipeTemplateString(value, parameterDefinitions);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      validateRecipeTemplateJsonLeaves(item, parameterDefinitions);
+    }
+    return;
+  }
+
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) {
+      validateRecipeTemplateJsonLeaves(child, parameterDefinitions);
+    }
+  }
+}
+
+function validateRecipeTemplates(recipe: GroveRecipe): void {
+  const parameterDefinitions = recipe.parameters ?? {};
+  if (recipe.instructions !== undefined) {
+    validateRecipeTemplateString(recipe.instructions, parameterDefinitions);
+  }
+
+  for (const activity of recipe.activities ?? []) {
+    if (activity.condition !== undefined) {
+      validateRecipeTemplateString(activity.condition, parameterDefinitions);
+    }
+  }
+
+  for (const subRecipe of recipe.subRecipes ?? []) {
+    if (subRecipe.when !== undefined) {
+      validateRecipeTemplateString(subRecipe.when, parameterDefinitions);
+    }
+    if (subRecipe.parameters !== undefined) {
+      validateRecipeTemplateJsonLeaves(subRecipe.parameters, parameterDefinitions);
+    }
+  }
+}
+
 export function parseGroveRecipe(content: string): GroveRecipe {
   const raw: unknown = parseYaml(content);
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -576,7 +703,9 @@ export function parseGroveRecipeObject(obj: unknown): GroveRecipe {
   if (!result.success) {
     throw new Error(`Invalid Grove recipe: ${formatZodIssues(result.error)}`);
   }
-  return wireToRecipe(result.data);
+  const recipe = wireToRecipe(result.data);
+  validateRecipeTemplates(recipe);
+  return recipe;
 }
 
 export function computeRecipeDigest(recipe: GroveRecipe): string {
@@ -597,31 +726,14 @@ export function renderRecipeTemplate(
   parameterDefinitions?: Readonly<Record<string, RecipeParameter>>,
 ): string {
   let rendered = "";
-  let cursor = 0;
-
-  while (cursor < template.length) {
-    const markerStart = template.indexOf("${", cursor);
-    if (markerStart === -1) {
-      rendered += template.slice(cursor);
-      break;
-    }
-
-    const literal = template.slice(cursor, markerStart);
-    rendered += literal;
-
-    const markerEnd = template.indexOf("}", markerStart + 2);
-    if (markerEnd === -1) {
-      throw new Error("malformed recipe template syntax");
-    }
-
-    const expression = template.slice(markerStart + 2, markerEnd);
-    if (expression.trim() === "") {
-      throw new Error("malformed recipe template syntax");
+  for (const token of readRecipeTemplateTokens(template)) {
+    if (token.kind === "literal") {
+      rendered += token.value;
+      continue;
     }
     rendered += stringifyTemplateValue(
-      lookupTemplateValue(parameters, parameterDefinitions, expression),
+      lookupTemplateValue(parameters, parameterDefinitions, token.value),
     );
-    cursor = markerEnd + 1;
   }
 
   return rendered;
@@ -709,7 +821,7 @@ function looksLikeJsonSource(value: string): boolean {
     trimmed === "true" ||
     trimmed === "false" ||
     trimmed === "null" ||
-    /^-?\d/.test(trimmed)
+    JsonNumberLiteralPattern.test(trimmed)
   );
 }
 
@@ -739,6 +851,8 @@ export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecip
       subRecipeDigests: [],
     },
     renderedInstructions: bound.renderedInstructions,
+    extensions: bound.recipe.extensions ?? [],
+    subRecipes: bound.recipe.subRecipes ?? [],
   };
 }
 

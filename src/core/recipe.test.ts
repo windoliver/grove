@@ -254,6 +254,120 @@ describe("parseGroveRecipe", () => {
       }),
     ).toThrow(/single parent/);
   });
+
+  test("rejects malformed activity condition templates during parsing", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "bad-activity-condition",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        activities: [
+          {
+            id: "review",
+            label: "Review",
+            condition: "${parameters.target_path",
+          },
+        ],
+      }),
+    ).toThrow(/malformed recipe template syntax/);
+  });
+
+  test("rejects malformed sub-recipe when templates during parsing", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "bad-sub-recipe-when",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        sub_recipes: [
+          {
+            name: "child",
+            ref: "recipe:child@1.0.0",
+            when: "${parameters.target_path",
+          },
+        ],
+      }),
+    ).toThrow(/malformed recipe template syntax/);
+  });
+
+  test("rejects unsupported sub-recipe parameter templates during parsing", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "bad-sub-recipe-parameters",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        sub_recipes: [
+          {
+            name: "child",
+            ref: "recipe:child@1.0.0",
+            parameters: {
+              child_path: "$" + "{parameters.target_path.name}",
+            },
+          },
+        ],
+      }),
+    ).toThrow(/nested recipe template paths require json parameter/);
+  });
+
+  test("rejects undeclared template parameter references during parsing", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "bad-template-reference",
+        version: "1.0.0",
+        parameters: {},
+        activities: [
+          {
+            id: "review",
+            label: "Review",
+            condition: "$" + "{parameters.target_path}",
+          },
+        ],
+      }),
+    ).toThrow(/unknown recipe template parameter/);
+  });
+
+  test("accepts literal braces in activity and sub-recipe template fields", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "literal-braces-in-recipe-fields",
+      version: "1.0.0",
+      activities: [
+        {
+          id: "review",
+          label: "Review",
+          condition: 'payload == {"ok": true}',
+        },
+      ],
+      sub_recipes: [
+        {
+          name: "child",
+          ref: "recipe:child@1.0.0",
+          when: "status in {ready,pending}",
+          parameters: {
+            child_path: "literal {braces}",
+          },
+        },
+      ],
+    });
+
+    expect(recipe.activities?.[0]?.condition).toBe('payload == {"ok": true}');
+    expect(recipe.subRecipes?.[0]?.when).toBe("status in {ready,pending}");
+    expect(recipe.subRecipes?.[0]?.parameters?.child_path).toBe("literal {braces}");
+  });
 });
 
 describe("recipe digests", () => {
@@ -348,6 +462,25 @@ parameters:
     expect(bound.parameters.message).toBe("hello");
   });
 
+  test("parses JSON CLI overrides as numbers only for complete JSON number literals", () => {
+    const recipe = parseGroveRecipe(`
+kind: recipe
+recipe_version: 1
+name: json-number-overrides
+version: 1.0.0
+parameters:
+  value:
+    type: json
+    required: true
+`);
+    expect(bindRecipeParameters(recipe, { value: "2026-05-27" }).parameters.value).toBe(
+      "2026-05-27",
+    );
+    expect(bindRecipeParameters(recipe, { value: "123abc" }).parameters.value).toBe("123abc");
+    expect(bindRecipeParameters(recipe, { value: "123" }).parameters.value).toBe(123);
+    expect(bindRecipeParameters(recipe, { value: "-1.5e2" }).parameters.value).toBe(-150);
+  });
+
   test("rejects invalid JSON-looking CLI overrides", () => {
     const recipe = parseGroveRecipe(`
 kind: recipe
@@ -418,37 +551,115 @@ parameters:
   });
 
   test("rejects missing template paths", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "missing-template-path",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        instructions: "Work on $" + "{parameters.other_path}.",
+      }),
+    ).toThrow(/unknown recipe template parameter/);
+  });
+
+  test("rejects missing template values during binding", () => {
     const recipe = parseGroveRecipeObject({
       kind: "recipe",
       recipe_version: 1,
-      name: "missing-template-path",
+      name: "missing-template-value",
       version: "1.0.0",
       parameters: {
-        target_path: { type: "path", required: true },
+        target_path: { type: "path", required: false },
       },
-      instructions: "Work on $" + "{parameters.other_path}.",
+      instructions: "Work on $" + "{parameters.target_path}.",
     });
 
-    expect(() => bindRecipeParameters(recipe, { target_path: "src/core" })).toThrow(
-      /missing recipe template parameter/,
+    expect(() => bindRecipeParameters(recipe, {})).toThrow(
+      /missing recipe template parameter 'target_path'/,
     );
   });
 
   test("rejects malformed template syntax", () => {
-    const recipe = parseGroveRecipeObject({
-      kind: "recipe",
-      recipe_version: 1,
-      name: "malformed-template",
-      version: "1.0.0",
-      parameters: {
-        target_path: { type: "path", required: true },
-      },
-      instructions: "Work on ${parameters.target_path.",
-    });
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "malformed-template",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        instructions: "Work on ${parameters.target_path.",
+      }),
+    ).toThrow(/malformed recipe template syntax/);
+  });
 
-    expect(() => bindRecipeParameters(recipe, { target_path: "src/core" })).toThrow(
-      /malformed recipe template syntax/,
-    );
+  test("rejects unsupported template roots", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "unsupported-template-root",
+        version: "1.0.0",
+        parameters: {},
+        instructions: "Home is $" + "{env.HOME}.",
+      }),
+    ).toThrow(/unsupported recipe template expression/);
+  });
+
+  test("rejects empty template markers", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "empty-template-marker",
+        version: "1.0.0",
+        instructions: "Work on $" + "{}.",
+      }),
+    ).toThrow(/malformed recipe template syntax/);
+  });
+
+  test("rejects nested template paths on non-json parameters during parsing", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "non-json-template-path",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        instructions: "Use $" + "{parameters.target_path.name}.",
+      }),
+    ).toThrow(/nested recipe template paths require json parameter/);
+  });
+
+  test("validates nested string leaves in sub-recipe parameter objects", () => {
+    expect(() =>
+      parseGroveRecipeObject({
+        kind: "recipe",
+        recipe_version: 1,
+        name: "bad-nested-sub-recipe-parameters",
+        version: "1.0.0",
+        parameters: {
+          target_path: { type: "path", required: true },
+        },
+        sub_recipes: [
+          {
+            name: "child",
+            ref: "recipe:child@1.0.0",
+            parameters: {
+              nested: {
+                child_path: "$" + "{parameters.target_path.name}",
+              },
+            },
+          },
+        ],
+      }),
+    ).toThrow(/nested recipe template paths require json parameter/);
   });
 
   test("renders nested JSON parameter paths", () => {
@@ -496,6 +707,58 @@ describe("materializeRecipeContract", () => {
     expect(materialized.contract.topology?.roles[0]?.name).toBe("coder");
     expect(materialized.provenance.recipeName).toBe("code-review-loop");
     expect(materialized.renderedInstructions).toContain("src/core");
+  });
+
+  test("preserves declared extensions and sub-recipes in dry-run materialization", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "composed-recipe",
+      version: "1.0.0",
+      parameters: {
+        target_path: { type: "path", required: true },
+      },
+      extensions: [
+        {
+          type: "mcp",
+          name: "filesystem",
+          uri: "stdio:grove-fs-mcp",
+          required: true,
+        },
+      ],
+      sub_recipes: [
+        {
+          name: "child",
+          ref: "recipe:child@1.0.0",
+          parameters: {
+            child_path: "$" + "{parameters.target_path}",
+          },
+        },
+      ],
+    });
+
+    const materialized = materializeRecipeContract(
+      bindRecipeParameters(recipe, { target_path: "src/core" }),
+    );
+
+    expect(materialized.extensions).toEqual([
+      {
+        type: "mcp",
+        name: "filesystem",
+        uri: "stdio:grove-fs-mcp",
+        required: true,
+      },
+    ]);
+    expect(materialized.subRecipes).toEqual([
+      {
+        name: "child",
+        ref: "recipe:child@1.0.0",
+        parameters: {
+          child_path: "$" + "{parameters.target_path}",
+        },
+      },
+    ]);
+    expect(materialized.provenance.subRecipeDigests).toEqual([]);
   });
 });
 

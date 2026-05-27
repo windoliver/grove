@@ -136,6 +136,8 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     boundParameterDigest: computeBoundRecipeDigest(bound),
     parameters: bound.parameters,
     renderedInstructions: materialized.renderedInstructions,
+    extensions: materialized.extensions,
+    subRecipes: materialized.subRecipes,
     contract: materialized.contract,
     provenance: materialized.provenance,
   };

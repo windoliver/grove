@@ -125,6 +125,67 @@ describe("recipe command", () => {
     }
   });
 
+  test("run --dry-run --json emits declared extensions and sub-recipes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-json-declared-"));
+    try {
+      const recipePath = join(dir, "composed.yaml");
+      await writeFile(
+        recipePath,
+        [
+          "kind: recipe",
+          "recipe_version: 1",
+          "name: composed-recipe",
+          "version: 1.0.0",
+          "parameters:",
+          "  target_path:",
+          "    type: path",
+          "    required: true",
+          "extensions:",
+          "  - type: mcp",
+          "    name: filesystem",
+          "    uri: stdio:grove-fs-mcp",
+          "sub_recipes:",
+          "  - name: child",
+          "    ref: recipe:child@1.0.0",
+          "    parameters:",
+          "      child_path: $" + "{parameters.target_path}",
+          "",
+        ].join("\n"),
+      );
+      const { lines, writer } = createWriter();
+      await runRecipe(
+        parseRecipeArgs([
+          "run",
+          recipePath,
+          "--dry-run",
+          "--json",
+          "--param",
+          "target_path=src/core",
+        ]),
+        {
+          cwd: dir,
+          writer,
+        },
+      );
+
+      const parsed = JSON.parse(lines.join("\n")) as {
+        extensions: readonly { readonly name: string; readonly type: string }[];
+        subRecipes: readonly {
+          readonly name: string;
+          readonly parameters?: Readonly<Record<string, unknown>>;
+          readonly ref: string;
+        }[];
+      };
+      expect(parsed.extensions[0]?.name).toBe("filesystem");
+      expect(parsed.extensions[0]?.type).toBe("mcp");
+      expect(parsed.subRecipes[0]?.name).toBe("child");
+      expect(parsed.subRecipes[0]?.ref).toBe("recipe:child@1.0.0");
+      expect(parsed.subRecipes[0]?.parameters?.child_path).toBe("$" + "{parameters.target_path}");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("run without --dry-run is rejected in the first implementation slice", async () => {
     const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-required-dry-"));
     try {
