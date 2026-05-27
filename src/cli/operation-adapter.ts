@@ -22,5 +22,18 @@ export function toOperationDeps(deps: CliDeps): OperationDeps {
     frontier: deps.frontier,
     ...(deps.workspace !== undefined ? { workspace: deps.workspace } : {}),
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
+    ...(deps.admissionPermissionResolver !== undefined
+      ? { admissionPermissionResolver: deps.admissionPermissionResolver }
+      : {}),
+    ...(deps.admissionGovernanceEvaluator !== undefined
+      ? { admissionGovernanceEvaluator: deps.admissionGovernanceEvaluator }
+      : {}),
+    ...(deps.blueprintHashSource !== undefined
+      ? { blueprintHashSource: deps.blueprintHashSource }
+      : {}),
+    ...(deps.artifactSignatureVerifier !== undefined
+      ? { artifactSignatureVerifier: deps.artifactSignatureVerifier }
+      : {}),
+    ...(deps.zoneId !== undefined ? { zoneId: deps.zoneId } : {}),
   };
 }

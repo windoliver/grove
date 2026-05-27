@@ -8,7 +8,7 @@ import type {
 } from "../../core/store.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import type { ServerDeps } from "../deps.js";
-import { contributionStoreForSession } from "./shared.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 function stubStore(
   contribution: Contribution,
@@ -88,5 +88,22 @@ describe("contributionStoreForSession fallback wrapper", () => {
       sessionId: "s1",
     });
     expect(listCalls).toBe(0);
+  });
+});
+
+describe("operationDepsForSession", () => {
+  test("session-scoped deps preserve admission zoneId without operation namespace", () => {
+    const contribution = makeContribution({ summary: "session operation deps" });
+    const inner = stubStore(contribution, undefined, []);
+    const deps = operationDepsForSession(
+      {
+        contributionStore: inner,
+        namespace: "project/main",
+      } as ServerDeps,
+      "s1",
+    );
+
+    expect(deps.zoneId).toBe("project/main");
+    expect(deps.namespace).toBeUndefined();
   });
 });

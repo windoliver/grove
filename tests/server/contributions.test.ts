@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { AdmissionGovernanceCheck } from "../../src/core/admission/index.js";
+import type { GroveContract } from "../../src/core/contract.js";
 import type { OutcomeRecord, OutcomeStore } from "../../src/core/outcome.js";
 import type { ContributionQuery, ContributionStore } from "../../src/core/store.js";
 import { makeContribution } from "../../src/core/test-helpers.js";
@@ -308,6 +310,52 @@ describe("POST /api/contributions", () => {
     const data = await res.json();
     expect(data.commitHash).toBe("955da4e077c08e281a01eed942efc0a2f0837a34");
     expect(data.agent.role).toBe("coder");
+  });
+
+  test("passes request namespace as admission zoneId for session-scoped submissions", async () => {
+    const sessionContract = {
+      contractVersion: 3,
+      name: "session-admission",
+      admission: [
+        {
+          type: "governance_policy",
+          name: "governance_clean",
+          policy: "governance_status_clean",
+        },
+      ],
+    } satisfies GroveContract;
+    const session = await ctx.stores.goalSessionStore.createSession({
+      goal: "session admission",
+      config: sessionContract,
+    });
+    let capturedZoneId: string | undefined;
+    const app = createApp(
+      {
+        ...ctx.deps,
+        goalSessionStore: ctx.stores.goalSessionStore,
+        admissionGovernanceEvaluator: {
+          evaluate: async (input: AdmissionGovernanceCheck) => {
+            capturedZoneId = input.zoneId;
+            return { allowed: true };
+          },
+        },
+      },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const res = await app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(
+        validManifestBody({
+          sessionId: session.id,
+          summary: "Session-scoped admission",
+        }),
+      ),
+    });
+
+    expect(res.status).toBe(201);
+    expect(capturedZoneId).toBe(TEST_NAMESPACE);
   });
 });
 

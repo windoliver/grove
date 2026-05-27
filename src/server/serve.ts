@@ -134,6 +134,8 @@ let contributionStoreForSessionFactory:
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
 const nexusApiKey = process.env.NEXUS_API_KEY;
+let admissionPermissionResolver = runtime.admissionPermissionResolver;
+let admissionGovernanceEvaluator = runtime.admissionGovernanceEvaluator;
 
 // Prefer the namespace persisted by `grove init` — stable across branch renames.
 // Fall back to GROVE_ZONE_ID env var, then auto-derive from project-id/branch.
@@ -285,6 +287,14 @@ if (nexusUrl) {
     process.exit(1);
   }
 
+  const { createNexusAdmissionAdapters } = await import("../nexus/nexus-admission-adapters.js");
+  const nexusAdmission = createNexusAdmissionAdapters({
+    url: nexusUrl,
+    ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+  });
+  admissionPermissionResolver = nexusAdmission.admissionPermissionResolver;
+  admissionGovernanceEvaluator = nexusAdmission.admissionGovernanceEvaluator;
+
   const { NexusInboxClient, NexusMessageDelivery } = await import("../nexus/index.js");
   const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
   const sessionId = process.env.GROVE_SESSION_ID;
@@ -426,9 +436,12 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  zoneId,
   inboxReadSource,
   messageDelivery,
   messageDeliveryForSession,
+  ...(admissionPermissionResolver !== undefined ? { admissionPermissionResolver } : {}),
+  ...(admissionGovernanceEvaluator !== undefined ? { admissionGovernanceEvaluator } : {}),
   watchHub,
   watchSubscriber,
 };

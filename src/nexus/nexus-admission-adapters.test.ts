@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { ContributionKind, ContributionMode } from "../core/models.js";
 import {
+  createNexusAdmissionAdapters,
   NexusAdmissionGovernanceEvaluator,
   NexusAdmissionPermissionResolver,
 } from "./nexus-admission-adapters.js";
@@ -25,6 +26,22 @@ function mockFetch(result: unknown, status = 200): void {
       fetchCalls.push({ input, init });
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
         status,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+}
+
+function mockFetchSequence(results: readonly unknown[]): void {
+  let index = 0;
+  globalThis.fetch = Object.assign(
+    async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+      fetchCalls.push({ input, init });
+      const result = results[index] ?? results.at(-1);
+      index += 1;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
+        status: 200,
         headers: { "Content-Type": "application/json" },
       });
     },
@@ -94,6 +111,55 @@ describe("NexusRpcClient", () => {
     await expect(client.call("rebac_check", {}, z.boolean())).rejects.toThrow(
       "Nexus RPC rebac_check failed: HTTP 503",
     );
+  });
+});
+
+describe("createNexusAdmissionAdapters", () => {
+  test("creates ReBAC and governance delegates from Nexus RPC config", async () => {
+    mockFetchSequence([
+      true,
+      { recent_alerts: { alerts: [], count: 0 }, fraud_rings: { rings: [], count: 0 } },
+    ]);
+    const adapters = createNexusAdmissionAdapters({
+      url: "http://nexus.test/",
+      apiKey: "key",
+    });
+
+    await adapters.admissionPermissionResolver.check({
+      subjectType: "agent",
+      subjectId: "agent-1",
+      permission: "contribute",
+      objectType: "session",
+      objectId: "session-1",
+      zoneId: "zone-1",
+    });
+    await adapters.admissionGovernanceEvaluator.evaluate({
+      policy: "governance_status_clean",
+      agentId: "agent-1",
+      contribution: {
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Evaluation,
+        summary: "work",
+        artifacts: {},
+        relations: [],
+        tags: [],
+        agent: { agentId: "agent-1" },
+        createdAt: "2026-05-27T00:00:00.000Z",
+      },
+      zoneId: "zone-1",
+    });
+
+    expect(fetchCalls.map((call) => call.input)).toEqual([
+      "http://nexus.test/api/nfs/rebac_check",
+      "http://nexus.test/api/nfs/governance_status",
+    ]);
+    const rebacCall = fetchCalls[0];
+    const governanceCall = fetchCalls[1];
+    if (rebacCall === undefined || governanceCall === undefined) {
+      throw new Error("expected ReBAC and governance RPC calls");
+    }
+    expect(requestHeaders(rebacCall).get("authorization")).toBe("Bearer key");
+    expect(requestHeaders(governanceCall).get("authorization")).toBe("Bearer key");
   });
 });
 

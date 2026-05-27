@@ -14,6 +14,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import type { GroveContract } from "../../core/contract.js";
 import { contributionToEntity } from "../../core/entity.js";
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
@@ -279,14 +280,44 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   const namespace = c.get("namespace");
   const body = c.req.valid("json");
   const store = contributionStoreForSession(deps, body.sessionId);
+  let sessionConfig: GroveContract | undefined;
+  if (body.sessionId !== undefined) {
+    if (deps.goalSessionStore === undefined) {
+      return c.json(
+        { error: { code: "NOT_CONFIGURED", message: "Goal/session store is not configured" } },
+        501,
+      );
+    }
+    const session = await deps.goalSessionStore.getSession(body.sessionId);
+    if (session === undefined) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${body.sessionId}` } },
+        404,
+      );
+    }
+    sessionConfig = await deps.goalSessionStore.getSessionConfig(body.sessionId);
+    if (sessionConfig === undefined) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Session ${body.sessionId} has no stored config`,
+          },
+        },
+        400,
+      );
+    }
+  }
 
-  // Inject namespace only for non-session writes (#292). When `sessionId`
-  // is set, the write lands in the session-scoped store but `/api/list`
-  // reads the process-global store, so firing a watch event the lister
-  // can't mirror would violate the list→watch RV invariant. Session-scoped
-  // watch is tracked as a follow-up.
+  // Inject operation namespace only for non-session writes (#292). Session
+  // writes still need the request namespace as admission zoneId, but must not
+  // emit namespace-scoped watch events until session watch is supported.
   const baseOpDeps = toOperationDeps({ ...deps, contributionStore: store });
-  const opDeps = body.sessionId === undefined ? { ...baseOpDeps, namespace } : baseOpDeps;
+  const sessionContract = sessionConfig !== undefined ? { contract: sessionConfig } : {};
+  const opDeps =
+    body.sessionId === undefined
+      ? { ...baseOpDeps, namespace, zoneId: namespace }
+      : { ...baseOpDeps, ...sessionContract, namespace: undefined, zoneId: namespace };
   const messageDelivery = deps.messageDeliveryForSession?.(body.sessionId) ?? deps.messageDelivery;
   const result = await sendMessageWithDelivery(
     {

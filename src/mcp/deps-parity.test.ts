@@ -146,6 +146,27 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(toOperationDeps(deps).sessionOwnerRef).toEqual(ownerRef);
   });
 
+  test("toOperationDeps forwards admission zoneId without watch namespace", () => {
+    const deps: McpDeps = {
+      contributionStore: runtime.contributionStore,
+      claimStore: runtime.claimStore,
+      timelineStore: runtime.timelineStore,
+      bountyStore: runtime.bountyStore,
+      cas: runtime.cas,
+      frontier: runtime.frontier,
+      workspace: requireWorkspace(runtime),
+      workspaceBoundary: runtime.groveRoot,
+      goalSessionStore: runtime.goalSessionStore,
+      zoneId: "zone-only",
+      watchHub: new WatchHub(),
+    };
+
+    const opDeps = toOperationDeps(deps);
+
+    expect(opDeps.zoneId).toBe("zone-only");
+    expect(opDeps.namespace).toBeUndefined();
+  });
+
   test("sessionToOwnerRef derives owner refs from session metadata", () => {
     expect(sessionToOwnerRef({ id: "nexus-session", uid: "stable-uid" })).toEqual({
       kind: "session",

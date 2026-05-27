@@ -20,6 +20,7 @@ import { McpErrorCode, toolError } from "./error-handler.js";
  * dependencies (gossip, topology).
  */
 export function toOperationDeps(deps: McpDeps): OperationDeps {
+  const zoneId = deps.zoneId ?? deps.namespace;
   return {
     contributionStore: deps.contributionStore,
     claimStore: deps.claimStore,
@@ -48,6 +49,19 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
     ...(deps.handoffStore !== undefined ? { handoffStore: deps.handoffStore } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
     ...(deps.deadlineWatcher !== undefined ? { deadlineWatcher: deps.deadlineWatcher } : {}),
+    ...(deps.admissionPermissionResolver !== undefined
+      ? { admissionPermissionResolver: deps.admissionPermissionResolver }
+      : {}),
+    ...(deps.admissionGovernanceEvaluator !== undefined
+      ? { admissionGovernanceEvaluator: deps.admissionGovernanceEvaluator }
+      : {}),
+    ...(deps.blueprintHashSource !== undefined
+      ? { blueprintHashSource: deps.blueprintHashSource }
+      : {}),
+    ...(deps.artifactSignatureVerifier !== undefined
+      ? { artifactSignatureVerifier: deps.artifactSignatureVerifier }
+      : {}),
+    ...(zoneId !== undefined ? { zoneId } : {}),
   };
 }
 

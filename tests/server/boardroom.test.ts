@@ -7,6 +7,8 @@
 
 import { describe, expect, test } from "bun:test";
 
+import type { AdmissionGovernanceCheck } from "../../src/core/admission/index.js";
+import type { GroveContract } from "../../src/core/contract.js";
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
 import type { DeliveredInboxMessage } from "../../src/core/operations/inbox-delegation.js";
@@ -228,11 +230,20 @@ describe("boardroom routes", () => {
   test("POST /api/boardroom/message uses session-scoped delivery factory", async () => {
     const ctx = await createTestContext();
     try {
+      const sessionContract = {
+        contractVersion: 3,
+        name: "boardroom-delivery",
+      } satisfies GroveContract;
+      const session = await ctx.stores.goalSessionStore.createSession({
+        goal: "boardroom delivery",
+        config: sessionContract,
+      });
       const delivered: DeliveredInboxMessage[] = [];
       let capturedSessionId: string | undefined;
       const app = createApp(
         {
           ...ctx.deps,
+          goalSessionStore: ctx.stores.goalSessionStore,
           messageDelivery: {
             deliverMessage: async () => {
               throw new Error("default delivery should not run");
@@ -256,20 +267,108 @@ describe("boardroom routes", () => {
         body: JSON.stringify({
           body: "session delivery",
           recipients: ["@bob"],
-          sessionId: "session-123",
+          sessionId: session.id,
         }),
       });
 
       const body = (await resp.json()) as { readonly cid: string };
 
       expect(resp.status).toBe(200);
-      expect(capturedSessionId).toBe("session-123");
+      expect(capturedSessionId).toBe(session.id);
       expect(delivered).toHaveLength(1);
       expect(delivered[0]?.cid).toBe(body.cid);
       expect(delivered[0]?.body).toBe("session delivery");
       expect(delivered[0]?.recipients).toEqual(["@bob"]);
       expect(delivered[0]?.from).toEqual({ agentId: "tui-operator", agentName: "operator" });
       expect(delivered[0]?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("POST /api/boardroom/message rejects unknown session before delivery", async () => {
+    const ctx = await createTestContext();
+    try {
+      const delivered: DeliveredInboxMessage[] = [];
+      const app = createApp(
+        {
+          ...ctx.deps,
+          goalSessionStore: ctx.stores.goalSessionStore,
+          messageDeliveryForSession: () => ({
+            deliverMessage: async (message) => {
+              delivered.push(message);
+            },
+          }),
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({
+          body: "missing session",
+          recipients: ["@bob"],
+          sessionId: "missing-session",
+        }),
+      });
+
+      const body = (await resp.json()) as { error: { code: string; message: string } };
+
+      expect(resp.status).toBe(404);
+      expect(body.error.code).toBe("NOT_FOUND");
+      expect(body.error.message).toContain("missing-session");
+      expect(delivered).toEqual([]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("POST /api/boardroom/message passes request namespace as admission zoneId for session writes", async () => {
+    const ctx = await createTestContext();
+    try {
+      const sessionContract = {
+        contractVersion: 3,
+        name: "boardroom-admission",
+        admission: [
+          {
+            type: "governance_policy",
+            name: "governance_clean",
+            policy: "governance_status_clean",
+          },
+        ],
+      } satisfies GroveContract;
+      const session = await ctx.stores.goalSessionStore.createSession({
+        goal: "boardroom admission",
+        config: sessionContract,
+      });
+      let capturedZoneId: string | undefined;
+      const app = createApp(
+        {
+          ...ctx.deps,
+          goalSessionStore: ctx.stores.goalSessionStore,
+          admissionGovernanceEvaluator: {
+            evaluate: async (input: AdmissionGovernanceCheck) => {
+              capturedZoneId = input.zoneId;
+              return { allowed: true };
+            },
+          },
+        },
+        new Map([[TEST_KEY, TEST_NAMESPACE]]),
+      );
+
+      const resp = await app.request("/api/boardroom/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify({
+          body: "session admission",
+          recipients: ["@bob"],
+          sessionId: session.id,
+        }),
+      });
+
+      expect(resp.status).toBe(200);
+      expect(capturedZoneId).toBe(TEST_NAMESPACE);
     } finally {
       await ctx.cleanup();
     }

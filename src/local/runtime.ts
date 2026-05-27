@@ -8,6 +8,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type {
+  AdmissionGovernanceEvaluator,
+  AdmissionPermissionResolver,
+  ArtifactSignatureVerifier,
+  BlueprintHashSource,
+} from "../core/admission/types.js";
 import type { GroveContract } from "../core/contract.js";
 import { parseGroveContract } from "../core/contract.js";
 import type { CreditsService } from "../core/credits.js";
@@ -91,6 +97,11 @@ export interface LocalRuntime {
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
   readonly contract: GroveContract | undefined;
+  readonly admissionPermissionResolver: AdmissionPermissionResolver | undefined;
+  readonly admissionGovernanceEvaluator: AdmissionGovernanceEvaluator | undefined;
+  readonly blueprintHashSource: BlueprintHashSource | undefined;
+  readonly artifactSignatureVerifier: ArtifactSignatureVerifier | undefined;
+  readonly zoneId: string | undefined;
   /** Call after writing a contribution to invalidate the frontier cache. */
   readonly onContributionWrite: () => void;
   /** Absolute path to the project root (parent of .grove). */
@@ -237,6 +248,11 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     frontier,
     workspace,
     contract,
+    admissionPermissionResolver: undefined,
+    admissionGovernanceEvaluator: undefined,
+    blueprintHashSource: undefined,
+    artifactSignatureVerifier: undefined,
+    zoneId: undefined,
     onContributionWrite,
     groveRoot,
     close: () => {

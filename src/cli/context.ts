@@ -7,6 +7,12 @@
  */
 
 import { resolve } from "node:path";
+import type {
+  AdmissionGovernanceEvaluator,
+  AdmissionPermissionResolver,
+  ArtifactSignatureVerifier,
+  BlueprintHashSource,
+} from "../core/admission/types.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
@@ -28,6 +34,11 @@ export interface CliDeps {
   readonly cas: FsCas;
   readonly groveRoot: string;
   readonly outcomeStore?: OutcomeStore | undefined;
+  readonly admissionPermissionResolver?: AdmissionPermissionResolver | undefined;
+  readonly admissionGovernanceEvaluator?: AdmissionGovernanceEvaluator | undefined;
+  readonly blueprintHashSource?: BlueprintHashSource | undefined;
+  readonly artifactSignatureVerifier?: ArtifactSignatureVerifier | undefined;
+  readonly zoneId?: string | undefined;
   readonly close: () => void;
 }
 
@@ -65,6 +76,11 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
     cas: runtime.cas,
     groveRoot: runtime.groveRoot,
     outcomeStore: runtime.outcomeStore,
+    admissionPermissionResolver: runtime.admissionPermissionResolver,
+    admissionGovernanceEvaluator: runtime.admissionGovernanceEvaluator,
+    blueprintHashSource: runtime.blueprintHashSource,
+    artifactSignatureVerifier: runtime.artifactSignatureVerifier,
+    zoneId: runtime.zoneId,
     close: runtime.close,
   };
 }

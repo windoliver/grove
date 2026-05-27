@@ -86,6 +86,12 @@ let nexusUrl: string | undefined;
 let nexusApiKey: string | undefined;
 let zoneId = "default";
 let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
+let admissionPermissionResolver:
+  | import("../core/admission/types.js").AdmissionPermissionResolver
+  | undefined;
+let admissionGovernanceEvaluator:
+  | import("../core/admission/types.js").AdmissionGovernanceEvaluator
+  | undefined;
 // biome-ignore lint/suspicious/noEmptyBlockStatements: default no-op replaced in try block
 let closeStores: () => void = () => {};
 
@@ -106,6 +112,8 @@ try {
     workspace: true,
     parseContract: !nexusUrl,
   });
+  admissionPermissionResolver = runtime.admissionPermissionResolver;
+  admissionGovernanceEvaluator = runtime.admissionGovernanceEvaluator;
 
   if (!runtime.workspace) {
     throw new Error("Workspace manager failed to initialize");
@@ -149,6 +157,13 @@ try {
         );
         process.exit(1);
       }
+      const { createNexusAdmissionAdapters } = await import("../nexus/nexus-admission-adapters.js");
+      const nexusAdmission = createNexusAdmissionAdapters({
+        url: nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      });
+      admissionPermissionResolver = nexusAdmission.admissionPermissionResolver;
+      admissionGovernanceEvaluator = nexusAdmission.admissionGovernanceEvaluator;
       process.stderr.write(`grove-mcp-http: Nexus client ready at ${nexusUrl}\n`);
     } catch (err) {
       // Configured Nexus that throws during setup is a hard failure. Exit so
@@ -838,10 +853,13 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
     ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     onContributionWrite: runtime.onContributionWrite,
+    zoneId,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,
     inboxReadSource,
     messageDelivery,
+    ...(admissionPermissionResolver !== undefined ? { admissionPermissionResolver } : {}),
+    ...(admissionGovernanceEvaluator !== undefined ? { admissionGovernanceEvaluator } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite

@@ -24,6 +24,7 @@ import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js"
 export interface TestContext {
   readonly app: Hono<ServerEnv>;
   readonly deps: ServerDeps;
+  readonly stores: ReturnType<typeof createSqliteStores>;
   readonly contributionStore: ContributionStore;
   readonly claimStore: ClaimStore;
   readonly agentTaskStore: AgentTaskStore;
@@ -69,6 +70,7 @@ export async function createTestContext(): Promise<TestContext> {
   return {
     app,
     deps,
+    stores,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
     agentTaskStore: stores.agentTaskStore,

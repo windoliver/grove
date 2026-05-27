@@ -8,7 +8,20 @@ import type {
   AdmissionPermissionDecision,
   AdmissionPermissionResolver,
 } from "../core/admission/types.js";
-import type { NexusRpcClient } from "./nexus-rpc-client.js";
+import { NexusRpcClient, type NexusRpcClientConfig } from "./nexus-rpc-client.js";
+
+export interface NexusAdmissionAdapters {
+  readonly admissionPermissionResolver: AdmissionPermissionResolver;
+  readonly admissionGovernanceEvaluator: AdmissionGovernanceEvaluator;
+}
+
+export function createNexusAdmissionAdapters(config: NexusRpcClientConfig): NexusAdmissionAdapters {
+  const rpcClient = new NexusRpcClient(config);
+  return {
+    admissionPermissionResolver: new NexusAdmissionPermissionResolver(rpcClient),
+    admissionGovernanceEvaluator: new NexusAdmissionGovernanceEvaluator(rpcClient),
+  };
+}
 
 const GovernanceStatusSchema = z
   .object({

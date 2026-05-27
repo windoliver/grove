@@ -352,13 +352,14 @@ contributions.post("/", async (c) => {
     parsed.sessionId === undefined
       ? toOperationDeps(serverDeps)
       : operationDepsForSession(serverDeps, parsed.sessionId);
-  // Inject namespace only for non-session writes (#292). When sessionId
-  // is set, the write lands in the session-scoped store but /api/list
-  // reads the process-global store, so emitting a watch event the lister
-  // can't mirror would violate the list→watch RV invariant. Session-scoped
-  // watch is tracked as a follow-up.
+  const namespace = c.get("namespace");
+  // Inject operation namespace only for non-session writes (#292). Session
+  // writes still need the request namespace as admission zoneId, but must not
+  // emit namespace-scoped watch events until session watch is supported.
   if (parsed.sessionId === undefined) {
-    opDeps = { ...opDeps, namespace: c.get("namespace") };
+    opDeps = { ...opDeps, namespace, zoneId: namespace };
+  } else {
+    opDeps = { ...opDeps, zoneId: namespace };
   }
 
   // Session-scoped store: when sessionId is present and a factory is wired

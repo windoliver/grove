@@ -5,6 +5,12 @@
  * injected by createApp(). This enables testing with real or mock stores.
  */
 
+import type {
+  AdmissionGovernanceEvaluator,
+  AdmissionPermissionResolver,
+  ArtifactSignatureVerifier,
+  BlueprintHashSource,
+} from "../core/admission/types.js";
 import type { BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
 import type { GroveContract } from "../core/contract.js";
@@ -93,6 +99,13 @@ export interface ServerDeps {
   readonly handoffStoreForSession?: (sessionId: string) => HandoffStore | undefined;
   /** Optional idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  readonly admissionPermissionResolver?: AdmissionPermissionResolver | undefined;
+  readonly admissionGovernanceEvaluator?: AdmissionGovernanceEvaluator | undefined;
+  readonly blueprintHashSource?: BlueprintHashSource | undefined;
+  readonly artifactSignatureVerifier?: ArtifactSignatureVerifier | undefined;
+  /** Optional admission zone ID. Distinct from namespace, which also controls watch fan-out. */
+  readonly zoneId?: string | undefined;
+  readonly namespace?: string | undefined;
   /** Watch hub for list→watch handshake (#292). */
   readonly watchHub: WatchHub;
   /**

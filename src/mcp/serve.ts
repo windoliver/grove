@@ -218,6 +218,8 @@ try {
   }
   let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
+  let admissionPermissionResolver = runtime.admissionPermissionResolver;
+  let admissionGovernanceEvaluator = runtime.admissionGovernanceEvaluator;
 
   if (nexusUrl) {
     try {
@@ -253,6 +255,16 @@ try {
       }
 
       if (health) {
+        const { createNexusAdmissionAdapters } = await import(
+          "../nexus/nexus-admission-adapters.js"
+        );
+        const nexusAdmission = createNexusAdmissionAdapters({
+          url: nexusUrl,
+          ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+        });
+        admissionPermissionResolver = nexusAdmission.admissionPermissionResolver;
+        admissionGovernanceEvaluator = nexusAdmission.admissionGovernanceEvaluator;
+
         contributionStore = new NexusContributionStore({
           client: nexusClient,
           zoneId,
@@ -792,11 +804,14 @@ try {
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
+    zoneId,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     runtimeSkillService,
     inboxReadSource,
     messageDelivery,
+    ...(admissionPermissionResolver !== undefined ? { admissionPermissionResolver } : {}),
+    ...(admissionGovernanceEvaluator !== undefined ? { admissionGovernanceEvaluator } : {}),
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
