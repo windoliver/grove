@@ -8,27 +8,12 @@
  * - Empty artifacts: styled empty state with artifact name and hint
  */
 
-import * as OpenTuiReact from "@opentui/react";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import { DataStatus } from "../components/data-status.js";
+import { useAccentPulse } from "../hooks/use-accent-pulse.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
-
-/**
- * Resolve `useTimeline` once at module load. In production the real
- * `@opentui/react` always exports it; under tests a leaked `mock.module`
- * (process-wide, not auto-restored) may replace the module with one that omits
- * `useTimeline`, which would make the call below `undefined(...)` and crash
- * render. Fall back to a no-op chainable so the pulse degrades to a static
- * accent rather than throwing — the hook is still called unconditionally.
- */
-const useTimeline: typeof OpenTuiReact.useTimeline =
-  OpenTuiReact.useTimeline ??
-  (((): { add: () => unknown; play: () => unknown } => ({
-    add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
-    play: () => undefined,
-  })) as unknown as typeof OpenTuiReact.useTimeline);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -376,49 +361,8 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
     );
 
     // Focus-change accent pulse (#192): a brief (~150ms) warning-colored flash
-    // on the header each time the selected artifact changes. Driven entirely
-    // from inside useEffect so a plain react-test-renderer mount/update is a
-    // no-op (no throw, no timer leak). Degrades to a static accent if
-    // useTimeline is unavailable at runtime.
-    const PULSE_MS = 150;
-    const timeline = useTimeline({ duration: PULSE_MS });
-    const [pulse, setPulse] = useState(false);
-    const prevIndexRef = useRef<number | undefined>(artifactIndex);
-    useEffect(() => {
-      const next = artifactIndex;
-      // Skip the initial mount / no-change re-renders: only pulse when the
-      // selected artifact actually changes.
-      if (prevIndexRef.current === next) return;
-      prevIndexRef.current = next;
-      setPulse(true);
-      let cleared = false;
-      const clear = (): void => {
-        if (!cleared) {
-          cleared = true;
-          setPulse(false);
-        }
-      };
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const target = { t: 0 };
-        timeline
-          .add(target, {
-            t: 1,
-            duration: PULSE_MS,
-            onUpdate: (anim: { targets: object[] }) => {
-              const v = (anim.targets[0] as { t: number }).t;
-              if (v >= 1) clear();
-            },
-          })
-          .play();
-      } catch {
-        // useTimeline/engine unavailable — fall through to the timer fallback.
-      }
-      timer = setTimeout(clear, PULSE_MS + 20);
-      return () => {
-        if (timer) clearTimeout(timer);
-      };
-    }, [artifactIndex, timeline]);
+    // on the header each time the selected artifact changes.
+    const pulse = useAccentPulse(artifactIndex);
 
     // Build artifact selector header
     const selectorHeader = useMemo((): string => {
