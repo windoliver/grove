@@ -940,12 +940,19 @@ export function App({
       },
       refresh: refreshAll,
       enterSearch: () => {
+        // Reveal + focus the Search panel before entering input mode — otherwise
+        // the user types into an invisible buffer (the keyboard '/' path relies
+        // on the panel already being visible). toggle adds-and-focuses when
+        // hidden; focus when already shown (toggle would hide it).
+        if (panels.isVisible(Panel.Search)) panels.focus(Panel.Search);
+        else panels.toggle(Panel.Search);
         dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
         panels.setMode(InputMode.SearchInput);
       },
       cycleZoom: () => dispatch({ type: "ZOOM_CYCLE" }),
       resetZoom: () => dispatch({ type: "ZOOM_RESET" }),
       toggleLayout: () => dispatch({ type: "LAYOUT_TOGGLE" }),
+      cycleViewMode: () => panels.cycleViewMode(),
       quit: handleQuit,
       // Mirror the keyboard frontier-slice handlers: rotate slice, reset the
       // cursor, and synchronously clear the entry/cid refs so a follow-up

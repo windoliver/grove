@@ -37,6 +37,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     cycleZoom: () => undefined,
     resetZoom: () => undefined,
     toggleLayout: () => undefined,
+    cycleViewMode: () => undefined,
     quit: () => undefined,
     nextFrontierSlice: () => undefined,
     prevFrontierSlice: () => undefined,

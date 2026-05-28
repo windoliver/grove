@@ -36,6 +36,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     cycleZoom: () => undefined,
     resetZoom: () => undefined,
     toggleLayout: () => undefined,
+    cycleViewMode: () => undefined,
     quit: () => undefined,
     nextFrontierSlice: () => undefined,
     prevFrontierSlice: () => undefined,
@@ -52,9 +53,13 @@ function ids(c: ActionContext): string[] {
 }
 
 describe("buildBuiltInActions", () => {
-  test("navigation: one open/focus action per operator panel + always offers register/compare", () => {
+  test("navigation: open/focus action per core AND operator panel + register/compare", () => {
     const present = ids(ctx());
+    // Operator panel
     expect(present).toContain("nav.panel.terminal");
+    // Core panels are reachable too (always-visible → focus)
+    expect(present).toContain("nav.panel.dag");
+    expect(present).toContain("nav.panel.frontier");
     expect(present).toContain("workflow.compare");
     expect(present).toContain("workflow.register-agent");
   });
@@ -145,6 +150,7 @@ describe("buildBuiltInActions", () => {
       "view.zoom",
       "view.zoom-reset",
       "view.layout",
+      "view.view-mode",
       "view.quit",
     ]) {
       const action = actions.find((a) => a.id === id);

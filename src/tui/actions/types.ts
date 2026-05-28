@@ -85,6 +85,7 @@ export interface ActionContext {
   readonly cycleZoom: () => void;
   readonly resetZoom: () => void;
   readonly toggleLayout: () => void;
+  readonly cycleViewMode: () => void;
   readonly quit: () => void;
   // Focused-panel-sensitive
   readonly nextFrontierSlice: () => void;

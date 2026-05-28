@@ -1,5 +1,5 @@
 import { checkSpawn } from "../agents/spawn-validator.js";
-import { OPERATOR_PANELS, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
+import { CORE_PANELS, OPERATOR_PANELS, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
 import type { Action, ActionContext } from "./types.js";
 
 /** Build the full set of built-in actions from the current context. */
@@ -16,7 +16,8 @@ export function buildBuiltInActions(ctx: ActionContext): readonly Action[] {
 
 function navigationActions(ctx: ActionContext): readonly Action[] {
   const actions: Action[] = [];
-  for (const panel of OPERATOR_PANELS) {
+  // Core panels are always visible (focus only); operator panels open-or-focus.
+  for (const panel of [...CORE_PANELS, ...OPERATOR_PANELS]) {
     const label = PANEL_LABELS[panel];
     const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
     actions.push({
@@ -206,6 +207,14 @@ function viewActions(): readonly Action[] {
       group: "View",
       keywords: ["layout", "grid", "tab", "toggle"],
       run: (c) => c.toggleLayout(),
+    },
+    {
+      id: "view.view-mode",
+      label: "Cycle view mode (grid/pipeline)",
+      detail: "view",
+      group: "View",
+      keywords: ["view", "pipeline", "grid", "mode", "cycle"],
+      run: (c) => c.cycleViewMode(),
     },
     {
       id: "view.quit",
