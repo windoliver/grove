@@ -12,3 +12,21 @@ describe("artifact diff mode (#192)", () => {
     expect(twice.artifactDiffMode).toBe("inline");
   });
 });
+
+describe("detail section focus (#192)", () => {
+  test("defaults to 0", () => {
+    expect(INITIAL_KEYBOARD_STATE.detailFocusedSection).toBe(0);
+  });
+  test("NEXT increments, PREV decrements (may go negative; view applies modulo)", () => {
+    const a = tuiReducer(INITIAL_KEYBOARD_STATE, { type: "DETAIL_SECTION_NEXT" });
+    expect(a.detailFocusedSection).toBe(1);
+    const b = tuiReducer(a, { type: "DETAIL_SECTION_PREV" });
+    expect(b.detailFocusedSection).toBe(0);
+    const c = tuiReducer(b, { type: "DETAIL_SECTION_PREV" });
+    expect(c.detailFocusedSection).toBe(-1);
+  });
+  test("RESET returns to 0", () => {
+    const a = tuiReducer(INITIAL_KEYBOARD_STATE, { type: "DETAIL_SECTION_NEXT" });
+    expect(tuiReducer(a, { type: "DETAIL_SECTION_RESET" }).detailFocusedSection).toBe(0);
+  });
+});

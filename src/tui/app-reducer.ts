@@ -22,6 +22,7 @@ export interface TuiKeyboardState {
   readonly zoomLevel: ZoomLevel;
   readonly terminalScrollOffset: number;
   readonly layoutMode: "grid" | "tab";
+  readonly detailFocusedSection: number;
 }
 
 /** Actions for the TUI keyboard state reducer. */
@@ -63,7 +64,10 @@ export type TuiAction =
   | { readonly type: "TERMINAL_SCROLL_UP" }
   | { readonly type: "TERMINAL_SCROLL_DOWN" }
   | { readonly type: "TERMINAL_SCROLL_BOTTOM" }
-  | { readonly type: "LAYOUT_TOGGLE" };
+  | { readonly type: "LAYOUT_TOGGLE" }
+  | { readonly type: "DETAIL_SECTION_NEXT" }
+  | { readonly type: "DETAIL_SECTION_PREV" }
+  | { readonly type: "DETAIL_SECTION_RESET" };
 
 export const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   vfsNavigateTrigger: 0,
@@ -85,6 +89,7 @@ export const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   zoomLevel: "normal",
   terminalScrollOffset: 0,
   layoutMode: "tab",
+  detailFocusedSection: 0,
 };
 
 /** Pure reducer for TUI keyboard state - testable and serializable. */
@@ -203,5 +208,11 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
       return state.terminalScrollOffset === 0 ? state : { ...state, terminalScrollOffset: 0 };
     case "LAYOUT_TOGGLE":
       return { ...state, layoutMode: state.layoutMode === "tab" ? "grid" : "tab" };
+    case "DETAIL_SECTION_NEXT":
+      return { ...state, detailFocusedSection: state.detailFocusedSection + 1 };
+    case "DETAIL_SECTION_PREV":
+      return { ...state, detailFocusedSection: state.detailFocusedSection - 1 };
+    case "DETAIL_SECTION_RESET":
+      return state.detailFocusedSection === 0 ? state : { ...state, detailFocusedSection: 0 };
   }
 }
