@@ -108,6 +108,7 @@ function mockActions(overrides?: {
     onArtifactPrev: () => record("onArtifactPrev"),
     onArtifactNext: () => record("onArtifactNext"),
     onArtifactDiffToggle: () => record("onArtifactDiffToggle"),
+    onArtifactDiffModeToggle: () => record("onArtifactDiffModeToggle"),
     onCompareToggle: () => record("onCompareToggle"),
     onCompareSelect: (cid) => record("onCompareSelect", cid),
     onCompareAdopt: (side) => record("onCompareAdopt", side),
@@ -673,6 +674,13 @@ describe("routeKey — panel-specific keys", () => {
     const { actions, log } = mockActions({ focused: Panel.Artifact });
     routeKey(keyEvent("d"), actions);
     expect(log.calls).toContain("onArtifactDiffToggle");
+  });
+
+  test("s in Artifact panel toggles diff mode (split/inline)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Artifact });
+    const handled = routeKey(keyEvent("s"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onArtifactDiffModeToggle");
   });
 
   test("a/b in Artifact compare mode adopts side", () => {

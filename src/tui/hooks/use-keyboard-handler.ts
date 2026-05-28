@@ -36,6 +36,7 @@ export interface KeyboardActions {
   readonly onArtifactPrev: () => void;
   readonly onArtifactNext: () => void;
   readonly onArtifactDiffToggle: () => void;
+  readonly onArtifactDiffModeToggle: () => void;
   readonly onCompareToggle: () => void;
   readonly onCompareSelect: (cid: string) => void;
   readonly onCompareAdopt: (side: "a" | "b") => void;
@@ -174,6 +175,10 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
     case "artifact_diff":
       if (focused !== Panel.Artifact) return false;
       actions.onArtifactDiffToggle();
+      return true;
+    case "artifact_diff_mode":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactDiffModeToggle();
       return true;
     case "approve":
       if (focused !== Panel.Decisions) return false;
@@ -564,6 +569,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
     if (input === "d") {
       actions.onArtifactDiffToggle();
+      return true;
+    }
+    if (input === "s") {
+      actions.onArtifactDiffModeToggle();
       return true;
     }
   }
