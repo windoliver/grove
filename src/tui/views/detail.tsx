@@ -11,7 +11,7 @@
  * into `useDerived`.
  */
 
-import React, { useCallback } from "react";
+import React, { createElement, useCallback } from "react";
 import { contributionToEntity } from "../../core/entity.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
@@ -29,13 +29,44 @@ export interface DetailProps {
   readonly provider: TuiDataProvider;
   readonly cid: string;
   readonly intervalMs: number;
+  /**
+   * Raw focused-section index. The view maps it onto the list of
+   * *present* sections via modulo, so the parent reducer can advance it
+   * freely (positive or negative) without knowing which sections have
+   * data. See {@link SECTION_ORDER}.
+   */
+  readonly focusedSectionRaw?: number | undefined;
 }
+
+/**
+ * Focus-ring order for detail sections. The focus cursor iterates only
+ * the sections that currently have data (see `present` below).
+ */
+const SECTION_ORDER = [
+  "summary",
+  "scores",
+  "relations",
+  "artifacts",
+  "ancestors",
+  "children",
+  "discussion",
+  "context",
+] as const;
+type SectionKey = (typeof SECTION_ORDER)[number];
+
+/**
+ * Coarse per-section row estimate used to derive a scroll offset that
+ * keeps the focused section on screen. Need not be pixel-exact — it only
+ * has to advance the scroll surface as focus moves down the ring.
+ */
+const APPROX_SECTION_ROWS = 6;
 
 /** Contribution detail view component. */
 export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(function DetailView({
   provider,
   cid,
   intervalMs,
+  focusedSectionRaw,
 }: DetailProps): React.ReactNode {
   const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
@@ -113,6 +144,47 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   const agent = entity.spec.agent;
   const createdAt = entity.metadata.creationTimestamp ?? "";
 
+  // Which sections currently carry data — mirrors each block's render
+  // guard below. Drives the focus ring and the scroll-into-view offset.
+  const sectionHasData = (key: SectionKey): boolean => {
+    switch (key) {
+      case "summary":
+        return true;
+      case "scores":
+        return !!scores && Object.keys(scores).length > 0;
+      case "relations":
+        return (relations ?? []).length > 0;
+      case "artifacts":
+        return Object.keys(artifacts).length > 0;
+      case "ancestors":
+        return ancestors.length > 0;
+      case "children":
+        return children.length > 0;
+      case "discussion":
+        return thread.length > 1;
+      case "context":
+        return !!context && Object.keys(context).length > 0;
+    }
+  };
+  const present = SECTION_ORDER.filter(sectionHasData);
+  const raw = focusedSectionRaw ?? 0;
+  const focusedIndexAmongPresent = present.length
+    ? ((raw % present.length) + present.length) % present.length
+    : 0;
+  const focusedKey: SectionKey | undefined = present.length
+    ? present[focusedIndexAmongPresent]
+    : undefined;
+
+  // Coarse scroll offset: advance the surface as the focused section moves
+  // down the ring so the active section stays visible. Need not be exact.
+  const scrollTop = focusedIndexAmongPresent * APPROX_SECTION_ROWS;
+
+  // Accent treatment for the focused section: a single-line border in the
+  // focus color plus a ">" title marker. Non-focused sections get nothing.
+  const sectionProps = (key: SectionKey): { borderStyle?: "single"; borderColor?: string } =>
+    key === focusedKey ? { borderStyle: "single", borderColor: theme.focus } : {};
+  const titlePrefix = (key: SectionKey): string => (key === focusedKey ? "> " : "");
+
   return (
     <box flexDirection="column">
       <ConditionChips conditions={entity.conditions} />
@@ -127,117 +199,123 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         )}
       </box>
 
-      <box flexDirection="column" marginBottom={1}>
-        <text>
-          Kind: {kind} Mode: {mode} Created: {formatTimestamp(createdAt)}
-        </text>
-        <text>
-          Agent: {agent?.agentName ?? agent?.agentId ?? "unknown"}
-          {agent?.model ? ` (${agent.model})` : ""}
-          {agent?.platform ? ` on ${agent.platform}` : ""}
-        </text>
-        {(tags ?? []).length > 0 && <text>Tags: {(tags ?? []).join(", ")}</text>}
-      </box>
-
-      {/* Outcome annotation */}
-      {outcome && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>Outcome</text>
-          <text>
-            Status: {outcome.status} By: {outcome.evaluatedBy} At:{" "}
-            {formatTimestamp(outcome.evaluatedAt)}
-          </text>
-          {outcome.reason && <text opacity={0.5}>Reason: {outcome.reason}</text>}
-          {outcome.baselineCid && (
-            <text opacity={0.5}>Baseline: {truncateCid(outcome.baselineCid)}</text>
-          )}
-        </box>
-      )}
-
-      <box flexDirection="column" marginBottom={1}>
-        <text>Summary</text>
-        <markdown>{summary}</markdown>
-        {description && (
-          <box marginTop={1}>
-            <markdown>{description.slice(0, 500)}</markdown>
-          </box>
-        )}
-      </box>
-
-      {scores && Object.keys(scores).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>Scores</text>
-          {Object.entries(scores).map(([name, score]) => (
-            <text key={name}>
-              {name}: {formatScore(score)} ({score.direction})
-            </text>
-          ))}
-        </box>
-      )}
-
-      {(relations ?? []).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Relations (${(relations ?? []).length})`}</text>
-          {(relations ?? []).map((r, i) => (
-            <text key={`rel-${String(i)}`}>
-              {r.relationType} → {truncateCid(r.targetCid)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {Object.keys(artifacts).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Artifacts (${Object.keys(artifacts).length})`}</text>
-          {Object.entries(artifacts).map(([name, hash]) => (
-            <text key={name}>
-              {name}: {truncateCid(hash)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {ancestors.length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Ancestors (${ancestors.length})`}</text>
-          {ancestors.map((a) => (
-            <text key={a.cid}>
-              {truncateCid(a.cid)} [{a.kind}] {a.summary.slice(0, 50)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {children.length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Children (${children.length})`}</text>
-          {children.map((ch) => (
-            <text key={ch.cid}>
-              {truncateCid(ch.cid)} [{ch.kind}] {ch.summary.slice(0, 50)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {thread.length > 1 && (
+      {createElement(
+        "scrollbox" as string,
+        { flexGrow: 1, scrollTop },
         <box flexDirection="column">
-          <text>{`Discussion (${thread.length - 1} replies)`}</text>
-          {thread.slice(1).map((node) => (
-            <text key={node.contribution.cid}>
-              {"  ".repeat(node.depth)}
-              {truncateCid(node.contribution.cid)} {node.contribution.summary.slice(0, 40)} [
-              {node.contribution.agent.agentName ?? node.contribution.agent.agentId}]{" "}
-              {formatTimestamp(node.contribution.createdAt)}
+          <box flexDirection="column" marginBottom={1}>
+            <text>
+              Kind: {kind} Mode: {mode} Created: {formatTimestamp(createdAt)}
             </text>
-          ))}
-        </box>
-      )}
+            <text>
+              Agent: {agent?.agentName ?? agent?.agentId ?? "unknown"}
+              {agent?.model ? ` (${agent.model})` : ""}
+              {agent?.platform ? ` on ${agent.platform}` : ""}
+            </text>
+            {(tags ?? []).length > 0 && <text>Tags: {(tags ?? []).join(", ")}</text>}
+          </box>
 
-      {context && Object.keys(context).length > 0 && (
-        <box flexDirection="column" marginTop={1}>
-          <text>Context</text>
-          <text opacity={0.5}>{JSON.stringify(context, null, 2).slice(0, 300)}</text>
-        </box>
+          {/* Outcome annotation */}
+          {outcome && (
+            <box flexDirection="column" marginBottom={1}>
+              <text>Outcome</text>
+              <text>
+                Status: {outcome.status} By: {outcome.evaluatedBy} At:{" "}
+                {formatTimestamp(outcome.evaluatedAt)}
+              </text>
+              {outcome.reason && <text opacity={0.5}>Reason: {outcome.reason}</text>}
+              {outcome.baselineCid && (
+                <text opacity={0.5}>Baseline: {truncateCid(outcome.baselineCid)}</text>
+              )}
+            </box>
+          )}
+
+          <box flexDirection="column" marginBottom={1} {...sectionProps("summary")}>
+            <text>{`${titlePrefix("summary")}Summary`}</text>
+            <markdown>{summary}</markdown>
+            {description && (
+              <box marginTop={1}>
+                <markdown>{description}</markdown>
+              </box>
+            )}
+          </box>
+
+          {scores && Object.keys(scores).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("scores")}>
+              <text>{`${titlePrefix("scores")}Scores`}</text>
+              {Object.entries(scores).map(([name, score]) => (
+                <text key={name}>
+                  {name}: {formatScore(score)} ({score.direction})
+                </text>
+              ))}
+            </box>
+          )}
+
+          {(relations ?? []).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("relations")}>
+              <text>{`${titlePrefix("relations")}Relations (${(relations ?? []).length})`}</text>
+              {(relations ?? []).map((r, i) => (
+                <text key={`rel-${String(i)}`}>
+                  {r.relationType} → {truncateCid(r.targetCid)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {Object.keys(artifacts).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("artifacts")}>
+              <text>{`${titlePrefix("artifacts")}Artifacts (${Object.keys(artifacts).length})`}</text>
+              {Object.entries(artifacts).map(([name, hash]) => (
+                <text key={name}>
+                  {name}: {truncateCid(hash)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {ancestors.length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("ancestors")}>
+              <text>{`${titlePrefix("ancestors")}Ancestors (${ancestors.length})`}</text>
+              {ancestors.map((a) => (
+                <text key={a.cid}>
+                  {truncateCid(a.cid)} [{a.kind}] {a.summary}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {children.length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("children")}>
+              <text>{`${titlePrefix("children")}Children (${children.length})`}</text>
+              {children.map((ch) => (
+                <text key={ch.cid}>
+                  {truncateCid(ch.cid)} [{ch.kind}] {ch.summary}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {thread.length > 1 && (
+            <box flexDirection="column" {...sectionProps("discussion")}>
+              <text>{`${titlePrefix("discussion")}Discussion (${thread.length - 1} replies)`}</text>
+              {thread.slice(1).map((node) => (
+                <text key={node.contribution.cid}>
+                  {"  ".repeat(node.depth)}
+                  {truncateCid(node.contribution.cid)} {node.contribution.summary} [
+                  {node.contribution.agent.agentName ?? node.contribution.agent.agentId}]{" "}
+                  {formatTimestamp(node.contribution.createdAt)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {context && Object.keys(context).length > 0 && (
+            <box flexDirection="column" marginTop={1} {...sectionProps("context")}>
+              <text>{`${titlePrefix("context")}Context`}</text>
+              <text opacity={0.5}>{JSON.stringify(context, null, 2)}</text>
+            </box>
+          )}
+        </box>,
       )}
     </box>
   );
