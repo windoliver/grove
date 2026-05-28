@@ -15,7 +15,7 @@ import type {
   TuiArtifactProvider,
   TuiDataProvider,
 } from "../provider.js";
-import { ArtifactPreviewView } from "./artifact-preview.js";
+import { ArtifactPreviewView, computeUnifiedDiff } from "./artifact-preview.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -151,5 +151,116 @@ describe("artifact diff rendering (#192)", () => {
     });
     expect(renderer.toJSON()).toBeDefined();
     renderer.unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeUnifiedDiff parser-contract tests (C4)
+//
+// The <diff> intrinsic parses its `diff` string via the "diff" package's
+// parsePatch, which REQUIRES a `@@ -a,b +c,d @@` hunk header and validates the
+// declared line counts against the body. Without it, parsePatch THROWS and the
+// diff view shows an error for every comparison. The "diff" package is not
+// resolvable from grove test code via bare import, so we assert the invariants
+// parsePatch checks structurally (header present; counts match body).
+// ---------------------------------------------------------------------------
+
+/** Split the diff into [labelLines, hunkHeader, bodyLines]. */
+function splitDiff(out: string): {
+  readonly labels: readonly string[];
+  readonly header: string | undefined;
+  readonly body: readonly string[];
+} {
+  const lines = out.split("\n");
+  const headerIdx = lines.findIndex((l) => /^@@ /.test(l));
+  return {
+    labels: headerIdx >= 0 ? lines.slice(0, headerIdx) : lines,
+    header: headerIdx >= 0 ? lines[headerIdx] : undefined,
+    body: headerIdx >= 0 ? lines.slice(headerIdx + 1) : [],
+  };
+}
+
+describe("computeUnifiedDiff parser contract (C4)", () => {
+  test("differing inputs emit a valid @@ hunk header with counts matching the body", () => {
+    const out = computeUnifiedDiff(
+      "parent line\nshared\n",
+      "child line\nshared\n",
+      "parent",
+      "child",
+    );
+    // Label lines preserved and in order, header after them.
+    expect(out.startsWith("--- parent\n+++ child\n")).toBe(true);
+    const { header, body } = splitDiff(out);
+    expect(header).toBeDefined();
+    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
+    expect(match).not.toBeNull();
+    const oldCount = Number(match?.[1]);
+    const newCount = Number(match?.[2]);
+    // parsePatch validates: declared old count == body lines that are context
+    // or removals; declared new count == context or additions.
+    const expectedOld = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length;
+    const expectedNew = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length;
+    expect(oldCount).toBe(expectedOld);
+    expect(newCount).toBe(expectedNew);
+  });
+
+  test("identical inputs (only context lines) still emit a valid header", () => {
+    const out = computeUnifiedDiff("a\nb\nc\n", "a\nb\nc\n", "p", "c");
+    const { header, body } = splitDiff(out);
+    expect(header).toBeDefined();
+    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
+    expect(match).not.toBeNull();
+    // All body lines are context, so old == new == context count, and there
+    // are no +/- lines.
+    expect(body.every((l) => l.startsWith(" "))).toBe(true);
+    const ctx = body.filter((l) => l.startsWith(" ")).length;
+    expect(Number(match?.[1])).toBe(ctx);
+    expect(Number(match?.[2])).toBe(ctx);
+  });
+
+  test("pure additions emit a valid header (old count = 0 context, new count = additions)", () => {
+    const out = computeUnifiedDiff("", "x\ny\nz", "p", "c");
+    const { header, body } = splitDiff(out);
+    expect(header).toBeDefined();
+    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
+    expect(match).not.toBeNull();
+    const expectedOld = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length;
+    const expectedNew = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length;
+    expect(Number(match?.[1])).toBe(expectedOld);
+    expect(Number(match?.[2])).toBe(expectedNew);
+  });
+
+  test("oversized input is capped to MAX_DIFF_LINES with a visible truncation marker", () => {
+    // 2500 distinct child lines (no parent) -> would be 2500 '+' lines uncapped.
+    const big = Array.from({ length: 2500 }, (_, i) => `line ${i}`).join("\n");
+    const out = computeUnifiedDiff("", big, "p", "c");
+    const { header, body } = splitDiff(out);
+    expect(header).toBeDefined();
+    // A visible truncation marker is present in the body.
+    expect(out).toContain("truncated");
+    // Counts still match the actual emitted body (parsePatch validates this).
+    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
+    expect(match).not.toBeNull();
+    const expectedOld = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length;
+    const expectedNew = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length;
+    expect(Number(match?.[1])).toBe(expectedOld);
+    expect(Number(match?.[2])).toBe(expectedNew);
+  });
+
+  // Optional stronger check: resolve the "diff" package by absolute path and
+  // assert parsePatch actually accepts the output (does not throw, hunks=1).
+  test("parsePatch (diff@8) accepts computeUnifiedDiff output without throwing", async () => {
+    const diffMod = (await import(
+      "/Users/tafeng/grove/node_modules/.bun/diff@8.0.2/node_modules/diff/libesm/index.js"
+    )) as { parsePatch: (s: string) => Array<{ hunks: unknown[] }> };
+    const out = computeUnifiedDiff(
+      "parent line\nshared\n",
+      "child line\nshared\n",
+      "parent",
+      "child",
+    );
+    const parsed = diffMod.parsePatch(out);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0]?.hunks.length).toBe(1);
   });
 });

@@ -43,6 +43,13 @@ const MAX_HEX_BYTES = 256;
 /** Bytes per row in hex dump display. */
 const HEX_BYTES_PER_ROW = 16;
 
+/**
+ * Maximum number of lines fed into the O(m*n) LCS diff. The unified-diff path
+ * is now the headline render for artifact comparison, so guard it against OOM:
+ * inputs beyond this are truncated (with a visible marker) before diffing.
+ */
+const MAX_DIFF_LINES = 2000;
+
 /** Extensions considered text-based. */
 const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
   ".txt",
@@ -177,15 +184,29 @@ function formatHexDump(buf: Buffer): string {
  *
  * Uses a basic line-by-line longest common subsequence (LCS) approach.
  * Suitable for small artifacts displayed in the TUI.
+ *
+ * The output is a valid unified-diff string accepted by the "diff" package's
+ * parsePatch (used by the OpenTUI <diff> intrinsic): `--- parent`, `+++ child`,
+ * a single `@@ -1,old +1,new @@` hunk header, then the body. parsePatch
+ * REQUIRES the hunk header and validates the declared line counts against the
+ * body, so the counts are computed from the actual emitted body lines.
+ *
+ * Exported for unit testing of that parser contract.
  */
-function computeUnifiedDiff(
+export function computeUnifiedDiff(
   parentText: string,
   childText: string,
   parentLabel: string,
   childLabel: string,
 ): string {
-  const parentLines = parentText.split("\n");
-  const childLines = childText.split("\n");
+  // OOM hardening: cap inputs before the O(m*n) LCS. Truncate (never silently)
+  // and append a visible marker to the diff body so the cut is observable.
+  const rawParentLines = parentText.split("\n");
+  const rawChildLines = childText.split("\n");
+  const parentTruncated = rawParentLines.length > MAX_DIFF_LINES;
+  const childTruncated = rawChildLines.length > MAX_DIFF_LINES;
+  const parentLines = parentTruncated ? rawParentLines.slice(0, MAX_DIFF_LINES) : rawParentLines;
+  const childLines = childTruncated ? rawChildLines.slice(0, MAX_DIFF_LINES) : rawChildLines;
 
   // Build LCS table
   const m = parentLines.length;
@@ -204,8 +225,7 @@ function computeUnifiedDiff(
     }
   }
 
-  // Backtrack to produce diff lines
-  const result: string[] = [`--- ${parentLabel}`, `+++ ${childLabel}`];
+  // Backtrack to produce diff body lines
   const diffLines: string[] = [];
   let i = m;
   let j = n;
@@ -225,7 +245,35 @@ function computeUnifiedDiff(
   }
 
   diffLines.reverse();
-  result.push(...diffLines);
+
+  // Visible (never silent) truncation marker, emitted as a context line so it
+  // is counted equally toward both old and new line counts.
+  if (parentTruncated || childTruncated) {
+    diffLines.push(` ... (diff truncated to first ${MAX_DIFF_LINES} lines)`);
+  }
+
+  // parsePatch requires a hunk header and validates its declared line counts
+  // against the body. Compute the counts from the ACTUAL emitted body lines so
+  // they always match: old = context + removals, new = context + additions.
+  let oldCount = 0;
+  let newCount = 0;
+  for (const line of diffLines) {
+    if (line.startsWith(" ")) {
+      oldCount++;
+      newCount++;
+    } else if (line.startsWith("-")) {
+      oldCount++;
+    } else if (line.startsWith("+")) {
+      newCount++;
+    }
+  }
+
+  const result: string[] = [
+    `--- ${parentLabel}`,
+    `+++ ${childLabel}`,
+    `@@ -1,${oldCount} +1,${newCount} @@`,
+    ...diffLines,
+  ];
   return result.join("\n");
 }
 
