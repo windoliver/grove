@@ -596,6 +596,7 @@ describe("SessionOrchestrator", () => {
     const bus = new LocalEventBus();
     const contract = makeContract();
     const contributions: ReturnType<typeof makeContribution>[] = [];
+    const acceptedCids: string[] = [];
     const contributionStore = {
       list: async () => contributions,
     };
@@ -611,12 +612,116 @@ describe("SessionOrchestrator", () => {
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
+      onContributionAccepted: (cid) => {
+        acceptedCids.push(cid);
+      },
     });
     const internals = orchestrator as unknown as {
       startContributionPolling: () => void;
       pollContributions: () => Promise<void>;
     };
     // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderSessionId).toBeDefined();
+    expect(coderToken).toBeDefined();
+
+    const routedContribution = signContributionForRouting(
+      makeContribution({
+        summary: "local coder contribution",
+        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    contributions.push(routedContribution);
+
+    await internals.pollContributions();
+
+    // 2 initial goal sends + 1 routed handoff to reviewer.
+    expect(runtime.sendCalls).toHaveLength(3);
+    expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
+    expect(acceptedCids).toEqual([routedContribution.cid]);
+
+    await internals.pollContributions();
+    expect(acceptedCids).toEqual([routedContribution.cid]);
+    bus.close();
+  });
+
+  test("polling does not mark untrusted contributions accepted", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const acceptedCids: string[] = [];
+    const contributions = [
+      makeContribution({
+        summary: "external coder contribution",
+        agent: { agentId: "external-session-coder", role: "coder" },
+      }),
+    ];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+      onContributionAccepted: (cid) => {
+        acceptedCids.push(cid);
+      },
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    internals.startContributionPolling = () => undefined;
+
+    await orchestrator.start();
+    await internals.pollContributions();
+
+    expect(acceptedCids).toEqual([]);
+    bus.close();
+  });
+
+  test("polling continues routing when session contribution linking fails", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+      onContributionAccepted: () => {
+        throw new Error("link failed");
+      },
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
     internals.startContributionPolling = () => undefined;
 
     const started = await orchestrator.start();
@@ -638,7 +743,6 @@ describe("SessionOrchestrator", () => {
 
     await internals.pollContributions();
 
-    // 2 initial goal sends + 1 routed handoff to reviewer.
     expect(runtime.sendCalls).toHaveLength(3);
     expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
     bus.close();

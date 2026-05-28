@@ -91,6 +91,32 @@ export type {
   Relation,
 } from "./core/models.js";
 export type {
+  BoundRecipe,
+  DiscoveredRecipe,
+  DiscoverRecipesOptions,
+  GroveRecipe,
+  MaterializedRecipe,
+  RecipeActivity,
+  RecipeExtension,
+  RecipeLibraryMetadata,
+  RecipeParameter,
+  RecipeParameterType,
+  RecipeProvenance,
+  RecipeRunPolicy,
+  RecipeSource,
+  RecipeSubRecipe,
+} from "./core/recipe.js";
+export {
+  bindRecipeParameters,
+  computeBoundRecipeDigest,
+  computeRecipeDigest,
+  discoverRecipes,
+  materializeRecipeContract,
+  parseGroveRecipe,
+  parseGroveRecipeObject,
+  renderRecipeTemplate,
+} from "./core/recipe.js";
+export type {
   ReconcileResult,
   Reconciler,
   ReconcilerConfig,

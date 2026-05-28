@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Agent,
   AgentSideConnection,
+  type InitializeRequest,
   ndJsonStream,
   RequestError,
   type RequestPermissionRequest,
@@ -9,6 +13,7 @@ import {
 import { AcpRuntime, type AcpRuntimeEvent, type LaunchOverride } from "./acp-runtime.js";
 
 interface AgentStubHandlers {
+  onInitialize?: (p: InitializeRequest) => void;
   onNewSession?: (p: Parameters<Agent["newSession"]>[0]) => void;
   onCancel?: () => Promise<void> | void;
   onPrompt?: (p: {
@@ -31,7 +36,8 @@ function makeInProcessAgent(handlers: AgentStubHandlers = {}): {
     const clientStream = ndJsonStream(toAgent.writable, toClient.readable);
 
     const agent: Agent = {
-      async initialize() {
+      async initialize(p) {
+        handlers.onInitialize?.(p);
         return {
           protocolVersion: 1,
           agentCapabilities: {},
@@ -83,6 +89,26 @@ function deferred<T = void>(): {
 }
 
 describe("AcpRuntime.spawn", () => {
+  test("advertises filesystem and terminal client capabilities", async () => {
+    let captured: InitializeRequest | undefined;
+    const { launchOverride } = makeInProcessAgent({
+      onInitialize(p) {
+        captured = p;
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    expect(captured?.clientCapabilities?.fs?.readTextFile).toBe(true);
+    expect(captured?.clientCapabilities?.fs?.writeTextFile).toBe(true);
+    expect(captured?.clientCapabilities?.terminal).toBe(true);
+    await rt.close(session);
+  });
+
   test("initializes, creates a session, returns grove-formatted id", async () => {
     const { launchOverride } = makeInProcessAgent();
     const rt = new AcpRuntime({ launchOverride });
@@ -184,6 +210,44 @@ describe("AcpRuntime.spawn", () => {
 });
 
 describe("AcpRuntime.send", () => {
+  test("serves ACP filesystem and terminal requests from the client", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "grove-acp-client-"));
+    const filePath = join(dir, "hello.txt");
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt({ sessionId, agentSide }) {
+        await agentSide.writeTextFile({ sessionId, path: filePath, content: "hi\nthere\n" });
+        const read = await agentSide.readTextFile({ sessionId, path: filePath, line: 2, limit: 1 });
+        expect(read.content).toBe("there\n");
+
+        const terminal = await agentSide.createTerminal({
+          sessionId,
+          command: "sh",
+          args: ["-lc", "printf terminal-ok"],
+          cwd: dir,
+        });
+        const exit = await terminal.waitForExit();
+        expect(exit.exitCode).toBe(0);
+        const output = await terminal.currentOutput();
+        expect(output.output).toBe("terminal-ok");
+        await terminal.release();
+
+        return { stopReason: "end_turn" };
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: dir,
+    });
+
+    const turn = await rt.send(session, "exercise client capabilities");
+    expect((await turn.result).stopReason).toBe("end_turn");
+    expect(existsSync(filePath)).toBe(true);
+    expect(readFileSync(filePath, "utf-8")).toBe("hi\nthere\n");
+    await rt.close(session);
+  });
+
   test("returns a turn; result resolves with stopReason=end_turn on successful prompt", async () => {
     const { launchOverride } = makeInProcessAgent({
       async onPrompt() {

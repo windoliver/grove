@@ -85,6 +85,19 @@ describe("grove CLI integration", () => {
     expect(stdout.trim()).toBe("grove 0.1.0");
   });
 
+  test("grove recipe validate works through the CLI entrypoint", async () => {
+    const recipePath = join(tempDir, "review.yaml");
+    await Bun.write(
+      recipePath,
+      "kind: recipe\nrecipe_version: 1\nname: review-loop\nversion: 1.0.0\n",
+    );
+
+    const result = await runGrove(["recipe", "validate", recipePath]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Valid recipe: review-loop@1.0.0");
+  });
+
   test("grove claim + release round-trip", async () => {
     // Create a claim
     const claimResult = await runGrove(["claim", "my-target", "--lease", "30m"]);

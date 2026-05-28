@@ -238,6 +238,16 @@ export const COMMANDS: readonly CommandMeta[] = [
     ],
   },
   {
+    name: "recipe",
+    description: "Validate, list, and dry-run Grove recipes",
+    flags: [],
+    subcommands: [
+      { name: "validate", description: "Validate a recipe file", flags: ["json"] },
+      { name: "list", description: "List discovered recipes", flags: ["dir", "json"] },
+      { name: "run", description: "Dry-run a recipe", flags: ["dry-run", "param", "json"] },
+    ],
+  },
+  {
     name: "session",
     description: "Manage agent sessions (start, list, status, stop, delete)",
     flags: [],

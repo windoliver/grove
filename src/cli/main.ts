@@ -388,6 +388,21 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "recipe",
+      description: "Validate, list, and dry-run Grove recipes",
+      needsStore: false,
+      helpText: `grove recipe — validate, list, and dry-run Grove recipes
+
+Usage:
+  grove recipe validate <path> [--json]
+  grove recipe list [--dir <path>] [--json]
+  grove recipe run <path> --dry-run [--param key=value] [--json]`,
+      handler: async (args) => {
+        const { handleRecipe } = await import("./commands/recipe.js");
+        await handleRecipe(args);
+      },
+    },
+    {
       name: "session",
       description: "Manage agent sessions (start, list, status, stop, delete)",
       needsStore: false,

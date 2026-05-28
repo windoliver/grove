@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grove.dev/schemas/grove-recipe.json",
+  "title": "Grove Recipe",
+  "description": "Schema for shareable Grove recipe YAML workflows.",
+  "type": "object",
+  "required": ["kind", "recipe_version", "name", "version"],
+  "properties": {
+    "kind": { "type": "string", "const": "recipe" },
+    "recipe_version": { "type": "integer", "const": 1 },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+      "maxLength": 64
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "labels": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+      "uniqueItems": true,
+      "maxItems": 50
+    },
+    "parameters": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "maxLength": 64
+      },
+      "additionalProperties": { "$ref": "#/$defs/parameter" },
+      "maxProperties": 100
+    },
+    "extensions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/extension" },
+      "maxItems": 50
+    },
+    "activities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/activity" },
+      "maxItems": 100
+    },
+    "instructions": { "type": "string", "maxLength": 20000 },
+    "agent_topology": { "$ref": "#/$defs/agent_topology" },
+    "context_manifests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/context_manifest_ref" },
+      "maxItems": 50
+    },
+    "sub_recipes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sub_recipe" },
+      "maxItems": 50
+    },
+    "response": { "$ref": "#/$defs/response" },
+    "run_policy": { "$ref": "#/$defs/run_policy" },
+    "library": { "$ref": "#/$defs/library_metadata" }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "json_value": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        { "type": "array", "items": { "$ref": "#/$defs/json_value" } },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/json_value" }
+        }
+      ]
+    },
+    "parameter": {
+      "oneOf": [
+        { "$ref": "#/$defs/string_parameter" },
+        { "$ref": "#/$defs/integer_parameter" },
+        { "$ref": "#/$defs/number_parameter" },
+        { "$ref": "#/$defs/boolean_parameter" },
+        { "$ref": "#/$defs/enum_parameter" },
+        { "$ref": "#/$defs/path_parameter" },
+        { "$ref": "#/$defs/json_parameter" }
+      ]
+    },
+    "string_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "string" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "integer_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "integer" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "number_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "number" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "boolean_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "boolean" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "enum_parameter": {
+      "type": "object",
+      "required": ["type", "enum"],
+      "properties": {
+        "type": { "const": "enum" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "enum": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "default": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "path_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "path" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "json_parameter": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "json" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "default": { "$ref": "#/$defs/json_value" }
+      },
+      "additionalProperties": false
+    },
+    "extension": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": { "type": "string", "enum": ["mcp", "tool", "provider", "service"] },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "uri": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "required": { "type": "boolean" }
+      },
+      "unevaluatedProperties": false
+    },
+    "activity": {
+      "type": "object",
+      "required": ["id", "label"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "role": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "condition": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      },
+      "unevaluatedProperties": false
+    },
+    "context_manifest_ref": {
+      "type": "object",
+      "required": ["ref"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "role": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "required": { "type": "boolean" }
+      },
+      "unevaluatedProperties": false
+    },
+    "sub_recipe": {
+      "type": "object",
+      "required": ["name", "ref"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "when": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "parameters": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "maxLength": 64
+          },
+          "additionalProperties": { "$ref": "#/$defs/json_value" },
+          "maxProperties": 100
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": "object" }
+      },
+      "unevaluatedProperties": false
+    },
+    "run_policy": {
+      "type": "object",
+      "properties": {
+        "max_iterations": { "type": "integer", "minimum": 1 },
+        "max_no_improvement_rounds": { "type": "integer", "minimum": 1 },
+        "improvement_threshold": { "type": "number", "minimum": 0 },
+        "direction": { "type": "string", "enum": ["maximize", "minimize"] }
+      },
+      "unevaluatedProperties": false
+    },
+    "library_metadata": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "license": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "visibility": { "type": "string", "enum": ["private", "workspace", "public"] }
+      },
+      "unevaluatedProperties": false
+    },
+    "agent_topology": {
+      "type": "object",
+      "required": ["structure", "roles"],
+      "properties": {
+        "structure": {
+          "type": "string",
+          "enum": ["graph", "tree", "flat"]
+        },
+        "roles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/topology_role" },
+          "minItems": 1,
+          "maxItems": 50
+        },
+        "spawning": { "$ref": "#/$defs/spawning_config" },
+        "edge_types": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "maxItems": 20
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "topology_role": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": { "type": "string", "maxLength": 256 },
+        "max_instances": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "mode": { "type": "string", "enum": ["explicit", "broadcast"] },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/role_edge" },
+          "maxItems": 50
+        },
+        "command": { "type": "string", "maxLength": 512 },
+        "ends_session": { "type": "boolean" },
+        "platform": {
+          "type": "string",
+          "enum": ["claude-code", "codex", "gemini", "custom"]
+        },
+        "model": { "type": "string", "maxLength": 128 },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "prompt": { "type": "string", "maxLength": 4096 },
+        "goal": { "type": "string", "maxLength": 512 },
+        "skills": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 100
+        },
+        "repo_index": { "type": "integer", "minimum": 0 }
+      },
+      "unevaluatedProperties": false
+    },
+    "role_edge": {
+      "type": "object",
+      "required": ["target", "edge_type"],
+      "properties": {
+        "target": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "edge_type": {
+          "type": "string",
+          "enum": ["delegates", "feedback", "monitors", "reports", "feeds", "requests", "escalates"]
+        },
+        "workspace": {
+          "type": "string",
+          "enum": ["branch_from_source", "independent"]
+        },
+        "reply_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 86400
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "spawning_config": {
+      "type": "object",
+      "required": ["dynamic"],
+      "properties": {
+        "dynamic": { "type": "boolean" },
+        "max_depth": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "max_children_per_agent": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "timeout_seconds": { "type": "integer", "minimum": 10, "maximum": 3600 }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}
