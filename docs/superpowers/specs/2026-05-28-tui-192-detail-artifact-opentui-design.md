@@ -44,13 +44,14 @@ OpenTUI primitives relied on (all already present in the codebase): `<scrollbox>
 
 ### 2. `artifact-preview.tsx` — real diff rendering
 
-- **Delete** `computeUnifiedDiff` and its LCS table (~50 lines) — *contingent* on the `<diff mode="inline">` verification below passing. If inline mode is unavailable, `computeUnifiedDiff` is retained solely to feed the `<code language="diff">` inline fallback.
-- Replace the diff branch with the `<diff>` intrinsic:
-  - `diffMode === "inline"` → `<diff mode="inline" oldContent newContent />`
-  - `diffMode === "split"` → the existing `SplitDiff` component (which renders `<diff mode="split">` with labeled panes).
-  - The existing diff fetcher already returns `{ parentText, childText }`, which feed `oldContent`/`newContent` directly.
+> **API correction (post-implementation).** The probe (Task 0) + adversarial verification proved the real `@opentui/core` `<diff>` API is **`diff` (a unified-diff *string*) + `view: "unified" | "split"` + `filetype`** — there is **no** `mode`/`oldContent`/`newContent`. The bullets below describe the *as-shipped* behavior, which supersedes the original draft. The `SplitDiff` component is **not** used (it passes the nonexistent `oldContent`/`newContent`/`mode` props — a pre-existing bug tracked as a follow-up). `computeUnifiedDiff` is **kept** (its output is exactly the `diff` string the intrinsic consumes) and emits a valid `@@ -1,m +1,n @@` hunk header so the intrinsic's `parsePatch` accepts it.
+
+- Render the diff via the `<diff>` intrinsic inside a `<scrollbox>`:
+  - `diffMode === "inline"` → `<diff diff={unifiedString} view="unified" filetype={lang} />`
+  - `diffMode === "split"` → `<diff diff={unifiedString} view="split" filetype={lang} />`
+  - `unifiedString = computeUnifiedDiff(parentText, childText, ...)`, headered with `--- / +++ / @@`. Diff inputs are capped at `MAX_DIFF_LINES = 2000` (visible truncation marker, never a silent cut).
 - New `diffMode: "inline" | "split"` (default `"inline"`; inline fits narrow panes).
-- Keep the existing `[d]` toggle for diff on/off. Add `[s]` to flip split/inline. New action `artifact_diff_mode`, new nav state `artifactDiffMode`, new `diffMode` prop. Header reflects state: `[d]iff` and `[s]plit`/`inline`.
+- Keep the existing `[d]` toggle for diff on/off. Add `[s]` to flip split/inline. New nav state `artifactDiffMode`, new `diffMode` prop, `s` handled in the Artifact-panel keyboard block. Header reflects state: `[d]iff` and `[DIFF <mode>]  [s]plit/inline`. (The original plan also added a named `artifact_diff_mode` keymap action; it was dropped as unreachable dead code since no keymap binds it — `s` routes via the hardcoded Artifact handler.)
 
 ### 3. Minimal transition
 
