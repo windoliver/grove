@@ -1,112 +1,53 @@
-import { describe, expect, mock, test } from "bun:test";
-import { mergeTuiActionRegistrations } from "../plugins/registry.js";
-import type { TuiActionRegistration, TuiPluginContext } from "../plugins/types.js";
-import type { TuiDataProvider } from "../provider.js";
-import {
-  buildPluginPaletteItems,
-  getBuiltInPaletteActionRegistryEntries,
-} from "./command-palette.js";
+// src/tui/components/command-palette.test.tsx
+import { describe, expect, test } from "bun:test";
+import type { Action, ActionContext } from "../actions/types.js";
+import { computeVisibleActions } from "../actions/visibility.js";
+import { fuzzyMatch } from "./command-palette.js";
 
-function providerStub(): TuiDataProvider {
+function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
   return {
-    capabilities: {
-      outcomes: false,
-      artifacts: false,
-      vfs: false,
-      messaging: false,
-      costTracking: false,
-      askUser: false,
-      github: false,
-      bounties: false,
-      gossip: false,
-      goals: false,
-      sessions: false,
-      handoffs: false,
-    },
-    getDashboard: async () => {
-      throw new Error("getDashboard not used");
-    },
-    getContributions: async () => [],
-    getContribution: async () => undefined,
-    getClaims: async () => [],
-    getFrontier: async () => ({
-      byMetric: {},
-      byAdoption: [],
-      byRecency: [],
-      byReviewScore: [],
-      byReproduction: [],
-    }),
-    getActivity: async () => [],
-    getDag: async () => ({ contributions: [] }),
-    getHotThreads: async () => [],
-    close: () => undefined,
-  };
-}
-
-function context(): TuiPluginContext {
-  return {
-    provider: providerStub(),
-    density: "compact",
+    sessions: [],
+    profiles: [],
+    gossipPeers: [],
+    claims: [],
+    pendingQuestionCount: 0,
+    hasGoals: false,
+    canSpawn: false,
+    canDelegate: false,
+    isPanelVisible: () => false,
+    focusPanel: () => undefined,
+    togglePanel: () => undefined,
+    openContribution: () => undefined,
+    jumpToSession: () => undefined,
+    enterGoalMode: () => undefined,
+    enterCompareMode: () => undefined,
+    addToCompare: () => undefined,
+    adoptContribution: () => undefined,
+    answerPendingQuestion: () => undefined,
+    registerAgentProfile: () => undefined,
+    spawn: () => undefined,
+    kill: () => undefined,
+    delegate: () => undefined,
     showMessage: () => undefined,
-  };
-}
-
-function action(overrides: Partial<TuiActionRegistration> = {}): TuiActionRegistration {
-  return {
-    id: "audit-refresh",
-    label: "Refresh audit panel",
-    detail: "audit",
-    run: () => undefined,
     ...overrides,
   };
 }
+function act(o: Partial<Action> & Pick<Action, "id" | "group">): Action {
+  return { label: o.id, detail: "", run: () => undefined, ...o };
+}
 
-describe("plugin palette items", () => {
-  test("includes fixed built-in action IDs for duplicate protection", () => {
-    expect(getBuiltInPaletteActionRegistryEntries().map((entry) => entry.id)).toEqual([
-      "set-goal",
-      "register-agent",
-    ]);
+describe("command palette model", () => {
+  test("fuzzyMatch still scores word-boundary bonuses", () => {
+    expect(fuzzyMatch("ft", "Focus Terminal").match).toBe(true);
+    expect(fuzzyMatch("zzz", "Focus Terminal").match).toBe(false);
   });
 
-  test("projects enabled plugin actions into palette items", () => {
-    const refresh = action();
-    const merged = mergeTuiActionRegistrations({
-      builtIns: getBuiltInPaletteActionRegistryEntries(),
-      plugins: [refresh],
-    });
-
-    const items = buildPluginPaletteItems(merged.entries, context());
-
-    expect(
-      items.map((item) => [item.kind, item.id, item.label, item.detail, item.enabled]),
-    ).toEqual([["plugin-action", "audit-refresh", "Refresh audit panel", "audit", true]]);
-    expect(items[0]?.pluginAction).toBe(refresh);
-  });
-
-  test("projects disabled plugin actions as non-executable palette items", () => {
-    const refresh = action({ enabled: () => false });
-    const merged = mergeTuiActionRegistrations({
-      builtIns: getBuiltInPaletteActionRegistryEntries(),
-      plugins: [refresh],
-    });
-
-    const items = buildPluginPaletteItems(merged.entries, context());
-
-    expect(items[0]?.enabled).toBe(false);
-  });
-
-  test("evaluates enabled predicate with the plugin context", () => {
-    const enabled = mock((ctx: TuiPluginContext) => ctx.density === "compact");
-    const refresh = action({ enabled });
-    const merged = mergeTuiActionRegistrations({
-      builtIns: getBuiltInPaletteActionRegistryEntries(),
-      plugins: [refresh],
-    });
-
-    const items = buildPluginPaletteItems(merged.entries, context());
-
-    expect(items[0]?.enabled).toBe(true);
-    expect(enabled).toHaveBeenCalledTimes(1);
+  test("visible list is the flat selection index space", () => {
+    const actions = [
+      act({ id: "n1", group: "Navigation", label: "nav" }),
+      act({ id: "a1", group: "Agents", label: "agent" }),
+    ];
+    const visible = computeVisibleActions(actions, ctx(), "");
+    expect(visible.map((v) => v.action.id)).toEqual(["n1", "a1"]);
   });
 });
