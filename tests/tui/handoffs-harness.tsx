@@ -19,10 +19,20 @@ import { createRoot } from "@opentui/react";
 import React from "react";
 import type { Handoff } from "../../src/core/handoff.js";
 import { HandoffStatus } from "../../src/core/handoff.js";
+import { createLocalRuntime } from "../../src/local/runtime.js";
+import { LocalDataProvider } from "../../src/tui/local-provider.js";
+import type { TuiDataProvider } from "../../src/tui/provider.js";
+import type { ConfirmAndMutateEntityBus } from "../../src/tui/safety/index.js";
+import { ConfirmAndMutateProvider } from "../../src/tui/safety/index.js";
 import type { ScreenState } from "../../src/tui/screens/screen-manager.js";
 import { ScreenManager } from "../../src/tui/screens/screen-manager.js";
 import { SpawnManager } from "../../src/tui/spawn-manager.js";
 import { SpawnManagerContext } from "../../src/tui/spawn-manager-context.js";
+
+const TEST_ENTITY_BUS: ConfirmAndMutateEntityBus = {
+  get: () => undefined,
+  subscribe: () => () => undefined,
+};
 
 // ---------------------------------------------------------------------------
 // Stub handoffs (3 in different states)
@@ -155,6 +165,56 @@ const topology = {
   edges: [{ from: "coder", to: "reviewer", type: "delegates" as const }],
 };
 
+interface HarnessData {
+  readonly provider: TuiDataProvider;
+  readonly topology: typeof topology;
+  readonly goal: string;
+  readonly sessionStartedAt?: string;
+  readonly cleanup: () => void;
+}
+
+function createHarnessData(): HarnessData {
+  const groveDir = process.env.GROVE_HANDOFFS_HARNESS_GROVE_DIR;
+  if (!groveDir) {
+    return {
+      provider: mockProvider as unknown as TuiDataProvider,
+      topology,
+      goal: "Review PR #42 — test handoffs panel (press 5)",
+      sessionStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      cleanup: () => mockProvider.close(),
+    };
+  }
+
+  const runtime = createLocalRuntime({
+    groveDir,
+    frontierCacheTtlMs: 0,
+    workspace: false,
+    parseContract: true,
+  });
+  const provider = new LocalDataProvider({
+    contributionStore: runtime.contributionStore,
+    claimStore: runtime.claimStore,
+    agentTaskStore: runtime.agentTaskStore,
+    frontier: runtime.frontier,
+    groveName: runtime.contract?.name ?? "grove-handoffs",
+    outcomeStore: runtime.outcomeStore,
+    bountyStore: runtime.bountyStore,
+    cas: runtime.cas,
+    goalSessionStore: runtime.goalSessionStore,
+    handoffStore: runtime.handoffStore,
+    timelineStore: runtime.timelineStore,
+    backendLabel: `local (${groveDir})`,
+  });
+
+  return {
+    provider,
+    topology: (runtime.contract?.topology ?? topology) as typeof topology,
+    goal: `Real handoffs from ${groveDir}`,
+    sessionStartedAt: undefined,
+    cleanup: () => runtime.close(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -162,6 +222,7 @@ const topology = {
 async function main() {
   const { DialogProvider } = await import("@opentui-ui/dialog/react");
   const { Toaster } = await import("@opentui-ui/toast/react");
+  const harness = createHarnessData();
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -170,7 +231,7 @@ async function main() {
   const root = createRoot(renderer);
 
   const spawnManager = new SpawnManager(
-    mockProvider as Parameters<typeof SpawnManager>[0],
+    harness.provider as Parameters<typeof SpawnManager>[0],
     undefined,
     () => {
       /* no-op */
@@ -180,14 +241,14 @@ async function main() {
 
   const initialState: ScreenState = {
     screen: "running",
-    goal: "Review PR #42 — test handoffs panel (press 5)",
+    goal: harness.goal,
     sessionId: "test-handoffs-session",
-    sessionStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    sessionStartedAt: harness.sessionStartedAt,
   };
 
   const appProps = {
-    provider: mockProvider,
-    topology,
+    provider: harness.provider,
+    topology: harness.topology,
     groveDir: undefined,
     tmux: undefined,
     intervalMs: 30_000,
@@ -200,13 +261,17 @@ async function main() {
       DialogProvider,
       null,
       React.createElement(
-        SpawnManagerContext,
-        { value: spawnManager },
-        React.createElement(ScreenManager, {
-          appProps,
-          startOnRunning: true,
-          initialState,
-        }),
+        ConfirmAndMutateProvider,
+        { entityBus: TEST_ENTITY_BUS },
+        React.createElement(
+          SpawnManagerContext,
+          { value: spawnManager },
+          React.createElement(ScreenManager, {
+            appProps,
+            startOnRunning: true,
+            initialState,
+          }),
+        ),
       ),
       React.createElement(Toaster, { position: "bottom-right" }),
     ),
@@ -218,6 +283,7 @@ async function main() {
   // Keep alive — press Ctrl+C or q to exit
   await new Promise((r) => setTimeout(r, 120_000));
   renderer.destroy();
+  harness.cleanup();
 }
 
 main().catch((err: unknown) => {
