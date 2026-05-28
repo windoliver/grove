@@ -51,7 +51,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
   );
   const [presetCursor, setPresetCursor] = useState(initialCursor);
   const [name, setName] = useState(defaultName);
-  const [keymap, setKeymap] = useState<KeymapChoice>("vim");
+  const [keymap, setKeymap] = useState<KeymapChoice>("default");
   const [presetDetailOpen, setPresetDetailOpen] = useState(false);
   // Pin the failed keymap alongside the error string so the panel text
   // doesn't drift if the operator switches keymap after the failure.
@@ -250,7 +250,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
           Keymap
         </text>
         <box flexDirection="row">
-          {(["vim", "emacs", "none"] as const).map((c) => (
+          {(["default", "power-user", "none"] as const).map((c) => (
             <text key={c} color={c === keymap ? theme.focus : theme.text} bold={c === keymap}>
               {`${c === keymap ? "(•) " : "( ) "}${c}   `}
             </text>

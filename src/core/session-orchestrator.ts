@@ -21,6 +21,7 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
 import { type GroveConfig, parseGroveConfig } from "./config.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
+import { DEFAULT_SESSION_FINALIZERS } from "./lifecycle-metadata.js";
 import { LoopStopStatus, type LoopStopStatus as LoopStopStatusValue } from "./loop-runner.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "./repo-cache.js";
 import type { RepoRef } from "./repo-ref.js";
@@ -120,6 +121,12 @@ export interface SessionConfig {
         }): Promise<readonly import("./models.js").Contribution[]>;
       }
     | undefined;
+  /**
+   * Called after the orchestrator accepts a contribution for this session.
+   * Used by durable session stores to keep list/status contribution counts in
+   * sync with the routing path, including Nexus-backed session starts.
+   */
+  readonly onContributionAccepted?: ((cid: string) => void | Promise<void>) | undefined;
   /** Optional agent profiles — overlay role defaults with per-agent runtime config. */
   readonly profiles?: readonly AgentProfile[] | undefined;
 }
@@ -294,6 +301,8 @@ export class SessionOrchestrator {
     const topology = this.config.topology;
     const policy = this.config.workspaceIsolationPolicy ?? "strict";
 
+    await this.ensureLocalSessionRecord();
+
     // Resolve workspace strategies from edge types — delegates/feeds/escalates edges
     // make the target role's worktree branch off the source role's branch.
     const wsStrategies = resolveRoleWorkspaceStrategies(topology, this.sessionId);
@@ -323,9 +332,9 @@ export class SessionOrchestrator {
         const ac = new AbortController();
         const timeoutId = setTimeout(() => ac.abort(), SPAWN_TIMEOUT_MS);
         try {
-          const result = await this.spawnAgent(role, ac.signal, ws);
+          const agent = await this.spawnAgent(role, ac.signal, ws);
           clearTimeout(timeoutId);
-          return result;
+          return { role: role.name, agent };
         } catch (err) {
           clearTimeout(timeoutId);
           if (ac.signal.aborted) {
@@ -336,18 +345,36 @@ export class SessionOrchestrator {
       }),
     );
 
-    for (const result of spawnResults) {
+    const spawnedAgents: AgentSessionInfo[] = [];
+    const spawnFailures: Array<{ role: string; reason: unknown }> = [];
+    for (const [index, result] of spawnResults.entries()) {
       if (result.status === "fulfilled") {
-        this.agents.push(result.value);
+        spawnedAgents.push(result.value.agent);
       } else {
-        process.stderr.write(`[SessionOrchestrator] spawn failed: ${result.reason}\n`);
+        const role = topology.roles[index]?.name ?? `role-${index}`;
+        spawnFailures.push({ role, reason: result.reason });
+        process.stderr.write(
+          `[SessionOrchestrator] spawn failed for '${role}': ${result.reason}\n`,
+        );
       }
     }
 
-    // Require at least one agent
-    if (this.agents.length === 0) {
-      throw new Error("No agents spawned — all roles failed");
+    if (spawnFailures.length > 0) {
+      for (const agent of spawnedAgents) {
+        try {
+          await this.config.runtime.close(agent.session);
+        } catch {
+          /* best-effort cleanup before surfacing the spawn failure */
+        }
+      }
+      const roles = spawnFailures.map((failure) => failure.role).join(", ");
+      const details = spawnFailures
+        .map((failure) => `${failure.role}: ${messageFromError(failure.reason)}`)
+        .join("; ");
+      throw new Error(`Failed to spawn required role(s): ${roles}. ${details}`);
     }
+
+    this.agents.push(...spawnedAgents);
 
     this.startedAt = Date.now();
 
@@ -414,9 +441,26 @@ export class SessionOrchestrator {
 
     this.unsubscribeEventHandlers();
 
+    if (stopStatus === LoopStopStatus.Achieved && this.config.runtime.sendsInitialPromptOnSpawn) {
+      await this.waitForAgentTurnsToSettle();
+    }
+
     // Close all agent sessions
     for (const agent of this.agents) {
       await this.config.runtime.close(agent.session);
+    }
+  }
+
+  private async waitForAgentTurnsToSettle(timeoutMs = 5_000, pollMs = 100): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const sessions = await this.config.runtime.listSessions();
+      const settled = this.agents.every((agent) => {
+        const current = sessions.find((session) => session.id === agent.session.id);
+        return current === undefined || current.status !== "running";
+      });
+      if (settled) return;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   }
 
@@ -485,7 +529,7 @@ export class SessionOrchestrator {
         // Mark as seen only after ownership verification so transient identity
         // skew doesn't permanently suppress routing for this CID.
         this.seenCids.add(c.cid);
-        this.contributionCount++;
+        await this.recordAcceptedContribution(c.cid);
 
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
@@ -539,6 +583,17 @@ export class SessionOrchestrator {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[SessionOrchestrator] contribution poll failed: ${message}\n`);
+    }
+  }
+
+  private async recordAcceptedContribution(cid: string): Promise<void> {
+    this.contributionCount++;
+    try {
+      await this.config.onContributionAccepted?.(cid);
+    } catch (err) {
+      process.stderr.write(
+        `[SessionOrchestrator] session contribution link failed for ${cid}: ${messageFromError(err)}\n`,
+      );
     }
   }
 
@@ -633,10 +688,57 @@ export class SessionOrchestrator {
     if (process.env.NEXUS_API_KEY) env.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
     return {
       name: "grove",
-      command: "bun",
+      command: process.execPath,
       args: ["run", resolveMcpServePath(this.config.projectRoot)],
       env,
     };
+  }
+
+  private async ensureLocalSessionRecord(): Promise<void> {
+    const groveDir = join(this.config.projectRoot, ".grove");
+    if (!existsSync(groveDir)) return;
+
+    try {
+      const { initSqliteDb } = await import("../local/sqlite-store.js");
+      const db = initSqliteDb(join(groveDir, "grove.db"));
+      try {
+        const startedAt = new Date().toISOString();
+        const worktreeStrategies = Object.fromEntries(
+          resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId),
+        );
+        db.prepare(`
+          INSERT OR IGNORE INTO sessions (
+            session_id,
+            uid,
+            goal,
+            preset_name,
+            topology_json,
+            config_json,
+            worktree_strategy_json,
+            status,
+            started_at,
+            finalizers_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        `).run(
+          this.sessionId,
+          randomUUID(),
+          this.config.goal,
+          this.config.contract.name,
+          JSON.stringify(this.config.topology),
+          JSON.stringify(this.config.contract),
+          JSON.stringify(worktreeStrategies),
+          startedAt,
+          JSON.stringify(DEFAULT_SESSION_FINALIZERS),
+        );
+      } finally {
+        db.close();
+      }
+    } catch (error) {
+      throw new Error(
+        `Failed to register local session '${this.sessionId}': ${messageFromError(error)}`,
+      );
+    }
   }
 
   private async ensureReposResolved(): Promise<void> {
@@ -786,6 +888,21 @@ export class SessionOrchestrator {
     if (this.stopped) return;
 
     const sessions = await this.config.runtime.listSessions();
+    const crashed: Array<{ role: string; message: string | undefined }> = [];
+    for (const agent of this.agents) {
+      const current = sessions.find((s) => s.id === agent.session.id);
+      if (current?.status === "crashed") {
+        crashed.push({ role: agent.role, message: current.statusMessage });
+      }
+    }
+    if (crashed.length > 0) {
+      const detail = crashed
+        .map((agent) => (agent.message ? `${agent.role} (${agent.message})` : agent.role))
+        .join(", ");
+      await this.stop(`Agent(s) crashed: ${detail}`, LoopStopStatus.Error);
+      return;
+    }
+
     const allIdle = this.agents.every((agent) => {
       const current = sessions.find((s) => s.id === agent.session.id);
       return current?.status === "idle" || current?.status === "stopped";

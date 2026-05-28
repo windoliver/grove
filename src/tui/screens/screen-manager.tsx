@@ -25,8 +25,10 @@ import { App } from "../app.js";
 import { PagesRouter, type PagesRouterComponentMap } from "../components/pages-router.js";
 import { DagStateStore } from "../data/dag-state-store.js";
 import { type PageKind, PagesStore } from "../data/pages-store.js";
+import { PulseAggregator } from "../data/pulse-aggregator.js";
 import { debugLog } from "../debug-log.js";
 import { DagStateProvider } from "../hooks/dag-state-context.js";
+import { useInformerOptional } from "../hooks/informer-context.js";
 import { isDoneContribution, useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import { PagesStoreProvider } from "../hooks/use-screen-stack.js";
@@ -42,6 +44,7 @@ import { mintTokenForCompensation } from "../safety/internal/compensation.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
+import { PulseView } from "../views/pulse-view.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
@@ -77,6 +80,8 @@ export interface ScreenState {
   sessionWarning?: string;
   /** ISO timestamp when the current session started — used to scope contribution feed. */
   sessionStartedAt?: string;
+  /** True when RunningView is attached to an existing session rather than a freshly spawned one. */
+  resumedSession?: boolean;
   /** Per-agent spawn progress for the spawning screen. */
   spawnStates?: AgentSpawnState[];
   /** Snapshot data captured on transition to complete screen. */
@@ -201,6 +206,51 @@ async function setGoalForCompensation(
   await provider.setGoal(token, goal, acceptance);
 }
 
+/**
+ * Constructs a single {@link PulseAggregator} bound to the live
+ * AgentTask/TimelineEvent/Contribution informers. Built in an effect
+ * (the constructor starts a periodic tick + informer subscriptions, so
+ * it must not run during render); persists across page navigation since
+ * ScreenManager is not unmounted on push/pop, and is disposed when
+ * ScreenManager unmounts (i.e. session end).
+ *
+ * `sessionKey` is included in the effect deps so the aggregator is
+ * disposed+recreated at session boundaries. Informer identity alone is
+ * stable across "New Session" within the same ScreenManager, so without
+ * this the locally-accumulated rate rings/buckets/lastPhase would carry
+ * stale prior-session history into the next session's Pulse view. The
+ * reset zeroes that local accumulation — which is the part that would
+ * otherwise be wrong, since rings only grow forward from live events.
+ *
+ * SCOPE (deliberate, per #308 spec non-goal "per-namespace filtering on
+ * gauges"): the watch protocol does not forward `sessionId` (see
+ * informer-context.tsx — server-side `/api/watch` sessionId filtering is
+ * a future PR), so the informers are namespace-wide. Pulse gauges
+ * (`taskInformer.list()`) and rates therefore reflect ALL activity in
+ * the namespace, not just the active session. The sessionKey reset
+ * bounds the rate *history* to the current session; it does NOT make
+ * the data session-exclusive. Concurrent sessions in one namespace will
+ * bleed into the counts until /api/watch gains sessionId support. This
+ * is an accepted, pre-existing platform limitation, not a Pulse bug.
+ */
+function usePulseAggregator(sessionKey: string): PulseAggregator | null {
+  const taskInformer = useInformerOptional("AgentTask");
+  const timelineInformer = useInformerOptional("TimelineEvent");
+  const contribInformer = useInformerOptional("Contribution");
+  const [aggregator, setAggregator] = useState<PulseAggregator | null>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionKey is an intentional re-init trigger — not read in the body, but a change means a new session, so the aggregator must be disposed+recreated to clear stale rate history.
+  useEffect(() => {
+    const agg = new PulseAggregator(taskInformer, timelineInformer, contribInformer);
+    setAggregator(agg);
+    return () => {
+      agg.dispose();
+    };
+  }, [taskInformer, timelineInformer, contribInformer, sessionKey]);
+
+  return aggregator;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -286,6 +336,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
         ...(resumeSessionStartedAt ? { sessionStartedAt: resumeSessionStartedAt } : {}),
         ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+        ...(effectiveResume ? { resumedSession: true } : {}),
       };
     });
 
@@ -303,6 +354,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // mount so expansion / focus / highlight survive DagView unmount when
     // the user navigates between panels.
     const [dagStateStore] = useState<DagStateStore>(() => new DagStateStore());
+
+    // PulseAggregator — Pulse dashboard data source (#308). Singleton across
+    // page navigation; disposed+recreated at session boundaries so a new
+    // session never shows the prior session's stale rate history.
+    const pulseAggregator = usePulseAggregator(
+      state.sessionId ?? state.sessionStartedAt ?? "no-session",
+    );
 
     // Apply session scope on mount for resumed sessions (startOnRunning path).
     // Must fire before the first contribution poll in the reconcile effect below —
@@ -655,7 +713,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 /* best-effort */
               }
             }
-            setState((s) => ({ ...s, sessionId: session.id }));
+            setState((s) => ({ ...s, sessionId: session.id, resumedSession: false }));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
@@ -682,13 +740,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             const fallbackId = crypto.randomUUID();
             spawnManager.setSessionId(fallbackId);
-            setState((s) => ({ ...s, sessionId: fallbackId }));
+            setState((s) => ({ ...s, sessionId: fallbackId, resumedSession: false }));
           }
         } else {
           // No session provider — generate a local session ID for MCP scoping
           const fallbackId = crypto.randomUUID();
           spawnManager.setSessionId(fallbackId);
-          setState((s) => ({ ...s, sessionId: fallbackId }));
+          setState((s) => ({ ...s, sessionId: fallbackId, resumedSession: false }));
         }
 
         // Transition to spawning screen with per-agent tracking
@@ -777,7 +835,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           })();
         } else {
           // No topology — go straight to running
-          setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
+          setState((s) => ({
+            ...s,
+            screen: "running",
+            goal,
+            sessionStartedAt,
+            resumedSession: false,
+          }));
           // Collapse the wizard so esc from running doesn't re-enter launch-preview.
           // Use resetTo (not replace) for parity with the topology branch in
           // handleSpawnComplete — both paths must collapse the entire wizard
@@ -890,6 +954,17 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       pages.push({ kind: "inspect" });
     }, [pages]);
 
+    // Running view -> Pulse dashboard overlay (#308). Hotkey wiring lands
+    // in Task 6; this exposes the navigation callback.
+    const handleOpenPulse = useCallback(() => {
+      pages.push({ kind: "pulse" });
+    }, [pages]);
+    // Pop the Pulse page back to the running view (Esc / Ctrl+G inside
+    // PulseView). PagesRouter never pops on bare Esc — see its header.
+    const handlePulseBack = useCallback(() => {
+      pages.pop();
+    }, [pages]);
+
     // Screen 4 -> Screen 5: session complete
     const handleComplete = useCallback(
       (reason: string) => {
@@ -912,6 +987,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           goal: _g,
           sessionId: _s,
           sessionStartedAt: _st,
+          resumedSession: _rs,
           spawnStates: _sp,
           completeSnapshot: _c,
           ...preserved
@@ -1035,9 +1111,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             goal={state.goal}
             sessionId={state.sessionId}
             sessionStartedAt={state.sessionStartedAt}
+            suppressInitialFeedSideEffects={state.resumedSession === true}
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
+            userConfig={appProps.userConfig}
             logBuffers={reconcileVersion >= 0 ? spawnManager.getLogBuffers() : undefined}
             agentFailures={agentFailureVersion >= 0 ? spawnManager.getAgentFailures() : undefined}
             onNewContribution={(c) => {
@@ -1065,6 +1143,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }}
             activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
             onEnterInspect={handleEnterInspect}
+            onOpenPulse={handleOpenPulse}
             onComplete={handleComplete}
             onQuit={handleQuit}
             onNavigateBackToMain={handleNavigateBackToMain}
@@ -1093,6 +1172,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           onQuit={handleQuit}
         />
       );
+      const PulsePage = (): React.ReactNode =>
+        wrapWithPermissions(
+          pulseAggregator ? (
+            <PulseView
+              aggregator={pulseAggregator}
+              active={state.screen === "running"}
+              onBack={handlePulseBack}
+            />
+          ) : (
+            <box />
+          ),
+        );
       // panel and entity-detail share the same RunningPage component reference
       // (not wrapper functions) so React's reconciler sees the same type across
       // running/panel/entity-detail stack pushes and preserves the mounted
@@ -1108,6 +1199,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         running: RunningPage,
         inspect: InspectPage,
         complete: CompletePage,
+        pulse: PulsePage,
         panel: RunningPage,
         "entity-detail": RunningPage,
       };
@@ -1121,6 +1213,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       state.goal,
       state.sessionId,
       state.sessionStartedAt,
+      state.resumedSession,
       state.spawnStates,
       state.completeSnapshot,
       topology,
@@ -1130,6 +1223,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       handleLaunchBack,
       handleSpawnComplete,
       handleEnterInspect,
+      handleOpenPulse,
+      handlePulseBack,
+      pulseAggregator,
+      state.screen,
       handleComplete,
       handleNavigateBackToMain,
       handleExitInspect,

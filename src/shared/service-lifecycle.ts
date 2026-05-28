@@ -341,7 +341,7 @@ async function startServicesUnlocked(options: ServiceStartOptions): Promise<Runn
       try {
         const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
         const res = await fetch(`${config.nexusUrl}/health`, {
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(PROBE_TIMEOUTS.nexusHealthFetchMs),
         });
         const body = (await res.json().catch(() => ({}))) as { status?: string };
         if (body.status === "healthy" || body.status === "starting") {
@@ -468,28 +468,51 @@ async function startServicesUnlocked(options: ServiceStartOptions): Promise<Runn
     // failure would mirror the round-5 Nexus-tear-down regression.
     const toKill = children.filter((c) => c.acquired === "spawned");
     const ROLLBACK_DEADLINE_MS = 5_000;
-    const deadline = Date.now() + ROLLBACK_DEADLINE_MS;
+    // Route through the verified terminateChild helper (round 9): the old
+    // raw-kill loop swallowed delivery errors and never confirmed the
+    // SIGKILL postcondition, so a sandboxed/D-state sibling that survived
+    // would be silently leaked.
+    const rollbackSurvivors: ManagedChildProcess[] = [];
     await Promise.all(
       toKill.map(async (child) => {
-        try {
-          child.proc.kill("SIGTERM");
-        } catch {
-          /* already dead */
-        }
-        const remaining = Math.max(0, deadline - Date.now());
-        const exited = await Promise.race([
-          child.proc.exited,
-          new Promise<false>((resolve) => setTimeout(() => resolve(false), remaining)),
-        ]);
-        if (exited === false) {
-          try {
-            child.proc.kill("SIGKILL");
-          } catch {
-            /* already dead */
-          }
+        const result = await terminateChild(
+          {
+            pid: child.pid,
+            kill: (sig: NodeJS.Signals) => child.proc.kill(sig),
+            exited: child.proc.exited,
+          },
+          ROLLBACK_DEADLINE_MS,
+        );
+        if (!result.ok) {
+          rollbackSurvivors.push(child);
+          report(
+            `[startServices] rollback: ${child.name} (PID ${child.pid}) survived teardown: ${result.reason}`,
+          );
         }
       }),
     );
+    // Persist any rollback survivors to grove.pid so the next grove
+    // up/down can target them, instead of leaving them as untracked
+    // orphan listeners.
+    if (rollbackSurvivors.length > 0) {
+      try {
+        const existing = (() => {
+          try {
+            return JSON.parse(readFileSync(pidFilePath, "utf-8")) as Record<string, unknown>;
+          } catch {
+            return {} as Record<string, unknown>;
+          }
+        })();
+        const rewritten = {
+          ...existing,
+          children: rollbackSurvivors.map((c) => ({ name: c.name, pid: c.pid })),
+          startedAt: existing.startedAt ?? new Date().toISOString(),
+        };
+        writeFileSync(pidFilePath, `${JSON.stringify(rewritten, null, 2)}\n`, "utf-8");
+      } catch {
+        /* best-effort */
+      }
+    }
     // Only tear down Nexus if THIS call started it. Reusing a healthy
     // pre-existing Nexus must not get torn down because the HTTP server
     // failed to bind — other work may depend on it.
@@ -607,31 +630,30 @@ export async function stopServices(services: RunningServices): Promise<void> {
   // gated on nexusStartedThisCall, not nexusManaged.
   const ownedChildren = children.filter((c) => c.acquired === "spawned");
 
-  // SIGTERM owned children
-  for (const child of ownedChildren) {
-    try {
-      child.proc.kill("SIGTERM");
-    } catch {
-      // Process may already be dead
-    }
-  }
-
-  // Wait for graceful shutdown (max 5s), then SIGKILL
-  const deadline = Date.now() + 5_000;
-  for (const child of ownedChildren) {
-    const remaining = Math.max(0, deadline - Date.now());
-    const exited = await Promise.race([
-      child.proc.exited,
-      new Promise((resolve) => setTimeout(() => resolve(false), remaining)),
-    ]);
-    if (exited === false) {
-      try {
-        child.proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
+  // Verified termination (round 8): route routine shutdown through the
+  // same terminateChild helper as readiness-failure cleanup so SIGKILL
+  // post-conditions are checked and survivors are surfaced. Without this,
+  // a sandboxed/D-state child that ignores SIGKILL would have its pidfile
+  // entry deleted while still bound to its port, orphaning the listener.
+  const stopSurvivors: ManagedChildProcess[] = [];
+  await Promise.all(
+    ownedChildren.map(async (child) => {
+      const result = await terminateChild(
+        {
+          pid: child.pid,
+          kill: (sig: NodeJS.Signals) => child.proc.kill(sig),
+          exited: child.proc.exited,
+        },
+        5_000,
+      );
+      if (!result.ok) {
+        process.stderr.write(
+          `stopServices: ${child.name} (PID ${child.pid}) survived teardown: ${result.reason}\n`,
+        );
+        stopSurvivors.push(child);
       }
-    }
-  }
+    }),
+  );
 
   // Stop managed Nexus only if we actually started it this call.
   if (nexusManaged && nexusStartedThisCall) {
@@ -644,12 +666,12 @@ export async function stopServices(services: RunningServices): Promise<void> {
   }
 
   // Pidfile policy under mixed ownership:
-  //   - If adopted children remain live: rewrite the pidfile with ONLY
-  //     the adopted entries so subsequent identity checks + `grove down`
-  //     can still find them. Unlinking would orphan the adopted services
-  //     with no record.
-  //   - If we acquired anything (spawned or started Nexus) AND no
-  //     adopted children remain: unlink (we cleaned up everything we
+  //   - Adopted-live children OR spawned-children-that-survived-teardown:
+  //     rewrite the pidfile with those entries. Unlinking would orphan
+  //     listeners with no record (round 8: stopServices survivors had
+  //     no recovery path).
+  //   - If we acquired anything (spawned or started Nexus) AND no live
+  //     adopted/survivor entries: unlink (we cleaned up everything we
   //     owned).
   //   - Pure-borrower call (no spawned, no nexusStartedThisCall): leave
   //     the original owner's pidfile alone.
@@ -663,10 +685,17 @@ export async function stopServices(services: RunningServices): Promise<void> {
     }
   });
   const owned = ownedChildren.length > 0 || (nexusManaged && nexusStartedThisCall);
+  // Merge both branches' preserve sets:
+  //   - adoptedLive: live children we attached to but did not spawn (#191)
+  //   - stopSurvivors: spawned children that survived our verified teardown
+  //     and would otherwise become untracked orphan listeners (#219 round 9)
   // Pure borrowers (owned=false) must NOT touch grove.pid — it belongs
-  // to the live owner. Only rewrite when we own at least one resource
-  // AND we have adopted entries to record. (#191 round 7.)
-  if (owned && adoptedLive.length > 0) {
+  // to the live owner (#191 round 7).
+  const preserveEntries = [
+    ...adoptedLive.map((c) => ({ name: c.name, pid: c.pid })),
+    ...stopSurvivors.map((c) => ({ name: c.name, pid: c.pid })),
+  ];
+  if (owned && preserveEntries.length > 0) {
     try {
       const existing = (() => {
         try {
@@ -675,17 +704,17 @@ export async function stopServices(services: RunningServices): Promise<void> {
           return {} as Record<string, unknown>;
         }
       })();
-      // Preserve per-child metadata (port, serverPort) so the next
-      // force-fresh classification can still tell whether an adopted
-      // MCP is bridged to the right server. Without this, the schema
-      // downgrade would force the classifier into the older-pidfile
-      // killable path on subsequent runs. (#191 round 5.)
+      // Preserve per-child metadata (port, serverPort) from the prior
+      // pidfile so the next force-fresh classification can still tell
+      // whether an adopted MCP is bridged to the right server. Without
+      // this, the schema downgrade would push the classifier into the
+      // older-pidfile killable path on subsequent runs. (#191 round 5.)
       const existingChildren = Array.isArray(existing.children)
         ? (existing.children as ReadonlyArray<Record<string, unknown>>)
         : [];
       const rewritten = {
         ...existing,
-        children: adoptedLive.map((c) => {
+        children: preserveEntries.map((c) => {
           const prior = existingChildren.find((x) => x.name === c.name && x.pid === c.pid);
           return prior ? { ...prior, name: c.name, pid: c.pid } : { name: c.name, pid: c.pid };
         }),
@@ -721,8 +750,51 @@ export async function stopServices(services: RunningServices): Promise<void> {
 /** Default service ports. */
 const DEFAULT_SERVICE_PORTS = { server: 4515, mcp: 4015 } as const;
 
-/** Service health-check timeout (ms). */
-const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+/** Default service health-check timeout (ms). */
+const DEFAULT_SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+
+/** Resolve service health-check timeout (ms). */
+export function resolveServiceHealthTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.GROVE_SERVICE_HEALTH_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SERVICE_HEALTH_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1_000) return DEFAULT_SERVICE_HEALTH_TIMEOUT_MS;
+  return parsed;
+}
+
+/**
+ * Per-probe ceilings for adoption-path checks. Split into two tiers:
+ *
+ * **Cheap transport probes** (tight): TCP connect, lsof — these are kernel-
+ *   speed on localhost. Tight ceilings let an unbound port fall through to
+ *   the spawn path immediately (issue #219).
+ * **Semantic probes** (looser): authenticated HTTP that hits a DB / external
+ *   Nexus that can be slow under load. A tight ceiling here would mis-
+ *   classify a valid-but-slow listener as foreign (review round 1).
+ *
+ * Treat timeout on semantic probes as INDETERMINATE — not a definitive
+ * "foreign" verdict.
+ */
+const PROBE_TIMEOUTS = {
+  /** TCP connect probe against localhost in isPortBound. */
+  portBindSocketMs: 300,
+  /** lsof spawnSync timeout in getListeningPid + describePortOwner. */
+  lsofMs: 800,
+  /**
+   * HTTP fetch against localhost grove-server in verifyServerOwnership.
+   * This is a semantic probe: /api/list?kind=Claim enumerates store state
+   * and can be slow under load. Keep generous to avoid declaring a valid
+   * but slow same-project server foreign.
+   */
+  ownershipFetchMs: 2_000,
+  /**
+   * HTTP fetch against Nexus /health on the reuse fast path. config.nexusUrl
+   * may point at an externally-managed Nexus that responds slower than a
+   * local container; treat sub-3s timeout as failure-to-confirm, not proof
+   * of absence (caller falls through to ensureNexusRunning).
+   */
+  nexusHealthFetchMs: 3_000,
+} as const;
 
 /** Resolve the port a managed service should bind to. */
 export function resolveServicePort(name: string, env: NodeJS.ProcessEnv = process.env): number {
@@ -736,7 +808,7 @@ export function resolveBunExecutable(execPath: string = process.execPath): strin
   return basename(execPath) === "bun" ? execPath : "bun";
 }
 
-function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
+function serviceEnv(name: string, groveDir: string, readinessToken: string): NodeJS.ProcessEnv {
   const port = resolveServicePort(name);
   // Propagate the server's bound port (as resolved by the parent — the same
   // value the server child receives via PORT) so siblings like the MCP
@@ -749,29 +821,304 @@ function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
     GROVE_DIR: groveDir,
     PORT: String(port),
     GROVE_SERVER_PORT: String(serverPort),
+    // Per-spawn unforgeable readiness proof — child echoes on /health, parent
+    // checks. Foreign listener cannot guess this value (round-4 finding).
+    GROVE_HEALTH_TOKEN: readinessToken,
   };
 }
 
+/** Verdict from waitForOwnedReadiness — see function doc. */
+type OwnedReadiness =
+  | { ok: true }
+  | { ok: false; kind: "no-listener" }
+  | { ok: false; kind: "child-exited" }
+  | { ok: false; kind: "owned-by-foreign"; foreignPid: number; owner: string }
+  | { ok: false; kind: "owned-but-unhealthy"; lastStatus: number; lastBody: string }
+  | { ok: false; kind: "owned-but-unresponsive"; lastError: string };
+
 /**
- * Poll a /health endpoint until it returns 200 OK or the timeout expires.
+ * Race-free readiness check for a spawned service (issue #219, review rounds 2-5).
  *
- * Uses exponential backoff starting at 250ms. Does not throw on timeout —
- * the caller checks process liveness separately.
+ * **Authority model** (round 5): lsof PID attribution is the FOUNDATION.
+ * /health's Grove-Health-Token is a secondary signal — useful on lsof-blind
+ * hosts but never trusted on its own when lsof can speak. The env-injected
+ * token can be read out of /proc/<pid>/environ by a same-UID process; a
+ * spoof attempt nonetheless cannot also bind a port already held by our
+ * spawned child, so requiring lsof PID match closes the leak.
+ *
+ * When lsof is unavailable on the host (`probe.kind === "unavailable"`),
+ * the predicate degrades to token-only. Documented limitation.
+ *
+ * Verdicts:
+ *   - ok                       lsof confirms our PID owns the port AND
+ *                              /health returned 2xx (token-bearing
+ *                              preferred; legacy 2xx-without-token is
+ *                              accepted on PID-confirmed listener so
+ *                              older child builds without /health-token
+ *                              still spawn)
+ *   - child-exited             spawnedExit resolved
+ *   - owned-but-unhealthy      lsof confirms our PID, /health returned non-2xx
+ *                              across OWNED_UNHEALTHY_REPEATS polls
+ *   - owned-but-unresponsive   lsof confirms our PID but /health never
+ *                              answered — dependency stall; spawnService
+ *                              leaves the child running for inspection
+ *   - owned-by-foreign         lsof showed a different stable PID across
+ *                              FOREIGN_STABILITY_REPEATS samples
+ *   - no-listener              deadline with no listener at all
  */
-async function waitForServiceHealth(url: string, timeoutMs: number): Promise<void> {
+async function waitForOwnedReadiness(opts: {
+  port: number;
+  spawnedPid: number;
+  spawnedExit: Promise<number>;
+  readinessToken: string;
+  url: string;
+  timeoutMs: number;
+}): Promise<OwnedReadiness> {
+  const { spawnedPid, spawnedExit, readinessToken, url, timeoutMs, port } = opts;
   const deadline = Date.now() + timeoutMs;
+  const FOREIGN_STABILITY_REPEATS = 3;
+  const OWNED_UNHEALTHY_REPEATS = 4;
+  let foreignSeen = 0;
+  let lastForeignPid = 0;
+  let ownedUnhealthySeen = 0;
+  let lastStatus = 0;
+  let lastBody = "";
+  let lastFetchError = "";
+  let exitCode: number | undefined;
+  spawnedExit.then((code) => {
+    exitCode = code;
+  });
   let delay = 250;
   while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (resp.ok) return;
-    } catch {
-      // not ready yet
+    await Promise.resolve();
+    if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
+
+    // Step 1 — lsof attribution comes first. A foreign PID that holds the
+    // port is the only authoritative signal that we lost the bind race;
+    // accept it before doing any HTTP work that could be spoofed.
+    const probe = await probeListenerPid(port);
+    if (probe.kind === "pid" && probe.pid !== spawnedPid) {
+      if (probe.pid === lastForeignPid) foreignSeen += 1;
+      else {
+        lastForeignPid = probe.pid;
+        foreignSeen = 1;
+      }
+      if (foreignSeen >= FOREIGN_STABILITY_REPEATS) {
+        const owner = await describePortOwner(port);
+        return { ok: false, kind: "owned-by-foreign", foreignPid: probe.pid, owner };
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      continue;
     }
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    // probe is one of: pid==spawnedPid, no-listener, unavailable. Any of
+    // these reset the foreign-stability counter.
+    foreignSeen = 0;
+    lastForeignPid = 0;
+
+    let resp: Response | undefined;
+    try {
+      resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+    } catch (err) {
+      lastFetchError = (err as Error).message ?? String(err);
+      await sleep(delay);
+      delay = Math.min(delay * 1.5, 2_000);
+      continue;
+    }
+    await Promise.resolve();
+    if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
+
+    const responseToken = resp.headers.get("Grove-Health-Token");
+    const tokenMatch = responseToken !== null && timingSafeEq(responseToken, readinessToken);
+    const pidConfirmed = probe.kind === "pid" && probe.pid === spawnedPid;
+    const lsofUnavailable = probe.kind === "unavailable";
+
+    if (resp.ok) {
+      // Token match + pre-fetch PID confirmation is sufficient — a spoof
+      // that learned the token cannot also be the spawnedPid AND have
+      // re-bound the port during the fetch window.
+      if (pidConfirmed && tokenMatch) return { ok: true };
+      // Tokenless legacy path (old child build): require POST-fetch lsof to
+      // STILL show our PID. Without this re-check, a TOCTOU between the
+      // pre-fetch sample and the response can let a foreign listener that
+      // bound the port mid-fetch satisfy readiness with a generic 2xx.
+      if (pidConfirmed && !tokenMatch) {
+        const postProbe = await probeListenerPid(port);
+        if (postProbe.kind === "pid" && postProbe.pid === spawnedPid) {
+          return { ok: true };
+        }
+        // PID moved while we were fetching; treat as a foreign-listener
+        // swap and let the next iteration's primary probe classify it.
+      }
+      // lsof-blind host + token match: degraded acceptance, documented
+      // weakness on same-UID hosts.
+      if (lsofUnavailable && tokenMatch) return { ok: true };
+    } else if (pidConfirmed) {
+      // Our listener BUT degraded (e.g. grove-server 503 from store error).
+      lastStatus = resp.status;
+      try {
+        lastBody = (await resp.text()).slice(0, 500);
+      } catch {
+        lastBody = "";
+      }
+      ownedUnhealthySeen += 1;
+      if (ownedUnhealthySeen >= OWNED_UNHEALTHY_REPEATS) {
+        return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
+      }
+    }
+    // Else: indeterminate, keep polling.
+    await sleep(delay);
     delay = Math.min(delay * 1.5, 2_000);
   }
-  // Timeout — caller will check process.kill(pid, 0) to determine liveness
+
+  // Deadline exceeded. Classify based on the most recent evidence.
+  await Promise.resolve();
+  if (exitCode !== undefined) return { ok: false, kind: "child-exited" };
+  if (ownedUnhealthySeen > 0) {
+    return { ok: false, kind: "owned-but-unhealthy", lastStatus, lastBody };
+  }
+  const finalProbe = await probeListenerPid(port);
+  if (finalProbe.kind === "pid") {
+    if (finalProbe.pid === spawnedPid) {
+      return {
+        ok: false,
+        kind: "owned-but-unresponsive",
+        lastError: lastFetchError || "no /health response within deadline",
+      };
+    }
+    const owner = await describePortOwner(port);
+    return { ok: false, kind: "owned-by-foreign", foreignPid: finalProbe.pid, owner };
+  }
+  return { ok: false, kind: "no-listener" };
+}
+
+/** Constant-time string comparison — see waitForOwnedReadiness. */
+function timingSafeEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Typed listener probe — distinguishes "no listener" from "lsof failed". */
+type ListenerProbe =
+  | { kind: "pid"; pid: number }
+  | { kind: "no-listener" }
+  | { kind: "unavailable"; reason: string };
+
+async function probeListenerPid(port: number): Promise<ListenerProbe> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUTS.lsofMs,
+    });
+    if (r.error) return { kind: "unavailable", reason: r.error.message };
+    if (r.signal) return { kind: "unavailable", reason: `lsof killed by ${r.signal}` };
+    if (r.status === null) return { kind: "unavailable", reason: "lsof timeout" };
+    const first = (r.stdout ?? "").trim().split(/\s+/)[0];
+    if (!first) {
+      // lsof exit code 1 + empty stdout = no listener (normal). Any other
+      // non-zero exit = probe failure.
+      if (r.status === 1) return { kind: "no-listener" };
+      if (r.status !== 0) return { kind: "unavailable", reason: `lsof exit ${r.status}` };
+      return { kind: "no-listener" };
+    }
+    const pid = Number.parseInt(first, 10);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      return { kind: "unavailable", reason: `lsof stdout parse failed: ${first}` };
+    }
+    return { kind: "pid", pid };
+  } catch (err) {
+    return { kind: "unavailable", reason: (err as Error).message };
+  }
+}
+
+/**
+ * Bounded SIGTERM → wait → SIGKILL of a child we spawned. Uses the actual
+ * `exited` promise to stop signalling once the child reaps, so a PID reuse
+ * (OS recycling the spawned PID before our SIGKILL fires) cannot signal an
+ * unrelated user process — round-3 finding, hardened in round 4.
+ *
+ * Both signal sites flush microtasks via `await Promise.resolve()` before
+ * checking the exit flag, so an already-settled `exited` promise reliably
+ * inhibits the signal.
+ */
+/** Result returned by terminateChild — see function docs. */
+type TerminateResult =
+  | { ok: true; how: "already-exited" | "sigterm" | "sigkill" }
+  | { ok: false; reason: string; stillAlive: boolean };
+
+/** Process surface terminateChild operates on — pluggable for tests. */
+interface TerminationTarget {
+  readonly pid: number;
+  /** Signal delivery — mirrors child_process kill / process.kill. */
+  readonly kill: (signal: NodeJS.Signals) => void;
+  readonly exited: Promise<number>;
+}
+
+async function terminateChild(
+  target: TerminationTarget,
+  deadlineMs: number = 3_000,
+): Promise<TerminateResult> {
+  const { pid, kill, exited } = target;
+  let isExited = false;
+  exited.then(() => {
+    isExited = true;
+  });
+  await Promise.resolve();
+  if (isExited) return { ok: true, how: "already-exited" };
+
+  try {
+    kill("SIGTERM");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, how: "already-exited" };
+    return { ok: false, reason: `SIGTERM failed: ${code ?? String(err)}`, stillAlive: true };
+  }
+
+  const winner = await Promise.race([
+    exited.then(() => "exited" as const),
+    sleep(deadlineMs).then(() => "timeout" as const),
+  ]);
+  if (winner === "exited") return { ok: true, how: "sigterm" };
+
+  await Promise.resolve();
+  if (isExited) return { ok: true, how: "sigterm" };
+
+  try {
+    kill("SIGKILL");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { ok: true, how: "already-exited" };
+    return { ok: false, reason: `SIGKILL failed: ${code ?? String(err)}`, stillAlive: true };
+  }
+
+  // Round 7 postcondition: confirm the child actually exited. SIGKILL
+  // delivery is asynchronous on macOS/Linux; a sandboxed/D-state process
+  // can survive the signal call and orphan the listener.
+  const sigkillDeadline = Date.now() + 1_500;
+  while (Date.now() < sigkillDeadline) {
+    await Promise.resolve();
+    if (isExited) return { ok: true, how: "sigkill" };
+    if (pid > 0) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return { ok: true, how: "sigkill" };
+      }
+    }
+    await sleep(50);
+  }
+  return {
+    ok: false,
+    reason: `process ${pid} still alive 1.5s after SIGKILL`,
+    stillAlive: true,
+  };
 }
 
 function waitForChildExit(child: NodeChildProcess): Promise<number> {
@@ -822,7 +1169,7 @@ export async function verifyServerOwnership(
   try {
     const bogus = await fetch(url, {
       headers: { Authorization: "Bearer grv_NOT_A_REAL_KEY_ownership_probe" },
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(PROBE_TIMEOUTS.ownershipFetchMs),
     });
     if (bogus.ok) {
       return {
@@ -842,7 +1189,7 @@ export async function verifyServerOwnership(
   try {
     resp = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(PROBE_TIMEOUTS.ownershipFetchMs),
     });
   } catch (err) {
     return { ok: false, reason: `Auth probe failed: ${(err as Error).message ?? err}` };
@@ -885,7 +1232,7 @@ async function describePortOwner(port: number): Promise<string> {
     const { spawnSync } = await import("node:child_process");
     const r = spawnSync("lsof", [`-iTCP:${port}`, "-sTCP:LISTEN", "-Pn"], {
       encoding: "utf8",
-      timeout: 1500,
+      timeout: PROBE_TIMEOUTS.lsofMs,
     });
     const out = (r.stdout ?? "").trim();
     if (!out) return "(lsof returned no listeners)";
@@ -905,7 +1252,7 @@ async function getListeningPid(port: number): Promise<number | undefined> {
     const { spawnSync } = await import("node:child_process");
     const r = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
       encoding: "utf8",
-      timeout: 1500,
+      timeout: PROBE_TIMEOUTS.lsofMs,
     });
     const first = (r.stdout ?? "").trim().split(/\s+/)[0];
     const pid = first ? Number.parseInt(first, 10) : Number.NaN;
@@ -1150,7 +1497,7 @@ async function isPortBound(port: number): Promise<boolean> {
       }
       resolve(v);
     };
-    sock.setTimeout(1500);
+    sock.setTimeout(PROBE_TIMEOUTS.portBindSocketMs);
     sock.once("connect", () => done(true));
     sock.once("error", () => done(false));
     sock.once("timeout", () => done(false));
@@ -1315,36 +1662,96 @@ async function spawnService(
   try {
     const { spawn: nodeSpawn } = await import("node:child_process");
     const { openSync } = await import("node:fs");
+    const { randomUUID } = await import("node:crypto");
     const logPath = join(groveDir, `${name}.log`);
     const logFd = openSync(logPath, "a");
+    // Per-spawn unforgeable readiness token. Injected via env, echoed by
+    // child on /health, checked by parent in waitForOwnedReadiness. A
+    // foreign listener cannot guess this value, closing the round-4 finding
+    // that a public Pid header alone is spoofable on an unauthenticated
+    // endpoint.
+    const readinessToken = randomUUID();
     const child = nodeSpawn(resolveBunExecutable(), [entryPoint], {
       cwd: join(groveDir, ".."),
       stdio: ["ignore", logFd, logFd],
-      env: serviceEnv(name, groveDir),
+      env: serviceEnv(name, groveDir, readinessToken),
       detached: true,
     });
     const pid = child.pid ?? 0;
     const exited = waitForChildExit(child);
     child.unref();
 
-    // Wait for the service to pass its health check instead of sleeping blindly.
+    // Unified readiness predicate (issue #219 review rounds 2-4). Token in
+    // /health header is authoritative; lsof is fallback for legacy builds;
+    // owned-but-unhealthy / owned-but-unresponsive distinguish dependency
+    // problems from bind-races so we don't kill our own healthy child.
     if (port) {
-      await waitForServiceHealth(`http://localhost:${port}/health`, SERVICE_HEALTH_TIMEOUT_MS);
-    }
-
-    // Verify the process is still alive after health check / timeout.
-    // If it died during startup, surface the failure instead of silently
-    // returning null — leaving startServices believing the service is
-    // running when it isn't would only resurface as confusing 401s/timeouts
-    // downstream (the same class of regression Codex flagged in round 2).
-    try {
-      process.kill(pid, 0); // Signal 0 = check existence
-    } catch {
-      const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
-      throw new Error(
-        `${name} exited during startup. Last log lines:\n${tail || "(empty)"}\n` +
-          `Common cause: another listener on the configured port. Run: lsof -iTCP:${port} -sTCP:LISTEN`,
-      );
+      const healthTimeoutMs = resolveServiceHealthTimeoutMs();
+      const readiness = await waitForOwnedReadiness({
+        port,
+        spawnedPid: pid,
+        spawnedExit: exited,
+        readinessToken,
+        url: `http://localhost:${port}/health`,
+        timeoutMs: healthTimeoutMs,
+      });
+      if (!readiness.ok) {
+        // Teardown policy (round 6): every non-ok verdict EXCEPT
+        // child-exited gets terminated. The startup log file
+        // (`${groveDir}/${name}.log`) is preserved on disk for post-mortem.
+        let cleanupError = "";
+        if (readiness.kind !== "child-exited") {
+          const term = await terminateChild({
+            pid,
+            kill: (sig: NodeJS.Signals) => process.kill(pid, sig),
+            exited,
+          });
+          if (!term.ok) {
+            // Round 7: SIGKILL failed or child survived it. The port stays
+            // bound by an unmanaged PID. Make this LOUD in the error so
+            // operators clean up manually before grove down/up tries again.
+            cleanupError =
+              `\nCLEANUP FAILED: spawned PID ${pid} could not be terminated (${term.reason}). ` +
+              `Port ${port} is leaked. Run: kill -9 ${pid}; lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill -9`;
+          }
+        }
+        const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+        const detail = (() => {
+          switch (readiness.kind) {
+            case "owned-by-foreign":
+              return `port held by PID ${readiness.foreignPid}; owner=${readiness.owner}`;
+            case "child-exited":
+              return `spawned PID ${pid} exited before binding. Last log lines:\n${tail || "(empty)"}`;
+            case "owned-but-unhealthy":
+              return (
+                `${name} bound the port but /health returned ${readiness.lastStatus}; ` +
+                `service is dependency-degraded (not a bind-race). Body: ${readiness.lastBody}`
+              );
+            case "owned-but-unresponsive":
+              return (
+                `${name} bound the port (PID ${pid}) but /health never responded within ` +
+                `${healthTimeoutMs}ms — dependency stall, not a bind-race. ` +
+                `Last fetch error: ${readiness.lastError}`
+              );
+            case "no-listener":
+              return `no listener bound within ${healthTimeoutMs}ms`;
+          }
+        })();
+        throw new Error(
+          `${name} did not reach readiness on port ${port}: ${detail}\n` +
+            `Startup log preserved at: ${join(groveDir, `${name}.log`)}\n` +
+            `Diagnose live state with: lsof -iTCP:${port} -sTCP:LISTEN${cleanupError}`,
+        );
+      }
+    } else {
+      // No port to verify (e.g. test/stub service). Fall back to the
+      // pre-round-2 liveness check.
+      try {
+        process.kill(pid, 0);
+      } catch {
+        const tail = await readLogTail(join(groveDir, `${name}.log`)).catch(() => "");
+        throw new Error(`${name} exited during startup. Last log lines:\n${tail || "(empty)"}`);
+      }
     }
 
     const proc = {

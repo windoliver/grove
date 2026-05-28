@@ -13,6 +13,7 @@ import { parse as yamlParse } from "yaml";
 
 import {
   derivePort,
+  describeNexusBuildLabel,
   generateNexusYaml,
   inferNexusPreset,
   type NexusState,
@@ -21,6 +22,7 @@ import {
   readNexusApiKey,
   readNexusState,
   readNexusUrl,
+  shouldReuseExistingNexusForUp,
   waitForNexusHealth,
 } from "./nexus-lifecycle.js";
 
@@ -132,6 +134,26 @@ describe("inferNexusPreset", () => {
 
   test('mode=remote, no flags → "local"', () => {
     expect(inferNexusPreset({ name: "t", mode: "remote" })).toBe("local");
+  });
+});
+
+describe("source-build lifecycle policy", () => {
+  test("normal starts may reuse an existing healthy Nexus", () => {
+    expect(shouldReuseExistingNexusForUp()).toBe(true);
+    expect(shouldReuseExistingNexusForUp({ build: false })).toBe(true);
+  });
+
+  test("source-build requests do not silently reuse an existing Nexus", () => {
+    expect(shouldReuseExistingNexusForUp({ build: true })).toBe(false);
+    expect(shouldReuseExistingNexusForUp({ nexusSource: "/tmp/nexus" })).toBe(false);
+  });
+
+  test("source-build progress labels include the requested source path", () => {
+    expect(describeNexusBuildLabel({ nexusSource: "/tmp/nexus" })).toBe(
+      " (source build from /tmp/nexus)",
+    );
+    expect(describeNexusBuildLabel({ build: true })).toBe(" (--build)");
+    expect(describeNexusBuildLabel()).toBe("");
   });
 });
 
@@ -620,6 +642,30 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     expect(calls[0]).toContain("--timeout");
     expect(calls[1]).not.toContain("--timeout");
     expect(out).toContain("http://localhost:2026");
+  });
+
+  test("uses extended nexus up timeout for local source builds", async () => {
+    const dir = makeTempDir();
+    const sourceDir = makeTempDir();
+    const calls: string[][] = [];
+    writeFileSync(join(sourceDir, "nexus-stack.yml"), "services: {}\n");
+    try {
+      // @ts-expect-error -- mock
+      Bun.spawn = (args: string[], _opts?: unknown) => {
+        calls.push(args);
+        return fakeProc(0, "nexus  http://localhost:2026\n", "");
+      };
+      const { nexusUp } = await import("./nexus-lifecycle.js");
+      await nexusUp(dir, { nexusSource: sourceDir });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("--timeout");
+      expect(calls[0]).toContain("900");
+      expect(calls[0]).toContain("--compose-file");
+      expect(calls[0]).toContain(join(sourceDir, "nexus-stack.yml"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(sourceDir, { recursive: true, force: true });
+    }
   });
 
   test("falls back when CLI says 'unrecognized arguments'", async () => {

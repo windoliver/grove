@@ -8,6 +8,12 @@
 
 import type { KeyEvent } from "@opentui/core";
 import { isHelpToggleKey } from "../hooks/shared-keyboard-core.js";
+import {
+  type KeyBinding,
+  keyEventToToken,
+  type ResolvedKeymap,
+  resolveKeySequence,
+} from "../keymap/keymap.js";
 import type { ZoomLevel } from "../panels/panel-registry.js";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +80,17 @@ export interface RunningKeyboardState {
    * approve/deny a pending tmux permission prompt.
    */
   readonly confirmModalOpen: boolean;
+  /** Active keymap for normal-mode leader sequences. */
+  readonly resolvedKeymap?: ResolvedKeymap | undefined;
+  /** Pending keymap prefix, if the operator is entering a leader sequence. */
+  readonly keymapPrefix?: readonly string[] | undefined;
+  /**
+   * #310: LogView filter-input mode. When true, the dispatcher swallows
+   * printable keys into the LogView filter buffer instead of routing them
+   * to normal-mode handlers. Only meaningful when LogView is mounted
+   * (Terminal panel expanded + actions.logViewActive).
+   */
+  readonly logFilterMode: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,19 +141,47 @@ export interface RunningKeyboardActions {
   readonly traceScrollToBottom: () => void;
   readonly traceScrollToTop: () => void;
   readonly traceCycleAgent: () => void;
+  // Handoff panel
+  readonly handoffCursorDown: () => void;
+  readonly handoffCursorUp: () => void;
+  readonly resendSelectedHandoff: () => void;
+  readonly rerouteSelectedHandoff: () => void;
+  readonly cancelSelectedHandoff: () => void;
+  readonly manualResolveSelectedHandoff: () => void;
   // Navigation
   readonly openDetail: () => void;
   readonly enterInspect: () => void;
+  readonly openPulse: () => void;
   readonly quit: () => void;
   // Permission
   readonly approvePermission: () => void;
   readonly denyPermission: () => void;
+  // LogView (#310): controlled-state action callbacks for the live-log pane.
+  // State (logPaused/logFilter/logFilterMode/logScrollOffset) lives in
+  // running-view; the dispatcher fires these when the Terminal panel is
+  // expanded AND running-view chose to mount <LogView> (logViewActive=true).
+  readonly logTogglePause: () => void;
+  readonly logScrollDown: () => void;
+  readonly logScrollUp: () => void;
+  readonly logScrollToBottom: () => void;
+  readonly logScrollToTop: () => void;
+  readonly logEnterFilterMode: () => void;
+  readonly logCommitFilter: () => void;
+  readonly logCancelFilter: () => void;
+  readonly logFilterAppend: (ch: string) => void;
+  readonly logFilterBackspace: () => void;
+  readonly onKeymapPrefixChange?: ((prefix: readonly string[]) => void) | undefined;
   // Context flags (not actions, just state the handler needs to make decisions)
   readonly hasPermissions: boolean;
   readonly hasActiveRoles: boolean;
   readonly hasSendToAgent: boolean;
   readonly feedLength: number;
   readonly hasAskUser: boolean;
+  /**
+   * #310: true when running-view has chosen to render <LogView> in the
+   * Terminal panel slot. Gates the LogView key-dispatch block.
+   */
+  readonly logViewActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +219,89 @@ export function toggleFullscreen(
 /** Collapse the expanded panel back to feed-only view. */
 export function collapsePanel(): { expandedPanel: RunningPanel | null; zoomLevel: ZoomLevel } {
   return { expandedPanel: null, zoomLevel: "normal" };
+}
+
+function runningPanelForKeyBinding(binding: KeyBinding): RunningPanel | undefined {
+  const [, panelId] = binding.id.split(":");
+  switch (panelId) {
+    case "agents":
+      return RunningPanel.Agents;
+    case "dag":
+      return RunningPanel.Dag;
+    case "terminal":
+      return RunningPanel.Terminal;
+    default:
+      return undefined;
+  }
+}
+
+function executeRunningKeymapAction(
+  binding: KeyBinding,
+  state: RunningKeyboardState,
+  actions: RunningKeyboardActions,
+): boolean {
+  switch (binding.action) {
+    case "quit":
+      if (state.showVfs) actions.dismissVfs();
+      else actions.showQuitDialog();
+      return true;
+    case "help":
+      actions.toggleHelp();
+      return true;
+    case "focus_panel":
+    case "toggle_panel": {
+      if (binding.id === "toggle_panel:vfs") {
+        actions.toggleVfs();
+        return true;
+      }
+      const panel = runningPanelForKeyBinding(binding);
+      if (panel === undefined) return false;
+      actions.expandPanel(panel);
+      return true;
+    }
+    case "zoom_cycle":
+      if (state.expandedPanel === null) return false;
+      actions.toggleFullscreen();
+      return true;
+    case "cursor_down":
+      if (state.expandedPanel === RunningPanel.Trace) actions.traceSelectDown();
+      else if (state.expandedPanel === RunningPanel.Handoffs) actions.handoffCursorDown();
+      else actions.feedCursorDown();
+      return true;
+    case "cursor_up":
+      if (state.expandedPanel === RunningPanel.Trace) actions.traceSelectUp();
+      else if (state.expandedPanel === RunningPanel.Handoffs) actions.handoffCursorUp();
+      else actions.feedCursorUp();
+      return true;
+    case "search_start":
+      actions.enterFilterMode();
+      return true;
+    case "broadcast":
+    case "direct_message":
+      if (!(actions.hasSendToAgent && actions.hasActiveRoles)) return false;
+      actions.enterPromptMode();
+      return true;
+    case "approve":
+      if (!(actions.hasPermissions && !state.confirmModalOpen)) return false;
+      actions.approvePermission();
+      return true;
+    case "deny":
+      if (!(actions.hasPermissions && !state.confirmModalOpen)) return false;
+      actions.denyPermission();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function shouldSuppressLegacyRunningKey(
+  key: KeyEvent,
+  token: string,
+  keymap: ResolvedKeymap,
+): boolean {
+  if (token === "q") return keymap.bindings.some((binding) => binding.action === "quit");
+  if (isHelpToggleKey(key)) return keymap.bindings.some((binding) => binding.action === "help");
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +390,89 @@ export function routeRunningKey(
     return true; // Swallow keys in help mode
   }
 
+  // ─── LogView mode (#310): live-log keys when Terminal panel hosts LogView ───
+  // Active only when running-view chose to mount <LogView> in the Terminal
+  // panel slot (e.g., ACPX sessions, currently gated by GROVE_LOGVIEW=1).
+  // Placed BEFORE normal-mode handlers because LogView shadows '/', escape,
+  // and j/k/g/G with its own behavior. Unmatched keys fall through to
+  // global handlers so the operator can still press 1-5 to switch panels,
+  // 'q' to quit, etc.
+  if (state.expandedPanel === RunningPanel.Terminal && actions.logViewActive) {
+    if (state.logFilterMode) {
+      if (input === "return") {
+        actions.logCommitFilter();
+        return true;
+      }
+      if (input === "escape") {
+        actions.logCancelFilter();
+        return true;
+      }
+      if (input === "backspace") {
+        actions.logFilterBackspace();
+        return true;
+      }
+      if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        actions.logFilterAppend(key.sequence);
+        return true;
+      }
+      return true; // swallow other keys while filter prompt is open
+    }
+
+    if (input === "space") {
+      actions.logTogglePause();
+      return true;
+    }
+    if (input === "/" || key.sequence === "/") {
+      actions.logEnterFilterMode();
+      return true;
+    }
+    // Shift+G must be checked before plain "g" since input === "g" matches both.
+    if (key.shift && input === "g") {
+      actions.logScrollToBottom();
+      return true;
+    }
+    if (input === "g") {
+      actions.logScrollToTop();
+      return true;
+    }
+    if (input === "j" || input === "down") {
+      actions.logScrollDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.logScrollUp();
+      return true;
+    }
+    // Unmatched keys fall through to global handlers.
+  }
+
+  const resolvedKeymap = state.resolvedKeymap;
+  const keymapPrefix = state.keymapPrefix ?? [];
+  if (resolvedKeymap !== undefined) {
+    const token = keyEventToToken(key);
+    if (token !== undefined) {
+      const nextPrefix = Object.freeze([...keymapPrefix, token]);
+      const result = resolveKeySequence(resolvedKeymap.bindings, nextPrefix);
+      switch (result.kind) {
+        case "pending":
+          actions.onKeymapPrefixChange?.(result.prefix);
+          return true;
+        case "match":
+          actions.onKeymapPrefixChange?.([]);
+          if (executeRunningKeymapAction(result.binding, state, actions)) return true;
+          if (keymapPrefix.length > 0) return true;
+          break;
+        case "miss":
+          if (keymapPrefix.length > 0) {
+            actions.onKeymapPrefixChange?.([]);
+            return true;
+          }
+          if (shouldSuppressLegacyRunningKey(key, token, resolvedKeymap)) return false;
+          break;
+      }
+    }
+  }
+
   // ─── Normal mode ───
 
   // '?': toggle help overlay
@@ -297,6 +508,22 @@ export function routeRunningKey(
   // Ctrl+G: enter inspect mode (Ctrl+I shares byte 0x09 with Tab — unusable in terminals)
   if (isCtrl && input === "g") {
     actions.enterInspect();
+    return true;
+  }
+
+  // p: open the Pulse page (#308). Gated like sibling single-key nav: the
+  // cmd/prompt/help short-circuits above already return before this point;
+  // the explicit guards keep it inert if the gating model changes and also
+  // suppress it while the VFS overlay is up (VFS is not a blanket
+  // short-circuit in normal mode).
+  if (
+    input === "p" &&
+    !state.promptMode &&
+    state.cmdMode === "none" &&
+    !state.showHelp &&
+    !state.showVfs
+  ) {
+    actions.openPulse();
     return true;
   }
 
@@ -416,6 +643,34 @@ export function routeRunningKey(
     // Tab: cycle to next agent
     if (input === "tab") {
       actions.traceCycleAgent();
+      return true;
+    }
+    return false;
+  }
+
+  if (state.expandedPanel === RunningPanel.Handoffs) {
+    if (input === "j" || input === "down") {
+      actions.handoffCursorDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.handoffCursorUp();
+      return true;
+    }
+    if (input === "s") {
+      actions.resendSelectedHandoff();
+      return true;
+    }
+    if (input === "r") {
+      actions.rerouteSelectedHandoff();
+      return true;
+    }
+    if (input === "x") {
+      actions.cancelSelectedHandoff();
+      return true;
+    }
+    if (input === "v") {
+      actions.manualResolveSelectedHandoff();
       return true;
     }
     return false;

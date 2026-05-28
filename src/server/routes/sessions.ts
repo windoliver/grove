@@ -5,6 +5,7 @@
  * GET  /api/sessions           — List sessions with optional status filter.
  * GET  /api/sessions/:id/delete-blockers — List blockers preventing deletion.
  * GET  /api/sessions/:id       — Get a single session by ID.
+ * GET  /api/sessions/:id/contributions — Full contribution history for a session.
  * DELETE /api/sessions/:id     — Delete a session.
  * PUT  /api/sessions/:id/archive — Archive a session.
  * POST /api/sessions/:id/contributions — Record a contribution against a session.
@@ -14,6 +15,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { getPreset, presetToSessionConfig } from "../../cli/presets/index.js";
 import type { GroveContract } from "../../core/contract.js";
+import type { Contribution } from "../../core/models.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import type { Session } from "../../core/session.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -252,6 +254,35 @@ sessions.get("/:id", async (c) => {
     );
   }
   return c.json(toSessionResponse(session));
+});
+
+/** GET /api/sessions/:id/contributions — Full contribution history for a session. */
+sessions.get("/:id/contributions", async (c) => {
+  const deps = c.get("deps");
+  const { goalSessionStore } = deps;
+  if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+
+  const sessionId = c.req.param("id");
+  const session = await goalSessionStore.getSession(sessionId);
+  if (!session) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: `Session not found: ${sessionId}` } },
+      404,
+    );
+  }
+
+  const cids = await goalSessionStore.getSessionContributions(sessionId);
+  if (cids.length === 0) return c.json([]);
+
+  const contributionStore = contributionStoreForSession(deps, sessionId);
+  const byCid = await contributionStore.getMany(cids);
+  const contributions: Contribution[] = [];
+  for (const cid of cids) {
+    const contribution = byCid.get(cid);
+    if (contribution !== undefined) contributions.push(contribution);
+  }
+
+  return c.json(contributions);
 });
 
 /**

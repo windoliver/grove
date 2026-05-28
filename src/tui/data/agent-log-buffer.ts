@@ -2,9 +2,9 @@
  * Per-agent log buffer — composes RingBuffer + IncrementalLogReader.
  *
  * Owns the full trace history for one agent role in one session.
- * Subscribers are notified at most once per 16ms frame (batched flush)
- * to avoid flooding React with re-renders when multiple agents produce
- * output simultaneously.
+ * Subscribers are notified at most once per flushMs window (batched flush,
+ * default 16ms) to avoid flooding React with re-renders when multiple agents
+ * produce output simultaneously.
  *
  * Role and sessionId are stored on the buffer instance, not on each LogLine,
  * to save ~30% memory at 10K lines per agent.
@@ -55,11 +55,12 @@ export function classifyLine(line: string): LogLineType {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CAPACITY = 10_000;
-const FLUSH_INTERVAL_MS = 16; // ~60fps
+const DEFAULT_FLUSH_INTERVAL_MS = 16; // ~60fps
 
 export class AgentLogBuffer {
   readonly role: string;
   readonly sessionId: string;
+  readonly flushMs: number;
 
   private readonly buffer: RingBuffer<LogLine>;
   private readonly listeners = new Set<LogBufferListener>();
@@ -78,9 +79,15 @@ export class AgentLogBuffer {
    */
   private readonly seekedPositions = new Map<string, number>();
 
-  constructor(role: string, sessionId: string, capacity: number = DEFAULT_CAPACITY) {
+  constructor(
+    role: string,
+    sessionId: string,
+    capacity: number = DEFAULT_CAPACITY,
+    flushMs: number = DEFAULT_FLUSH_INTERVAL_MS,
+  ) {
     this.role = role;
     this.sessionId = sessionId;
+    this.flushMs = Number.isFinite(flushMs) && flushMs > 0 ? flushMs : DEFAULT_FLUSH_INTERVAL_MS;
     this.buffer = new RingBuffer<LogLine>(capacity);
   }
 
@@ -191,7 +198,7 @@ export class AgentLogBuffer {
 
   // ─── Subscription ───
 
-  /** Subscribe to buffer changes. Listener is called at most once per 16ms. */
+  /** Subscribe to buffer changes. Listener is called at most once per flushMs (default 16ms). */
   subscribe(listener: LogBufferListener): void {
     this.listeners.add(listener);
   }
@@ -288,7 +295,7 @@ export class AgentLogBuffer {
           this.dirty = false;
           this.notifyListeners();
         }
-      }, FLUSH_INTERVAL_MS);
+      }, this.flushMs);
     }
   }
 

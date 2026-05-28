@@ -1,33 +1,95 @@
 /**
  * Tests for HelpOverlay:
- *   1. PANEL_BINDINGS completeness — every registered panel appears
+ *   1. Resolved keymap rendering
  *   2. Context-sensitive section rendering per focusedPanel
  *   3. visible=false renders nothing
  */
 
 import { describe, expect, test } from "bun:test";
+import React from "react";
+import type * as TestRendererTypes from "react-test-renderer";
 import { Panel } from "../hooks/use-panel-focus.js";
+import { resolveBuiltinKeymap } from "../keymap/keymap.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+type RenderNode = {
+  readonly children?: readonly RenderChild[] | null;
+};
+type RenderChild = RenderNode | string;
+
+function textOf(node: RenderChild | null): string {
+  if (node === null) return "";
+  if (typeof node === "string") return node;
+  return (node.children ?? []).map((child) => textOf(child)).join("");
+}
+
+function sectionTexts(root: RenderNode | null): ReadonlyMap<string, string> {
+  const sections = root?.children?.[1];
+  if (typeof sections === "string") return new Map();
+  const entries = (sections?.children ?? [])
+    .filter((section): section is RenderNode => typeof section !== "string")
+    .map((section) => {
+      const titleNode = section.children?.[0];
+      const title = typeof titleNode === "string" ? titleNode : textOf(titleNode ?? null);
+      return [title, textOf(section)] as const;
+    });
+  return new Map(entries);
+}
+
+async function renderHelpOverlay(
+  props: {
+    readonly isDetailView?: boolean | undefined;
+    readonly focusedPanel?: Panel | undefined;
+  } = {},
+): Promise<TestRendererTypes.ReactTestRenderer> {
+  const TestRendererModule = await import("react-test-renderer");
+  const TestRenderer = (TestRendererModule as unknown as { default: typeof TestRendererTypes })
+    .default;
+  const { act } = TestRendererModule;
+  const { HelpOverlay } = await import("./help-overlay.js");
+
+  let renderer!: TestRendererTypes.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(HelpOverlay, {
+        visible: true,
+        resolvedKeymap: resolveBuiltinKeymap("default"),
+        ...props,
+      }),
+    );
+  });
+  return renderer;
+}
+
+async function unmountHelpOverlay(renderer: TestRendererTypes.ReactTestRenderer): Promise<void> {
+  const { act } = await import("react-test-renderer");
+  await act(async () => {
+    renderer.unmount();
+  });
+}
+
 // ---------------------------------------------------------------------------
-// 1. PANEL_BINDINGS completeness
+// 1. Resolved keymap rendering
 // ---------------------------------------------------------------------------
 
-describe("HelpOverlay — PANEL_BINDINGS completeness", () => {
-  test("every PANEL_REGISTRY entry's keybinding appears in PANEL_BINDINGS", async () => {
-    // We verify this by reading the module source: PANEL_BINDINGS is derived
-    // from PANEL_REGISTRY, so every registered panel must have a keybinding entry.
-    // This test ensures the derivation covers all panels — including new ones.
+describe("HelpOverlay — resolved keymap rendering", () => {
+  test("source accepts a resolvedKeymap prop", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
 
-    // The panel bindings must be derived from PANEL_REGISTRY (not a hardcoded list).
-    expect(source).toContain("PANEL_REGISTRY");
-    expect(source).toContain("PANEL_BINDINGS");
+    expect(source).toContain("resolvedKeymap");
+    expect(source).toContain("formatKeySequence");
+  });
 
-    // Verify the derivation uses registry keybinding field.
-    expect(source).toContain("def.keybinding");
+  test("source no longer renders panel bindings from def.keybinding directly", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
+
+    expect(source).not.toContain("def.keybinding");
   });
 
   test("every registered panel keybinding is distinct", () => {
@@ -41,32 +103,57 @@ describe("HelpOverlay — PANEL_BINDINGS completeness", () => {
     expect(planDef).toBeDefined();
     expect(planDef!.keybinding).toBe("`");
   });
-
-  test("core panels 1-4 are assigned to Dag/Detail/Frontier/Claims", () => {
-    const byKey = new Map(PANEL_REGISTRY.map((def) => [def.keybinding, def.panel]));
-    expect(byKey.get("1")).toBe(Panel.Dag);
-    expect(byKey.get("2")).toBe(Panel.Detail);
-    expect(byKey.get("3")).toBe(Panel.Frontier);
-    expect(byKey.get("4")).toBe(Panel.Claims);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Context-sensitive sections — panel comparisons use Panel enum
+// 2. Context-sensitive sections — focused panel is still typed as Panel
 // ---------------------------------------------------------------------------
 
-describe("HelpOverlay — uses Panel enum constants (not magic numbers)", () => {
-  test("source uses Panel.Artifact not magic number 7", async () => {
+describe("HelpOverlay — focused panel sections", () => {
+  test("source derives focused panel bindings from resolved keymap", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const source = readFileSync(resolve(import.meta.dir, "help-overlay.tsx"), "utf-8");
-    expect(source).toContain("Panel.Artifact");
-    expect(source).toContain("Panel.Terminal");
-    expect(source).toContain("Panel.Search");
-    expect(source).toContain("Panel.Decisions");
-    expect(source).toContain("Panel.Frontier");
+
+    expect(source).toContain("bindingsForPanel");
     // Must NOT contain standalone numeric panel comparisons
     expect(source).not.toMatch(/=== \d+/);
+  });
+
+  test("Panels section excludes focused-panel action bindings", async () => {
+    const renderer = await renderHelpOverlay();
+    const sections = sectionTexts(renderer.toJSON() as RenderNode | null);
+    const panels = sections.get("Panels") ?? "";
+
+    expect(panels).toContain("Toggle Terminal panel");
+    expect(panels).not.toContain("Enter terminal input mode");
+    expect(panels).not.toContain("Previous artifact");
+    expect(panels).not.toContain("Approve pending question");
+    expect(panels).not.toContain("Browse VFS entry");
+    await unmountHelpOverlay(renderer);
+  });
+
+  test("Focused Panel section excludes panel switching binding", async () => {
+    const renderer = await renderHelpOverlay({ focusedPanel: Panel.Artifact });
+    const sections = sectionTexts(renderer.toJSON() as RenderNode | null);
+    const focused = sections.get("Focused Panel") ?? "";
+
+    expect(focused).toContain("Previous artifact");
+    expect(focused).toContain("Toggle artifact diff");
+    expect(focused).not.toContain("Toggle Artifact panel");
+    await unmountHelpOverlay(renderer);
+  });
+
+  test("Detail view keeps navigation and panel sections", async () => {
+    const renderer = await renderHelpOverlay({ isDetailView: true });
+    const sections = sectionTexts(renderer.toJSON() as RenderNode | null);
+
+    expect(sections.has("Global")).toBe(true);
+    expect(sections.has("Detail View")).toBe(true);
+    expect(sections.has("Navigation")).toBe(true);
+    expect(sections.has("Panels")).toBe(true);
+    expect(sections.has("Messaging")).toBe(true);
+    await unmountHelpOverlay(renderer);
   });
 });
 

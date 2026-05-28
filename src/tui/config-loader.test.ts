@@ -78,3 +78,17 @@ describe("mergeGroveConfig — merge semantics", () => {
     expect(project.theme.focus).toBe("#00ff00"); // not mutated
   });
 });
+
+describe("mergeGroveConfig — keymapPreset", () => {
+  test("project keymapPreset overrides global", () => {
+    const result = mergeGroveConfig({ keymapPreset: "default" }, { keymapPreset: "power-user" });
+
+    expect(result.keymapPreset).toBe("power-user");
+  });
+
+  test("global keymapPreset is preserved when project omits it", () => {
+    const result = mergeGroveConfig({ keymapPreset: "power-user" }, {});
+
+    expect(result.keymapPreset).toBe("power-user");
+  });
+});

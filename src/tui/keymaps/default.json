@@ -1,0 +1,480 @@
+{
+  "bindings": [
+    {
+      "id": "quit",
+      "action": "quit",
+      "sequence": "Space q",
+      "label": "Quit",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "help",
+      "action": "help",
+      "sequence": "Space ?",
+      "label": "Help",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "palette",
+      "action": "palette",
+      "sequence": "Space c p",
+      "label": "Command palette",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "refresh",
+      "action": "refresh",
+      "sequence": "Space r",
+      "label": "Refresh",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "zoom_cycle",
+      "action": "zoom_cycle",
+      "sequence": "Space z",
+      "label": "Zoom cycle",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "zoom_reset",
+      "action": "zoom_reset",
+      "sequence": "Space Z",
+      "label": "Zoom reset",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "layout_toggle",
+      "action": "layout_toggle",
+      "sequence": "Space l",
+      "label": "Toggle layout",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "view_cycle",
+      "action": "view_cycle",
+      "sequence": "Space V",
+      "label": "Cycle view",
+      "context": "global",
+      "layer": "leader"
+    },
+    {
+      "id": "cycle_panel_next",
+      "action": "cycle_panel_next",
+      "sequence": "Tab",
+      "label": "Next panel",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "cycle_panel_prev",
+      "action": "cycle_panel_prev",
+      "sequence": "Shift+Tab",
+      "label": "Previous panel",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "cursor_down",
+      "action": "cursor_down",
+      "sequence": "j",
+      "label": "Move cursor down",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "cursor_down",
+      "action": "cursor_down",
+      "sequence": "down",
+      "label": "Move cursor down",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "cursor_up",
+      "action": "cursor_up",
+      "sequence": "k",
+      "label": "Move cursor up",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "cursor_up",
+      "action": "cursor_up",
+      "sequence": "up",
+      "label": "Move cursor up",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "select",
+      "action": "select",
+      "sequence": "Enter",
+      "label": "Select",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "page_next",
+      "action": "page_next",
+      "sequence": "n",
+      "label": "Next page",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "page_prev",
+      "action": "page_prev",
+      "sequence": "p",
+      "label": "Previous page",
+      "context": "navigation",
+      "layer": "normal"
+    },
+    {
+      "id": "broadcast",
+      "action": "broadcast",
+      "sequence": "Space m b",
+      "label": "Broadcast message",
+      "context": "messaging",
+      "layer": "leader"
+    },
+    {
+      "id": "direct_message",
+      "action": "direct_message",
+      "sequence": "Space m @",
+      "label": "Direct message",
+      "context": "messaging",
+      "layer": "leader"
+    },
+    {
+      "id": "focus_panel:dag",
+      "action": "focus_panel",
+      "sequence": "Space p 1",
+      "label": "Focus DAG panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "dag"
+    },
+    {
+      "id": "focus_panel:detail",
+      "action": "focus_panel",
+      "sequence": "Space p 2",
+      "label": "Focus Detail panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "detail"
+    },
+    {
+      "id": "focus_panel:frontier",
+      "action": "focus_panel",
+      "sequence": "Space p 3",
+      "label": "Focus Frontier panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "frontier"
+    },
+    {
+      "id": "focus_panel:claims",
+      "action": "focus_panel",
+      "sequence": "Space p 4",
+      "label": "Focus Claims panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "claims"
+    },
+    {
+      "id": "toggle_panel:agents",
+      "action": "toggle_panel",
+      "sequence": "Space p a",
+      "label": "Toggle Agents panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "agents"
+    },
+    {
+      "id": "toggle_panel:terminal",
+      "action": "toggle_panel",
+      "sequence": "Space p t",
+      "label": "Toggle Terminal panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "terminal"
+    },
+    {
+      "id": "toggle_panel:artifact",
+      "action": "toggle_panel",
+      "sequence": "Space p A",
+      "label": "Toggle Artifact panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "artifact"
+    },
+    {
+      "id": "toggle_panel:vfs",
+      "action": "toggle_panel",
+      "sequence": "Space p v",
+      "label": "Toggle VFS panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "vfs"
+    },
+    {
+      "id": "toggle_panel:activity",
+      "action": "toggle_panel",
+      "sequence": "Space p 9",
+      "label": "Toggle Activity panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "activity"
+    },
+    {
+      "id": "toggle_panel:search",
+      "action": "toggle_panel",
+      "sequence": "Space p s",
+      "label": "Toggle Search panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "search"
+    },
+    {
+      "id": "toggle_panel:threads",
+      "action": "toggle_panel",
+      "sequence": "Space p h",
+      "label": "Toggle Threads panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "threads"
+    },
+    {
+      "id": "toggle_panel:outcomes",
+      "action": "toggle_panel",
+      "sequence": "Space p o",
+      "label": "Toggle Outcomes panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "outcomes"
+    },
+    {
+      "id": "toggle_panel:bounties",
+      "action": "toggle_panel",
+      "sequence": "Space p b",
+      "label": "Toggle Bounties panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "bounties"
+    },
+    {
+      "id": "toggle_panel:gossip",
+      "action": "toggle_panel",
+      "sequence": "Space p g",
+      "label": "Toggle Gossip panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "gossip"
+    },
+    {
+      "id": "toggle_panel:inbox",
+      "action": "toggle_panel",
+      "sequence": "Space p i",
+      "label": "Toggle Inbox panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "inbox"
+    },
+    {
+      "id": "toggle_panel:decisions",
+      "action": "toggle_panel",
+      "sequence": "Space p d",
+      "label": "Toggle Decisions panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "decisions"
+    },
+    {
+      "id": "toggle_panel:github",
+      "action": "toggle_panel",
+      "sequence": "Space p H",
+      "label": "Toggle GitHub panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "github"
+    },
+    {
+      "id": "toggle_panel:plan",
+      "action": "toggle_panel",
+      "sequence": "Space p P",
+      "label": "Toggle Plan panel",
+      "context": "panel",
+      "layer": "leader",
+      "panel": "plan"
+    },
+    {
+      "id": "terminal_input",
+      "action": "terminal_input",
+      "sequence": "i",
+      "label": "Enter terminal input mode",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "terminal"
+    },
+    {
+      "id": "terminal_scroll_down",
+      "action": "terminal_scroll_down",
+      "sequence": "j",
+      "label": "Scroll terminal down",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "terminal"
+    },
+    {
+      "id": "terminal_scroll_up",
+      "action": "terminal_scroll_up",
+      "sequence": "k",
+      "label": "Scroll terminal up",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "terminal"
+    },
+    {
+      "id": "terminal_scroll_bottom",
+      "action": "terminal_scroll_bottom",
+      "sequence": "G",
+      "label": "Scroll terminal to bottom",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "terminal"
+    },
+    {
+      "id": "artifact_prev",
+      "action": "artifact_prev",
+      "sequence": "h",
+      "label": "Previous artifact",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
+      "id": "artifact_next",
+      "action": "artifact_next",
+      "sequence": "l",
+      "label": "Next artifact",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
+      "id": "artifact_diff",
+      "action": "artifact_diff",
+      "sequence": "d",
+      "label": "Toggle artifact diff",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
+      "id": "compare_adopt_a",
+      "action": "compare_adopt_a",
+      "sequence": "a",
+      "label": "Adopt comparison A",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
+      "id": "compare_adopt_b",
+      "action": "compare_adopt_b",
+      "sequence": "b",
+      "label": "Adopt comparison B",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
+      "id": "approve",
+      "action": "approve",
+      "sequence": "a",
+      "label": "Approve pending question",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "decisions"
+    },
+    {
+      "id": "deny",
+      "action": "deny",
+      "sequence": "d",
+      "label": "Deny pending question",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "decisions"
+    },
+    {
+      "id": "compare_toggle",
+      "action": "compare_toggle",
+      "sequence": "C",
+      "label": "Compare frontier artifacts",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "frontier"
+    },
+    {
+      "id": "frontier_tab_next",
+      "action": "frontier_tab_next",
+      "sequence": "]",
+      "label": "Next frontier slice",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "frontier"
+    },
+    {
+      "id": "frontier_tab_prev",
+      "action": "frontier_tab_prev",
+      "sequence": "[",
+      "label": "Previous frontier slice",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "frontier"
+    },
+    {
+      "id": "frontier_adopt",
+      "action": "frontier_adopt",
+      "sequence": "a",
+      "label": "Adopt frontier item",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "frontier"
+    },
+    {
+      "id": "compare_select",
+      "action": "compare_select",
+      "sequence": "Enter",
+      "label": "Select comparison item",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "frontier"
+    },
+    {
+      "id": "search_start",
+      "action": "search_start",
+      "sequence": "/",
+      "label": "Search",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "search"
+    },
+    {
+      "id": "vfs_navigate",
+      "action": "vfs_navigate",
+      "sequence": "Enter",
+      "label": "Browse VFS entry",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "vfs"
+    }
+  ]
+}

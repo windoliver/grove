@@ -18,7 +18,10 @@ import {
   workBlockToEntity,
 } from "../core/entity.js";
 import type { FrontierCalculator } from "../core/frontier.js";
-import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
+import {
+  DefaultFrontierCalculator,
+  SessionAggregatingFrontierCalculator,
+} from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { readProjectId } from "../core/project-id.js";
@@ -113,6 +116,13 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 let serverFrontier: FrontierCalculator = runtime.frontier;
+/**
+ * Frontier calculator dedicated to gossip's outbound digest. Defaults to
+ * the same store as `serverFrontier`; in Nexus mode it is rebound to a
+ * root-only calculator so we don't advertise session-scoped CIDs that the
+ * peer fetch path cannot resolve (#226).
+ */
+let gossipFrontier: FrontierCalculator = runtime.frontier;
 let serverTimelineStore: import("../core/timeline-store.js").TimelineStore = runtime.timelineStore;
 let inboxReadSource: import("../core/operations/inbox-delegation.js").InboxReadSource | undefined;
 let messageDelivery: import("../core/operations/inbox-delegation.js").MessageDelivery | undefined;
@@ -354,7 +364,33 @@ if (nexusUrl) {
       storeForSession: nexusContributionStoreForSession,
     }),
   );
+  // Gossip federation advertises CIDs by bare hash and the peer fetch path
+  // resolves against the *root* contribution store (no session scope on the
+  // wire). Advertising session-only contributions through the aggregating
+  // wrapper would make peers chase 404s. Keep a root-only frontier for
+  // gossip's outbound digest while the HTTP API continues to use the
+  // session-aggregating wrapper for local reads.
+  gossipFrontier = new DefaultFrontierCalculator(serverContributionStore);
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
+}
+
+/**
+ * Parse a positive-integer env var. Returns undefined when unset, empty,
+ * or malformed (so callers fall through to the library default). Refuses
+ * NaN, non-finite, zero, and negative values — setTimeout(NaN) and
+ * setTimeout(<=0) run on every tick and would turn gossip into a hot loop.
+ */
+function parsePositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+    console.error(
+      `grove-server: invalid ${name}='${raw}' (must be a positive integer). Ignoring; using default.`,
+    );
+    return undefined;
+  }
+  return n;
 }
 
 if (seedPeers.length > 0) {
@@ -367,10 +403,18 @@ if (seedPeers.length > 0) {
       address: peerAddress,
       seedPeers: [...seedPeers],
       hmacSecret: gossipHmacSecret,
+      intervalMs: parsePositiveIntEnv("GROVE_GOSSIP_INTERVAL_MS"),
+      antiEntropy: {
+        enabled: process.env.GROVE_GOSSIP_ANTI_ENTROPY === "1",
+        intervalMs: parsePositiveIntEnv("GROVE_GOSSIP_ANTI_ENTROPY_INTERVAL_MS"),
+        batchSize: parsePositiveIntEnv("GROVE_GOSSIP_ANTI_ENTROPY_BATCH"),
+      },
     },
     transport,
-    frontier: serverFrontier,
+    frontier: gossipFrontier,
     getLoad: () => ({ queueDepth: 0 }),
+    contributionStore: serverContributionStore,
+    cas: serverCas,
   });
 }
 

@@ -18,6 +18,7 @@ import { stopServices } from "./service-lifecycle.js";
 const helpers = lifecycle as typeof lifecycle & {
   resolveBunExecutable?: (execPath?: string) => string;
   resolveServicePort?: (name: string, env?: NodeJS.ProcessEnv) => number;
+  resolveServiceHealthTimeoutMs?: (env?: NodeJS.ProcessEnv) => number;
   pickFreePort?: () => Promise<number>;
 };
 
@@ -193,6 +194,25 @@ describe("service startup configuration", () => {
 
     expect(resolveBunExecutable("/Users/example/.bun/bin/bun")).toBe("/Users/example/.bun/bin/bun");
     expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
+  });
+
+  test("service health timeout can be extended for cold managed starts", () => {
+    expect(helpers.resolveServiceHealthTimeoutMs).toBeDefined();
+    const resolveServiceHealthTimeoutMs = helpers.resolveServiceHealthTimeoutMs;
+    if (resolveServiceHealthTimeoutMs === undefined)
+      throw new Error("resolveServiceHealthTimeoutMs is not exported");
+
+    expect(resolveServiceHealthTimeoutMs({} as NodeJS.ProcessEnv)).toBe(10_000);
+    expect(
+      resolveServiceHealthTimeoutMs({
+        GROVE_SERVICE_HEALTH_TIMEOUT_MS: "30000",
+      } as NodeJS.ProcessEnv),
+    ).toBe(30_000);
+    expect(
+      resolveServiceHealthTimeoutMs({
+        GROVE_SERVICE_HEALTH_TIMEOUT_MS: "abc",
+      } as NodeJS.ProcessEnv),
+    ).toBe(10_000);
   });
 
   // Concurrent grove worktrees on the same host should not collide on the

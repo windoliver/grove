@@ -2,7 +2,7 @@
 
 import type { KeyEvent } from "@opentui/core";
 
-export type KeymapChoice = "vim" | "emacs" | "none";
+export type KeymapChoice = "default" | "power-user" | "none";
 export type CustomizeField = "preset" | "name" | "keymap";
 
 export interface CustomizeState {
@@ -30,7 +30,7 @@ export interface CustomizeActions {
 }
 
 const FIELD_ORDER: readonly CustomizeField[] = ["preset", "name", "keymap"];
-const KEYMAP_ORDER: readonly KeymapChoice[] = ["vim", "emacs", "none"];
+const KEYMAP_ORDER: readonly KeymapChoice[] = ["default", "power-user", "none"];
 
 export function routeCustomizeKey(
   key: KeyEvent,
@@ -126,11 +126,11 @@ export function routeCustomizeKey(
     return true;
   }
   if (name === "1") {
-    actions.setKeymap("vim");
+    actions.setKeymap("default");
     return true;
   }
   if (name === "2") {
-    actions.setKeymap("emacs");
+    actions.setKeymap("power-user");
     return true;
   }
   if (name === "3") {

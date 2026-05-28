@@ -360,6 +360,7 @@ export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore
 
     try {
       const markers = await this.client.list(this.contributionMarkersDir(sessionId));
+      const markerItems: SessionContributionLink[] = [];
       for (const entry of markers.files) {
         if (entry.isDirectory) continue;
         try {
@@ -367,7 +368,7 @@ export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore
           if (data !== undefined) {
             const marker = JSON.parse(decoder.decode(data)) as Partial<ContributionMarker>;
             if (typeof marker.cid === "string") {
-              addItem({
+              markerItems.push({
                 cid: marker.cid,
                 ownerRef: marker.ownerRef ?? defaultOwnerRef,
                 addedAt: marker.addedAt ?? defaultAddedAt,
@@ -378,12 +379,14 @@ export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore
         } catch {
           // Fall through to filename-derived CID for older/partial markers.
         }
-        addItem({
+        markerItems.push({
           cid: decodeSegment(entry.name),
           ownerRef: defaultOwnerRef,
           addedAt: defaultAddedAt,
         });
       }
+      markerItems.sort((a, b) => Date.parse(a.addedAt) - Date.parse(b.addedAt));
+      for (const item of markerItems) addItem(item);
     } catch {
       // Marker directory may not exist on legacy sessions.
     }

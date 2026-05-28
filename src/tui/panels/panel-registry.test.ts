@@ -4,8 +4,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { initialPanelState, Panel, panelFocus, panelToggle } from "../hooks/use-panel-focus.js";
+import { panelToId } from "./panel-ids.js";
 import {
   getActivePanelsForLayout,
+  getBuiltInTuiRegistryEntries,
+  getPanelDefById,
+  getPresetPanelIds,
   getPresetPanels,
   getRegistry,
   getRowFlex,
@@ -321,6 +325,56 @@ describe("PRESET_PANELS", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getPresetPanelIds()
+// ---------------------------------------------------------------------------
+
+describe("getPresetPanelIds", () => {
+  it("returns stable string IDs for review-loop", () => {
+    expect([...(getPresetPanelIds("review-loop") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+    ]);
+  });
+
+  it("returns stable string IDs for swarm-ops", () => {
+    expect([...(getPresetPanelIds("swarm-ops") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+      "frontier",
+      "outcomes",
+      "bounties",
+    ]);
+  });
+
+  it("returns stable string IDs for federated-swarm", () => {
+    expect([...(getPresetPanelIds("federated-swarm") ?? [])]).toEqual([
+      "dag",
+      "detail",
+      "claims",
+      "terminal",
+      "frontier",
+      "gossip",
+    ]);
+  });
+
+  it("stays in sync with numeric preset membership", () => {
+    for (const [presetName, panels] of Object.entries(PRESET_PANELS)) {
+      expect([...(getPresetPanelIds(presetName) ?? [])]).toEqual(
+        [...panels].map((panel) => panelToId(panel)),
+      );
+    }
+  });
+
+  it("returns undefined for unknown preset", () => {
+    expect(getPresetPanelIds("unknown-preset")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getVisiblePanelsForLayout() with allowedPanels
 // ---------------------------------------------------------------------------
 
@@ -393,5 +447,103 @@ describe("getVisiblePanelsForLayout with allowedPanels", () => {
     expect(panelIds).toContain(Panel.Detail);
     expect(panelIds).toContain(Panel.Claims);
     expect(panelIds).not.toContain(Panel.Frontier);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stable panel IDs
+// ---------------------------------------------------------------------------
+
+describe("stable panel IDs", () => {
+  it("assigns a stable string id to every built-in panel definition", () => {
+    const registry = getRegistry();
+    const ids = registry.map((def) => def.id);
+
+    expect(ids).toEqual([
+      "dag",
+      "detail",
+      "frontier",
+      "claims",
+      "agents",
+      "terminal",
+      "artifact",
+      "vfs",
+      "activity",
+      "search",
+      "threads",
+      "outcomes",
+      "bounties",
+      "gossip",
+      "inbox",
+      "decisions",
+      "github",
+      "plan",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("looks up a built-in panel definition by string id", () => {
+    expect(getPanelDefById("dag")?.panel).toBe(Panel.Dag);
+    expect(getPanelDefById("agents")?.panel).toBe(Panel.AgentList);
+    expect(getPanelDefById("github")?.panel).toBe(Panel.GitHub);
+  });
+
+  it("converts built-in panel definitions into TUI registry entries", () => {
+    const entries = getBuiltInTuiRegistryEntries();
+    expect(entries[0]).toEqual({
+      id: "dag",
+      label: "DAG",
+      slot: "operator-panel",
+      order: 0,
+      source: "builtin",
+      builtInPanel: Panel.Dag,
+    });
+    expect(entries.at(-1)).toEqual({
+      id: "plan",
+      label: "Plan",
+      slot: "operator-panel",
+      order: 17,
+      source: "builtin",
+      builtInPanel: Panel.Plan,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injectable registry helpers
+// ---------------------------------------------------------------------------
+
+describe("injectable registry helpers", () => {
+  it("groups an injected registry instead of always reading PANEL_REGISTRY", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const groups = getRowGroups(registry);
+    expect(groups.size).toBe(1);
+    expect(groups.get(2)?.map((def) => def.id)).toEqual(["claims"]);
+  });
+
+  it("computes visible panels from an injected registry", () => {
+    const registry = getRegistry().filter((def) => def.id === "dag" || def.id === "claims");
+    const visible = getVisiblePanelsForLayout(initialPanelState(), "grid", undefined, registry);
+    expect(visible.map((def) => def.id)).toEqual(["dag", "claims"]);
+  });
+
+  it("computes active panels from an injected registry", () => {
+    const registry = getRegistry().filter((def) => def.id === "dag" || def.id === "claims");
+    const active = getActivePanelsForLayout(initialPanelState(), "grid", registry);
+    expect([...active]).toEqual([Panel.Dag, Panel.Claims]);
+  });
+
+  it("computes active tab panels when injected registry includes the focused panel", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const state = panelFocus(initialPanelState(), Panel.Claims);
+    const active = getActivePanelsForLayout(state, "tab", registry);
+    expect([...active]).toEqual([Panel.Claims]);
+  });
+
+  it("computes no active tab panels when injected registry excludes the focused panel", () => {
+    const registry = getRegistry().filter((def) => def.id === "claims");
+    const state = panelFocus(initialPanelState(), Panel.Dag);
+    const active = getActivePanelsForLayout(state, "tab", registry);
+    expect([...active]).toEqual([]);
   });
 });

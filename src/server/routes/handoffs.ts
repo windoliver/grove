@@ -4,18 +4,22 @@
  * GET  /api/handoffs              — List handoffs (filtered by role, status, etc.)
  * GET  /api/handoffs/:id          — Get a single handoff by ID
  * POST /api/handoffs/:id/delivered — Mark a handoff delivered (IPC transport ack)
+ * POST /api/handoffs/:id/cancel — Mark a handoff cancelled by operator action
+ * POST /api/handoffs/:id/manual-resolve — Mark a handoff manually resolved
+ * POST /api/handoffs/:id/resend — Create a retry handoff and cancel the original
+ * POST /api/handoffs/:id/reroute — Create a replacement handoff for another role
  *
- * Other state mutations (replied / seen / acked / processed) are deliberately
- * NOT exposed here — they are role-sensitive and the HTTP surface is
- * unauthenticated. See comments below for rationale.
+ * Role-sensitive state mutations (replied / seen / acked / processed) are
+ * deliberately NOT exposed here — they flow through MCP tools with role and
+ * session guards. See comments below for rationale.
  */
 
 import { zValidator } from "@hono/zod-validator";
 import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { HandoffStore } from "../../core/handoff.js";
-import { HandoffStatus as HandoffStatusValue } from "../../core/handoff.js";
+import type { Handoff, HandoffStore } from "../../core/handoff.js";
+import { HANDOFF_STATUS_VALUES, HandoffStatus, validateTransition } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -23,28 +27,33 @@ const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
 const listQuerySchema = z.object({
   toRole: z.string().optional(),
   fromRole: z.string().optional(),
-  status: z
-    .enum([
-      HandoffStatusValue.PendingPickup,
-      HandoffStatusValue.Delivered,
-      HandoffStatusValue.Processed,
-      HandoffStatusValue.Replied,
-      HandoffStatusValue.Expired,
-      HandoffStatusValue.DeadLettered,
-    ])
-    .optional(),
+  status: z.enum(HANDOFF_STATUS_VALUES).optional(),
   sourceCid: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   sessionId: z.string().optional(),
 });
+
+const terminalActionSchema = z.object({
+  reason: z.string().min(1).max(500).optional(),
+});
+
+const replacementActionSchema = terminalActionSchema.extend({
+  replyDueAt: z.string().datetime().optional(),
+});
+
+const rerouteActionSchema = replacementActionSchema.extend({
+  toRole: z.string().min(1),
+});
+
+const invalidJsonBodySchema = z.custom(() => false, { message: "Invalid JSON body" });
 
 /**
  * Middleware: require handoffStore to be configured.
  * Returns 501 if not available, otherwise passes through.
  */
 handoffs.use("/*", async (c, next) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) {
+  const { handoffStore, handoffStoreForSession } = c.get("deps");
+  if (handoffStore === undefined && handoffStoreForSession === undefined) {
     return c.json(
       { error: { code: "NOT_CONFIGURED", message: "Handoff store not available" } },
       501,
@@ -70,18 +79,65 @@ handoffs.use("/*", async (c, next) => {
  * that keeps a well-behaved remote TUI from seeing peer sessions'
  * handoffs; it is NOT a security boundary against a hostile client.
  */
-function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
+interface StoreResolution {
+  readonly store?: HandoffStore | undefined;
+  readonly scopedMissing: boolean;
+}
+
+function resolveStore(c: Context<ServerEnv>): StoreResolution {
   const { handoffStore, handoffStoreForSession } = c.get("deps");
   const sessionId = c.req.query("sessionId");
-  if (sessionId && handoffStoreForSession) {
-    return handoffStoreForSession(sessionId) ?? handoffStore;
+  if (sessionId !== undefined && sessionId.length > 0 && handoffStoreForSession !== undefined) {
+    const scoped = handoffStoreForSession(sessionId);
+    return scoped === undefined ? { scopedMissing: true } : { store: scoped, scopedMissing: false };
   }
-  return handoffStore;
+  return { store: handoffStore, scopedMissing: false };
+}
+
+function notFound(c: Context<ServerEnv>): Response {
+  return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+}
+
+async function parseOptionalJson(c: Context<ServerEnv>): Promise<unknown> {
+  const body = await c.req.text();
+  if (body.trim() === "") {
+    return {};
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return parsed;
+  } catch {
+    invalidJsonBodySchema.parse(body);
+    return {};
+  }
+}
+
+function replacementDueAt(original: Handoff, next?: string): string | undefined {
+  if (next !== undefined) return next;
+  if (original.replyDueAt !== undefined && Date.parse(original.replyDueAt) > Date.now()) {
+    return original.replyDueAt;
+  }
+  return undefined;
+}
+
+async function cancelReplacementAfterOriginalFailure(
+  store: HandoffStore,
+  replacementId: string,
+): Promise<void> {
+  try {
+    await store.markCancelled(replacementId, {
+      terminalReason: "replacement cancelled after original cancellation failed",
+    });
+  } catch {
+    // Best-effort cleanup only; callers must see the original cancellation error.
+  }
 }
 
 /** GET /api/handoffs — List handoffs with optional filters. */
 handoffs.get("/", zValidator("query", listQuerySchema), async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return c.json({ handoffs: [] });
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   // Expire stale handoffs before listing so callers always see fresh status.
@@ -102,7 +158,8 @@ handoffs.get("/", zValidator("query", listQuerySchema), async (c) => {
 
 /** GET /api/handoffs/:id — Get a single handoff. */
 handoffs.get("/:id", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -110,11 +167,121 @@ handoffs.get("/:id", async (c) => {
     return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
   }
   const handoff = await store.get(id);
-  if (handoff === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (handoff === undefined) return notFound(c);
 
   return c.json(handoff);
+});
+
+/** POST /api/handoffs/:id/cancel — Mark unresolved handoff cancelled by operator action. */
+handoffs.post("/:id/cancel", async (c) => {
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
+  }
+
+  const action = terminalActionSchema.parse(await parseOptionalJson(c));
+  await store.markCancelled(id, { terminalReason: action.reason ?? "operator cancelled" });
+  const updated = await store.get(id);
+  if (updated === undefined) return notFound(c);
+  return c.json(updated);
+});
+
+/** POST /api/handoffs/:id/manual-resolve — Mark eligible handoff manually resolved. */
+handoffs.post("/:id/manual-resolve", async (c) => {
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
+  }
+
+  const action = terminalActionSchema.parse(await parseOptionalJson(c));
+  await store.markManuallyResolved(id, { terminalReason: action.reason ?? "operator resolved" });
+  const updated = await store.get(id);
+  if (updated === undefined) return notFound(c);
+  return c.json(updated);
+});
+
+/** POST /api/handoffs/:id/resend — Create retry handoff and cancel the original. */
+handoffs.post("/:id/resend", async (c) => {
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
+  }
+
+  const action = replacementActionSchema.parse(await parseOptionalJson(c));
+  const original = await store.get(id);
+  if (original === undefined) return notFound(c);
+
+  const replyDueAt = replacementDueAt(original, action.replyDueAt);
+  validateTransition(id, original.status, HandoffStatus.Cancelled);
+  const replacement = await store.create({
+    sourceCid: original.sourceCid,
+    fromRole: original.fromRole,
+    toRole: original.toRole,
+    requiresReply: original.requiresReply,
+    ...(replyDueAt !== undefined ? { replyDueAt } : {}),
+  });
+  try {
+    await store.markCancelled(id, {
+      terminalReason: action.reason ?? "resent",
+      replacementHandoffId: replacement.handoffId,
+    });
+  } catch (err) {
+    await cancelReplacementAfterOriginalFailure(store, replacement.handoffId);
+    throw err;
+  }
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) return notFound(c);
+  return c.json({ original: updatedOriginal, replacement });
+});
+
+/** POST /api/handoffs/:id/reroute — Create replacement handoff for selected role. */
+handoffs.post("/:id/reroute", async (c) => {
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
+  }
+
+  const action = rerouteActionSchema.parse(await parseOptionalJson(c));
+  const original = await store.get(id);
+  if (original === undefined) return notFound(c);
+
+  const replyDueAt = replacementDueAt(original, action.replyDueAt);
+  validateTransition(id, original.status, HandoffStatus.Cancelled);
+  const replacement = await store.create({
+    sourceCid: original.sourceCid,
+    fromRole: original.fromRole,
+    toRole: action.toRole,
+    requiresReply: original.requiresReply,
+    ...(replyDueAt !== undefined ? { replyDueAt } : {}),
+  });
+  try {
+    await store.markCancelled(id, {
+      terminalReason: action.reason ?? `rerouted to ${action.toRole}`,
+      replacementHandoffId: replacement.handoffId,
+    });
+  } catch (err) {
+    await cancelReplacementAfterOriginalFailure(store, replacement.handoffId);
+    throw err;
+  }
+  const updatedOriginal = await store.get(id);
+  if (updatedOriginal === undefined) return notFound(c);
+  return c.json({ original: updatedOriginal, replacement });
 });
 
 /**
@@ -133,12 +300,13 @@ handoffs.get("/:id", async (c) => {
  *     a target agent, so removing it would strand handoffs in
  *     pending_pickup and block grove_process_handoff on the target role.
  *
- * Role-sensitive mutations (replied, seen, acked, processed) are NOT
- * exposed here. They flow through MCP tools with GROVE_AGENT_ROLE +
- * session-scoped store guards.
+ * Role-sensitive mutations (replied, seen, acked, processed) stay out of
+ * this HTTP surface. Operator terminal/retry actions above do not claim
+ * target-role processing; they only stop or replace stalled delivery work.
  */
 handoffs.post("/:id/delivered", async (c) => {
-  const store = resolveStore(c);
+  const { store, scopedMissing } = resolveStore(c);
+  if (scopedMissing) return notFound(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
@@ -148,9 +316,7 @@ handoffs.post("/:id/delivered", async (c) => {
 
   await store.markDelivered(id);
   const updated = await store.get(id);
-  if (updated === undefined) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
+  if (updated === undefined) return notFound(c);
   return c.json(updated);
 });
 

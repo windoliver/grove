@@ -467,17 +467,24 @@ try {
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
-  // When running with a local SQLite store and GROVE_SESSION_ID is set,
-  // tag every contribution write against the session at the MCP layer.
-  // Nexus handles this via path-scoped stores; local SQLite needs the junction table.
+  // When GROVE_SESSION_ID is set, tag every contribution write against the
+  // session at the MCP layer. Contribution stores are session-scoped in Nexus,
+  // but session rows still keep a contribution index for list/detail counts.
   const envSessionId = process.env.GROVE_SESSION_ID;
-  const onContributionWritten =
-    envSessionId && !nexusClient
-      ? (cid: string) => {
-          // biome-ignore lint/suspicious/noEmptyBlockStatements: fire-and-forget, errors intentionally swallowed
-          void runtime.goalSessionStore.addContributionToSession(envSessionId, cid).catch(() => {});
-        }
-      : undefined;
+  let onContributionWritten: ((cid: string) => void) | undefined;
+  if (envSessionId && nexusClient) {
+    const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+    const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+    onContributionWritten = (cid: string) => {
+      void nexusSessionStore.addContribution(envSessionId, cid).catch(() => undefined);
+    };
+  } else if (envSessionId) {
+    onContributionWritten = (cid: string) => {
+      void runtime.goalSessionStore
+        .addContributionToSession(envSessionId, cid)
+        .catch(() => undefined);
+    };
+  }
 
   // Wire DeadlineWatcher for proactive overdue detection. Both Nexus and
   // SQLite (session-scoped via GROVE_SESSION_ID) safely support it: every

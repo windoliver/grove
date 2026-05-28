@@ -222,6 +222,8 @@ export function createMockHandoffStore(overrides?: Partial<HandoffStore>): Hando
     list: async () => [],
     markDelivered: async () => undefined,
     markReplied: async () => undefined,
+    markCancelled: async () => undefined,
+    markManuallyResolved: async () => undefined,
     markSeen: async () => undefined,
     markAcked: async () => undefined,
     expireStale: async () => [],

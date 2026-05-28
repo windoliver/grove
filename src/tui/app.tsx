@@ -18,7 +18,13 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
-import { buildPaletteItems, CommandPalette, fuzzyMatch } from "./components/command-palette.js";
+import {
+  buildPaletteItems,
+  buildPluginPaletteItems,
+  CommandPalette,
+  fuzzyMatch,
+  getBuiltInPaletteActionRegistryEntries,
+} from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
@@ -36,7 +42,6 @@ import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import {
-  buildKeyActionMap,
   type KeybindingOverrides,
   useKeybindingOverrides,
 } from "./hooks/use-keybinding-overrides.js";
@@ -45,8 +50,18 @@ import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
+import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
+import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
+import { runTuiActionRegistration } from "./plugins/actions.js";
+import {
+  collectTuiActionRegistrations,
+  collectTuiPanelRegistrations,
+  mergeTuiActionRegistrations,
+  mergeTuiRegistrations,
+} from "./plugins/registry.js";
+import type { TuiExtension, TuiPluginContext } from "./plugins/types.js";
 import {
   type DashboardData,
   type GitHubPRSummary,
@@ -77,12 +92,16 @@ export interface AppProps {
   readonly contract?: import("../core/contract.js").GroveContract | undefined;
   /** User config preloaded in main.ts before React mounts (theme + keymap). */
   readonly userConfig?: GroveUserConfig | undefined;
+  /** Resolved backend mode for delivery-path decisions. */
+  readonly backendMode?: "local" | "remote" | "nexus" | undefined;
   /** When set, ScreenManager should scope the resumed session feed to this id. */
   readonly resumeSessionId?: string | undefined;
   /** When set, ScreenManager should open goal-input with this preset pre-selected (new session in existing grove). */
   readonly newSessionPreset?: string | undefined;
   /** Pre-fetched dashboard data — populates the first render before polling hooks fire. */
   readonly initialDashboard?: import("./provider.js").DashboardData | undefined;
+  /** Trusted local-code TUI extensions. Grove does not dynamically load these. */
+  readonly extensions?: readonly TuiExtension[] | undefined;
   /**
    * Which top-level screen is active. Drives the StatusBar `[INSPECT]` chip
    * so users always know whether the inspect overlay is on screen (#191).
@@ -114,6 +133,7 @@ export function App({
   userConfig,
   eventBus,
   screenContext,
+  extensions,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -133,8 +153,19 @@ export function App({
     () => ({ ...userConfig?.keymap, ...hotkeyOverrides, ...fileOverrides }),
     [userConfig?.keymap, hotkeyOverrides, fileOverrides],
   );
-  const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
+  const resolvedKeymap = useMemo(
+    () => resolveKeymapWithOverrides(userConfig?.keymapPreset ?? "default", keybindingOverrides),
+    [userConfig?.keymapPreset, keybindingOverrides],
+  );
+  const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
+  const resolvedKeymapRef = useRef(resolvedKeymap);
+
+  useEffect(() => {
+    if (resolvedKeymapRef.current === resolvedKeymap) return;
+    resolvedKeymapRef.current = resolvedKeymap;
+    setKeymapPrefix([]);
+  }, [resolvedKeymap]);
 
   // Restore persisted state on first load.
   // restoredRef gates both restore AND save — save must not run before restore.
@@ -190,7 +221,16 @@ export function App({
   const [contributionList, setContributionList] = useState<readonly Contribution[]>([]);
   const [rowCount, setRowCount] = useState(0);
   const [selectedSession, setSelectedSession] = useState<string | undefined>();
-  const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
+  // Frontier active-slice state lives in refs (not React state) because the
+  // keyboard handler must read the current value synchronously. If terminal
+  // input delivers `]` then `a` (or `]` then Enter in compare mode) within
+  // the same JS tick, a setState-based snapshot would still hold the
+  // previous slice's data because React hasn't committed yet — that would
+  // adopt/select a row from the wrong slice. Refs are mutated synchronously
+  // by the FrontierView callback AND by slice-nav handlers; no rendering
+  // depends on these values, so state is unnecessary.
+  const frontierCidsRef = useRef<readonly string[]>([]);
+  const frontierEntriesRef = useRef<ReadonlyArray<{ cid: string; summary: string }>>([]);
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -201,6 +241,54 @@ export function App({
     setLastError(message);
     errorTimerRef.current = setTimeout(() => setLastError(undefined), 5_000);
   }, []);
+
+  const pluginActionRegistrations = useMemo(
+    () => collectTuiActionRegistrations(extensions),
+    [extensions],
+  );
+  const mergedActionRegistry = useMemo(
+    () =>
+      mergeTuiActionRegistrations({
+        builtIns: getBuiltInPaletteActionRegistryEntries(),
+        plugins: pluginActionRegistrations,
+      }),
+    [pluginActionRegistrations],
+  );
+  const pluginPanelRegistrations = useMemo(
+    () => collectTuiPanelRegistrations(extensions),
+    [extensions],
+  );
+  const mergedPanelRegistry = useMemo(
+    () =>
+      mergeTuiRegistrations({
+        builtIns: getBuiltInTuiRegistryEntries(),
+        plugins: pluginPanelRegistrations,
+      }),
+    [pluginPanelRegistrations],
+  );
+  const pluginContext = useMemo<TuiPluginContext>(
+    () => ({
+      provider,
+      topology,
+      selectedSession,
+      selectedCid: nav.detailCid,
+      density: ks.layoutMode === "tab" ? "compact" : "comfortable",
+      showMessage: showError,
+    }),
+    [provider, topology, selectedSession, nav.detailCid, ks.layoutMode, showError],
+  );
+
+  useEffect(() => {
+    for (const diagnostic of mergedActionRegistry.diagnostics) {
+      showError(diagnostic.message);
+    }
+  }, [mergedActionRegistry.diagnostics, showError]);
+
+  useEffect(() => {
+    for (const diagnostic of mergedPanelRegistry.diagnostics) {
+      showError(diagnostic.message);
+    }
+  }, [mergedPanelRegistry.diagnostics, showError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -499,7 +587,7 @@ export function App({
   }, [eventBus, topology, provider, triggerGlobalRefresh]);
 
   const hasGoals = isGoalProvider(provider);
-  const paletteItems = useMemo(
+  const corePaletteItems = useMemo(
     () =>
       buildPaletteItems(
         topology,
@@ -526,6 +614,14 @@ export function App({
       hasGoals,
     ],
   );
+  const pluginPaletteItems = useMemo(
+    () => buildPluginPaletteItems(mergedActionRegistry.entries, pluginContext),
+    [mergedActionRegistry.entries, pluginContext],
+  );
+  const paletteItems = useMemo(
+    () => [...corePaletteItems, ...pluginPaletteItems],
+    [corePaletteItems, pluginPaletteItems],
+  );
 
   // Filtered + ranked palette items — matches CommandPalette's rendering order
   // so Enter always executes the visually selected item.
@@ -551,8 +647,15 @@ export function App({
   }, []);
 
   const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
-    setFrontierCids(cids);
+    frontierCidsRef.current = cids;
   }, []);
+
+  const handleFrontierEntriesChanged = useCallback(
+    (entries: ReadonlyArray<{ cid: string; summary: string }>) => {
+      frontierEntriesRef.current = entries;
+    },
+    [],
+  );
 
   const handleSelect = useCallback(
     (index: number) => {
@@ -717,13 +820,27 @@ export function App({
       if (role?.platform) context.platform = role.platform;
       if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;
+      // Snapshot adoptContext into the spawn-call context, then clear it
+      // synchronously. Two reasons:
+      //  1. Race-safety: if spawn A is in flight and the user starts spawn B
+      //     with a new adoptContext, an async clear in A's success handler
+      //     would clobber B's pending target. Synchronous clear here means
+      //     B's ADOPT_SET runs after A's clear.
+      //  2. Failure path: if spawn rejects, the stale target would otherwise
+      //     leak into the next palette open. The spawn already has its copy
+      //     in `context` regardless of subsequent reducer state.
+      if (ks.adoptContext) {
+        context.adoptTarget = ks.adoptContext.targetCid;
+        context.adoptSummary = ks.adoptContext.summary;
+        dispatch({ type: "ADOPT_CLEAR" });
+      }
 
-      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
+      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : "Spawn failed";
         showError(msg);
       });
     },
-    [topology, activeClaims, showError, spawnManager],
+    [topology, activeClaims, showError, spawnManager, ks.adoptContext],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
@@ -738,7 +855,9 @@ export function App({
   );
 
   const handleCommandPaletteClose = useCallback(() => {
+    dispatch({ type: "ADOPT_CLEAR" });
     panels.setMode(InputMode.Normal);
+    dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
 
   // ---------------------------------------------------------------------------
@@ -752,7 +871,14 @@ export function App({
       panels,
       nav,
       onQuit: handleQuit,
-      onSpawnPalette: () => dispatch({ type: "PALETTE_RESET" }),
+      onSpawnPalette: () => {
+        // Defensive: opening a fresh palette must not inherit a stale adopt
+        // target from a previous 'a'-on-Frontier press that was dismissed
+        // through a path other than onPaletteClose.
+        dispatch({ type: "ADOPT_CLEAR" });
+        dispatch({ type: "PALETTE_RESET" });
+      },
+      onPaletteClose: handleCommandPaletteClose,
       onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
       onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
       onTerminalScrollUp: () => dispatch({ type: "TERMINAL_SCROLL_UP" }),
@@ -768,8 +894,16 @@ export function App({
       onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
       onCompareAdopt: (side: "a" | "b") => {
         const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
-        showError(`Adopted: ${(cid ?? "").slice(0, 16)}...`);
+        if (!cid) return;
+        // Read from refs (synchronous current value) — same race-safety
+        // discipline as the 'a' adopt path.
+        const summary =
+          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
+          contributionList.find((c) => c.cid === cid)?.summary ??
+          "";
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         dispatch({ type: "COMPARE_ADOPT" });
+        panels.setMode(InputMode.CommandPalette);
       },
       onSearchStart: () => {
         dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
@@ -912,6 +1046,10 @@ export function App({
           })();
         } else if (item.kind === "delegate") {
           void handleDelegate(item.id);
+        } else if (item.kind === "plugin-action" && item.pluginAction !== undefined) {
+          void runTuiActionRegistration(item.pluginAction, pluginContext).catch((err: unknown) => {
+            showError(err instanceof Error ? err.message : "Plugin action failed");
+          });
         } else if (item.kind === "goal") {
           panels.setMode(InputMode.GoalInput);
           dispatch({ type: "GOAL_INPUT_MODE" });
@@ -926,16 +1064,48 @@ export function App({
       pageSize: PAGE_SIZE,
       paletteItemCount: filteredPaletteItems.length,
       compareMode: ks.compareMode,
-      frontierCids,
+      frontierCids: () => frontierCidsRef.current,
       selectedSession,
       hasTmux: tmux !== undefined,
-      keybindingOverrides,
-      keyActionMap,
+      resolvedKeymap,
+      keymapPrefix,
+      onKeymapPrefixChange: setKeymapPrefix,
+      // Slice nav also resets the global cursor to 0 AND synchronously
+      // clears the entries/cids refs. Without the cursor reset, switching
+      // from a long slice (cursor=9) to a short slice (2 rows) leaves the
+      // cursor off-row, hiding the selection AND blocking 'a'. Without the
+      // synchronous ref clear, a fast `]` then `a` (or `]` then Enter)
+      // delivered in the same JS tick would still see the previous slice's
+      // entries because setState defers the visible value to the next
+      // render. The refs are mutated in place so the very next routeKey
+      // call sees an empty array; the effect re-fills both state and ref
+      // on the next render with the new active slice's data.
+      onFrontierTabNext: () => {
+        dispatch({ type: "FRONTIER_SLICE_NEXT" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      onFrontierTabPrev: () => {
+        dispatch({ type: "FRONTIER_SLICE_PREV" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      onFrontierAdopt: (cid: string, summary: string) => {
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+        panels.setMode(InputMode.CommandPalette);
+      },
+      // Function form so the keyboard handler always reads the latest ref
+      // (refs are mutated synchronously by handleFrontierEntriesChanged and
+      // by slice-nav handlers; state-based values would lag by one render).
+      frontierEntries: () => frontierEntriesRef.current,
     }),
     [
       panels,
       nav,
       handleQuit,
+      handleCommandPaletteClose,
       handleSelect,
       handleApproveQuestion,
       handleDenyQuestion,
@@ -955,12 +1125,13 @@ export function App({
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
-      frontierCids,
+      contributionList,
       agentProfiles,
       topology,
       paletteParentId,
-      keybindingOverrides,
-      keyActionMap,
+      pluginContext,
+      resolvedKeymap,
+      keymapPrefix,
       refreshAll,
       provider,
       spawnManager,
@@ -987,7 +1158,7 @@ export function App({
           visible={panels.state.mode === InputMode.Help}
           isDetailView={nav.isDetailView}
           focusedPanel={panels.state.focused}
-          keybindingOverrides={keybindingOverrides}
+          resolvedKeymap={resolvedKeymap}
         />
         {paletteVisible && (
           <box
@@ -1012,6 +1183,7 @@ export function App({
               parentAgentId={paletteParentId}
               items={paletteItems}
               query={ks.paletteQuery}
+              adoptContext={ks.adoptContext}
             />
           </box>
         )}
@@ -1054,12 +1226,17 @@ export function App({
           compareCids={ks.compareCids}
           onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
           onFrontierCidsChanged={handleFrontierCidsChanged}
+          activeSliceKey={ks.activeFrontierSlice}
+          onFrontierTabsChanged={(keys) => dispatch({ type: "FRONTIER_SET_TABS", keys })}
+          onFrontierEntriesChanged={handleFrontierEntriesChanged}
           zoomLevel={ks.zoomLevel}
           activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
           terminalScrollOffset={ks.terminalScrollOffset}
           terminalBuffers={terminalBuffers ?? undefined}
           layoutMode={ks.layoutMode}
           presetName={presetName}
+          registryEntries={mergedPanelRegistry.entries}
+          pluginContext={pluginContext}
         />
         <StatusBar
           mode={panels.state.mode}
@@ -1067,6 +1244,8 @@ export function App({
           isDetailView={nav.isDetailView}
           error={lastError}
           focusedPanel={panels.state.focused}
+          resolvedKeymap={resolvedKeymap}
+          keymapPrefix={keymapPrefix}
           agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
           viewMode={panels.state.viewMode}
           costLabel={

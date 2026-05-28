@@ -19,6 +19,7 @@ import type { ContributeInput, OperationDeps } from "../../core/operations/index
 import { contributeOperation } from "../../core/operations/index.js";
 import type { AgentOverrides } from "../agent.js";
 import { outputJson, outputJsonError } from "../format.js";
+import { formatNextCommandHint } from "../utils/color.js";
 import { findGroveDir, resolveGroveDir } from "../utils/grove-dir.js";
 
 // ---------------------------------------------------------------------------
@@ -524,6 +525,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       if (value.relationCount > 0) {
         console.log(`  relations: ${value.relationCount}`);
       }
+      console.log(formatNextCommandHint("Run `grove frontier` to see updated frontier"));
     }
 
     return { cid: value.cid };

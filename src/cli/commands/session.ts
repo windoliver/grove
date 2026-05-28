@@ -28,7 +28,9 @@ import {
 } from "../../core/loop-runner.js";
 import { MockRuntime } from "../../core/mock-runtime.js";
 import { lookupPresetTopology } from "../../core/presets.js";
+import { readNamespace } from "../../core/project-key.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
+import type { ContributionStore } from "../../core/store.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { TopologyResolutionResult } from "../../core/topology-resolver.js";
 import { SqliteGoalSessionStore } from "../../local/sqlite-goal-session-store.js";
@@ -38,6 +40,24 @@ import { buildRepos } from "../utils/build-repos.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+interface SessionNexusZoneEnv {
+  readonly GROVE_ZONE_ID?: string | undefined;
+}
+
+interface SessionCompletionUpdates {
+  readonly status: "completed" | "cancelled";
+  readonly completedAt: string;
+  readonly stopReason: string;
+  readonly stopStatus: LoopStopStatus;
+}
+
+export function resolveSessionNexusZoneId(
+  groveDir: string,
+  env: SessionNexusZoneEnv = { GROVE_ZONE_ID: process.env.GROVE_ZONE_ID },
+): string {
+  return readNamespace(groveDir) ?? env.GROVE_ZONE_ID ?? "default";
+}
 
 // ---------------------------------------------------------------------------
 // Subcommand dispatch
@@ -197,23 +217,36 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   let sessionId: string | undefined;
   let orchestrator: SessionOrchestrator | undefined;
   let workflowStore: WorkflowStateStore | undefined;
+  let contributionStore: ContributionStore | undefined;
+  let updateNexusSession:
+    | ((sessionId: string, updates: SessionCompletionUpdates) => Promise<void>)
+    | undefined;
+  let addNexusContributionToSession:
+    | ((sessionId: string, cid: string) => Promise<void>)
+    | undefined;
   const goalSessionStore = new SqliteGoalSessionStore(db);
 
   const markDone = async (reason: string, stopStatus: LoopStopStatus): Promise<void> => {
     if (sessionId === undefined) return;
+    const updates: SessionCompletionUpdates = {
+      status: terminalSessionStatus(stopStatus),
+      completedAt: new Date().toISOString(),
+      stopReason: reason,
+      stopStatus,
+    };
     try {
       // C6 (#304): no ifMatch supplied — rv-mismatch is unreachable here;
       // surface as a hard error so future ifMatch wiring (T7) doesn't silently
       // skip the markDone path.
-      const result = await goalSessionStore.updateSession(sessionId, {
-        status: terminalSessionStatus(stopStatus),
-        completedAt: new Date().toISOString(),
-        stopReason: reason,
-        stopStatus,
-      });
+      const result = await goalSessionStore.updateSession(sessionId, updates);
       expectCasOk(result, `cli markDone(${sessionId})`);
     } catch {
       // Best-effort — DB may already be closed or session archived.
+    }
+    try {
+      await updateNexusSession?.(sessionId, updates);
+    } catch {
+      // Best-effort — Nexus may be unavailable during shutdown.
     }
   };
 
@@ -244,15 +277,27 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     const nexusApiKey = process.env.NEXUS_API_KEY;
     if (nexusUrl) {
       const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
+      const { NexusContributionStore } = await import("../../nexus/nexus-contribution-store.js");
       const { NexusSessionStore } = await import("../../nexus/nexus-session-store.js");
       const { NexusWorkflowStore } = await import("../../nexus/nexus-workflow-store.js");
       const nexusClient = new NexusHttpClient({
         url: nexusUrl,
         ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       });
-      const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+      const zoneId = resolveSessionNexusZoneId(groveDir);
       const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+      updateNexusSession = async (targetSessionId, updates) => {
+        const result = await nexusSessionStore.updateSession(targetSessionId, updates);
+        expectCasOk(result, `cli nexus markDone(${targetSessionId})`);
+      };
+      addNexusContributionToSession = (targetSessionId, cid) =>
+        nexusSessionStore.addContribution(targetSessionId, cid);
       workflowStore = new NexusWorkflowStore({ client: nexusClient, zoneId });
+      contributionStore = new NexusContributionStore({
+        client: nexusClient,
+        zoneId,
+        sessionId: session.id,
+      });
 
       const retryDelaysMs = [0, 200, 500, 1000];
       let lastErr: unknown;
@@ -282,9 +327,14 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       }
     }
 
-    // Create contribution store for polling-based routing (MCP runs in child processes)
-    const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
-    const contributionStore = new SqliteContributionStore(db);
+    // Create contribution store for polling-based routing (MCP runs in child processes).
+    // In Nexus mode MCP writes session-scoped contributions to Nexus, so the
+    // orchestrator must poll the same scoped store or downstream roles never
+    // receive handoffs.
+    if (!contributionStore) {
+      const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
+      contributionStore = new SqliteContributionStore(db);
+    }
 
     orchestrator = new SessionOrchestrator({
       goal,
@@ -297,6 +347,14 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       workspaceBaseDir: join(groveDir, "workspaces"),
       sessionId: session.id,
       contributionStore,
+      onContributionAccepted: async (cid) => {
+        const localLink = goalSessionStore.addContributionToSession(session.id, cid);
+        if (addNexusContributionToSession === undefined) {
+          await localLink;
+          return;
+        }
+        await Promise.all([localLink, addNexusContributionToSession(session.id, cid)]);
+      },
     });
 
     let status: import("../../core/session-orchestrator.js").SessionStatus;

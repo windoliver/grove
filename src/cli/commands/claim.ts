@@ -17,6 +17,7 @@ import type { OperationDeps } from "../../core/operations/index.js";
 import { claimOperation, ErrorCode } from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
 import { outputJson } from "../format.js";
+import { formatNextCommandHint } from "../utils/color.js";
 import { parseDuration } from "../utils/duration.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
 import { handleOperationError } from "../utils/handle-result.js";
@@ -101,16 +102,19 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
 
   // Fetch the claim object for formatting (formatClaimSummary expects a Claim)
   const claim = await deps.claimStore.getClaim(result.value.claimId);
+  const action = result.value.renewed ? "Renewed" : "Claimed";
+  const hint = formatNextCommandHint("Run `grove claims` to see active claims");
   if (claim === undefined) {
     // Should not happen after a successful operation
     deps.stdout(
-      `${result.value.renewed ? "Renewed" : "Claimed"}: ${result.value.claimId}\n` +
+      `${action}: ${result.value.claimId}\n` +
         `  target:  ${result.value.targetRef}\n` +
         `  agent:   ${result.value.agentId}\n` +
-        `  status:  ${result.value.status}`,
+        `  status:  ${result.value.status}\n` +
+        hint,
     );
     return;
   }
 
-  deps.stdout(formatClaimSummary(claim, result.value.renewed ? "Renewed" : "Claimed"));
+  deps.stdout(`${formatClaimSummary(claim, action)}\n${hint}`);
 }

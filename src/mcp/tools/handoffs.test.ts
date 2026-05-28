@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import { HandoffStatus } from "../../core/handoff.js";
 import { InMemoryHandoffStore } from "../../core/in-memory-handoff-store.js";
 import type { McpDeps } from "../deps.js";
 import type { TestMcpDeps } from "../test-helpers.js";
@@ -171,6 +172,22 @@ describe("grove_ack_handoff authorization", () => {
     expect(registeredTools.grove_list_handoffs).toBeDefined();
     expect(registeredTools.grove_get_handoff).toBeDefined();
     expect(registeredTools.grove_ack_handoff).toBeUndefined();
+  });
+
+  test("grove_list_handoffs schema accepts operator terminal status filters", () => {
+    const registeredTools = (
+      server as unknown as {
+        _registeredTools: Record<
+          string,
+          { inputSchema: { safeParse(input: unknown): { success: boolean } } }
+        >;
+      }
+    )._registeredTools;
+    const schema = registeredTools.grove_list_handoffs?.inputSchema;
+    if (schema === undefined) throw new Error("grove_list_handoffs was not registered");
+
+    expect(schema.safeParse({ status: HandoffStatus.Cancelled }).success).toBe(true);
+    expect(schema.safeParse({ status: HandoffStatus.ManuallyResolved }).success).toBe(true);
   });
 });
 

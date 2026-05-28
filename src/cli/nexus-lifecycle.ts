@@ -43,6 +43,9 @@ const HEALTH_POLL_MS = 1_000;
 /** Default `nexus up` timeout (seconds). */
 const NEXUS_UP_TIMEOUT_S = 180;
 
+/** Local Docker builds can spend minutes compiling before health checks begin. */
+const NEXUS_SOURCE_BUILD_TIMEOUT_S = 900;
+
 const LIFECYCLE_PATH_EXTRAS = [
   join(homedir(), ".local/bin"),
   join(homedir(), ".bun/bin"),
@@ -444,6 +447,20 @@ function buildNexusUpArgs(opts: {
   return args;
 }
 
+export function shouldReuseExistingNexusForUp(
+  opts?: Pick<NexusUpOptions, "build" | "nexusSource">,
+): boolean {
+  return !(opts?.build || !!opts?.nexusSource);
+}
+
+export function describeNexusBuildLabel(
+  opts?: Pick<NexusUpOptions, "build" | "nexusSource">,
+): string {
+  if (opts?.nexusSource) return ` (source build from ${opts.nexusSource})`;
+  if (opts?.build) return " (--build)";
+  return "";
+}
+
 function coerceEnvString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim() !== "") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -524,8 +541,9 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
   const report = opts.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
   report(`[nexusUp] cwd=${projectRoot}`);
 
-  const timeout = opts.timeoutSeconds ?? NEXUS_UP_TIMEOUT_S;
   const wantsBuild = opts.build || !!opts.nexusSource;
+  const timeout =
+    opts.timeoutSeconds ?? (wantsBuild ? NEXUS_SOURCE_BUILD_TIMEOUT_S : NEXUS_UP_TIMEOUT_S);
 
   // Resolve source directory for --build
   let sourceDir: string | undefined;
@@ -966,6 +984,10 @@ export async function ensureNexusRunning(
   const stateFileUrl = state?.ports?.http ? `http://localhost:${state.ports.http}` : undefined;
 
   report(`[ensureNexus] derived port=${derivedPort} state url=${stateFileUrl ?? "none"}`);
+  const reuseExistingNexus = shouldReuseExistingNexusForUp(upOpts);
+  if (!reuseExistingNexus) {
+    report("[ensureNexus] source build requested; skipping existing Nexus reuse");
+  }
 
   // Discover any running container belonging to this worktree.
   let containerUrl: string | undefined;
@@ -979,16 +1001,18 @@ export async function ensureNexusRunning(
   // DEFAULT_NEXUS_URL is intentionally excluded — it could match any running
   // Nexus instance (e.g. another project via OrbStack port forwarding) and
   // would cause cross-worktree session leakage.
-  const candidateUrls = [
-    process.env.GROVE_NEXUS_URL, // explicit user override (highest priority)
-    containerUrl, // docker container on our derived port
-    config.nexusUrl, // persisted from a previous successful start
-    readNexusUrl(projectRoot), // our nexus.yaml (has our derived port)
-    stateFileUrl, // our state.json
-    // DEFAULT_NEXUS_URL intentionally excluded — it could match any running
-    // Nexus instance (e.g. another project via OrbStack port forwarding)
-    // and would cause cross-worktree session leakage.
-  ].filter((u): u is string => !!u);
+  const candidateUrls = reuseExistingNexus
+    ? [
+        process.env.GROVE_NEXUS_URL, // explicit user override (highest priority)
+        containerUrl, // docker container on our derived port
+        config.nexusUrl, // persisted from a previous successful start
+        readNexusUrl(projectRoot), // our nexus.yaml (has our derived port)
+        stateFileUrl, // our state.json
+        // DEFAULT_NEXUS_URL intentionally excluded — it could match any running
+        // Nexus instance (e.g. another project via OrbStack port forwarding)
+        // and would cause cross-worktree session leakage.
+      ].filter((u): u is string => !!u)
+    : [];
 
   const urlsToTry = [...new Set(candidateUrls)];
   report(`[ensureNexus] checking URLs in parallel: ${urlsToTry.join(", ")}`);
@@ -1027,7 +1051,7 @@ export async function ensureNexusRunning(
   //     in-flight grove-server connections; avoid it when the container
   //     is just slow to answer (Raft re-election, cold cache, etc.).
   // -----------------------------------------------------------------------
-  if (containerUrl) {
+  if (reuseExistingNexus && containerUrl) {
     report(`[ensureNexus] container running, waiting up to 15s for health at ${containerUrl}...`);
     try {
       await waitForNexusHealth(containerUrl, 15_000);
@@ -1065,38 +1089,40 @@ export async function ensureNexusRunning(
 
   if (hasYaml && !upOpts?.force) {
     let quickRestartUrl: string | undefined;
-    try {
-      const projectName = state?.project_name;
-      const httpPort = state?.ports?.http;
-      if (projectName && httpPort) {
-        report(`[ensureNexus] quick restart: project=${projectName} port=${httpPort}`);
-        const restart = Bun.spawn(["docker", "compose", "-p", projectName, "restart", "nexus"], {
-          cwd: groveHomeDir,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const restartCode = await restart.exited;
-        if (restartCode === 0) {
-          quickRestartUrl = `http://localhost:${httpPort}`;
-          report(`[ensureNexus] quick restart done, checking health at ${quickRestartUrl}...`);
-          try {
-            await waitForNexusHealth(quickRestartUrl, 30_000);
-            const apiKey = readNexusApiKey(groveHomeDir);
-            report("Nexus is ready (quick restart)");
-            // We invoked `docker compose restart` — owned the transition this call.
-            return { url: quickRestartUrl, apiKey, startedThisCall: true };
-          } catch {
-            report("[ensureNexus] quick restart unhealthy, falling through to nexus up...");
+    if (reuseExistingNexus) {
+      try {
+        const projectName = state?.project_name;
+        const httpPort = state?.ports?.http;
+        if (projectName && httpPort) {
+          report(`[ensureNexus] quick restart: project=${projectName} port=${httpPort}`);
+          const restart = Bun.spawn(["docker", "compose", "-p", projectName, "restart", "nexus"], {
+            cwd: groveHomeDir,
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const restartCode = await restart.exited;
+          if (restartCode === 0) {
+            quickRestartUrl = `http://localhost:${httpPort}`;
+            report(`[ensureNexus] quick restart done, checking health at ${quickRestartUrl}...`);
+            try {
+              await waitForNexusHealth(quickRestartUrl, 30_000);
+              const apiKey = readNexusApiKey(groveHomeDir);
+              report("Nexus is ready (quick restart)");
+              // We invoked `docker compose restart` — owned the transition this call.
+              return { url: quickRestartUrl, apiKey, startedThisCall: true };
+            } catch {
+              report("[ensureNexus] quick restart unhealthy, falling through to nexus up...");
+            }
           }
         }
+      } catch {
+        // best-effort — fall through to nexus up
       }
-    } catch {
-      // best-effort — fall through to nexus up
     }
 
     report("[ensureNexus] warm start: nexus.yaml found, ensuring compose file...");
     await ensureNexusComposeFile(groveHomeDir);
-    report("[ensureNexus] warm start: running nexus up...");
+    report(`[ensureNexus] warm start: running nexus up${describeNexusBuildLabel(upOpts)}...`);
     const upStdout = await nexusUp(groveHomeDir, upOpts);
     const nexusUrl =
       readNexusUrl(groveHomeDir) ??
@@ -1140,12 +1166,7 @@ export async function ensureNexusRunning(
   report("[ensureNexus] cold start: ensuring compose file...");
   await ensureNexusComposeFile(groveHomeDir);
 
-  const buildLabel = upOpts?.nexusSource
-    ? ` (source build from ${upOpts.nexusSource})`
-    : upOpts?.build
-      ? " (--build)"
-      : "";
-  report(`[ensureNexus] starting Nexus${buildLabel}...`);
+  report(`[ensureNexus] starting Nexus${describeNexusBuildLabel(upOpts)}...`);
   const upStdout = await nexusUp(groveHomeDir, upOpts);
 
   const nexusUrl =

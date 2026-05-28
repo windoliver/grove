@@ -5,15 +5,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { KeyEvent } from "@opentui/core";
-import {
-  buildKeyActionMap,
-  loadKeybindings,
-  REMAPPABLE_ACTIONS,
-} from "./use-keybinding-overrides.js";
+import { resolveKeymapWithOverrides } from "../keymap/keymap.js";
+import { loadKeybindings, REMAPPABLE_ACTIONS } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { routeKey } from "./use-keyboard-handler.js";
 import type { PanelFocusState } from "./use-panel-focus.js";
@@ -129,6 +127,9 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     onSpawnPalette: () => {
       /* noop */
     },
+    onPaletteClose: () => {
+      /* noop */
+    },
     onVfsNavigate: () => {
       /* noop */
     },
@@ -238,7 +239,17 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     pageSize: 20,
     paletteItemCount: 5,
     compareMode: false,
-    frontierCids: [],
+    frontierCids: () => [],
+    frontierEntries: () => [],
+    onFrontierTabNext: () => {
+      /* noop */
+    },
+    onFrontierTabPrev: () => {
+      /* noop */
+    },
+    onFrontierAdopt: () => {
+      /* noop */
+    },
     selectedSession: undefined,
     hasTmux: false,
   };
@@ -259,6 +270,13 @@ describe("loadKeybindings", () => {
     const result = await loadKeybindings();
     expect(result.quit).toBe("Q");
     expect(result.help).toBe("F1");
+  });
+
+  test("loads parameterized panel action ids", async () => {
+    await writeKeybindings({ "toggle_panel:terminal": "Space p x" });
+    const result = await loadKeybindings();
+
+    expect(result["toggle_panel:terminal"]).toBe("Space p x");
   });
 
   test("silently ignores unknown action names", async () => {
@@ -296,38 +314,15 @@ describe("loadKeybindings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildKeyActionMap
+// legacy reverse map cleanup
 // ---------------------------------------------------------------------------
 
-describe("buildKeyActionMap", () => {
-  test("empty overrides produces empty map", () => {
-    const map = buildKeyActionMap({});
-    expect(map.size).toBe(0);
-  });
+describe("legacy reverse-map cleanup", () => {
+  test("override module no longer exports the pre-keymap reverse map", () => {
+    const source = readFileSync(resolve(import.meta.dir, "use-keybinding-overrides.ts"), "utf-8");
 
-  test("builds reverse map from action→key to key→action", () => {
-    const map = buildKeyActionMap({ quit: "Q", help: "F1" });
-    expect(map.get("Q")).toBe("quit");
-    expect(map.get("F1")).toBe("help");
-  });
-
-  test("first-win semantics when two actions share the same key", () => {
-    // Object.entries iteration order is insertion order for string keys
-    const overrides: Record<string, string> = {};
-    overrides.quit = "X";
-    overrides.refresh = "X";
-    const map = buildKeyActionMap(overrides);
-    // "quit" was inserted first → "X" maps to "quit"
-    expect(map.get("X")).toBe("quit");
-    expect(map.size).toBe(1); // only one entry for "X"
-  });
-
-  test("multiple distinct keys all appear in map", () => {
-    const map = buildKeyActionMap({ quit: "Q", help: "H", refresh: "R" });
-    expect(map.size).toBe(3);
-    expect(map.get("Q")).toBe("quit");
-    expect(map.get("H")).toBe("help");
-    expect(map.get("R")).toBe("refresh");
+    expect(source).not.toContain("buildKeyActionMap");
+    expect(source).not.toContain("DEFAULT_KEY_ACTIONS");
   });
 });
 
@@ -339,14 +334,12 @@ describe("routeKey — keybinding override integration", () => {
   test("remapped quit key triggers onQuit", () => {
     let quitCalled = false;
     const overrides = { quit: "Q" };
-    const keyMap = buildKeyActionMap(overrides);
     const actions: KeyboardActions = {
       ...mockActions(),
       onQuit: () => {
         quitCalled = true;
       },
-      keybindingOverrides: overrides,
-      keyActionMap: keyMap,
+      resolvedKeymap: resolveKeymapWithOverrides("default", overrides),
     };
 
     const handled = routeKey(keyEvent("Q"), actions);
@@ -354,20 +347,18 @@ describe("routeKey — keybinding override integration", () => {
     expect(quitCalled).toBe(true);
   });
 
-  test("non-overridden key falls through to default handler", () => {
+  test("non-overridden legacy key does not bypass the active keymap", () => {
     let quitCalled = false;
     const actions: KeyboardActions = {
       ...mockActions(),
       onQuit: () => {
         quitCalled = true;
       },
-      keybindingOverrides: {},
-      keyActionMap: new Map(),
+      resolvedKeymap: resolveKeymapWithOverrides("default", {}),
     };
 
-    // No override for "q" — the default hardcoded "q" handler runs
     const handled = routeKey(keyEvent("q"), actions);
-    expect(handled).toBe(true);
-    expect(quitCalled).toBe(true);
+    expect(handled).toBe(false);
+    expect(quitCalled).toBe(false);
   });
 });

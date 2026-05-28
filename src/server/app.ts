@@ -9,10 +9,33 @@
  * All /api/* routes require a valid bearer token from `.grove/server-keys.yaml`.
  * The token resolves to a namespace that is injected into each request context.
  * Requests without a valid token receive 400 (missing) or 401 (unrecognized).
+ *
+ * Authentication: `/api/*` routes require a valid bearer token, with two
+ * exemptions that apply only when gossip is configured:
+ *   - POST /api/gossip/exchange and POST /api/gossip/shuffle use HMAC.
+ *   - GET /api/contributions/:cid and
+ *     GET /api/contributions/:cid/artifacts/:name are contribution-scoped
+ *     and used by peer federation fetchers — auth-exempt only when the
+ *     request carries a valid X-Gossip-Signature / X-Gossip-Timestamp pair
+ *     keyed by the shared gossip HMAC secret (#226).
+ *
+ * Local-trigger routes like POST /api/gossip/fetch/:cid remain bearer-protected.
+ *
+ * There is intentionally no hash-keyed CAS read endpoint: a direct
+ * /api/cas/:hash would expose every blob in the zone-shared CAS (including
+ * blobs only referenced by session contributions) to any namespace bearer
+ * that happened to learn the hash. Federation MUST use the
+ * contribution-scoped artifact route so the local server's root contribution
+ * store can authorize the read.
  */
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import {
+  GOSSIP_GET_SIGNATURE_HEADER,
+  GOSSIP_GET_TIMESTAMP_HEADER,
+  verifyGetRequest,
+} from "../gossip/protocol.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
 import { type KeyRegistry, namespaceAuth } from "./middleware/namespace-auth.js";
@@ -87,13 +110,73 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // All /api/* routes require a valid namespace bearer token.
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
+  //
+  // Federation read paths (#226): the contribution-scoped read endpoints
+  // used by peer fetchers are auth-exempt **only** when the request carries
+  // a valid HMAC signature over `${method}\n${path}\n${timestamp}` keyed by
+  // the shared gossip secret, with the timestamp inside the standard 5-minute
+  // clock-skew window. Namespace API keys never leave the server (see
+  // serve.ts), so peer-to-peer trust is bound to the same HMAC that protects
+  // gossip exchange.
+  //
+  //   GET /api/contributions/:cid                       — manifest fetch.
+  //   GET /api/contributions/:cid/artifacts/:name       — artifact-name fetch.
+  //
+  // These paths route through the local server's root contribution store,
+  // which only resolves CIDs that exist at the zone root. Session-only
+  // contributions and their artifacts therefore stay unreachable to peers
+  // even when the underlying CAS is zone-shared.
+  //
+  // There is intentionally no /api/cas/:hash route — direct hash-keyed
+  // reads bypass the contribution-scope boundary and would leak any blob
+  // in the shared CAS, including blobs only referenced by session
+  // contributions.
+  // Match either the raw or percent-encoded ":" form of the cid prefix, since
+  // peer transports may encode the colon (e.g., HttpGossipTransport calls
+  // encodeURIComponent(cid)).
+  const FEDERATION_CONTRIB_PATH = /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}$/;
+  const FEDERATION_ARTIFACT_PATH =
+    /^\/api\/contributions\/blake3(?::|%3A)[0-9a-f]{64}\/artifacts\/[^/]+$/;
   app.use(
     "/api/*",
     namespaceAuth(registry, {
-      exempt: (c) =>
-        deps.gossip !== undefined &&
-        c.req.method === "POST" &&
-        c.req.path.startsWith("/api/gossip"),
+      exempt: (c) => {
+        if (deps.gossip === undefined) return false;
+        if (c.req.method === "POST" && c.req.path.startsWith("/api/gossip/")) {
+          // /api/gossip/fetch/:cid is a LOCAL trigger that doesn't run HMAC
+          // verification — it must remain bearer-protected. Only peer-to-peer
+          // POST endpoints (/exchange, /shuffle) belong on the exempt list.
+          if (c.req.path.startsWith("/api/gossip/fetch/")) return false;
+          return true;
+        }
+        if (c.req.method === "GET") {
+          const path = c.req.path;
+          if (!FEDERATION_CONTRIB_PATH.test(path) && !FEDERATION_ARTIFACT_PATH.test(path)) {
+            return false;
+          }
+          // Reject any query string on exempt federation GETs. The peer
+          // transport never sends queries; honoring (e.g.) ?sessionId= on a
+          // signed request would broaden the auth window from "this content
+          // hash" to "this content hash in any session scope". Keep the
+          // signed surface bound to path-only.
+          const rawUrl = c.req.url;
+          const qIdx = rawUrl.indexOf("?");
+          if (qIdx !== -1 && rawUrl.length > qIdx + 1) return false;
+          const secret = deps.gossipHmacSecret;
+          if (!secret) return false;
+          const timestamp = c.req.header(GOSSIP_GET_TIMESTAMP_HEADER);
+          const signature = c.req.header(GOSSIP_GET_SIGNATURE_HEADER);
+          return verifyGetRequest({
+            method: "GET",
+            path,
+            timestamp,
+            signature,
+            secret,
+            nowMs: Date.now(),
+          });
+        }
+        return false;
+      },
     }),
   );
 

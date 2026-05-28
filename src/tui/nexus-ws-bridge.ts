@@ -25,7 +25,7 @@
 
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
-import type { HandoffStore } from "../core/handoff.js";
+import { HandoffStatus, type HandoffStore, InvalidTransitionError } from "../core/handoff.js";
 import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
 import { startInterval } from "../local/use-interval.js";
@@ -1158,6 +1158,14 @@ export class NexusWsBridge {
     try {
       const store = this.opts.handoffStore;
       if (!store) return;
+      const existing = await (store as { get?: HandoffStore["get"] }).get?.(handoffId);
+      if (existing && NexusWsBridge.hasReachedDelivery(existing.status)) {
+        debugLog(
+          "wsBridge.markHandoffDeliveredById",
+          `SKIP already-delivered handoffId=${handoffId} role=${targetRole} status=${existing.status}`,
+        );
+        return;
+      }
       await store.markDelivered(handoffId);
       debugLog(
         "wsBridge.markHandoffDeliveredById",
@@ -1166,6 +1174,17 @@ export class NexusWsBridge {
       const cacheable = store as { invalidateCache?: () => void };
       cacheable.invalidateCache?.();
     } catch (err) {
+      if (
+        err instanceof InvalidTransitionError &&
+        err.toStatus === HandoffStatus.Delivered &&
+        NexusWsBridge.hasReachedDelivery(err.fromStatus)
+      ) {
+        debugLog(
+          "wsBridge.markHandoffDeliveredById",
+          `SKIP already-delivered handoffId=${err.handoffId} role=${targetRole} status=${err.fromStatus}`,
+        );
+        return;
+      }
       debugLog(
         "wsBridge.markHandoffDeliveredById",
         `FAIL handoffId=${handoffId} err=${err instanceof Error ? err.message : String(err)}`,
@@ -1296,6 +1315,52 @@ export class NexusWsBridge {
     );
   }
 
+  private static isTerminalHandoffStatus(status: string): boolean {
+    return (
+      status === HandoffStatus.Replied ||
+      status === HandoffStatus.Expired ||
+      status === HandoffStatus.DeadLettered
+    );
+  }
+
+  private static hasReachedDelivery(status: string): boolean {
+    return (
+      status === HandoffStatus.Delivered ||
+      status === HandoffStatus.Processed ||
+      NexusWsBridge.isTerminalHandoffStatus(status)
+    );
+  }
+
+  private static isCancelledPush(reason: string): boolean {
+    return /stopReason=cancelled/i.test(reason);
+  }
+
+  private async shouldSkipDeadLetterForHandoff(
+    handoffId: string | undefined,
+    reason: string,
+  ): Promise<boolean> {
+    if (!handoffId) return false;
+    const store = this.opts.handoffStore;
+    if (!store) return false;
+    const existing = await store.get(handoffId);
+    if (!existing) return false;
+    if (NexusWsBridge.isTerminalHandoffStatus(existing.status)) {
+      debugLog(
+        "wsBridge.markHandoffDeadLettered",
+        `SKIP terminal handoffId=${handoffId} status=${existing.status}: ${reason}`,
+      );
+      return true;
+    }
+    if (!existing.requiresReply && NexusWsBridge.isCancelledPush(reason)) {
+      debugLog(
+        "wsBridge.markHandoffDeadLettered",
+        `SKIP optional cancelled handoffId=${handoffId} status=${existing.status}: ${reason}`,
+      );
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Send a notification with bounded transient-retry. Retries on ACP
    * connection-closed-style errors (recipient bootstrap race) with
@@ -1383,6 +1448,7 @@ export class NexusWsBridge {
           await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
           continue;
         }
+        if (await this.shouldSkipDeadLetterForHandoff(resolvedHandoffId, detail)) return;
         process.stderr.write(
           `[NexusWsBridge] local push failed for role=${targetRole} turn=${turn.turnId}: ${detail}\n`,
         );
@@ -1403,6 +1469,7 @@ export class NexusWsBridge {
           await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
           continue;
         }
+        if (await this.shouldSkipDeadLetterForHandoff(resolvedHandoffId, detail)) return;
         process.stderr.write(
           `[NexusWsBridge] runtime.send rejected for role=${targetRole}: ${detail}\n`,
         );
@@ -1477,6 +1544,8 @@ export class NexusWsBridge {
         return;
       }
 
+      if (await this.shouldSkipDeadLetterForHandoff(effectiveId, reason)) return;
+
       await store.markDeadLettered(effectiveId);
       process.stderr.write(
         `[NexusWsBridge] dead-lettered handoffId=${effectiveId} role=${targetRole}: ${reason}\n`,
@@ -1485,6 +1554,17 @@ export class NexusWsBridge {
       const cacheable = store as { invalidateCache?: () => void };
       cacheable.invalidateCache?.();
     } catch (err) {
+      if (
+        err instanceof InvalidTransitionError &&
+        err.toStatus === HandoffStatus.DeadLettered &&
+        NexusWsBridge.isTerminalHandoffStatus(err.fromStatus)
+      ) {
+        debugLog(
+          "wsBridge.markHandoffDeadLettered",
+          `SKIP terminal handoffId=${err.handoffId} status=${err.fromStatus}: ${reason}`,
+        );
+        return;
+      }
       debugLog(
         "wsBridge.markHandoffDeadLettered",
         `FAIL handoffId=${handoffId} err=${err instanceof Error ? err.message : String(err)}`,

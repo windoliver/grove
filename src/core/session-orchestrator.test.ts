@@ -5,6 +5,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hash } from "blake3";
+import { SqliteGoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import { initSqliteDb } from "../local/sqlite-store.js";
 import { MockNexusClient } from "../nexus/mock-client.js";
 import { writeSkillCatalogToNexusForTest } from "../nexus/nexus-skill-catalog.js";
 import { createStoredZip } from "../shared/zip.js";
@@ -233,6 +235,38 @@ function makeOrchestrator(
   return { orchestrator, runtime, bus };
 }
 
+class FailingSpawnRuntime extends MockRuntime {
+  private readonly failingRoles: ReadonlySet<string>;
+
+  constructor(failingRoles: ReadonlySet<string>) {
+    super();
+    this.failingRoles = failingRoles;
+  }
+
+  override async spawn(
+    role: string,
+    config: Parameters<MockRuntime["spawn"]>[1],
+  ): ReturnType<MockRuntime["spawn"]> {
+    if (this.failingRoles.has(role)) {
+      throw new Error(`boom from ${role}`);
+    }
+    return await super.spawn(role, config);
+  }
+}
+
+class CloseStatusRuntime extends MockRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+  readonly statusesAtClose: Array<string | undefined> = [];
+
+  override async close(
+    session: Parameters<MockRuntime["close"]>[0],
+  ): ReturnType<MockRuntime["close"]> {
+    const current = (await this.listSessions()).find((candidate) => candidate.id === session.id);
+    this.statusesAtClose.push(current?.status);
+    return await super.close(session);
+  }
+}
+
 function signContributionForRouting(
   contribution: ReturnType<typeof makeContribution>,
   routingToken: string,
@@ -304,11 +338,83 @@ describe("SessionOrchestrator", () => {
     const coderConfig = runtime.spawnCalls.find((call) => call.role === "coder")?.config;
     expect(coderConfig?.mcpServers).toHaveLength(1);
     expect(coderConfig?.mcpServers?.[0]?.name).toBe("grove");
-    expect(coderConfig?.mcpServers?.[0]?.command).toBe("bun");
+    expect(coderConfig?.mcpServers?.[0]?.command).toBe(process.execPath);
     expect(coderConfig?.mcpServers?.[0]?.args?.join(" ")).toContain("mcp/serve");
     expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_DIR).toBe("/tmp/.grove");
     expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_AGENT_ROLE).toBe("coder");
     expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_SESSION_ID).toBe("session-mcp-forward");
+    bus.close();
+  });
+
+  test("start registers the local session before spawning MCP-backed agents", async () => {
+    const contract = makeContract();
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-so-session-root-"));
+    mkdirSync(join(projectRoot, ".grove"), { recursive: true });
+    const sessionId = "session-local-registration";
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot,
+      repos: [{ kind: "local", path: projectRoot }],
+      workspaceBaseDir: join(projectRoot, ".grove", "workspaces"),
+      workspaceIsolationPolicy: "allow-fallback",
+      sessionId,
+    });
+
+    try {
+      await orchestrator.start();
+
+      const db = initSqliteDb(join(projectRoot, ".grove", "grove.db"));
+      try {
+        const store = new SqliteGoalSessionStore(db);
+        const session = await store.getSession(sessionId);
+        expect(session?.id).toBe(sessionId);
+        expect(session?.goal).toBe("Build auth module");
+        expect(session?.topology?.roles.map((role) => role.name)).toEqual(["coder", "reviewer"]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      bus.close();
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("start aborts and closes spawned agents when any required role fails to spawn", async () => {
+    const runtime = new FailingSpawnRuntime(new Set(["reviewer"]));
+    const contract = makeContract();
+    const { orchestrator, bus } = makeOrchestrator(contract, { runtime });
+
+    await expect(orchestrator.start()).rejects.toThrow(
+      "Failed to spawn required role(s): reviewer",
+    );
+
+    expect(runtime.spawnCalls.map((call) => call.role)).toEqual(["coder"]);
+    expect(runtime.closeCalls).toHaveLength(1);
+    bus.close();
+  });
+
+  test("crashed agents stop the session as an error instead of waiting for timeout", async () => {
+    const runtime = new MockRuntime();
+    Object.assign(runtime, { sendsInitialPromptOnSpawn: true });
+    const contract = makeContract();
+    const { orchestrator, bus } = makeOrchestrator(contract, { runtime });
+
+    const status = await orchestrator.start();
+    const coder = status.agents.find((agent) => agent.role === "coder");
+    expect(coder).toBeDefined();
+
+    runtime.setSessionStatus(coder?.session.id ?? "", "crashed");
+    const stopped = await orchestrator.checkIdleCompletion();
+
+    expect(stopped).toBe(true);
+    expect(orchestrator.getStatus().stopStatus).toBe(LoopStopStatus.Error);
+    expect(orchestrator.getStatus().stopReason).toContain("coder");
     bus.close();
   });
 
@@ -361,6 +467,24 @@ describe("SessionOrchestrator", () => {
     expect(status.stopped).toBe(true);
     expect(status.stopStatus).toBe(LoopStopStatus.Interrupted);
     expect(runtime.closeCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("achieved stop waits for ACP-style turns to settle before closing", async () => {
+    const runtime = new CloseStatusRuntime();
+    const contract = makeContract();
+    const { orchestrator, bus } = makeOrchestrator(contract, { runtime });
+
+    const started = await orchestrator.start();
+    setTimeout(() => {
+      for (const agent of started.agents) {
+        runtime.setSessionStatus(agent.session.id, "idle");
+      }
+    }, 20);
+
+    await orchestrator.stop("done", LoopStopStatus.Achieved);
+
+    expect(runtime.statusesAtClose).toEqual(["idle", "idle"]);
     bus.close();
   });
 
@@ -472,6 +596,7 @@ describe("SessionOrchestrator", () => {
     const bus = new LocalEventBus();
     const contract = makeContract();
     const contributions: ReturnType<typeof makeContribution>[] = [];
+    const acceptedCids: string[] = [];
     const contributionStore = {
       list: async () => contributions,
     };
@@ -487,12 +612,116 @@ describe("SessionOrchestrator", () => {
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
+      onContributionAccepted: (cid) => {
+        acceptedCids.push(cid);
+      },
     });
     const internals = orchestrator as unknown as {
       startContributionPolling: () => void;
       pollContributions: () => Promise<void>;
     };
     // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderSessionId).toBeDefined();
+    expect(coderToken).toBeDefined();
+
+    const routedContribution = signContributionForRouting(
+      makeContribution({
+        summary: "local coder contribution",
+        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+      }),
+      coderToken ?? "missing-token",
+    );
+    contributions.push(routedContribution);
+
+    await internals.pollContributions();
+
+    // 2 initial goal sends + 1 routed handoff to reviewer.
+    expect(runtime.sendCalls).toHaveLength(3);
+    expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
+    expect(acceptedCids).toEqual([routedContribution.cid]);
+
+    await internals.pollContributions();
+    expect(acceptedCids).toEqual([routedContribution.cid]);
+    bus.close();
+  });
+
+  test("polling does not mark untrusted contributions accepted", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const acceptedCids: string[] = [];
+    const contributions = [
+      makeContribution({
+        summary: "external coder contribution",
+        agent: { agentId: "external-session-coder", role: "coder" },
+      }),
+    ];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+      onContributionAccepted: (cid) => {
+        acceptedCids.push(cid);
+      },
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    internals.startContributionPolling = () => undefined;
+
+    await orchestrator.start();
+    await internals.pollContributions();
+
+    expect(acceptedCids).toEqual([]);
+    bus.close();
+  });
+
+  test("polling continues routing when session contribution linking fails", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+      onContributionAccepted: () => {
+        throw new Error("link failed");
+      },
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
     internals.startContributionPolling = () => undefined;
 
     const started = await orchestrator.start();
@@ -514,7 +743,6 @@ describe("SessionOrchestrator", () => {
 
     await internals.pollContributions();
 
-    // 2 initial goal sends + 1 routed handoff to reviewer.
     expect(runtime.sendCalls).toHaveLength(3);
     expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
     bus.close();

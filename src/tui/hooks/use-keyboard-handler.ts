@@ -6,10 +6,15 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
+import {
+  type KeyBinding,
+  keyEventToToken,
+  type ResolvedKeymap,
+  resolveKeySequence,
+} from "../keymap/keymap.js";
 import type { ZoomLevel } from "../panels/panel-manager.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { isHelpToggleKey } from "./shared-keyboard-core.js";
-import type { KeybindingOverrides, RemappableAction } from "./use-keybinding-overrides.js";
 import type { NavigationActions } from "./use-navigation.js";
 import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
 
@@ -23,6 +28,10 @@ export interface KeyboardActions {
   readonly nav: NavigationActions;
   readonly onQuit: () => void;
   readonly onSpawnPalette: () => void;
+  /** Called whenever the command palette is dismissed (any path). Clears
+   *  adoptContext + palette state so leftover targets don't leak into the
+   *  next unrelated spawn. */
+  readonly onPaletteClose: () => void;
   readonly onVfsNavigate: () => void;
   readonly onArtifactPrev: () => void;
   readonly onArtifactNext: () => void;
@@ -61,17 +70,23 @@ export interface KeyboardActions {
   readonly rowCount: number;
   readonly pageSize: number;
   readonly paletteItemCount: number;
+  readonly onFrontierTabNext: () => void;
+  readonly onFrontierTabPrev: () => void;
+  readonly onFrontierAdopt: (cid: string, summary: string) => void;
+  /** Entries (cid + summary) for the currently visible frontier slice.
+   *  Resolved on each call so the value reflects the latest slice nav,
+   *  even if it happened in the same JS tick before React committed. */
+  readonly frontierEntries: () => ReadonlyArray<{ cid: string; summary: string }>;
   readonly compareMode: boolean;
-  readonly frontierCids: readonly string[];
+  /** Cids for the currently visible frontier slice. Function form so the
+   *  keyboard handler reads the latest ref-backed value (slice nav clears
+   *  the ref synchronously; state-based array would lag by a render). */
+  readonly frontierCids: () => readonly string[];
   readonly selectedSession: string | undefined;
   readonly hasTmux: boolean;
-  /** Keybinding overrides from .grove/keybindings.json (item 19). */
-  readonly keybindingOverrides?: KeybindingOverrides | undefined;
-  /**
-   * Pre-built reverse map (key → action) derived from keybindingOverrides.
-   * Use buildKeyActionMap() to construct. Enables O(1) lookup vs O(n) scan.
-   */
-  readonly keyActionMap?: ReadonlyMap<string, RemappableAction> | undefined;
+  readonly resolvedKeymap?: ResolvedKeymap | undefined;
+  readonly keymapPrefix?: readonly string[] | undefined;
+  readonly onKeymapPrefixChange?: (prefix: readonly string[]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +105,158 @@ export function nextZoom(current: ZoomLevel): ZoomLevel {
   }
 }
 
+export function executeKeymapAction(binding: KeyBinding, actions: KeyboardActions): boolean {
+  const focused = actions.panels.state.focused;
+  switch (binding.action) {
+    case "quit":
+      actions.onQuit();
+      return true;
+    case "help":
+      actions.panels.setMode(InputMode.Help);
+      return true;
+    case "palette":
+      actions.onSpawnPalette();
+      actions.panels.setMode(InputMode.CommandPalette);
+      return true;
+    case "refresh":
+      actions.onRefresh();
+      return true;
+    case "zoom_cycle":
+      actions.onZoomCycle();
+      return true;
+    case "zoom_reset":
+      actions.onZoomReset();
+      return true;
+    case "layout_toggle":
+      actions.onLayoutToggle();
+      return true;
+    case "view_cycle":
+      actions.panels.cycleViewMode();
+      return true;
+    case "cycle_panel_next":
+      actions.panels.cycleNext();
+      return true;
+    case "cycle_panel_prev":
+      actions.panels.cyclePrev();
+      return true;
+    case "focus_panel":
+      actions.panels.focus(binding.panel);
+      return true;
+    case "toggle_panel":
+      actions.panels.toggle(binding.panel);
+      return true;
+    case "broadcast":
+      actions.onBroadcastMode();
+      return true;
+    case "direct_message":
+      actions.onDirectMessageMode();
+      return true;
+    case "search_start":
+      if (focused !== Panel.Search) return false;
+      actions.onSearchStart();
+      return true;
+    case "terminal_input":
+      if (focused !== Panel.Terminal) return false;
+      actions.panels.setMode(InputMode.TerminalInput);
+      return true;
+    case "compare_toggle":
+      if (focused !== Panel.Frontier) return false;
+      actions.onCompareToggle();
+      return true;
+    case "artifact_prev":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactPrev();
+      return true;
+    case "artifact_next":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactNext();
+      return true;
+    case "artifact_diff":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactDiffToggle();
+      return true;
+    case "approve":
+      if (focused !== Panel.Decisions) return false;
+      actions.onApproveQuestion();
+      return true;
+    case "deny":
+      if (focused !== Panel.Decisions) return false;
+      actions.onDenyQuestion();
+      return true;
+    case "cursor_down":
+      actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
+      return true;
+    case "cursor_up":
+      actions.nav.cursorUp();
+      return true;
+    case "select":
+      if (!actions.nav.isDetailView && focused !== Panel.Claims && actions.rowCount > 0) {
+        actions.onSelect(actions.nav.state.cursor);
+      }
+      return true;
+    case "page_next": {
+      const hasFullPage = actions.rowCount >= actions.pageSize;
+      const totalItems = hasFullPage
+        ? actions.nav.state.pageOffset + actions.rowCount + 1
+        : actions.nav.state.pageOffset + actions.rowCount;
+      actions.nav.nextPage(actions.pageSize, totalItems);
+      return true;
+    }
+    case "page_prev":
+      actions.nav.prevPage(actions.pageSize);
+      return true;
+    case "vfs_navigate":
+      if (focused !== Panel.Vfs) return false;
+      actions.onVfsNavigate();
+      return true;
+    case "terminal_scroll_up":
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollUp();
+      return true;
+    case "terminal_scroll_down":
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollDown();
+      return true;
+    case "terminal_scroll_bottom":
+      if (focused !== Panel.Terminal) return false;
+      actions.onTerminalScrollBottom();
+      return true;
+    case "frontier_tab_next":
+      if (focused !== Panel.Frontier) return false;
+      actions.onFrontierTabNext();
+      return true;
+    case "frontier_tab_prev":
+      if (focused !== Panel.Frontier) return false;
+      actions.onFrontierTabPrev();
+      return true;
+    case "frontier_adopt":
+      if (focused === Panel.Frontier && !actions.compareMode) {
+        const entries = actions.frontierEntries();
+        const entry = entries[actions.nav.state.cursor];
+        if (entry !== undefined) actions.onFrontierAdopt(entry.cid, entry.summary);
+        return entry !== undefined;
+      }
+      return false;
+    case "compare_select":
+      if (focused === Panel.Frontier && actions.compareMode) {
+        const cid = actions.frontierCids()[actions.nav.state.cursor];
+        if (cid !== undefined) {
+          actions.onCompareSelect(cid);
+          return true;
+        }
+      }
+      return false;
+    case "compare_adopt_a":
+      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
+      actions.onCompareAdopt("a");
+      return true;
+    case "compare_adopt_b":
+      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
+      actions.onCompareAdopt("b");
+      return true;
+  }
+}
+
 /**
  * Route a key event to the appropriate action.
  *
@@ -101,70 +268,15 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   const isCtrl = key.ctrl;
   const mode = actions.panels.state.mode;
   const focused = actions.panels.state.focused;
+  const keymapPrefix = actions.keymapPrefix ?? [];
 
-  // Keybinding overrides (item 19): O(1) lookup via pre-built reverse map.
-  // Override lookup only applies in normal mode to avoid breaking modal input.
-  const keyActionMap = actions.keyActionMap;
-  if (mode === InputMode.Normal && keyActionMap && input && !isCtrl) {
-    const action = keyActionMap.get(input);
-    if (action !== undefined) {
-      switch (action) {
-        case "quit":
-          actions.onQuit();
-          return true;
-        case "help":
-          actions.panels.setMode(InputMode.Help);
-          return true;
-        case "zoom_cycle":
-          actions.onZoomCycle();
-          return true;
-        case "zoom_reset":
-          actions.onZoomReset();
-          return true;
-        case "broadcast":
-          actions.onBroadcastMode();
-          return true;
-        case "direct_message":
-          actions.onDirectMessageMode();
-          return true;
-        case "search_start":
-          if (focused === Panel.Search) actions.onSearchStart();
-          return true;
-        case "terminal_input":
-          if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
-          return true;
-        case "compare_toggle":
-          if (focused === Panel.Frontier) actions.onCompareToggle();
-          return true;
-        case "artifact_prev":
-          if (focused === Panel.Artifact) actions.onArtifactPrev();
-          return true;
-        case "artifact_next":
-          if (focused === Panel.Artifact) actions.onArtifactNext();
-          return true;
-        case "artifact_diff":
-          if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
-          return true;
-        case "approve":
-          if (focused === Panel.Decisions) actions.onApproveQuestion();
-          return true;
-        case "deny":
-          if (focused === Panel.Decisions) actions.onDenyQuestion();
-          return true;
-        case "refresh":
-          actions.onRefresh();
-          return true;
-        case "palette":
-          actions.onSpawnPalette();
-          actions.panels.setMode(InputMode.CommandPalette);
-          return true;
-      }
-    }
-  }
-
-  // Command palette toggle (works in all modes except help)
+  // Command palette toggle (works in all modes except help). Both
+  // dismissal AND opening route through onPaletteClose / onSpawnPalette
+  // (which also clears adoptContext) to ensure a stale adopt target from
+  // a prior 'a'-on-Frontier press cannot leak into the next spawn.
   if (isCtrl && input === "p") {
     if (mode === InputMode.CommandPalette) {
+      actions.onPaletteClose();
       actions.panels.setMode(InputMode.Normal);
     } else {
       actions.onSpawnPalette();
@@ -176,7 +288,17 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Escape: one effect per keypress, highest-priority first.
   // Priority: (1) exit mode → (2) pop detail → (3) reset zoom
   if (input === "escape") {
+    if (mode === InputMode.Normal && keymapPrefix.length > 0) {
+      actions.onKeymapPrefixChange?.([]);
+      return true;
+    }
     if (mode !== InputMode.Normal) {
+      // Leaving CommandPalette via Esc must clear adoptContext (set by the
+      // 'a' Frontier-row keypress) and reset palette state — otherwise the
+      // next unrelated palette open inherits a stale adopt target.
+      if (mode === InputMode.CommandPalette) {
+        actions.onPaletteClose();
+      }
       actions.panels.setMode(InputMode.Normal);
       return true;
     }
@@ -258,6 +380,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onMessageBackspace();
       return true;
     }
+    if (input === "space") {
+      actions.onMessageChar(" ");
+      return true;
+    }
     if (input && input.length === 1 && !isCtrl) {
       actions.onMessageChar(input);
       return true;
@@ -286,6 +412,33 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  const resolvedKeymap = actions.resolvedKeymap;
+  if (mode === InputMode.Normal && resolvedKeymap !== undefined) {
+    const token = keyEventToToken(key);
+    if (token !== undefined) {
+      const nextPrefix = Object.freeze([...keymapPrefix, token]);
+      const result = resolveKeySequence(resolvedKeymap.bindings, nextPrefix, {
+        focusedPanel: focused,
+      });
+      switch (result.kind) {
+        case "pending":
+          actions.onKeymapPrefixChange?.(result.prefix);
+          return true;
+        case "match":
+          actions.onKeymapPrefixChange?.([]);
+          if (executeKeymapAction(result.binding, actions)) return true;
+          if (keymapPrefix.length > 0) return true;
+          break;
+        case "miss":
+          if (keymapPrefix.length > 0) {
+            actions.onKeymapPrefixChange?.([]);
+            return true;
+          }
+          return false;
+      }
+    }
+  }
+
   // Help overlay toggle
   if (isHelpToggleKey(key)) {
     actions.panels.setMode(InputMode.Help);
@@ -296,6 +449,31 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   if (input === "q") {
     actions.onQuit();
     return true;
+  }
+
+  // Frontier panel: slice nav + adopt. Uses '[' / ']' for prev/next slice
+  // (vim-style next-tab) so global Tab + 1-9 (panel cycle / panel focus)
+  // remain available — keyboard-only operators must always be able to leave
+  // the Frontier panel without resorting to the mouse.
+  if (focused === Panel.Frontier) {
+    if (input === "]") {
+      actions.onFrontierTabNext();
+      return true;
+    }
+    if (input === "[") {
+      actions.onFrontierTabPrev();
+      return true;
+    }
+    if (input === "a" && !actions.compareMode) {
+      const entries = actions.frontierEntries();
+      if (entries.length > 0 && actions.nav.state.cursor < entries.length) {
+        const entry = entries[actions.nav.state.cursor];
+        if (entry) {
+          actions.onFrontierAdopt(entry.cid, entry.summary);
+          return true;
+        }
+      }
+    }
   }
 
   // Panel dispatch: driven by PANEL_REGISTRY (Issue 4A — eliminates DRY violation
@@ -311,7 +489,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
   }
 
-  // Tab/Shift+Tab: cycle focus
+  // Tab/Shift+Tab: cycle focus (global — only reached when Frontier is not focused)
   if (input === "tab") {
     if (key.shift) {
       actions.panels.cyclePrev();
@@ -442,10 +620,13 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onVfsNavigate();
       return true;
     }
-    if (actions.compareMode && focused === Panel.Frontier && actions.frontierCids.length > 0) {
-      const cid = actions.frontierCids[actions.nav.state.cursor];
-      if (cid) actions.onCompareSelect(cid);
-      return true;
+    if (actions.compareMode && focused === Panel.Frontier) {
+      const cids = actions.frontierCids();
+      if (cids.length > 0) {
+        const cid = cids[actions.nav.state.cursor];
+        if (cid) actions.onCompareSelect(cid);
+        return true;
+      }
     }
     const isClaimsPanel = focused === Panel.Claims;
     if (!actions.nav.isDetailView && !isClaimsPanel && actions.rowCount > 0) {

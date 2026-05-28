@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { GroveEvent } from "../core/event-bus.js";
+import { HandoffStatus } from "../core/handoff.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { NexusWsBridge, type NexusWsBridgeOptions } from "./nexus-ws-bridge.js";
 
@@ -104,6 +105,24 @@ class TestableNexusWsBridge extends NexusWsBridge {
     await (
       this as unknown as { drainRoleInbox: (r: string, reason: string) => Promise<void> }
     ).drainRoleInbox(role, "test");
+  }
+
+  /** Expose dead-letter path for terminal-state regression tests. */
+  async testMarkHandoffDeadLettered(handoffId: string, targetRole = "reviewer"): Promise<void> {
+    await (
+      this as unknown as {
+        markHandoffDeadLettered: (id: string, role: string, reason: string) => Promise<void>;
+      }
+    ).markHandoffDeadLettered(handoffId, targetRole, "test failure");
+  }
+
+  /** Expose delivered path for delivery replay regression tests. */
+  async testMarkHandoffDelivered(handoffId: string, targetRole = "reviewer"): Promise<void> {
+    await (
+      this as unknown as {
+        markHandoffDeliveredById: (id: string, role: string) => Promise<void>;
+      }
+    ).markHandoffDeliveredById(handoffId, targetRole);
   }
 }
 
@@ -1274,6 +1293,138 @@ describe("NexusWsBridge", () => {
     // Wait for async readAndPush
     await new Promise((r) => setTimeout(r, 20));
     expect(markDelivered).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  test("dead-letter path skips handoffs already replied before delivery failure wins race", async () => {
+    const markDeadLettered = mock(() => Promise.resolve());
+    const handoffStore = {
+      get: mock(() =>
+        Promise.resolve({
+          handoffId: "handoff-replied",
+          sourceCid: "blake3:reviewed",
+          fromRole: "coder",
+          toRole: "reviewer",
+          status: HandoffStatus.Replied,
+          requiresReply: true,
+          createdAt: new Date().toISOString(),
+          resolvedByCid: "blake3:review",
+        }),
+      ),
+      markDeadLettered,
+    };
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+      }),
+    );
+
+    await bridge.testMarkHandoffDeadLettered("handoff-replied");
+
+    expect(handoffStore.get).toHaveBeenCalledWith("handoff-replied");
+    expect(markDeadLettered).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  test("delivery path skips handoffs already replied before duplicate delivery replay", async () => {
+    const markDelivered = mock(() => Promise.resolve());
+    const handoffStore = {
+      get: mock(() =>
+        Promise.resolve({
+          handoffId: "handoff-replied",
+          sourceCid: "blake3:reviewed",
+          fromRole: "coder",
+          toRole: "reviewer",
+          status: HandoffStatus.Replied,
+          requiresReply: true,
+          createdAt: new Date().toISOString(),
+          resolvedByCid: "blake3:review",
+        }),
+      ),
+      markDelivered,
+    };
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+      }),
+    );
+
+    await bridge.testMarkHandoffDelivered("handoff-replied");
+
+    expect(handoffStore.get).toHaveBeenCalledWith("handoff-replied");
+    expect(markDelivered).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  test("cancelled optional notification push does not dead-letter handoff", async () => {
+    const runtime = makeMockRuntime();
+    runtime.send = mock((session: AgentSession) =>
+      Promise.resolve({
+        ...makeNoAcpTurn(session.id),
+        result: Promise.resolve({
+          turnId: `${session.id}-cancelled`,
+          stopReason: "cancelled" as const,
+        }),
+      }),
+    ) as AgentRuntime["send"];
+    const markDeadLettered = mock(() => Promise.resolve());
+    const optionalHandoff = {
+      handoffId: "handoff-optional",
+      sourceCid: "blake3:review",
+      fromRole: "reviewer",
+      toRole: "coder",
+      status: HandoffStatus.Delivered,
+      requiresReply: false,
+      createdAt: new Date().toISOString(),
+      ipcMessageId: "msg-optional",
+    };
+    const handoffStore = {
+      get: mock(() => Promise.resolve(optionalHandoff)),
+      list: mock(() => Promise.resolve([optionalHandoff])),
+      markDelivered: mock(() => Promise.resolve()),
+      markDeadLettered,
+    };
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          content: JSON.stringify({
+            message_id: "msg-optional",
+            sender: "reviewer",
+            payload: {
+              cid: "blake3:review",
+              kind: "review",
+              summary: "approved",
+            },
+          }),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+      }),
+    );
+    bridge.registerSession("coder", makeSession("coder"));
+
+    bridge.testHandleEvent(
+      "coder",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-optional",
+        sender: "reviewer",
+        recipient: "coder",
+        type: "event",
+        path: "/ipc/coder/inbox/msg-optional.json",
+      }),
+    );
+
+    await waitFor(
+      () => (runtime.send as unknown as { mock: { calls: unknown[] } }).mock.calls.length === 1,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(markDeadLettered).not.toHaveBeenCalled();
     bridge.close();
   });
 

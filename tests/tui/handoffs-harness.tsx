@@ -1,94 +1,194 @@
 /**
  * Visual test harness for the Handoffs panel in RunningView.
  *
- * Renders RunningView in a running session with pre-populated handoff data.
- * Press 5 to open the Handoffs panel, Esc to close it.
- *
- * Run in a tmux session so you can attach:
- *
- *   tmux new-session -d -s grove-handoffs \
- *     "bun run tests/tui/handoffs-harness.tsx; read"
- *   tmux attach -t grove-handoffs
- *
- * Or run directly in your terminal (no tmux needed):
- *   bun run tests/tui/handoffs-harness.tsx
+ * This harness is intentionally deterministic: it renders a codex -> claude
+ * review-loop topology with handoffs in overdue, resolved, blocked, and
+ * dead-letter states. Run it inside tmux and use capture-pane for regression
+ * checks without requiring real ACP credentials.
  */
 
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
-import React from "react";
 import type { Handoff } from "../../src/core/handoff.js";
 import { HandoffStatus } from "../../src/core/handoff.js";
+import {
+  type Claim,
+  ClaimStatus,
+  type Contribution,
+  ContributionKind,
+  ContributionMode,
+  ScoreDirection,
+} from "../../src/core/models.js";
+import type { AgentTopology } from "../../src/core/topology.js";
 import { createLocalRuntime } from "../../src/local/runtime.js";
+import { PagesStore } from "../../src/tui/data/pages-store.js";
+import { PagesStoreProvider } from "../../src/tui/hooks/use-screen-stack.js";
 import { LocalDataProvider } from "../../src/tui/local-provider.js";
-import type { TuiDataProvider } from "../../src/tui/provider.js";
-import type { ConfirmAndMutateEntityBus } from "../../src/tui/safety/index.js";
-import { ConfirmAndMutateProvider } from "../../src/tui/safety/index.js";
-import type { ScreenState } from "../../src/tui/screens/screen-manager.js";
-import { ScreenManager } from "../../src/tui/screens/screen-manager.js";
-import { SpawnManager } from "../../src/tui/spawn-manager.js";
-import { SpawnManagerContext } from "../../src/tui/spawn-manager-context.js";
+import type { TuiDataProvider, TuiHandoffProvider } from "../../src/tui/provider.js";
+import { RunningView } from "../../src/tui/screens/running-view.js";
 
-const TEST_ENTITY_BUS: ConfirmAndMutateEntityBus = {
-  get: () => undefined,
-  subscribe: () => () => undefined,
-};
+const SESSION_ID = "review-loop-codex-claude";
+const STARTED_AT = new Date(Date.now() - 10 * 60_000).toISOString();
 
-// ---------------------------------------------------------------------------
-// Stub handoffs (3 in different states)
-// ---------------------------------------------------------------------------
+function isoFromNow(deltaMs: number): string {
+  return new Date(Date.now() + deltaMs).toISOString();
+}
 
-const stubHandoffs: readonly Handoff[] = [
+function cid(prefix: string): string {
+  return `blake3:${prefix.padEnd(64, prefix)}`;
+}
+
+let replacementCounter = 0;
+
+let stubHandoffs: readonly Handoff[] = [
   {
     handoffId: "h-001",
-    sourceCid: "blake3:aaaa0000111111111111111111111111111111111111111111111111111111111",
-    fromRole: "coder",
-    toRole: "reviewer",
+    sourceCid: cid("a1"),
+    fromRole: "reviewer",
+    toRole: "coder",
     status: HandoffStatus.PendingPickup,
     requiresReply: true,
-    replyDueAt: new Date(Date.now() - 120_000).toISOString(), // 2min overdue
-    createdAt: new Date(Date.now() - 30_000).toISOString(),
+    replyDueAt: isoFromNow(-120_000),
+    createdAt: isoFromNow(-240_000),
   },
   {
     handoffId: "h-002",
-    sourceCid: "blake3:bbbb0000222222222222222222222222222222222222222222222222222222222",
+    sourceCid: cid("b2"),
     fromRole: "reviewer",
     toRole: "coder",
     status: HandoffStatus.Replied,
     requiresReply: false,
-    resolvedByCid: "blake3:cccc0000333333333333333333333333333333333333333333333333333333333",
-    seenAt: new Date(Date.now() - 100_000).toISOString(),
-    ackedAt: new Date(Date.now() - 95_000).toISOString(),
-    createdAt: new Date(Date.now() - 90_000).toISOString(),
+    resolvedByCid: cid("c3"),
+    seenAt: isoFromNow(-100_000),
+    ackedAt: isoFromNow(-95_000),
+    createdAt: isoFromNow(-180_000),
   },
   {
     handoffId: "h-003",
-    sourceCid: "blake3:dddd0000444444444444444444444444444444444444444444444444444444444",
+    sourceCid: cid("d4"),
     fromRole: "coder",
     toRole: "reviewer",
-    status: HandoffStatus.Expired,
+    status: HandoffStatus.Delivered,
     requiresReply: true,
-    replyDueAt: new Date(Date.now() - 10_000).toISOString(),
-    createdAt: new Date(Date.now() - 180_000).toISOString(),
+    replyDueAt: isoFromNow(300_000),
+    seenAt: isoFromNow(-80_000),
+    createdAt: isoFromNow(-160_000),
   },
   {
     handoffId: "h-004",
-    sourceCid: "blake3:eeee0000555555555555555555555555555555555555555555555555555555555",
+    sourceCid: cid("e5"),
     fromRole: "coder",
-    toRole: "tester",
-    status: HandoffStatus.Delivered,
+    toRole: "reviewer",
+    status: HandoffStatus.DeadLettered,
     requiresReply: true,
-    replyDueAt: new Date(Date.now() + 300_000).toISOString(), // 5min left
-    seenAt: new Date(Date.now() - 20_000).toISOString(),
-    createdAt: new Date(Date.now() - 60_000).toISOString(),
+    replyDueAt: isoFromNow(300_000),
+    createdAt: isoFromNow(-120_000),
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Mock provider with handoff support
-// ---------------------------------------------------------------------------
+const contributions: readonly Contribution[] = [
+  {
+    cid: cid("a1"),
+    manifestVersion: 1,
+    kind: ContributionKind.Work,
+    mode: ContributionMode.Evaluation,
+    summary: "Codex posts implementation for Claude review",
+    artifacts: {},
+    relations: [],
+    scores: { confidence: { value: 0.82, direction: ScoreDirection.Maximize } },
+    tags: ["review-loop", "codex"],
+    agent: { agentId: "coder-acp", role: "coder", platform: "codex" },
+    createdAt: isoFromNow(-240_000),
+  },
+  {
+    cid: cid("b2"),
+    manifestVersion: 1,
+    kind: ContributionKind.Review,
+    mode: ContributionMode.Evaluation,
+    summary: "Claude replies with review complete",
+    artifacts: {},
+    relations: [],
+    tags: ["review-loop", "claude"],
+    agent: { agentId: "reviewer-acp", role: "reviewer", platform: "claude-code" },
+    createdAt: isoFromNow(-180_000),
+  },
+];
 
-const mockProvider = {
+const activeClaims: readonly Claim[] = [
+  {
+    claimId: "claim-coder",
+    targetRef: "session:review-loop-codex-claude/coder",
+    agent: { agentId: "coder-acp", role: "coder", platform: "codex" },
+    status: ClaimStatus.Active,
+    intentSummary: "Implement issue #163 handoff recovery",
+    createdAt: STARTED_AT,
+    heartbeatAt: isoFromNow(-5_000),
+    leaseExpiresAt: isoFromNow(300_000),
+  },
+  {
+    claimId: "claim-reviewer",
+    targetRef: "session:review-loop-codex-claude/reviewer",
+    agent: { agentId: "reviewer-acp", role: "reviewer", platform: "claude-code" },
+    status: ClaimStatus.Active,
+    intentSummary: "Review Codex handoff recovery",
+    createdAt: STARTED_AT,
+    heartbeatAt: isoFromNow(-5_000),
+    leaseExpiresAt: isoFromNow(300_000),
+  },
+];
+
+function requireHandoff(handoffId: string): Handoff {
+  const handoff = stubHandoffs.find((candidate) => candidate.handoffId === handoffId);
+  if (handoff === undefined) {
+    throw new Error(`Unknown handoff '${handoffId}'`);
+  }
+  return handoff;
+}
+
+function updateHandoff(handoffId: string, next: (handoff: Handoff) => Handoff): void {
+  let found = false;
+  stubHandoffs = stubHandoffs.map((handoff) => {
+    if (handoff.handoffId !== handoffId) return handoff;
+    found = true;
+    return next(handoff);
+  });
+  if (!found) {
+    throw new Error(`Unknown handoff '${handoffId}'`);
+  }
+}
+
+function appendReplacement(
+  original: Handoff,
+  replacement: Pick<Handoff, "fromRole" | "toRole" | "requiresReply" | "replyDueAt">,
+  reason: string | undefined,
+): void {
+  replacementCounter += 1;
+  const replacementHandoffId = `h-r${replacementCounter.toString().padStart(3, "0")}`;
+  stubHandoffs = [
+    ...stubHandoffs.map((handoff) =>
+      handoff.handoffId === original.handoffId
+        ? {
+            ...handoff,
+            status: HandoffStatus.Cancelled,
+            terminalReason: reason ?? "operator replacement",
+            replacementHandoffId,
+          }
+        : handoff,
+    ),
+    {
+      handoffId: replacementHandoffId,
+      sourceCid: original.sourceCid,
+      fromRole: replacement.fromRole,
+      toRole: replacement.toRole,
+      status: HandoffStatus.PendingPickup,
+      requiresReply: replacement.requiresReply,
+      replyDueAt: replacement.replyDueAt,
+      createdAt: isoFromNow(0),
+    },
+  ];
+}
+
+const mockProvider: TuiDataProvider & TuiHandoffProvider = {
   capabilities: {
     outcomes: false,
     artifacts: false,
@@ -103,73 +203,147 @@ const mockProvider = {
     sessions: false,
     handoffs: true,
   },
-  getDashboard: async () => ({
-    totalContributions: 2,
-    frontier: [],
-    topMetrics: {},
-    recentActivity: [],
-    activeClaimCount: 1,
-    staleClaimCount: 0,
-    sessions: [],
-    activeClaims: [
-      {
-        claimId: "c1",
-        targetRef: "coder-abc",
-        status: "active",
-        agent: { agentId: "coder-abc", role: "coder", platform: "claude-code" },
-        leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
-        heartbeatAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        intentSummary: "Implementing auth fix",
+  async getDashboard() {
+    return {
+      metadata: {
+        name: "review-loop validation",
+        contributionCount: contributions.length,
+        activeClaimCount: activeClaims.length,
+        mode: "local-harness",
+        backendLabel: "tmux harness",
+        goal: "Codex coder hands off to Claude reviewer",
+        activeSessionId: SESSION_ID,
       },
-    ],
-    frontierSummary: { topByMetric: [] },
-  }),
-  getContributions: async () => [],
-  getContribution: async () => undefined,
-  getClaims: async () => [],
-  getFrontier: async () => ({ pareto: [], dominated: [], metrics: {} }),
-  getActivity: async () => [
-    {
-      cid: "blake3:aaaa0000111111111111111111111111111111111111111111111111111111111",
-      kind: "work",
-      mode: "evaluation",
-      summary: "Fix null check in auth module",
-      agent: { agentId: "coder-abc", role: "coder" },
-      artifacts: {},
-      relations: [],
-      tags: [],
-      createdAt: new Date(Date.now() - 30_000).toISOString(),
-    },
-  ],
-  getDag: async () => ({ nodes: [], edges: [] }),
-  getHotThreads: async () => [],
-  // TuiHandoffProvider
-  getHandoffs: async () => stubHandoffs,
-  close: () => {
+      activeClaims,
+      recentContributions: contributions,
+      frontierSummary: {
+        topByMetric: [
+          {
+            metric: "confidence",
+            cid: contributions[0]?.cid ?? cid("00"),
+            summary: contributions[0]?.summary ?? "no contribution",
+            value: 0.82,
+          },
+        ],
+        topByAdoption: [],
+      },
+    };
+  },
+  async getContributions() {
+    return contributions;
+  },
+  async getContribution(targetCid) {
+    const contribution = contributions.find((candidate) => candidate.cid === targetCid);
+    if (contribution === undefined) return undefined;
+    return { contribution, ancestors: [], children: [], thread: [] };
+  },
+  async getClaims() {
+    return activeClaims;
+  },
+  async getFrontier() {
+    return {
+      byMetric: {},
+      byAdoption: [],
+      byRecency: [],
+      byReviewScore: [],
+      byReproduction: [],
+    };
+  },
+  async getActivity() {
+    return contributions;
+  },
+  async getDag() {
+    return { contributions };
+  },
+  async getHotThreads() {
+    return [];
+  },
+  async getAgentTasks() {
+    return [];
+  },
+  async getHandoffs() {
+    return [...stubHandoffs];
+  },
+  async markHandoffDelivered(handoffId) {
+    updateHandoff(handoffId, (handoff) => ({
+      ...handoff,
+      status: HandoffStatus.Delivered,
+      seenAt: handoff.seenAt ?? isoFromNow(0),
+    }));
+  },
+  async cancelHandoff(handoffId, reason) {
+    updateHandoff(handoffId, (handoff) => ({
+      ...handoff,
+      status: HandoffStatus.Cancelled,
+      terminalReason: reason ?? "operator cancelled",
+    }));
+  },
+  async manualResolveHandoff(handoffId, reason) {
+    updateHandoff(handoffId, (handoff) => ({
+      ...handoff,
+      status: HandoffStatus.ManuallyResolved,
+      terminalReason: reason ?? "operator resolved",
+    }));
+  },
+  async resendHandoff(handoffId, options) {
+    const original = requireHandoff(handoffId);
+    appendReplacement(
+      original,
+      {
+        fromRole: original.fromRole,
+        toRole: original.toRole,
+        requiresReply: original.requiresReply,
+        replyDueAt: options?.replyDueAt ?? isoFromNow(300_000),
+      },
+      options?.reason,
+    );
+  },
+  async rerouteHandoff(handoffId, options) {
+    const original = requireHandoff(handoffId);
+    appendReplacement(
+      original,
+      {
+        fromRole: original.fromRole,
+        toRole: options.toRole,
+        requiresReply: original.requiresReply,
+        replyDueAt: options.replyDueAt ?? isoFromNow(300_000),
+      },
+      options.reason,
+    );
+  },
+  close() {
     /* no-op */
   },
 };
 
-const topology = {
-  structure: "graph" as const,
+const topology: AgentTopology = {
+  structure: "graph",
   roles: [
     {
       name: "coder",
-      description: "Writes code",
-      command: "echo",
-      platform: "claude-code" as const,
+      description: "Codex implementation agent",
+      command: "codex",
+      platform: "codex",
+      edges: [{ target: "reviewer", edgeType: "delegates", replyTimeoutSeconds: 300 }],
     },
-    { name: "reviewer", description: "Reviews code", command: "echo", platform: "codex" as const },
+    {
+      name: "reviewer",
+      description: "Claude review agent",
+      command: "claude",
+      platform: "claude-code",
+      edges: [{ target: "coder", edgeType: "feedback", replyTimeoutSeconds: 300 }],
+    },
   ],
-  edges: [{ from: "coder", to: "reviewer", type: "delegates" as const }],
 };
 
 interface HarnessData {
   readonly provider: TuiDataProvider;
-  readonly topology: typeof topology;
+  readonly topology: AgentTopology;
   readonly goal: string;
+  readonly sessionId: string;
   readonly sessionStartedAt?: string;
+  readonly activeRoles: readonly string[];
+  readonly agentFailures?: ReadonlyMap<string, string> | undefined;
   readonly cleanup: () => void;
 }
 
@@ -177,10 +351,13 @@ function createHarnessData(): HarnessData {
   const groveDir = process.env.GROVE_HANDOFFS_HARNESS_GROVE_DIR;
   if (!groveDir) {
     return {
-      provider: mockProvider as unknown as TuiDataProvider,
+      provider: mockProvider,
       topology,
-      goal: "Review PR #42 — test handoffs panel (press 5)",
-      sessionStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      goal: "Review loop: coder=codex, reviewer=claude; validate handoff recovery",
+      sessionId: SESSION_ID,
+      sessionStartedAt: STARTED_AT,
+      activeRoles: ["coder", "reviewer"],
+      agentFailures: new Map([["reviewer", "claude ACP runtime unavailable"]]),
       cleanup: () => mockProvider.close(),
     };
   }
@@ -208,18 +385,16 @@ function createHarnessData(): HarnessData {
 
   return {
     provider,
-    topology: (runtime.contract?.topology ?? topology) as typeof topology,
+    topology: runtime.contract?.topology ?? topology,
     goal: `Real handoffs from ${groveDir}`,
+    sessionId: process.env.GROVE_SESSION_ID ?? SESSION_ID,
     sessionStartedAt: undefined,
+    activeRoles: (runtime.contract?.topology ?? topology).roles.map((role) => role.name),
     cleanup: () => runtime.close(),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-async function main() {
+async function main(): Promise<void> {
   const { DialogProvider } = await import("@opentui-ui/dialog/react");
   const { Toaster } = await import("@opentui-ui/toast/react");
   const harness = createHarnessData();
@@ -229,64 +404,43 @@ async function main() {
     useAlternateScreen: false,
   });
   const root = createRoot(renderer);
-
-  const spawnManager = new SpawnManager(
-    harness.provider as Parameters<typeof SpawnManager>[0],
-    undefined,
-    () => {
-      /* no-op */
-    },
-    [{ kind: "local" as const, path: "/tmp" }],
-  );
-
-  const initialState: ScreenState = {
-    screen: "running",
-    goal: harness.goal,
-    sessionId: "test-handoffs-session",
-    sessionStartedAt: harness.sessionStartedAt,
-  };
-
-  const appProps = {
-    provider: harness.provider,
-    topology: harness.topology,
-    groveDir: undefined,
-    tmux: undefined,
-    intervalMs: 30_000,
-    agentRuntime: undefined,
-    eventBus: undefined,
-  } as Parameters<typeof ScreenManager>[0]["appProps"];
+  const pagesStore = new PagesStore();
+  pagesStore.push({ kind: "running" });
 
   root.render(
-    React.createElement(
-      DialogProvider,
-      null,
-      React.createElement(
-        ConfirmAndMutateProvider,
-        { entityBus: TEST_ENTITY_BUS },
-        React.createElement(
-          SpawnManagerContext,
-          { value: spawnManager },
-          React.createElement(ScreenManager, {
-            appProps,
-            startOnRunning: true,
-            initialState,
-          }),
-        ),
-      ),
-      React.createElement(Toaster, { position: "bottom-right" }),
-    ),
+    <DialogProvider>
+      <PagesStoreProvider store={pagesStore}>
+        <RunningView
+          provider={harness.provider}
+          intervalMs={1000}
+          topology={harness.topology}
+          goal={harness.goal}
+          sessionId={harness.sessionId}
+          sessionStartedAt={harness.sessionStartedAt}
+          activeRoles={harness.activeRoles}
+          agentFailures={harness.agentFailures}
+          onEnterInspect={() => {
+            /* no-op */
+          }}
+          onComplete={() => {
+            /* no-op */
+          }}
+          onQuit={() => renderer.destroy()}
+        />
+      </PagesStoreProvider>
+      <Toaster position="bottom-right" />
+    </DialogProvider>,
   );
 
   renderer.start();
   await renderer.idle();
 
-  // Keep alive — press Ctrl+C or q to exit
-  await new Promise((r) => setTimeout(r, 120_000));
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
   renderer.destroy();
   harness.cleanup();
 }
 
-main().catch((err: unknown) => {
-  console.error(err);
+main().catch((error: unknown) => {
+  console.error(error);
   process.exit(1);
 });

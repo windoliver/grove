@@ -8,8 +8,9 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "../app-reducer.js";
+import type { ResolvedKeymap } from "../keymap/keymap.js";
+import { resolveBuiltinKeymap, resolveKeymapWithOverrides } from "../keymap/keymap.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
-import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./use-keyboard-handler.js";
 import type { PanelFocusState } from "./use-panel-focus.js";
@@ -52,12 +53,14 @@ function mockActions(overrides?: {
   focused?: Panel;
   compareMode?: boolean;
   frontierCids?: readonly string[];
+  frontierEntries?: ReadonlyArray<{ cid: string; summary: string }>;
   paletteItemCount?: number;
   rowCount?: number;
   selectedSession?: string;
   hasTmux?: boolean;
   isDetailView?: boolean;
-  keybindingOverrides?: import("./use-keybinding-overrides.js").KeybindingOverrides;
+  resolvedKeymap?: ResolvedKeymap;
+  keymapPrefix?: readonly string[];
 }): { actions: KeyboardActions; log: ActionLog } {
   const log: ActionLog = { calls: [], args: {} };
 
@@ -100,6 +103,7 @@ function mockActions(overrides?: {
     },
     onQuit: () => record("onQuit"),
     onSpawnPalette: () => record("onSpawnPalette"),
+    onPaletteClose: () => record("onPaletteClose"),
     onVfsNavigate: () => record("onVfsNavigate"),
     onArtifactPrev: () => record("onArtifactPrev"),
     onArtifactNext: () => record("onArtifactNext"),
@@ -135,17 +139,20 @@ function mockActions(overrides?: {
     onLayoutToggle: () => record("onLayoutToggle"),
     onRefresh: () => record("onRefresh"),
     onSelect: (index) => record("onSelect", index),
+    onFrontierTabNext: () => record("onFrontierTabNext"),
+    onFrontierTabPrev: () => record("onFrontierTabPrev"),
+    onFrontierAdopt: (cid, summary) => record("onFrontierAdopt", cid, summary),
+    frontierEntries: () => overrides?.frontierEntries ?? [],
     rowCount: overrides?.rowCount ?? 10,
     pageSize: 20,
     paletteItemCount: overrides?.paletteItemCount ?? 5,
     compareMode: overrides?.compareMode ?? false,
-    frontierCids: overrides?.frontierCids ?? [],
+    frontierCids: () => overrides?.frontierCids ?? [],
     selectedSession: overrides?.selectedSession,
     hasTmux: overrides?.hasTmux ?? false,
-    keybindingOverrides: overrides?.keybindingOverrides,
-    keyActionMap: overrides?.keybindingOverrides
-      ? buildKeyActionMap(overrides.keybindingOverrides)
-      : undefined,
+    resolvedKeymap: overrides?.resolvedKeymap,
+    keymapPrefix: overrides?.keymapPrefix ?? [],
+    onKeymapPrefixChange: (prefix) => record("onKeymapPrefixChange", prefix),
   };
 
   return { actions, log };
@@ -167,6 +174,117 @@ describe("nextZoom", () => {
     zoom = nextZoom(zoom);
     zoom = nextZoom(zoom);
     expect(zoom).toBe("normal");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Normal mode — leader keymap
+// ---------------------------------------------------------------------------
+
+describe("routeKey — leader keymap", () => {
+  test("Space starts a pending leader sequence", () => {
+    const { actions, log } = mockActions({ resolvedKeymap: resolveBuiltinKeymap("default") });
+    const handled = routeKey(keyEvent("space"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([["space"]]);
+  });
+
+  test("Space p t toggles the Terminal panel", () => {
+    const keymap = resolveBuiltinKeymap("default");
+    const first = mockActions({ resolvedKeymap: keymap });
+    routeKey(keyEvent("space"), first.actions);
+    const second = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space"] });
+    routeKey(keyEvent("p"), second.actions);
+    const third = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space", "p"] });
+    const handled = routeKey(keyEvent("t"), third.actions);
+
+    expect(handled).toBe(true);
+    expect(third.log.args["panels.toggle"]).toEqual([Panel.Terminal]);
+    expect(third.log.args.onKeymapPrefixChange).toEqual([[]]);
+  });
+
+  test("invalid leader sequence clears prefix and consumes the key", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("x"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onQuit");
+  });
+
+  test("pending leader sequence takes precedence over legacy override map", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveKeymapWithOverrides("default", { refresh: "x" }),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("x"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onRefresh");
+  });
+
+  test("Escape clears pending leader prefix before zoom reset", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    const handled = routeKey(keyEvent("escape"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onKeymapPrefixChange).toEqual([[]]);
+    expect(log.calls).not.toContain("onZoomReset");
+  });
+
+  test("leader key is not intercepted in message input mode", () => {
+    const { actions, log } = mockActions({
+      mode: InputMode.MessageInput,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("space"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.args.onMessageChar).toEqual([" "]);
+    expect(log.calls).not.toContain("onKeymapPrefixChange");
+  });
+
+  test("power-user direct q still quits", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("power-user"),
+    });
+    const handled = routeKey(keyEvent("q"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onQuit");
+  });
+
+  test("default keymap does not fall through to legacy direct quit", () => {
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("q"), actions);
+
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("onQuit");
+  });
+
+  test("overridden quit key removes the old direct key", () => {
+    const keymap = resolveKeymapWithOverrides("default", { quit: "Space x" });
+    const oldKey = mockActions({ resolvedKeymap: keymap });
+    const handledOld = routeKey(keyEvent("q"), oldKey.actions);
+    const leader = mockActions({ resolvedKeymap: keymap });
+    routeKey(keyEvent("space"), leader.actions);
+    const remapped = mockActions({ resolvedKeymap: keymap, keymapPrefix: ["space"] });
+    const handledRemapped = routeKey(keyEvent("x"), remapped.actions);
+
+    expect(handledOld).toBe(false);
+    expect(oldKey.log.calls).not.toContain("onQuit");
+    expect(handledRemapped).toBe(true);
+    expect(remapped.log.calls).toContain("onQuit");
   });
 });
 
@@ -279,7 +397,9 @@ describe("routeKey — normal mode misc", () => {
   });
 
   test("keybinding override for 'refresh' calls onRefresh", () => {
-    const { actions, log } = mockActions({ keybindingOverrides: { refresh: "F5" } });
+    const { actions, log } = mockActions({
+      resolvedKeymap: resolveKeymapWithOverrides("default", { refresh: "F5" }),
+    });
     const handled = routeKey(keyEvent("F5"), actions);
     expect(handled).toBe(true);
     expect(log.calls).toContain("onRefresh");
@@ -586,6 +706,21 @@ describe("routeKey — Enter key", () => {
     expect(log.args.onSelect).toEqual([0]);
   });
 
+  test("Enter selects contribution in Frontier when compare mode is off", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      compareMode: false,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      rowCount: 5,
+    });
+    const handled = routeKey(keyEvent("return"), actions);
+
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onSelect");
+    expect(log.args.onSelect).toEqual([0]);
+    expect(log.calls).not.toContain("onCompareSelect");
+  });
+
   test("Enter does not select in Claims panel", () => {
     const { actions, log } = mockActions({ focused: Panel.Claims, rowCount: 5 });
     routeKey(keyEvent("return"), actions);
@@ -767,5 +902,83 @@ describe("routeKey — registry-driven panel dispatch", () => {
       expect(log.calls).toContain("panels.toggle");
       expect(log.calls).not.toContain("panels.focus");
     }
+  });
+});
+
+describe("routeKey — Frontier panel slice nav + adopt", () => {
+  test("']' dispatches onFrontierTabNext when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("]"), actions);
+    expect(log.calls).toContain("onFrontierTabNext");
+  });
+
+  test("'[' dispatches onFrontierTabPrev when Frontier focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("["), actions);
+    expect(log.calls).toContain("onFrontierTabPrev");
+  });
+
+  test("Tab on Frontier panel does NOT dispatch slice-next (global panel cycle wins)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("tab"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("digit '4' on Frontier panel does NOT dispatch slice-jump (panel focus wins)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Frontier });
+    routeKey(keyEvent("4"), actions);
+    // Should fall through to PANEL_REGISTRY which focuses Panel.Claims (key '4').
+    expect(log.calls).toContain("panels.focus");
+  });
+
+  test("'a' on a frontier row dispatches onFrontierAdopt with cid + summary", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      frontierEntries: [{ cid: "cid-z", summary: "do thing" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).toContain("onFrontierAdopt");
+    expect(log.args.onFrontierAdopt).toEqual(["cid-z", "do thing"]);
+  });
+
+  test("'a' suppressed when in compareMode", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Frontier,
+      compareMode: true,
+      frontierEntries: [{ cid: "cid-z", summary: "x" }],
+    });
+    routeKey(keyEvent("a"), actions);
+    expect(log.calls).not.toContain("onFrontierAdopt");
+  });
+
+  test("']' does NOT dispatch onFrontierTabNext when a different panel is focused", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    routeKey(keyEvent("]"), actions);
+    expect(log.calls).not.toContain("onFrontierTabNext");
+  });
+
+  test("Esc on CommandPalette mode dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Esc on Normal mode does NOT dispatch onPaletteClose", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.calls).not.toContain("onPaletteClose");
+  });
+
+  test("Ctrl+P toggle-OFF dispatches onPaletteClose (clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onPaletteClose");
+  });
+
+  test("Ctrl+P toggle-ON dispatches onSpawnPalette (defensively clears adoptContext)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.Normal });
+    routeKey(keyEvent("p", { ctrl: true }), actions);
+    expect(log.calls).toContain("onSpawnPalette");
+    expect(log.calls).not.toContain("onPaletteClose");
   });
 });

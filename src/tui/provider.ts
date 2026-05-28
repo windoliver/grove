@@ -385,11 +385,41 @@ export interface TuiHandoffProvider {
    * call can't strand the handoff in pending_pickup.
    */
   markHandoffDelivered(handoffId: string, sessionId?: string): Promise<void>;
+  cancelHandoff(handoffId: string, reason?: string, sessionId?: string): Promise<void>;
+  manualResolveHandoff(handoffId: string, reason?: string, sessionId?: string): Promise<void>;
+  resendHandoff(
+    handoffId: string,
+    options?: {
+      readonly reason?: string;
+      readonly replyDueAt?: string;
+      readonly sessionId?: string;
+    },
+  ): Promise<void>;
+  rerouteHandoff(
+    handoffId: string,
+    options: {
+      readonly toRole: string;
+      readonly reason?: string;
+      readonly replyDueAt?: string;
+      readonly sessionId?: string;
+    },
+  ): Promise<void>;
 }
 
 /** Type guard: does the provider support handoff queries? */
 export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
-  return typeof (p as TuiHandoffProvider).getHandoffs === "function";
+  const candidate = p as Partial<Record<keyof TuiHandoffProvider, unknown>>;
+  const capabilities = (p as { readonly capabilities?: Partial<ProviderCapabilities> | undefined })
+    .capabilities;
+  return (
+    capabilities?.handoffs === true &&
+    typeof candidate.getHandoffs === "function" &&
+    typeof candidate.markHandoffDelivered === "function" &&
+    typeof candidate.cancelHandoff === "function" &&
+    typeof candidate.manualResolveHandoff === "function" &&
+    typeof candidate.resendHandoff === "function" &&
+    typeof candidate.rerouteHandoff === "function"
+  );
 }
 
 /** Goal management — available when capabilities.goals is true. */
@@ -419,6 +449,8 @@ export interface TuiSessionProvider {
   }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  /** Return all contributions linked to a session, preserving session history order. */
+  getSessionContributions(sessionId: string): Promise<readonly Contribution[]>;
   /**
    * Archive a session.
    *
@@ -516,5 +548,8 @@ export function isGoalProvider(
 export function isSessionProvider(
   provider: TuiDataProvider,
 ): provider is TuiDataProvider & TuiSessionProvider {
-  return provider.capabilities.sessions;
+  return (
+    provider.capabilities.sessions &&
+    typeof (provider as Partial<TuiSessionProvider>).getSessionContributions === "function"
+  );
 }

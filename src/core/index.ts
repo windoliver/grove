@@ -185,14 +185,35 @@ export {
   FrontierRewardService,
   type FrontierRewardServiceOptions,
 } from "./frontier-reward-service.js";
-export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
+export type {
+  Handoff,
+  HandoffInput,
+  HandoffQuery,
+  HandoffStore,
+  HandoffTerminalMetadata,
+} from "./handoff.js";
 export {
   canTransition,
+  HANDOFF_STATUS_VALUES,
   HandoffStatus,
   InvalidTransitionError,
   VALID_TRANSITIONS,
   validateTransition as validateHandoffTransition,
 } from "./handoff.js";
+export type {
+  HandoffHealthSignal,
+  HandoffOperatorCounts,
+  HandoffOperatorOptions,
+  HandoffOperatorProjection,
+} from "./handoff-operator-state.js";
+export {
+  countHandoffOperatorStates,
+  deriveHandoffOperatorProjection,
+  HandoffOperatorAction,
+  HandoffOperatorState,
+  healthSignalsFromAgentFailures,
+  healthSignalsFromAgentTasks,
+} from "./handoff-operator-state.js";
 export {
   type HookEntry,
   HookEntrySchema,
@@ -298,6 +319,32 @@ export type {
 export { PolicyEnforcer } from "./policy-enforcer.js";
 export type { CorePresetConfig } from "./presets.js";
 export { getPresetTopologyRegistry, listPresetNames, lookupPresetTopology } from "./presets.js";
+export type {
+  BoundRecipe,
+  DiscoveredRecipe,
+  DiscoverRecipesOptions,
+  GroveRecipe,
+  MaterializedRecipe,
+  RecipeActivity,
+  RecipeExtension,
+  RecipeLibraryMetadata,
+  RecipeParameter,
+  RecipeParameterType,
+  RecipeProvenance,
+  RecipeRunPolicy,
+  RecipeSource,
+  RecipeSubRecipe,
+} from "./recipe.js";
+export {
+  bindRecipeParameters,
+  computeBoundRecipeDigest,
+  computeRecipeDigest,
+  discoverRecipes,
+  materializeRecipeContract,
+  parseGroveRecipe,
+  parseGroveRecipeObject,
+  renderRecipeTemplate,
+} from "./recipe.js";
 export type {
   ReconcileResult,
   Reconciler,

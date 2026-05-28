@@ -11,30 +11,34 @@
 import React, { useCallback } from "react";
 import type { HandoffQuery } from "../../core/handoff.js";
 import { type Handoff, HandoffStatus } from "../../core/handoff.js";
+import {
+  countHandoffOperatorStates,
+  deriveHandoffOperatorProjection,
+  type HandoffHealthSignal,
+  type HandoffOperatorAction,
+  HandoffOperatorState,
+} from "../../core/handoff-operator-state.js";
 import { truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { isHandoffProvider } from "../provider.js";
-import { theme } from "../theme.js";
 
 const COLUMNS = [
-  { header: "FROM", key: "from", width: 10 },
-  { header: "TO", key: "to", width: 10 },
-  { header: "STATUS", key: "status", width: 16 },
-  { header: "RECEIPT", key: "receipt", width: 10 },
-  { header: "DEADLINE", key: "deadline", width: 12 },
-  { header: "SOURCE CID", key: "cid", width: 18 },
-  { header: "CREATED", key: "created", width: 7 },
+  { header: "FROM", key: "from", width: 8 },
+  { header: "TO", key: "to", width: 8 },
+  { header: "STATE", key: "state", width: 16 },
+  { header: "REASON", key: "reason", width: 18 },
+  { header: "RECEIPT", key: "receipt", width: 8 },
+  { header: "DEADLINE", key: "deadline", width: 10 },
+  { header: "ACTIONS", key: "actions", width: 25 },
+  { header: "SOURCE CID", key: "cid", width: 12 },
 ] as const;
 
-/** Status labels with emoji indicators. */
-const STATUS_LABELS: Record<string, string> = {
-  [HandoffStatus.PendingPickup]: "\u23F3 pending",
-  [HandoffStatus.Delivered]: "\uD83D\uDCEC delivered",
-  [HandoffStatus.Replied]: "\u2705 [done]",
-  [HandoffStatus.Expired]: "\u231B expired",
-};
+const OPERATOR_TERMINAL_STATUSES: ReadonlySet<HandoffStatus> = new Set([
+  HandoffStatus.Cancelled,
+  HandoffStatus.ManuallyResolved,
+]);
 
 /**
  * Receipt state — derived from seenAt/ackedAt timestamps.
@@ -56,6 +60,7 @@ function deadlineLabel(h: Handoff): string {
   // Already resolved — show checkmark
   if (h.status === HandoffStatus.Replied) return "\u2713 met";
   if (h.status === HandoffStatus.Expired) return "\u2717 expired";
+  if (OPERATOR_TERMINAL_STATUSES.has(h.status)) return "\u2713 closed";
 
   // Overdue
   if (diff < 0) {
@@ -70,20 +75,35 @@ function deadlineLabel(h: Handoff): string {
   return `${Math.floor(remainMins / 60)}h left`;
 }
 
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  } catch {
-    return "--:--";
-  }
+function actionsLabel(actions: readonly HandoffOperatorAction[]): string {
+  return [...actions].sort(compareActionLabels).map(actionLabel).join(", ");
 }
 
-/** Check if a handoff is overdue (has deadline, unresolved, past due). */
-function isOverdue(h: Handoff): boolean {
-  if (h.replyDueAt === undefined) return false;
-  if (h.status === HandoffStatus.Replied || h.status === HandoffStatus.Expired) return false;
-  return new Date(h.replyDueAt).getTime() < Date.now();
+function compareActionLabels(a: HandoffOperatorAction, b: HandoffOperatorAction): number {
+  return actionOrder(a) - actionOrder(b);
+}
+
+function actionOrder(action: HandoffOperatorAction): number {
+  if (action === "resend") return 0;
+  if (action === "reroute") return 1;
+  if (action === "manual_resolve") return 2;
+  return 3;
+}
+
+function actionLabel(action: HandoffOperatorAction): string {
+  if (action === "manual_resolve") return "manual";
+  return action;
+}
+
+function stateLabel(state: HandoffOperatorState): string {
+  if (
+    state === HandoffOperatorState.Blocked ||
+    state === HandoffOperatorState.DeadLettered ||
+    state === HandoffOperatorState.Overdue
+  ) {
+    return `! ${state}`;
+  }
+  return state;
 }
 
 export interface HandoffsViewProps {
@@ -100,6 +120,9 @@ export interface HandoffsViewProps {
   readonly sessionStartedAt?: string | undefined;
   /** Pre-fetched handoffs from parent. When provided, skips the internal fetch. */
   readonly handoffs?: readonly Handoff[] | undefined;
+  readonly healthSignals?: readonly HandoffHealthSignal[] | undefined;
+  /** Optional: scope to handoffs touching this role. Omitted = no narrowing (#193). */
+  readonly filterRole?: string | undefined;
 }
 
 /** Handoffs panel component. */
@@ -112,6 +135,8 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     toRoleFilter,
     sessionStartedAt,
     handoffs: prefetched,
+    healthSignals,
+    filterRole,
   }: HandoffsViewProps): React.ReactNode {
     // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
@@ -152,17 +177,24 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     }
 
     const handoffs = data ?? [];
-    const pending = handoffs.filter((h) => h.status === HandoffStatus.PendingPickup).length;
-    const overdueCount = handoffs.filter(isOverdue).length;
+    const scoped =
+      filterRole === undefined
+        ? handoffs
+        : handoffs.filter((h) => h.fromRole === filterRole || h.toRole === filterRole);
+    const projections = scoped.map((handoff) =>
+      deriveHandoffOperatorProjection(handoff, { healthSignals }),
+    );
+    const counts = countHandoffOperatorStates(projections);
 
-    const rows = handoffs.map((h) => ({
-      from: h.fromRole,
-      to: h.toRole,
-      status: STATUS_LABELS[h.status] ?? h.status,
-      receipt: receiptLabel(h),
-      deadline: deadlineLabel(h),
-      cid: truncateCid(h.sourceCid),
-      created: formatTime(h.createdAt),
+    const rows = projections.map((projection) => ({
+      from: projection.handoff.fromRole,
+      to: projection.handoff.toRole,
+      state: stateLabel(projection.state),
+      reason: projection.reason,
+      receipt: receiptLabel(projection.handoff),
+      deadline: deadlineLabel(projection.handoff),
+      actions: actionsLabel(projection.actions),
+      cid: truncateCid(projection.handoff.sourceCid),
     }));
 
     return (
@@ -170,13 +202,12 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
         <box marginBottom={1} flexDirection="row">
           <text>Handoffs</text>
           <text opacity={0.5}>
-            {handoffs.length > 0
-              ? `  ${handoffs.length} total, ${pending} pending`
+            {scoped.length > 0
+              ? `  ${scoped.length} total, ${counts.pending} pending, ${counts.overdue} overdue, ${counts.blocked} blocked, ${counts.deadLettered} failed`
               : "  (no handoffs yet)"}
           </text>
-          {overdueCount > 0 && <text color={theme.error}>{`  ${overdueCount} overdue`}</text>}
         </box>
-        {handoffs.length === 0 ? (
+        {scoped.length === 0 ? (
           <text opacity={0.4}>
             No handoffs yet. Handoffs appear when contributions are routed between roles.
           </text>

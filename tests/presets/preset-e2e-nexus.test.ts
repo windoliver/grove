@@ -19,6 +19,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 // 30s per test — real Nexus + server spawn
 setDefaultTimeout(30_000);
@@ -26,6 +27,18 @@ setDefaultTimeout(30_000);
 const NEXUS_URL = process.env.NEXUS_URL ?? "http://localhost:2026";
 const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
 const CLI_PATH = join(import.meta.dir, "..", "..", "src", "cli", "main.ts");
+
+function groveServerAuthHeaders(dir: string): Record<string, string> {
+  const serverKeysPath = join(dir, ".grove", "server-keys.yaml");
+  const parsed = parseYaml(readFileSync(serverKeysPath, "utf-8")) as {
+    keys?: Record<string, { namespace?: string }>;
+  } | null;
+  const token = Object.keys(parsed?.keys ?? {})[0];
+  if (!token) {
+    throw new Error(`No Grove server key found in ${serverKeysPath}`);
+  }
+  return { Authorization: `Bearer ${token}` };
+}
 
 // ---------------------------------------------------------------------------
 // Skip if Nexus not available — uses test.skipIf so CI shows "skipped"
@@ -160,6 +173,7 @@ async function startServer(dir: string): Promise<{ port: number; stop: () => voi
   while (Date.now() < deadline) {
     try {
       const r = await fetch(`http://localhost:${port}/api/contributions`, {
+        headers: groveServerAuthHeaders(dir),
         signal: AbortSignal.timeout(1_000),
       });
       if (r.ok || r.status === 404) break;
@@ -307,7 +321,9 @@ describe("E2E: swarm-ops", () => {
       // API: list contributions (swarm-ops ships with no seed data since
       // commit 6da5494, so the initial list is empty — just verify the
       // endpoint is reachable and returns a valid shape).
-      const resp = await fetch(`http://localhost:${server.port}/api/contributions`);
+      const resp = await fetch(`http://localhost:${server.port}/api/contributions`, {
+        headers: groveServerAuthHeaders(dir),
+      });
       expect(resp.ok).toBe(true);
       const data = (await resp.json()) as Record<string, unknown>;
       const contributions = Array.isArray(data)
@@ -316,7 +332,9 @@ describe("E2E: swarm-ops", () => {
       expect(Array.isArray(contributions)).toBe(true);
 
       // API: frontier
-      const frontier = await fetch(`http://localhost:${server.port}/api/frontier`);
+      const frontier = await fetch(`http://localhost:${server.port}/api/frontier`, {
+        headers: groveServerAuthHeaders(dir),
+      });
       expect(frontier.ok).toBe(true);
 
       // Note: swarm-ops enforces a `has_relation: derives_from` gate, so a

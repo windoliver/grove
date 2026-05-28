@@ -8,6 +8,7 @@
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { OutcomeStore } from "../core/outcome.js";
+import { parseContributions } from "../core/schemas.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type {
   ActivityQuery,
@@ -134,6 +135,22 @@ export async function contributionDetailFromStore(
   ]);
 
   return { contribution, ancestors, children, thread };
+}
+
+/** Batch-load contributions by CID while preserving the requested CID order. */
+export async function contributionsForCidsInOrder(
+  store: ContributionStore,
+  cids: readonly string[],
+): Promise<readonly Contribution[]> {
+  if (cids.length === 0) return [];
+
+  const byCid = await store.getMany(cids);
+  const ordered: Contribution[] = [];
+  for (const cid of cids) {
+    const contribution = byCid.get(cid);
+    if (contribution !== undefined) ordered.push(contribution);
+  }
+  return ordered;
 }
 
 // ---------------------------------------------------------------------------
@@ -468,4 +485,21 @@ export async function addContributionToSessionHttp(
   );
   if (resp.ok) return;
   throw new Error(`Failed to add contribution to session: HTTP ${String(resp.status)}`);
+}
+
+/** Fetch full contribution history for a session via grove-server HTTP API. */
+export async function getSessionContributionsHttp(
+  baseUrl: string,
+  sessionId: string,
+  authHeaders?: Record<string, string>,
+): Promise<readonly Contribution[]> {
+  const resp = await fetch(
+    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/contributions`,
+    {
+      headers: authHeaders,
+    },
+  );
+  if (resp.ok) return parseContributions(await resp.json());
+  if (resp.status === 404) return [];
+  throw new Error(`Failed to fetch session contributions: HTTP ${String(resp.status)}`);
 }
