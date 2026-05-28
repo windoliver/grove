@@ -42,6 +42,24 @@ function navigationActions(ctx: ActionContext): readonly Action[] {
       run: (c) => c.jumpToSession(session),
     });
   }
+  actions.push(
+    {
+      id: "nav.panel.next",
+      label: "Cycle to next panel",
+      detail: "panel",
+      group: "Navigation",
+      keywords: ["panel", "next", "cycle", "tab"],
+      run: (c) => c.cyclePanelNext(),
+    },
+    {
+      id: "nav.panel.prev",
+      label: "Cycle to previous panel",
+      detail: "panel",
+      group: "Navigation",
+      keywords: ["panel", "previous", "cycle"],
+      run: (c) => c.cyclePanelPrev(),
+    },
+  );
   return actions;
 }
 
@@ -52,6 +70,9 @@ function agentActions(ctx: ActionContext): readonly Action[] {
   const profileRoles = new Set<string>();
   if (ctx.canSpawn) {
     for (const profile of ctx.profiles) {
+      // De-dupe by role: two profiles sharing a role would otherwise emit a
+      // duplicate `agent.spawn.<role>` id. First profile for a role wins.
+      if (profileRoles.has(profile.role)) continue;
       profileRoles.add(profile.role);
       const role = profile.role;
       actions.push({
@@ -215,6 +236,14 @@ function viewActions(): readonly Action[] {
       group: "View",
       keywords: ["view", "pipeline", "grid", "mode", "cycle"],
       run: (c) => c.cycleViewMode(),
+    },
+    {
+      id: "view.help",
+      label: "Show help",
+      detail: "view",
+      group: "View",
+      keywords: ["help", "keys", "shortcuts", "?"],
+      run: (c) => c.showHelp(),
     },
     {
       id: "view.quit",

@@ -16,6 +16,8 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     isPanelVisible: () => false,
     focusPanel: () => undefined,
     togglePanel: () => undefined,
+    cyclePanelNext: () => undefined,
+    cyclePanelPrev: () => undefined,
     openContribution: () => undefined,
     jumpToSession: () => undefined,
     enterGoalMode: () => undefined,
@@ -37,6 +39,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     resetZoom: () => undefined,
     toggleLayout: () => undefined,
     cycleViewMode: () => undefined,
+    showHelp: () => undefined,
     quit: () => undefined,
     nextFrontierSlice: () => undefined,
     prevFrontierSlice: () => undefined,
@@ -151,6 +154,7 @@ describe("buildBuiltInActions", () => {
       "view.zoom-reset",
       "view.layout",
       "view.view-mode",
+      "view.help",
       "view.quit",
     ]) {
       const action = actions.find((a) => a.id === id);
@@ -173,5 +177,29 @@ describe("buildBuiltInActions", () => {
   test("terminal scroll-to-bottom appears only when Terminal focused", () => {
     expect(ids(ctx())).not.toContain("nav.terminal.scroll-bottom");
     expect(ids(ctx({ focusedPanel: Panel.Terminal }))).toContain("nav.terminal.scroll-bottom");
+  });
+
+  test("panel-cycle and help actions are offered", () => {
+    const present = ids(ctx());
+    expect(present).toContain("nav.panel.next");
+    expect(present).toContain("nav.panel.prev");
+    expect(present).toContain("view.help");
+  });
+
+  test("two profiles sharing a role produce a single (de-duped) spawn action", () => {
+    const c = ctx({
+      canSpawn: true,
+      profiles: [
+        { name: "@a", role: "reviewer", platform: "claude-code" },
+        { name: "@b", role: "reviewer", platform: "codex" },
+      ],
+    });
+    const spawnIds = buildBuiltInActions(c)
+      .map((a) => a.id)
+      .filter((id) => id === "agent.spawn.reviewer");
+    expect(spawnIds).toHaveLength(1);
+    // All ids across the full catalog are unique.
+    const all = buildBuiltInActions(c).map((a) => a.id);
+    expect(new Set(all).size).toBe(all.length);
   });
 });

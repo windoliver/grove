@@ -909,10 +909,14 @@ export function App({
       frontierSliceCount: ks.frontierTabKeys.length,
       focusPanel: (panel) => panels.focus(panel),
       togglePanel: (panel) => panels.toggle(panel),
+      cyclePanelNext: () => panels.cycleNext(),
+      cyclePanelPrev: () => panels.cyclePrev(),
       openContribution: (cid) => nav.pushDetail(cid),
       jumpToSession: (session) => {
         setSelectedSession(session);
-        panels.toggle(Panel.Terminal);
+        // Reveal the Terminal panel (focus if already shown; toggle would hide).
+        if (panels.isVisible(Panel.Terminal)) panels.focus(Panel.Terminal);
+        else panels.toggle(Panel.Terminal);
       },
       enterGoalMode: () => {
         panels.setMode(InputMode.GoalInput);
@@ -953,6 +957,7 @@ export function App({
       resetZoom: () => dispatch({ type: "ZOOM_RESET" }),
       toggleLayout: () => dispatch({ type: "LAYOUT_TOGGLE" }),
       cycleViewMode: () => panels.cycleViewMode(),
+      showHelp: () => panels.setMode(InputMode.Help),
       quit: handleQuit,
       // Mirror the keyboard frontier-slice handlers: rotate slice, reset the
       // cursor, and synchronously clear the entry/cid refs so a follow-up

@@ -65,6 +65,8 @@ export interface ActionContext {
   // --- capabilities ---
   readonly focusPanel: (panel: Panel) => void;
   readonly togglePanel: (panel: Panel) => void;
+  readonly cyclePanelNext: () => void;
+  readonly cyclePanelPrev: () => void;
   readonly openContribution: (cid: string) => void;
   readonly jumpToSession: (session: string) => void;
   readonly enterGoalMode: () => void;
@@ -86,6 +88,7 @@ export interface ActionContext {
   readonly resetZoom: () => void;
   readonly toggleLayout: () => void;
   readonly cycleViewMode: () => void;
+  readonly showHelp: () => void;
   readonly quit: () => void;
   // Focused-panel-sensitive
   readonly nextFrontierSlice: () => void;

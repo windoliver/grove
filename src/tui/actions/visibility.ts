@@ -1,4 +1,4 @@
-import { fuzzyMatch } from "../components/command-palette.js";
+import { fuzzyMatch } from "./fuzzy.js";
 import type { Action, ActionContext } from "./types.js";
 import { GROUP_ORDER } from "./types.js";
 
