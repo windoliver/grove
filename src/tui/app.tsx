@@ -905,6 +905,8 @@ export function App({
       canSpawn,
       canDelegate,
       isPanelVisible: (panel) => panels.isVisible(panel),
+      focusedPanel: panels.state.focused,
+      frontierSliceCount: ks.frontierTabKeys.length,
       focusPanel: (panel) => panels.focus(panel),
       togglePanel: (panel) => panels.toggle(panel),
       openContribution: (cid) => nav.pushDetail(cid),
@@ -928,6 +930,39 @@ export function App({
         handleSpawn(roleId, command, "HEAD", parentAgentId),
       kill: (session) => handleKill(session),
       delegate: (peerAddress) => void handleDelegate(peerAddress),
+      broadcastMessage: () => {
+        dispatch({ type: "BROADCAST_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      directMessage: () => {
+        dispatch({ type: "DIRECT_MESSAGE_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      refresh: refreshAll,
+      enterSearch: () => {
+        dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
+        panels.setMode(InputMode.SearchInput);
+      },
+      cycleZoom: () => dispatch({ type: "ZOOM_CYCLE" }),
+      resetZoom: () => dispatch({ type: "ZOOM_RESET" }),
+      toggleLayout: () => dispatch({ type: "LAYOUT_TOGGLE" }),
+      quit: handleQuit,
+      // Mirror the keyboard frontier-slice handlers: rotate slice, reset the
+      // cursor, and synchronously clear the entry/cid refs so a follow-up
+      // adopt/select reads the new slice (see onFrontierTabNext).
+      nextFrontierSlice: () => {
+        dispatch({ type: "FRONTIER_SLICE_NEXT" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      prevFrontierSlice: () => {
+        dispatch({ type: "FRONTIER_SLICE_PREV" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      scrollTerminalToBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
       showMessage: showError,
     }),
     [
@@ -944,11 +979,15 @@ export function App({
       hasGoals,
       canSpawn,
       panels,
+      ks.frontierTabKeys,
+      ks.searchQuery,
       answerPendingQuestion,
       registerAgentProfile,
       handleSpawn,
       handleKill,
       handleDelegate,
+      refreshAll,
+      handleQuit,
       showError,
     ],
   );

@@ -41,6 +41,19 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     spawn: () => undefined,
     kill: () => undefined,
     delegate: () => undefined,
+    focusedPanel: 1,
+    frontierSliceCount: 1,
+    broadcastMessage: () => undefined,
+    directMessage: () => undefined,
+    refresh: () => undefined,
+    enterSearch: () => undefined,
+    cycleZoom: () => undefined,
+    resetZoom: () => undefined,
+    toggleLayout: () => undefined,
+    quit: () => undefined,
+    nextFrontierSlice: () => undefined,
+    prevFrontierSlice: () => undefined,
+    scrollTerminalToBottom: () => undefined,
     showMessage: () => undefined,
     ...overrides,
   };
@@ -123,6 +136,15 @@ describe("CommandPalette render (#194)", () => {
     // Built-in actions present.
     expect(text).toContain("Set goal");
     expect(text).toContain("Go to Terminal panel");
+  });
+
+  test("renders the View group + messaging/system actions", () => {
+    const c = ctx();
+    const text = allText(render({ actions: buildBuiltInActions(c), ctx: c }));
+    expect(text).toContain("View");
+    expect(text).toContain("Refresh all data");
+    expect(text).toContain("Quit grove");
+    expect(text).toContain("Broadcast message to all agents");
   });
 
   test("query collapses groups to a flat ranked list (no headers)", () => {

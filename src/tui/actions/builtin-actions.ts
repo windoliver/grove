@@ -1,13 +1,15 @@
 import { checkSpawn } from "../agents/spawn-validator.js";
-import { OPERATOR_PANELS, PANEL_LABELS, type Panel } from "../hooks/use-panel-focus.js";
+import { OPERATOR_PANELS, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
 import type { Action, ActionContext } from "./types.js";
 
 /** Build the full set of built-in actions from the current context. */
 export function buildBuiltInActions(ctx: ActionContext): readonly Action[] {
   return Object.freeze([
     ...navigationActions(ctx),
+    ...focusedPanelActions(),
     ...agentActions(ctx),
-    ...workflowActions(ctx),
+    ...workflowActions(),
+    ...viewActions(),
     ...contributionActions(),
   ]);
 }
@@ -104,11 +106,119 @@ function agentActions(ctx: ActionContext): readonly Action[] {
     });
   }
 
+  actions.push(
+    {
+      id: "agent.broadcast",
+      label: "Broadcast message to all agents",
+      detail: "message",
+      group: "Agents",
+      keywords: ["message", "broadcast", "all", "tell"],
+      run: (c) => c.broadcastMessage(),
+    },
+    {
+      id: "agent.direct-message",
+      label: "Direct message an agent",
+      detail: "message",
+      group: "Agents",
+      keywords: ["message", "direct", "dm", "tell"],
+      run: (c) => c.directMessage(),
+    },
+  );
+
   return actions;
 }
 
-function workflowActions(ctx: ActionContext): readonly Action[] {
-  void ctx;
+/**
+ * Actions that only make sense for the currently focused panel. They are hidden
+ * (via `available`) unless the relevant panel holds focus.
+ */
+function focusedPanelActions(): readonly Action[] {
+  return [
+    {
+      id: "nav.frontier.next-slice",
+      label: "Next frontier slice",
+      detail: "frontier",
+      group: "Navigation",
+      keywords: ["frontier", "slice", "tab", "next"],
+      available: (c) => c.focusedPanel === Panel.Frontier && c.frontierSliceCount > 1,
+      run: (c) => c.nextFrontierSlice(),
+    },
+    {
+      id: "nav.frontier.prev-slice",
+      label: "Previous frontier slice",
+      detail: "frontier",
+      group: "Navigation",
+      keywords: ["frontier", "slice", "tab", "previous"],
+      available: (c) => c.focusedPanel === Panel.Frontier && c.frontierSliceCount > 1,
+      run: (c) => c.prevFrontierSlice(),
+    },
+    {
+      id: "nav.terminal.scroll-bottom",
+      label: "Scroll terminal to bottom",
+      detail: "terminal",
+      group: "Navigation",
+      keywords: ["terminal", "scroll", "bottom"],
+      available: (c) => c.focusedPanel === Panel.Terminal,
+      run: (c) => c.scrollTerminalToBottom(),
+    },
+  ];
+}
+
+/** Global view / system actions. */
+function viewActions(): readonly Action[] {
+  return [
+    {
+      id: "view.refresh",
+      label: "Refresh all data",
+      detail: "view",
+      group: "View",
+      keywords: ["refresh", "reload", "update"],
+      run: (c) => c.refresh(),
+    },
+    {
+      id: "view.search",
+      label: "Search transcripts",
+      detail: "view",
+      group: "View",
+      keywords: ["search", "find", "filter"],
+      run: (c) => c.enterSearch(),
+    },
+    {
+      id: "view.zoom",
+      label: "Cycle zoom level",
+      detail: "view",
+      group: "View",
+      keywords: ["zoom", "focus", "expand"],
+      run: (c) => c.cycleZoom(),
+    },
+    {
+      id: "view.zoom-reset",
+      label: "Reset zoom",
+      detail: "view",
+      group: "View",
+      keywords: ["zoom", "reset", "normal"],
+      run: (c) => c.resetZoom(),
+    },
+    {
+      id: "view.layout",
+      label: "Toggle layout (grid/tab)",
+      detail: "view",
+      group: "View",
+      keywords: ["layout", "grid", "tab", "toggle"],
+      run: (c) => c.toggleLayout(),
+    },
+    {
+      id: "view.quit",
+      label: "Quit grove",
+      detail: "view",
+      group: "View",
+      keywords: ["quit", "exit", "close"],
+      run: (c) => c.quit(),
+    },
+  ];
+}
+
+function workflowActions(): readonly Action[] {
   return [
     {
       id: "workflow.set-goal",

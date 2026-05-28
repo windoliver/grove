@@ -3,13 +3,20 @@ import type { AgentTopology } from "../../core/topology.js";
 import type { Panel } from "../hooks/use-panel-focus.js";
 
 /** Top-level grouping for palette actions. */
-export type ActionGroup = "Navigation" | "Agents" | "Workflow" | "Contributions" | "Plugins";
+export type ActionGroup =
+  | "Navigation"
+  | "Agents"
+  | "Workflow"
+  | "View"
+  | "Contributions"
+  | "Plugins";
 
 /** Fixed display order for groups when no query is active. */
 export const GROUP_ORDER: readonly ActionGroup[] = [
   "Navigation",
   "Agents",
   "Workflow",
+  "View",
   "Contributions",
   "Plugins",
 ];
@@ -50,6 +57,10 @@ export interface ActionContext {
   readonly canSpawn: boolean;
   readonly canDelegate: boolean;
   readonly isPanelVisible: (panel: Panel) => boolean;
+  /** Currently focused panel — drives focused-panel-sensitive actions. */
+  readonly focusedPanel: Panel;
+  /** Number of frontier slice tabs — frontier-slice nav needs more than one. */
+  readonly frontierSliceCount: number;
 
   // --- capabilities ---
   readonly focusPanel: (panel: Panel) => void;
@@ -65,6 +76,20 @@ export interface ActionContext {
   readonly spawn: (roleId: string, command: string, parentAgentId?: string) => void;
   readonly kill: (session: string) => void;
   readonly delegate: (peerAddress: string) => void;
+  // Messaging
+  readonly broadcastMessage: () => void;
+  readonly directMessage: () => void;
+  // View / system
+  readonly refresh: () => void;
+  readonly enterSearch: () => void;
+  readonly cycleZoom: () => void;
+  readonly resetZoom: () => void;
+  readonly toggleLayout: () => void;
+  readonly quit: () => void;
+  // Focused-panel-sensitive
+  readonly nextFrontierSlice: () => void;
+  readonly prevFrontierSlice: () => void;
+  readonly scrollTerminalToBottom: () => void;
   readonly showMessage: (message: string) => void;
 }
 

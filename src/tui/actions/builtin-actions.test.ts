@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Panel } from "../hooks/use-panel-focus.js";
 import { buildBuiltInActions } from "./builtin-actions.js";
 import type { ActionContext } from "./types.js";
 
@@ -26,6 +27,19 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     spawn: () => undefined,
     kill: () => undefined,
     delegate: () => undefined,
+    focusedPanel: 1,
+    frontierSliceCount: 1,
+    broadcastMessage: () => undefined,
+    directMessage: () => undefined,
+    refresh: () => undefined,
+    enterSearch: () => undefined,
+    cycleZoom: () => undefined,
+    resetZoom: () => undefined,
+    toggleLayout: () => undefined,
+    quit: () => undefined,
+    nextFrontierSlice: () => undefined,
+    prevFrontierSlice: () => undefined,
+    scrollTerminalToBottom: () => undefined,
     showMessage: () => undefined,
     ...overrides,
   };
@@ -112,5 +126,46 @@ describe("buildBuiltInActions", () => {
     expect(ids(ctx({ canDelegate: true, gossipPeers: peers }))).toContain(
       "agent.delegate.http://p1",
     );
+  });
+
+  test("messaging actions are always offered in the Agents group", () => {
+    const actions = buildBuiltInActions(ctx());
+    const broadcast = actions.find((a) => a.id === "agent.broadcast");
+    const dm = actions.find((a) => a.id === "agent.direct-message");
+    expect(broadcast?.group).toBe("Agents");
+    expect(dm?.group).toBe("Agents");
+    expect(ids(ctx())).toEqual(expect.arrayContaining(["agent.broadcast", "agent.direct-message"]));
+  });
+
+  test("view/system actions are always offered in the View group", () => {
+    const actions = buildBuiltInActions(ctx());
+    for (const id of [
+      "view.refresh",
+      "view.search",
+      "view.zoom",
+      "view.zoom-reset",
+      "view.layout",
+      "view.quit",
+    ]) {
+      const action = actions.find((a) => a.id === id);
+      expect(action, id).toBeDefined();
+      expect(action?.group).toBe("View");
+    }
+  });
+
+  test("frontier-slice actions appear only when Frontier focused with >1 slice", () => {
+    expect(ids(ctx())).not.toContain("nav.frontier.next-slice");
+    // Focused but only one slice → still hidden.
+    expect(ids(ctx({ focusedPanel: Panel.Frontier, frontierSliceCount: 1 }))).not.toContain(
+      "nav.frontier.next-slice",
+    );
+    const focused = ids(ctx({ focusedPanel: Panel.Frontier, frontierSliceCount: 3 }));
+    expect(focused).toContain("nav.frontier.next-slice");
+    expect(focused).toContain("nav.frontier.prev-slice");
+  });
+
+  test("terminal scroll-to-bottom appears only when Terminal focused", () => {
+    expect(ids(ctx())).not.toContain("nav.terminal.scroll-bottom");
+    expect(ids(ctx({ focusedPanel: Panel.Terminal }))).toContain("nav.terminal.scroll-bottom");
   });
 });
