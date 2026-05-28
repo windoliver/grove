@@ -641,21 +641,6 @@ async function findStoredDuplicateByContentHash(
   }
 }
 
-function isLegacyGateAdmissionReject(
-  error: unknown,
-  rules: readonly NormalizedAdmissionRule[],
-): error is AdmissionRejectError {
-  return (
-    error instanceof AdmissionRejectError &&
-    rules.some(
-      (rule) =>
-        rule.source === "legacy_gate" &&
-        rule.name === error.ruleName &&
-        rule.type === error.ruleType,
-    )
-  );
-}
-
 function legacyGateIdentity(gate: Gate): string | undefined {
   switch (gate.type) {
     case "metric_improves":
@@ -1296,6 +1281,17 @@ export async function contributeOperation(
     };
     let admittedContributionInput = unsignedContributionInput;
     let admissionAudit: AdmissionAudit | undefined;
+    const unsignedLogicalContribution = createContribution(
+      withRuntimeRoutingSignature(unsignedContributionInput),
+    );
+    const preAdmissionDuplicate = await findStoredDuplicateByContentHash(
+      deps.contributionStore,
+      unsignedLogicalContribution,
+    );
+    if (preAdmissionDuplicate !== undefined) {
+      return returnDuplicate(preAdmissionDuplicate);
+    }
+
     const admissionRules = normalizeAdmissionRules(deps.contract);
     const hasAdmissionRules = admissionRules.length > 0;
     const skipPolicyGateEnforcement = shouldSkipPolicyGateEnforcement(
@@ -1329,10 +1325,10 @@ export async function contributeOperation(
       try {
         admissionResult = await chain.admit(attrs);
       } catch (admissionErr) {
-        if (isLegacyGateAdmissionReject(admissionErr, admissionRules)) {
+        if (admissionErr instanceof AdmissionRejectError) {
           const duplicate = await findStoredDuplicateByContentHash(
             deps.contributionStore,
-            createContribution(withRuntimeRoutingSignature(unsignedContributionInput)),
+            unsignedLogicalContribution,
           );
           if (duplicate !== undefined) return returnDuplicate(duplicate);
         }

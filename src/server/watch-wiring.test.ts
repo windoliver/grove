@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import { contributionToEntity } from "../core/entity.js";
 import type { FrontierRewardService } from "../core/frontier-reward-service.js";
+import type { HookRunner } from "../core/hooks.js";
 import type { Contribution } from "../core/models.js";
 import type { EntityWriteEvent } from "../core/watch-events.js";
 import type { ServerDeps } from "./deps.js";
@@ -81,6 +82,26 @@ describe("watch wiring (T12)", () => {
     expect(opDepsWithCredits.creditsService).toBe(creditsService);
     expect(opDepsWithCredits.bountyStore).toBe(bountyStore);
     expect(opDepsWithCredits.frontierRewardService).toBe(frontierRewardService);
+
+    const hookRunner: HookRunner = {
+      async run(entry, cwd) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: cwd,
+          stderr: "",
+          command: typeof entry === "string" ? entry : entry.cmd,
+          durationMs: 0,
+        };
+      },
+    };
+    const opDepsWithHooks = toOperationDeps({
+      ...deps,
+      hookRunner,
+      hookCwd: "/repo",
+    });
+    expect(opDepsWithHooks.hookRunner).toBe(hookRunner);
+    expect(opDepsWithHooks.hookCwd).toBe("/repo");
   });
 
   test("HTTP contribute increments watchHub RV for the namespace", async () => {

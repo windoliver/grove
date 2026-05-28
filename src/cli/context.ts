@@ -14,6 +14,7 @@ import type {
   BlueprintHashSource,
 } from "../core/admission/types.js";
 import type { FrontierCalculator } from "../core/frontier.js";
+import type { HookRunner } from "../core/hooks.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { TimelineStore } from "../core/timeline-store.js";
@@ -34,6 +35,8 @@ export interface CliDeps {
   readonly cas: FsCas;
   readonly groveRoot: string;
   readonly outcomeStore?: OutcomeStore | undefined;
+  readonly hookRunner?: HookRunner | undefined;
+  readonly hookCwd?: string | undefined;
   readonly admissionPermissionResolver?: AdmissionPermissionResolver | undefined;
   readonly admissionGovernanceEvaluator?: AdmissionGovernanceEvaluator | undefined;
   readonly blueprintHashSource?: BlueprintHashSource | undefined;
@@ -76,6 +79,8 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
     cas: runtime.cas,
     groveRoot: runtime.groveRoot,
     outcomeStore: runtime.outcomeStore,
+    hookRunner: runtime.hookRunner,
+    hookCwd: runtime.hookCwd,
     admissionPermissionResolver: runtime.admissionPermissionResolver,
     admissionGovernanceEvaluator: runtime.admissionGovernanceEvaluator,
     blueprintHashSource: runtime.blueprintHashSource,

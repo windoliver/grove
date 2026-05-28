@@ -49,6 +49,8 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
     ...(deps.handoffStore !== undefined ? { handoffStore: deps.handoffStore } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
     ...(deps.deadlineWatcher !== undefined ? { deadlineWatcher: deps.deadlineWatcher } : {}),
+    ...(deps.hookRunner !== undefined ? { hookRunner: deps.hookRunner } : {}),
+    ...(deps.hookCwd !== undefined ? { hookCwd: deps.hookCwd } : {}),
     ...(deps.admissionPermissionResolver !== undefined
       ? { admissionPermissionResolver: deps.admissionPermissionResolver }
       : {}),

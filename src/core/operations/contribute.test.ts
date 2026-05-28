@@ -1038,6 +1038,57 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(matching).toHaveLength(1);
   });
 
+  test("identical explicit admission payload returns duplicate before rerunning flaky rules", async () => {
+    let shellPasses = true;
+    const hookRunner: NonNullable<OperationDeps["hookRunner"]> = {
+      run: async (entry) => ({
+        success: shellPasses,
+        exitCode: shellPasses ? 0 : 1,
+        stdout: "",
+        stderr: shellPasses ? "" : "flaky validator failed",
+        command: typeof entry === "string" ? entry : entry.cmd,
+        durationMs: 1,
+      }),
+    };
+    const contract = {
+      contractVersion: 3,
+      name: "explicit-admission-dedupe",
+      mode: "evaluation" as const,
+      admission: [{ type: "shell" as const, name: "flaky", command: "flaky" }],
+    };
+    const input = {
+      kind: "work" as const,
+      summary: "explicit admission duplicate",
+      agent: { agentId: "a1" },
+    };
+
+    const first = await contributeOperation(input, {
+      ...deps,
+      contract,
+      hookRunner,
+      hookCwd: testDeps.tempDir,
+    });
+    shellPasses = false;
+    const second = await contributeOperation(input, {
+      ...deps,
+      contract,
+      hookRunner,
+      hookCwd: testDeps.tempDir,
+    });
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(second.value.cid).toBe(first.value.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "explicit admission duplicate");
+    expect(matching).toHaveLength(1);
+  });
+
   test("concurrent admission-audited payloads dedup at the store boundary", async () => {
     const callerCount = 5;
     let startedCount = 0;

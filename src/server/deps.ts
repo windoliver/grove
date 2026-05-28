@@ -19,6 +19,7 @@ import type { FrontierCalculator } from "../core/frontier.js";
 import type { FrontierRewardService } from "../core/frontier-reward-service.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { HandoffStore } from "../core/handoff.js";
+import type { HookRunner } from "../core/hooks.js";
 import type { IdempotencyStore } from "../core/operations/deps.js";
 import type { InboxReadSource, MessageDelivery } from "../core/operations/inbox-delegation.js";
 import type { OutcomeStore } from "../core/outcome.js";
@@ -99,6 +100,8 @@ export interface ServerDeps {
   readonly handoffStoreForSession?: (sessionId: string) => HandoffStore | undefined;
   /** Optional idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  readonly hookRunner?: HookRunner | undefined;
+  readonly hookCwd?: string | undefined;
   readonly admissionPermissionResolver?: AdmissionPermissionResolver | undefined;
   readonly admissionGovernanceEvaluator?: AdmissionGovernanceEvaluator | undefined;
   readonly blueprintHashSource?: BlueprintHashSource | undefined;

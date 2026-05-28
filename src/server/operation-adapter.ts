@@ -42,6 +42,8 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
       : {}),
     ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
+    ...(deps.hookRunner !== undefined ? { hookRunner: deps.hookRunner } : {}),
+    ...(deps.hookCwd !== undefined ? { hookCwd: deps.hookCwd } : {}),
     ...(deps.admissionPermissionResolver !== undefined
       ? { admissionPermissionResolver: deps.admissionPermissionResolver }
       : {}),

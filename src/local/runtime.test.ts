@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,33 @@ import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "./runtime.js";
 
 describe("createLocalRuntime", () => {
+  test("provides local hook runner and project-root cwd", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-hooks-"));
+    const groveDir = join(rootDir, ".grove");
+
+    try {
+      await mkdir(groveDir, { recursive: true });
+      const runtime = createLocalRuntime({
+        groveDir,
+        parseContract: false,
+      });
+      try {
+        const resolvedRootDir = await realpath(rootDir);
+        expect(runtime.hookRunner).toBeDefined();
+        expect(await realpath(runtime.hookCwd)).toBe(resolvedRootDir);
+
+        const result = await runtime.hookRunner.run("pwd", runtime.hookCwd);
+
+        expect(result.success).toBe(true);
+        expect(result.stdout.trim()).toBe(resolvedRootDir);
+      } finally {
+        runtime.close();
+      }
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   test("provides frontierRewardService from the local runtime", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "grove-runtime-frontier-reward-"));
     const groveDir = join(rootDir, ".grove");

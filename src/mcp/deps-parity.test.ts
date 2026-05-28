@@ -80,6 +80,8 @@ describe("MCP deps parity with LocalRuntime", () => {
       workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
+      hookRunner: runtime.hookRunner,
+      hookCwd: runtime.hookCwd,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
       runtimeSkillService,
@@ -95,6 +97,8 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeDefined();
     expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(toOperationDeps(deps).hookRunner).toBe(runtime.hookRunner);
+    expect(toOperationDeps(deps).hookCwd).toBe(runtime.hookCwd);
   });
 
   test("HTTP MCP deps construction includes goalSessionStore", () => {
@@ -112,6 +116,8 @@ describe("MCP deps parity with LocalRuntime", () => {
       workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
+      hookRunner: runtime.hookRunner,
+      hookCwd: runtime.hookCwd,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
       watchHub: new WatchHub(),
@@ -125,6 +131,8 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeUndefined();
     expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
+    expect(toOperationDeps(deps).hookRunner).toBe(runtime.hookRunner);
+    expect(toOperationDeps(deps).hookCwd).toBe(runtime.hookCwd);
   });
 
   test("toOperationDeps forwards sessionOwnerRef", () => {

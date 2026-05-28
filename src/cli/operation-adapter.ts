@@ -22,6 +22,8 @@ export function toOperationDeps(deps: CliDeps): OperationDeps {
     frontier: deps.frontier,
     ...(deps.workspace !== undefined ? { workspace: deps.workspace } : {}),
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
+    ...(deps.hookRunner !== undefined ? { hookRunner: deps.hookRunner } : {}),
+    ...(deps.hookCwd !== undefined ? { hookCwd: deps.hookCwd } : {}),
     ...(deps.admissionPermissionResolver !== undefined
       ? { admissionPermissionResolver: deps.admissionPermissionResolver }
       : {}),

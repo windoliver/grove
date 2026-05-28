@@ -436,6 +436,8 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  hookRunner: runtime.hookRunner,
+  hookCwd: runtime.hookCwd,
   zoneId,
   inboxReadSource,
   messageDelivery,

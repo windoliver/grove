@@ -804,6 +804,8 @@ try {
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
+    hookRunner: runtime.hookRunner,
+    hookCwd: runtime.hookCwd,
     zoneId,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,

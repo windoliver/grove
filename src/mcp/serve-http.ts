@@ -853,6 +853,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
     ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     onContributionWrite: runtime.onContributionWrite,
+    hookRunner: runtime.hookRunner,
+    hookCwd: runtime.hookCwd,
     zoneId,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,

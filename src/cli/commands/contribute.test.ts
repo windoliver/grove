@@ -483,6 +483,38 @@ describe("executeContribute", () => {
     }
   });
 
+  test("runs GROVE.md shell admission from the project root", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+      await writeFile(
+        join(dir, "GROVE.md"),
+        `---
+contract_version: 3
+name: cli-shell-admission
+admission:
+  - type: shell
+    name: root_marker
+    command: "test -f allow-contribute"
+---
+# CLI shell admission test
+`,
+      );
+      await writeFile(join(dir, "allow-contribute"), "ok");
+
+      const result = await executeContribute(
+        makeContributeOptions({
+          summary: "Allowed by shell hook",
+          cwd: dir,
+        }),
+      );
+
+      expect(result.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("creates a contribution with tags", async () => {
     const dir = await createTempDir();
     try {
