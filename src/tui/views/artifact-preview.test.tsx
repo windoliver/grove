@@ -72,11 +72,15 @@ async function renderDiff(diffMode: "inline" | "split"): Promise<TestRenderer.Re
       ) as React.ReactElement,
     );
   });
-  // Let the async fetcher resolve and flush effects.
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
+  // Let the async fetcher resolve and flush effects. The diff data loads via
+  // useEventDrivenData (microtask chain: effect -> doFetch -> dispatch). Under
+  // a loaded `bun test` process the queue can take several flush cycles to
+  // settle, so flush until the <diff> node appears (cap iterations).
+  for (let i = 0; i < 20 && findNode(renderer.toJSON(), "diff") === undefined; i++) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
   return renderer;
 }
 

@@ -11,8 +11,8 @@
  * into `useDerived`.
  */
 
-import { useTimeline } from "@opentui/react";
-import React, { createElement, useCallback, useEffect, useRef, useState } from "react";
+import * as OpenTuiReact from "@opentui/react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { contributionToEntity } from "../../core/entity.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
@@ -24,6 +24,21 @@ import { useEntity } from "../hooks/use-entity.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
+
+/**
+ * Resolve `useTimeline` once at module load. In production the real
+ * `@opentui/react` always exports it; under tests a leaked `mock.module`
+ * (process-wide, not auto-restored) may replace the module with one that omits
+ * `useTimeline`, which would make the call below `undefined(...)` and crash
+ * render. Fall back to a no-op chainable so the pulse degrades to a static
+ * accent rather than throwing — the hook is still called unconditionally.
+ */
+const useTimeline: typeof OpenTuiReact.useTimeline =
+  OpenTuiReact.useTimeline ??
+  (((): { add: () => unknown; play: () => unknown } => ({
+    add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
+    play: () => undefined,
+  })) as unknown as typeof OpenTuiReact.useTimeline);
 
 /** Props for the Detail view. */
 export interface DetailProps {
@@ -250,7 +265,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         )}
       </box>
 
-      {createElement(
+      {React.createElement(
         "scrollbox" as string,
         { flexGrow: 1, scrollTop },
         <box flexDirection="column">

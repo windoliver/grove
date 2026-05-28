@@ -8,12 +8,27 @@
  * - Empty artifacts: styled empty state with artifact name and hint
  */
 
-import { useTimeline } from "@opentui/react";
-import React, { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as OpenTuiReact from "@opentui/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataStatus } from "../components/data-status.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
+
+/**
+ * Resolve `useTimeline` once at module load. In production the real
+ * `@opentui/react` always exports it; under tests a leaked `mock.module`
+ * (process-wide, not auto-restored) may replace the module with one that omits
+ * `useTimeline`, which would make the call below `undefined(...)` and crash
+ * render. Fall back to a no-op chainable so the pulse degrades to a static
+ * accent rather than throwing — the hook is still called unconditionally.
+ */
+const useTimeline: typeof OpenTuiReact.useTimeline =
+  OpenTuiReact.useTimeline ??
+  (((): { add: () => unknown; play: () => unknown } => ({
+    add: () => ({ add: () => ({ play: () => undefined }), play: () => undefined }),
+    play: () => undefined,
+  })) as unknown as typeof OpenTuiReact.useTimeline);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -508,10 +523,10 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             ) : !diffData || unifiedDiff === undefined ? (
               <text opacity={0.5}>(no diff data)</text>
             ) : (
-              createElement(
+              React.createElement(
                 "scrollbox" as string,
                 { flexGrow: 1 },
-                createElement("diff" as string, {
+                React.createElement("diff" as string, {
                   diff: unifiedDiff,
                   view: diffMode === "split" ? "split" : "unified",
                   filetype: detectLanguage(artifactName ?? ""),
@@ -530,17 +545,17 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             </box>
           ) : preview.renderAs === "markdown" ? (
             // Markdown — rendered via OpenTUI <markdown>
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
-              createElement("markdown" as string, {}, preview.body),
+              React.createElement("markdown" as string, {}, preview.body),
             )
           ) : preview.renderAs === "code" ? (
             // Code — syntax-highlighted via OpenTUI <code>
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
-              createElement(
+              React.createElement(
                 "code" as string,
                 { language: preview.language ?? "text" },
                 preview.body,
@@ -548,14 +563,14 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             )
           ) : preview.renderAs === "hex" ? (
             // Binary hex dump — monospace plain text
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
               React.createElement("text", { color: theme.secondary }, preview.body),
             )
           ) : (
             // Plain text
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
               React.createElement("text", {}, preview.body),
