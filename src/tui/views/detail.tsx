@@ -11,7 +11,8 @@
  * into `useDerived`.
  */
 
-import React, { createElement, useCallback } from "react";
+import { useTimeline } from "@opentui/react";
+import React, { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { contributionToEntity } from "../../core/entity.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
@@ -98,6 +99,54 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     true,
   );
 
+  // Focus-change accent pulse (#192): a brief (~150ms) warning-colored flash
+  // on the focused section border each time the focused section changes.
+  // Driven entirely from inside useEffect so a plain react-test-renderer
+  // mount/update is a no-op (no throw, no timer leak). Degrades to a static
+  // accent if useTimeline is unavailable at runtime.
+  const PULSE_MS = 150;
+  const timeline = useTimeline({ duration: PULSE_MS });
+  const [pulse, setPulse] = useState(false);
+  const prevFocusRef = useRef<number | undefined>(focusedSectionRaw);
+  useEffect(() => {
+    const next = focusedSectionRaw;
+    // Skip the initial mount / no-change re-renders: only pulse when the
+    // focused section actually changes.
+    if (prevFocusRef.current === next) return;
+    prevFocusRef.current = next;
+    setPulse(true);
+    let cleared = false;
+    const clear = (): void => {
+      if (!cleared) {
+        cleared = true;
+        setPulse(false);
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Drive a throwaway target so the renderer's animation engine runs the
+      // clock; clear the accent when the tween completes.
+      const target = { t: 0 };
+      timeline
+        .add(target, {
+          t: 1,
+          duration: PULSE_MS,
+          onUpdate: (anim: { targets: object[] }) => {
+            const v = (anim.targets[0] as { t: number }).t;
+            if (v >= 1) clear();
+          },
+        })
+        .play();
+    } catch {
+      // useTimeline/engine unavailable — fall through to the timer fallback.
+    }
+    // Timer fallback guarantees the accent clears even without a live engine.
+    timer = setTimeout(clear, PULSE_MS + 20);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [focusedSectionRaw, timeline]);
+
   // Body source: prefer the informer-cached entity when available, else
   // project from the polled detail.
   const bodyEntity =
@@ -181,8 +230,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
   // Accent treatment for the focused section: a single-line border in the
   // focus color plus a ">" title marker. Non-focused sections get nothing.
+  // During the focus-change pulse the border flashes to the warning accent.
+  const focusBorderColor = pulse ? theme.warning : theme.focus;
   const sectionProps = (key: SectionKey): { borderStyle?: "single"; borderColor?: string } =>
-    key === focusedKey ? { borderStyle: "single", borderColor: theme.focus } : {};
+    key === focusedKey ? { borderStyle: "single", borderColor: focusBorderColor } : {};
   const titlePrefix = (key: SectionKey): string => (key === focusedKey ? "> " : "");
 
   return (

@@ -8,7 +8,8 @@
  * - Empty artifacts: styled empty state with artifact name and hint
  */
 
-import React, { createElement, useCallback, useMemo } from "react";
+import { useTimeline } from "@opentui/react";
+import React, { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataStatus } from "../components/data-status.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
@@ -311,6 +312,51 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       active && showDiff === true && parentCid !== undefined,
     );
 
+    // Focus-change accent pulse (#192): a brief (~150ms) warning-colored flash
+    // on the header each time the selected artifact changes. Driven entirely
+    // from inside useEffect so a plain react-test-renderer mount/update is a
+    // no-op (no throw, no timer leak). Degrades to a static accent if
+    // useTimeline is unavailable at runtime.
+    const PULSE_MS = 150;
+    const timeline = useTimeline({ duration: PULSE_MS });
+    const [pulse, setPulse] = useState(false);
+    const prevIndexRef = useRef<number | undefined>(artifactIndex);
+    useEffect(() => {
+      const next = artifactIndex;
+      // Skip the initial mount / no-change re-renders: only pulse when the
+      // selected artifact actually changes.
+      if (prevIndexRef.current === next) return;
+      prevIndexRef.current = next;
+      setPulse(true);
+      let cleared = false;
+      const clear = (): void => {
+        if (!cleared) {
+          cleared = true;
+          setPulse(false);
+        }
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const target = { t: 0 };
+        timeline
+          .add(target, {
+            t: 1,
+            duration: PULSE_MS,
+            onUpdate: (anim: { targets: object[] }) => {
+              const v = (anim.targets[0] as { t: number }).t;
+              if (v >= 1) clear();
+            },
+          })
+          .play();
+      } catch {
+        // useTimeline/engine unavailable — fall through to the timer fallback.
+      }
+      timer = setTimeout(clear, PULSE_MS + 20);
+      return () => {
+        if (timer) clearTimeout(timer);
+      };
+    }, [artifactIndex, timeline]);
+
     // Build artifact selector header
     const selectorHeader = useMemo((): string => {
       const names = allArtifactNames ?? [];
@@ -443,7 +489,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
           </box>
         )}
         <box marginBottom={1} flexDirection="row">
-          <text color={theme.focus}>{preview.header}</text>
+          <text color={pulse ? theme.warning : theme.focus}>{preview.header}</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (
             <text color={showDiff ? theme.warning : theme.secondary}>

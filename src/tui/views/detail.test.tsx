@@ -170,4 +170,44 @@ describe("detail view (#192)", () => {
     void theme; // theme.focus used by the view for the border color
     renderer.unmount();
   });
+
+  test("changing focusedSectionRaw re-renders without error (pulse)", async () => {
+    // The focus-change accent pulse (useTimeline) must be test-safe: a plain
+    // react-test-renderer mount + update is a no-op (all timeline calls live
+    // inside useEffect), so updating the focused section must not throw.
+    const detail = longContribution({
+      scores: { accuracy: { value: 0.9, direction: "maximize" } },
+    });
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <DetailView
+            provider={makeDetailProvider(detail)}
+            cid="c1"
+            intervalMs={0}
+            focusedSectionRaw={0}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      renderer.update(
+        (
+          <DetailView
+            provider={makeDetailProvider(detail)}
+            cid="c1"
+            intervalMs={0}
+            focusedSectionRaw={1}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    expect(renderer.toJSON()).toBeDefined();
+    renderer.unmount();
+  });
 });

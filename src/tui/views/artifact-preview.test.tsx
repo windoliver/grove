@@ -106,4 +106,46 @@ describe("artifact diff rendering (#192)", () => {
     expect(typeof diffNode?.props?.diff).toBe("string");
     renderer.unmount();
   });
+
+  test("changing artifactIndex re-renders without error (pulse)", async () => {
+    // The header accent pulse (useTimeline) keyed on artifactIndex must be
+    // test-safe: all timeline calls live inside useEffect, so a plain
+    // react-test-renderer mount + update is a no-op and must not throw.
+    const names = ["a.txt", "b.txt"] as const;
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <ArtifactPreviewView
+            provider={makeArtifactProvider()}
+            cid="childcid01"
+            artifactName="a.txt"
+            allArtifactNames={names}
+            artifactIndex={0}
+            active
+          />
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      renderer.update(
+        (
+          <ArtifactPreviewView
+            provider={makeArtifactProvider()}
+            cid="childcid01"
+            artifactName="b.txt"
+            allArtifactNames={names}
+            artifactIndex={1}
+            active
+          />
+        ) as React.ReactElement,
+      );
+    });
+    expect(renderer.toJSON()).toBeDefined();
+    renderer.unmount();
+  });
 });
