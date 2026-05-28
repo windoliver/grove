@@ -132,6 +132,8 @@ function mockActions(overrides?: {
     onPaletteSelect: () => record("onPaletteSelect"),
     onPaletteChar: (char) => record("onPaletteChar", char),
     onPaletteBackspace: () => record("onPaletteBackspace"),
+    onDetailSectionNext: () => record("onDetailSectionNext"),
+    onDetailSectionPrev: () => record("onDetailSectionPrev"),
     onZoomCycle: () => record("onZoomCycle"),
     onZoomReset: () => record("onZoomReset"),
     onTerminalScrollUp: () => record("onTerminalScrollUp"),
@@ -988,5 +990,59 @@ describe("routeKey — Frontier panel slice nav + adopt", () => {
     routeKey(keyEvent("p", { ctrl: true }), actions);
     expect(log.calls).toContain("onSpawnPalette");
     expect(log.calls).not.toContain("onPaletteClose");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Detail view: j/k navigate sections (Task 4 — Issue #192)
+// ---------------------------------------------------------------------------
+
+describe("routeKey — detail view section navigation", () => {
+  test("j calls onDetailSectionNext (not nav.cursorDown) when isDetailView is true", () => {
+    const { actions, log } = mockActions({ isDetailView: true });
+    const handled = routeKey(keyEvent("j"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionNext");
+    expect(log.calls).not.toContain("nav.cursorDown");
+  });
+
+  test("down arrow calls onDetailSectionNext when isDetailView is true", () => {
+    const { actions, log } = mockActions({ isDetailView: true });
+    const handled = routeKey(keyEvent("down"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionNext");
+    expect(log.calls).not.toContain("nav.cursorDown");
+  });
+
+  test("k calls onDetailSectionPrev (not nav.cursorUp) when isDetailView is true", () => {
+    const { actions, log } = mockActions({ isDetailView: true });
+    const handled = routeKey(keyEvent("k"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionPrev");
+    expect(log.calls).not.toContain("nav.cursorUp");
+  });
+
+  test("up arrow calls onDetailSectionPrev when isDetailView is true", () => {
+    const { actions, log } = mockActions({ isDetailView: true });
+    const handled = routeKey(keyEvent("up"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionPrev");
+    expect(log.calls).not.toContain("nav.cursorUp");
+  });
+
+  test("j calls nav.cursorDown (not onDetailSectionNext) when isDetailView is false", () => {
+    const { actions, log } = mockActions({ isDetailView: false, rowCount: 5 });
+    const handled = routeKey(keyEvent("j"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("nav.cursorDown");
+    expect(log.calls).not.toContain("onDetailSectionNext");
+  });
+
+  test("k calls nav.cursorUp (not onDetailSectionPrev) when isDetailView is false", () => {
+    const { actions, log } = mockActions({ isDetailView: false });
+    const handled = routeKey(keyEvent("k"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("nav.cursorUp");
+    expect(log.calls).not.toContain("onDetailSectionPrev");
   });
 });

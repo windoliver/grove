@@ -60,6 +60,8 @@ export interface KeyboardActions {
   readonly onPaletteSelect: () => void;
   readonly onPaletteChar: (char: string) => void;
   readonly onPaletteBackspace: () => void;
+  readonly onDetailSectionNext: () => void;
+  readonly onDetailSectionPrev: () => void;
   readonly onZoomCycle: () => void;
   readonly onZoomReset: () => void;
   readonly onTerminalScrollUp: () => void;
@@ -612,6 +614,18 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
     return true;
+  }
+
+  // Detail overlay: j/k move the focused section (no row cursor in detail).
+  if (actions.nav.isDetailView) {
+    if (input === "j" || input === "down") {
+      actions.onDetailSectionNext();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.onDetailSectionPrev();
+      return true;
+    }
   }
 
   // Within-panel navigation
