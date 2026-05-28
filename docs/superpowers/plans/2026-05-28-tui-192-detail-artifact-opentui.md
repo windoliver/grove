@@ -465,7 +465,11 @@ git commit -m "feat(tui): thread diffMode + focusedSection props to views (#192)
 
 ## Task 7: artifact-preview.tsx — `<diff>` intrinsic + diffMode
 
-Replace the plain-text diff branch. Behavior depends on Task 0's `INLINE_DIFF` finding.
+**Task 0 findings (authoritative — overrides earlier assumptions in this task):**
+- The real `<diff>` intrinsic API (`@opentui/core/renderables/Diff.d.ts`) is `diff?: string` (a **unified-diff-format string** the component parses) + `view?: "unified" | "split"` + optional `filetype?: string` for syntax highlighting. There is **no** `oldContent`/`newContent` and **no** `mode` prop.
+- Therefore: **KEEP `computeUnifiedDiff`** — its output is exactly the `diff` string the intrinsic consumes. Do NOT delete it. Do NOT use the `SplitDiff` component (it passes nonexistent `oldContent`/`newContent`/`mode` props and is a pre-existing bug; leave it alone, note it as a follow-up in your report).
+- `diffMode` maps: `"inline"` → `view="unified"`, `"split"` → `view="split"`.
+- `<scrollbox>` supports `scrollTop` (number) and `stickyScroll`/`stickyStart` — relevant to Task 8, not here.
 
 **Files:**
 - Modify: `src/tui/views/artifact-preview.tsx`
@@ -517,8 +521,7 @@ Expected: FAIL — `diffMode` not a prop; no `<diff>` in tree (current code rend
 In `src/tui/views/artifact-preview.tsx`:
 - Add to `ArtifactPreviewProps`: `readonly diffMode?: "inline" | "split" | undefined;`
 - Destructure `diffMode` (default `"inline"`) in the component params.
-- Import `SplitDiff`: `import { SplitDiff } from "../components/split-diff.js";`
-- Replace `diffBody` (the `computeUnifiedDiff` consumer) with raw text plus a render branch. Keep loading/error strings. New diff render block (replacing the `diffBody !== undefined ? (... scrollbox text ...)` branch):
+- KEEP `computeUnifiedDiff`. Keep the existing `diffBody` memo computing the unified-diff string (it already calls `computeUnifiedDiff` and returns the loading/error/no-data strings). The only change is how a successful diff string is rendered: instead of wrapping the string in `<text>`, feed it to the `<diff>` intrinsic. Replace the diff render branch (the `diffBody !== undefined ? (createElement("scrollbox", ..., <text>{diffBody}</text>)) : ...`) with:
 
 ```tsx
         {showDiff && parentCid ? (
@@ -528,26 +531,25 @@ In `src/tui/views/artifact-preview.tsx`:
             <text color={theme.error}>{`Diff error: ${diffError.message}`}</text>
           ) : !diffData ? (
             <text opacity={0.5}>(no diff data)</text>
-          ) : diffMode === "split" ? (
-            <SplitDiff
-              leftLabel={`parent (${parentCid.slice(0, 8)})`}
-              rightLabel={`child (${(cid ?? "").slice(0, 8)})`}
-              leftContent={diffData.parentText}
-              rightContent={diffData.childText}
-            />
           ) : (
             createElement("scrollbox" as string, { flexGrow: 1 },
               createElement("diff" as string, {
-                oldContent: diffData.parentText,
-                newContent: diffData.childText,
-                mode: "inline",
+                diff: computeUnifiedDiff(
+                  diffData.parentText,
+                  diffData.childText,
+                  `parent (${parentCid.slice(0, 8)})`,
+                  `child (${(cid ?? "").slice(0, 8)})`,
+                ),
+                view: diffMode === "split" ? "split" : "unified",
+                filetype: detectLanguage(artifactName ?? ""),
               }))
           )
-        ) : ( /* existing content render: empty | markdown | code | hex | text */ )}
+        ) : ( /* existing content render: empty | markdown | code | hex | text — UNCHANGED */ )}
 ```
 
-- **If Task 0 found `INLINE_DIFF: fallback-to-code`:** replace the inline `createElement("diff", {mode:"inline"})` with `createElement("code" as string, { language: "diff" }, computeUnifiedDiff(diffData.parentText, diffData.childText, leftLabel, rightLabel))` and KEEP `computeUnifiedDiff`. Otherwise delete `computeUnifiedDiff` and its LCS table (lines ~165–214) and the now-unused `diffBody` memo.
-- Update the header hint to include split/inline: `{showDiff ? \`  [DIFF ${diffMode}]\` : "  [d]iff"}` and, when `hasDiffSupport`, append `  [s]plit/inline` while diff is on.
+  Note: `computeUnifiedDiff` already emits standard `---`/`+++`/` `/`+`/`-` unified-diff lines, which `<diff>` parses. If the existing `diffBody` memo previously short-circuited the content render, preserve that control flow — only the leaf changes from `<text>` to `<diff>`.
+- Update the header hint: when diff is off show `  [d]iff`; when on show `  [DIFF ${diffMode}]` plus `  [s]plit/inline` (only when `hasDiffSupport`).
+- Verify there are no remaining references to a `mode`/`oldContent`/`newContent` prop on `<diff>` and that `computeUnifiedDiff` is still imported/used (no unused-symbol lint error).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -650,7 +652,7 @@ In `src/tui/views/detail.tsx`:
 - Wrap the returned section stack in `createElement("scrollbox" as string, { flexGrow: 1 }, <the column of sections>)` (header line with cid/status can stay above the scrollbox or inside it — keep inside so it scrolls with content is unnecessary; place header outside, sections inside).
 - Give each section box a focus treatment when its key === `focusedKey`: `borderStyle="single" borderColor={theme.focus}` (or a `>` prefix on its title `<text>`), else no border. Use a small helper `sectionProps(key)` returning the border props.
 - **Remove truncation:** render `description` in full (drop `.slice(0, 500)`); render ancestor/child `summary` in full (drop `.slice(0, 50)`); render full `context` JSON (drop `.slice(0, 300)`). Thread reply summary `.slice(0,40)` may stay (single-line list) or be removed — remove for consistency.
-- **If Task 0 found `SCROLLBOX_SCROLL: scrollTop`:** also set `scrollTop` on the scrollbox so the focused section is in view (estimate offset by summing prior present-section heights, or pass the focused child's index — simplest: set `stickyScroll`/`scrollTop` to a coarse `focusedIndex * approxSectionRows`). **If `manual-window`:** instead render only a window of present sections centered on `focusedKey` (slice `present` around the focused index) — document this as the fallback in a comment.
+- **Scroll-into-view (Task 0 confirmed `scrollTop` is supported):** set `scrollTop` on the `<scrollbox>` so the focused section is visible. Compute a coarse offset from the focused section's position — simplest viable: `scrollTop = focusedIndexAmongPresent * APPROX_SECTION_ROWS` (define a small const, e.g. 6) so advancing sections scrolls the surface down. This need not be pixel-exact; it only has to keep the focused section on screen. Acceptable to refine later. (`stickyStart`/`stickyScroll` are also available if useful, but `scrollTop` is the primary mechanism.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -763,6 +765,6 @@ gh pr create --fill --base main
 ## Self-review notes
 
 - **Spec coverage:** scrollable detail → Task 8; obvious focus/selection → Tasks 2/4/8 (border+marker) ; diff rendering → Task 7; split/inline toggle → Tasks 1/3/7; transitions → Task 9; "native to OpenTUI" → `<scrollbox>`/`<diff>`/`useTimeline` across 7–9. All four acceptance criteria mapped.
-- **Runtime unknowns** isolated to Task 0 with explicit fallbacks consumed in Tasks 7 (`INLINE_DIFF`) and 8 (`SCROLLBOX_SCROLL`).
+- **Runtime unknowns** isolated to Task 0 with explicit fallbacks consumed in Tasks 7 (`INLINE_DIFF`→keep computeUnifiedDiff) and 8 (`SCROLLBOX_SCROLL`→scrollTop).
 - **Type consistency:** prop names `focusedSectionRaw` (detail) and `diffMode` (artifact), state `detailFocusedSection`/`artifactDiffMode`, callbacks `onDetailSectionNext/Prev`/`onArtifactDiffModeToggle`, actions `DETAIL_SECTION_NEXT/PREV/RESET`/`ARTIFACT_DIFF_MODE_TOGGLE` — used consistently across Tasks 1–8.
 - **No silent truncation** preserved as a spec invariant in Task 8 (full content or visible marker only).
