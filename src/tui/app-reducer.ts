@@ -6,6 +6,7 @@ export interface TuiKeyboardState {
   readonly vfsNavigateTrigger: number;
   readonly artifactIndex: number;
   readonly showArtifactDiff: boolean;
+  readonly artifactDiffMode: "inline" | "split";
   readonly paletteIndex: number;
   readonly paletteQuery: string;
   readonly searchQuery: string;
@@ -29,6 +30,7 @@ export type TuiAction =
   | { readonly type: "ARTIFACT_PREV" }
   | { readonly type: "ARTIFACT_NEXT" }
   | { readonly type: "ARTIFACT_DIFF_TOGGLE" }
+  | { readonly type: "ARTIFACT_DIFF_MODE_TOGGLE" }
   | { readonly type: "PALETTE_UP" }
   | { readonly type: "PALETTE_DOWN"; readonly maxIndex: number }
   | { readonly type: "PALETTE_RESET" }
@@ -67,6 +69,7 @@ export const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   vfsNavigateTrigger: 0,
   artifactIndex: 0,
   showArtifactDiff: false,
+  artifactDiffMode: "inline",
   paletteIndex: 0,
   paletteQuery: "",
   searchQuery: "",
@@ -95,6 +98,11 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
       return { ...state, artifactIndex: state.artifactIndex + 1 };
     case "ARTIFACT_DIFF_TOGGLE":
       return { ...state, showArtifactDiff: !state.showArtifactDiff };
+    case "ARTIFACT_DIFF_MODE_TOGGLE":
+      return {
+        ...state,
+        artifactDiffMode: state.artifactDiffMode === "inline" ? "split" : "inline",
+      };
     case "PALETTE_UP":
       return { ...state, paletteIndex: Math.max(0, state.paletteIndex - 1) };
     case "PALETTE_DOWN":
