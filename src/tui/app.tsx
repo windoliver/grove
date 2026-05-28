@@ -968,8 +968,9 @@ export function App({
 
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
-  // Complex palette execution (spawn/kill/register/delegate) and paste safety
-  // remain here because they need closure access to spawnManager, etc.
+  // Palette execution now runs through `actionContext`/`action.run`; the paste-
+  // safety path and other handlers remain here for closure access to
+  // spawnManager, etc.
   // ---------------------------------------------------------------------------
 
   const keyboardActions: KeyboardActions = useMemo(
