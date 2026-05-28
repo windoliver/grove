@@ -54,7 +54,7 @@ function agentActions(ctx: ActionContext): readonly Action[] {
       actions.push({
         id: `agent.spawn.${role}`,
         label: `Spawn ${profile.name} [${profile.platform}]`,
-        detail: "spawn",
+        detail: spawnDetail(ctx, role),
         group: "Agents",
         keywords: ["spawn", "agent", role],
         enabled: (c) => spawnAllowed(c, role),
@@ -71,7 +71,7 @@ function agentActions(ctx: ActionContext): readonly Action[] {
       actions.push({
         id: `agent.spawn.${name}`,
         label: `Spawn ${name}`,
-        detail: "spawn",
+        detail: spawnDetail(ctx, name),
         group: "Agents",
         keywords: ["spawn", "agent", name],
         enabled: (c) => spawnAllowed(c, name),
@@ -199,6 +199,21 @@ function spawnAllowed(ctx: ActionContext, role: string): boolean {
   if (!ctx.topology) return true; // no topology constraints to enforce
   if (ctx.claims === null) return false; // scoped session: conservative
   return checkSpawn(ctx.topology, role, ctx.claims, ctx.parentAgentId).allowed;
+}
+
+/**
+ * Capacity/edge summary shown next to a spawn action, e.g. "1/3 → reviewer".
+ * Falls back to "spawn" when topology constraints can't be evaluated (no
+ * topology, or scoped session where claims are unavailable).
+ */
+function spawnDetail(ctx: ActionContext, role: string): string {
+  if (!ctx.topology || ctx.claims === null) return "spawn";
+  const check = checkSpawn(ctx.topology, role, ctx.claims, ctx.parentAgentId);
+  const max = check.maxInstances !== undefined ? String(check.maxInstances) : "∞";
+  const suffix = !check.allowed ? " (at capacity)" : "";
+  const edges = ctx.topology.roles.find((r) => r.name === role)?.edges;
+  const edgeSuffix = edges && edges.length > 0 ? ` → ${edges.map((e) => e.target).join(", ")}` : "";
+  return `${check.currentInstances}/${max}${suffix}${edgeSuffix}`;
 }
 
 function topologyCommand(ctx: ActionContext, role: string): string | undefined {

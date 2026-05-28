@@ -81,6 +81,29 @@ describe("buildBuiltInActions", () => {
     expect(spawn?.enabled?.(c) ?? true).toBe(true);
   });
 
+  test("spawn detail shows capacity and edges from topology", () => {
+    const topology = {
+      roles: [
+        { name: "planner", maxInstances: 3, edges: [{ target: "reviewer" }] },
+        { name: "reviewer", maxInstances: 1 },
+      ],
+    } as unknown as ActionContext["topology"];
+    const c = ctx({ canSpawn: true, topology, claims: [] });
+    const planner = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.planner");
+    expect(planner?.detail).toBe("0/3 → reviewer");
+    const reviewer = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.reviewer");
+    expect(reviewer?.detail).toBe("0/1");
+  });
+
+  test("spawn detail falls back to 'spawn' without topology", () => {
+    const c = ctx({
+      canSpawn: true,
+      profiles: [{ name: "@w", role: "worker", platform: "claude-code" }],
+    });
+    const spawn = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.worker");
+    expect(spawn?.detail).toBe("spawn");
+  });
+
   test("delegate only available when canDelegate and peer has free slots", () => {
     const peers = [{ peerId: "p1", address: "http://p1", freeSlots: 2 }];
     expect(ids(ctx({ canDelegate: false, gossipPeers: peers }))).not.toContain(
