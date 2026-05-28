@@ -246,6 +246,8 @@ export interface ArtifactPreviewProps {
   readonly parentCid?: string | undefined;
   /** Whether to show diff view instead of content view. */
   readonly showDiff?: boolean | undefined;
+  /** Diff rendering mode: inline (unified) or side-by-side (split). */
+  readonly diffMode?: "inline" | "split" | undefined;
   /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
   readonly intervalMs?: number;
   readonly active: boolean;
@@ -265,6 +267,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
     artifactIndex,
     parentCid,
     showDiff,
+    diffMode = "inline",
     active,
   }: ArtifactPreviewProps): React.ReactNode {
     const artifactProvider = provider.capabilities.artifacts
@@ -405,19 +408,21 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       return { header, body, renderAs: "text" };
     }, [cid, artifactName, artifactProvider, data, loading, error]);
 
-    // Compute diff body
-    const diffBody = useMemo((): string | undefined => {
-      if (!showDiff || !parentCid) return undefined;
-      if (diffLoading && !diffData) return "Loading diff...";
-      if (diffError && !diffData) return `Diff error: ${diffError.message}`;
-      if (!diffData) return "(no diff data)";
+    // Whether the diff view is the active surface (vs. content render).
+    const showDiffView = Boolean(showDiff && parentCid);
+
+    // The successful diff is rendered via the <diff> intrinsic, which parses a
+    // unified-diff-format STRING (see Diff.d.ts). computeUnifiedDiff produces
+    // exactly that string. Loading/error/no-data are rendered as <text> below.
+    const unifiedDiff = useMemo((): string | undefined => {
+      if (!showDiffView || !diffData) return undefined;
       return computeUnifiedDiff(
         diffData.parentText,
         diffData.childText,
-        `parent (${parentCid.slice(0, 8)})`,
+        `parent (${(parentCid ?? "").slice(0, 8)})`,
         `child (${(cid ?? "").slice(0, 8)})`,
       );
-    }, [showDiff, parentCid, cid, diffData, diffLoading, diffError]);
+    }, [showDiffView, parentCid, cid, diffData]);
 
     if (!cid || !artifactName) {
       return (
@@ -442,17 +447,30 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (
             <text color={showDiff ? theme.warning : theme.secondary}>
-              {showDiff ? "  [DIFF ON]" : "  [d]iff"}
+              {showDiff ? `  [DIFF ${diffMode}]  [s]plit/inline` : "  [d]iff"}
             </text>
           )}
         </box>
         <box flexGrow={1}>
-          {diffBody !== undefined ? (
-            // Diff view — plain text, typically contains unified diff output
-            createElement(
-              "scrollbox" as string,
-              { flexGrow: 1 },
-              React.createElement("text", {}, diffBody),
+          {showDiffView ? (
+            // Diff view — rendered via OpenTUI <diff> intrinsic (unified/split).
+            // Loading/error/no-data fall back to plain text.
+            diffLoading && !diffData ? (
+              <text>Loading diff...</text>
+            ) : diffError && !diffData ? (
+              <text color={theme.error}>{`Diff error: ${diffError.message}`}</text>
+            ) : !diffData || unifiedDiff === undefined ? (
+              <text opacity={0.5}>(no diff data)</text>
+            ) : (
+              createElement(
+                "scrollbox" as string,
+                { flexGrow: 1 },
+                createElement("diff" as string, {
+                  diff: unifiedDiff,
+                  view: diffMode === "split" ? "split" : "unified",
+                  filetype: detectLanguage(artifactName ?? ""),
+                }),
+              )
             )
           ) : preview.renderAs === "empty" ? (
             // Empty artifact — styled empty state
