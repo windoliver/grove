@@ -120,6 +120,12 @@ export interface SessionConfig {
         }): Promise<readonly import("./models.js").Contribution[]>;
       }
     | undefined;
+  /**
+   * Called after the orchestrator accepts a contribution for this session.
+   * Used by durable session stores to keep list/status contribution counts in
+   * sync with the routing path, including Nexus-backed session starts.
+   */
+  readonly onContributionAccepted?: ((cid: string) => void | Promise<void>) | undefined;
   /** Optional agent profiles — overlay role defaults with per-agent runtime config. */
   readonly profiles?: readonly AgentProfile[] | undefined;
 }
@@ -485,7 +491,7 @@ export class SessionOrchestrator {
         // Mark as seen only after ownership verification so transient identity
         // skew doesn't permanently suppress routing for this CID.
         this.seenCids.add(c.cid);
-        this.contributionCount++;
+        await this.recordAcceptedContribution(c.cid);
 
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
@@ -539,6 +545,17 @@ export class SessionOrchestrator {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[SessionOrchestrator] contribution poll failed: ${message}\n`);
+    }
+  }
+
+  private async recordAcceptedContribution(cid: string): Promise<void> {
+    this.contributionCount++;
+    try {
+      await this.config.onContributionAccepted?.(cid);
+    } catch (err) {
+      process.stderr.write(
+        `[SessionOrchestrator] session contribution link failed for ${cid}: ${messageFromError(err)}\n`,
+      );
     }
   }
 

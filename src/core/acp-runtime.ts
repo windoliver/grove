@@ -4,12 +4,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { Readable as NodeReadable, Writable as NodeWritable } from "node:stream";
 import {
@@ -69,6 +70,7 @@ interface AcpSessionEntry {
   session: AgentSession;
   connection: ClientSideConnection;
   wireSessionId: string;
+  cwd: string;
   dispose: () => Promise<void>;
   idleCallbacks: (() => void)[];
   currentTurn: AcpTurnImpl | null;
@@ -82,9 +84,20 @@ interface AcpSessionEntry {
   closed: boolean;
 }
 
+interface TerminalEntry {
+  readonly sessionId: string;
+  readonly proc: ChildProcessByStdio<null, Readable, Readable>;
+  readonly outputByteLimit: number;
+  output: string;
+  truncated: boolean;
+  exitStatus?: { readonly exitCode?: number | null; readonly signal?: string | null };
+  readonly exited: Promise<{ readonly exitCode?: number | null; readonly signal?: string | null }>;
+}
+
 const CLOSE_SEND_DRAIN_TIMEOUT_MS = 2_000;
 const CHILD_TERM_TIMEOUT_MS = 2_000;
 const CHILD_KILL_TIMEOUT_MS = 500;
+const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 
 function resolveAgentFromConfig(config: AgentConfig): string {
   if (config.platform === "claude-code") return "claude";
@@ -629,7 +642,9 @@ export class AcpRuntime implements AgentRuntime {
   private readonly launchOverride: LaunchOverride | undefined;
   private eventSink: AcpRuntimeEventSink | undefined;
   private readonly sessions: Map<string, AcpSessionEntry> = new Map();
+  private readonly terminals: Map<string, TerminalEntry> = new Map();
   private nextId = 0;
+  private nextTerminalId = 0;
 
   /**
    * Optional callback invoked after a session lifecycle transition that
@@ -708,8 +723,8 @@ export class AcpRuntime implements AgentRuntime {
       await connection.initialize({
         protocolVersion: 1,
         clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
+          fs: { readTextFile: true, writeTextFile: true },
+          terminal: true,
         },
       });
       const groveMcpEnv = Object.fromEntries(
@@ -751,6 +766,7 @@ export class AcpRuntime implements AgentRuntime {
       session,
       connection,
       wireSessionId: created.sessionId,
+      cwd: config.cwd,
       dispose: launched.dispose,
       idleCallbacks: [],
       currentTurn: null,
@@ -911,6 +927,7 @@ export class AcpRuntime implements AgentRuntime {
     } catch {
       /* ignore */
     }
+    await this.releaseSessionTerminals(entry.wireSessionId);
     try {
       await entry.dispose();
     } catch {
@@ -1000,12 +1017,109 @@ export class AcpRuntime implements AgentRuntime {
           message: msg,
         });
       },
-      async readTextFile() {
-        throw new Error("[acp-runtime] fs.readTextFile not supported; agents use local fs");
+      async readTextFile(params) {
+        const text = readFileSync(params.path, "utf-8");
+        const line = params.line ?? undefined;
+        const limit = params.limit ?? undefined;
+        if (line === undefined && limit === undefined) return { content: text };
+
+        const lines = text.split(/(?<=\n)/);
+        const start = line === undefined ? 0 : Math.max(0, line - 1);
+        const end = limit === undefined ? lines.length : start + Math.max(0, limit);
+        return { content: lines.slice(start, end).join("") };
       },
-      async writeTextFile() {
-        throw new Error("[acp-runtime] fs.writeTextFile not supported; agents use local fs");
+      async writeTextFile(params) {
+        mkdirSync(dirname(params.path), { recursive: true });
+        writeFileSync(params.path, params.content, "utf-8");
+        return {};
+      },
+      async createTerminal(params) {
+        const entry = runtime.findEntryByWireSession(params.sessionId);
+        const env = { ...process.env };
+        for (const item of params.env ?? []) {
+          env[item.name] = item.value;
+        }
+        const proc = nodeSpawn(params.command, params.args ?? [], {
+          cwd: params.cwd ?? entry?.cwd ?? process.cwd(),
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const terminalId = `term-${++runtime.nextTerminalId}`;
+        const terminal: TerminalEntry = {
+          sessionId: params.sessionId,
+          proc,
+          outputByteLimit: params.outputByteLimit ?? DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT,
+          output: "",
+          truncated: false,
+          exited: new Promise((resolve) => {
+            proc.once("exit", (code, signal) => {
+              const exitStatus = { exitCode: code, signal };
+              terminal.exitStatus = exitStatus;
+              resolve(exitStatus);
+            });
+          }),
+        };
+        const append = (chunk: Buffer): void => {
+          terminal.output += chunk.toString("utf-8");
+          while (Buffer.byteLength(terminal.output, "utf-8") > terminal.outputByteLimit) {
+            terminal.output = terminal.output.slice(1);
+            terminal.truncated = true;
+          }
+        };
+        proc.stdout.on("data", append);
+        proc.stderr.on("data", append);
+        runtime.terminals.set(terminalId, terminal);
+        return { terminalId };
+      },
+      async terminalOutput(params) {
+        const terminal = runtime.requireTerminal(params.terminalId);
+        return {
+          output: terminal.output,
+          truncated: terminal.truncated,
+          ...(terminal.exitStatus !== undefined ? { exitStatus: terminal.exitStatus } : {}),
+        };
+      },
+      async waitForTerminalExit(params) {
+        const terminal = runtime.requireTerminal(params.terminalId);
+        return await terminal.exited;
+      },
+      async releaseTerminal(params) {
+        await runtime.releaseTerminal(params.terminalId);
+        return {};
+      },
+      async killTerminal(params) {
+        const terminal = runtime.requireTerminal(params.terminalId);
+        if (terminal.exitStatus === undefined) terminal.proc.kill("SIGTERM");
+        return {};
       },
     };
+  }
+
+  private requireTerminal(terminalId: string): TerminalEntry {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal) throw new Error(`[acp-runtime] unknown terminal: ${terminalId}`);
+    return terminal;
+  }
+
+  private async releaseTerminal(terminalId: string): Promise<void> {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal) return;
+    if (terminal.exitStatus === undefined) {
+      terminal.proc.kill("SIGTERM");
+      await Promise.race([
+        terminal.exited,
+        new Promise((resolve) => setTimeout(resolve, CHILD_TERM_TIMEOUT_MS)),
+      ]);
+    }
+    this.terminals.delete(terminalId);
+  }
+
+  private async releaseSessionTerminals(sessionId: string): Promise<void> {
+    const ids = [...this.terminals.entries()]
+      .filter(([, terminal]) => terminal.sessionId === sessionId)
+      .map(([id]) => id);
+    for (const id of ids) {
+      await this.releaseTerminal(id);
+    }
   }
 }
