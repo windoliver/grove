@@ -317,6 +317,7 @@ export interface MaterializedRecipe {
   readonly renderedInstructions: string;
   readonly extensions: readonly RecipeExtension[];
   readonly subRecipes: readonly RecipeSubRecipe[];
+  readonly runPolicy?: RecipeRunPolicy | undefined;
 }
 
 export type RecipeSource = "project" | "workspace" | "user";
@@ -739,6 +740,40 @@ export function renderRecipeTemplate(
   return rendered;
 }
 
+function renderRecipeTemplateJsonLeaves(
+  value: JsonValue,
+  parameters: Readonly<Record<string, JsonValue>>,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): JsonValue {
+  if (typeof value === "string") {
+    return renderRecipeTemplate(value, parameters, parameterDefinitions);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      renderRecipeTemplateJsonLeaves(item, parameters, parameterDefinitions),
+    );
+  }
+
+  if (value !== null && typeof value === "object") {
+    return renderRecipeTemplateJsonObjectLeaves(value, parameters, parameterDefinitions);
+  }
+
+  return value;
+}
+
+function renderRecipeTemplateJsonObjectLeaves(
+  value: Readonly<Record<string, JsonValue>>,
+  parameters: Readonly<Record<string, JsonValue>>,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): Record<string, JsonValue> {
+  const rendered: Record<string, JsonValue> = {};
+  for (const [key, child] of Object.entries(value)) {
+    rendered[key] = renderRecipeTemplateJsonLeaves(child, parameters, parameterDefinitions);
+  }
+  return rendered;
+}
+
 export function bindRecipeParameters(
   recipe: GroveRecipe,
   overrides: Readonly<Record<string, JsonValue>>,
@@ -826,21 +861,17 @@ function looksLikeJsonSource(value: string): boolean {
 }
 
 export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecipe {
+  const stopConditions = materializeRecipeStopConditions(bound.recipe.runPolicy);
   const contract: GroveContract = {
     contractVersion: 3,
     name: bound.recipe.name,
     ...(bound.recipe.description !== undefined && { description: bound.recipe.description }),
     ...(bound.recipe.topology !== undefined && { topology: bound.recipe.topology }),
-    ...(bound.recipe.runPolicy?.maxIterations !== undefined && {
-      stopConditions: {
-        budget: {
-          maxContributions: bound.recipe.runPolicy.maxIterations,
-        },
-      },
-    }),
+    ...(stopConditions !== undefined && { stopConditions }),
   };
 
   const boundDigest = computeBoundRecipeDigest(bound);
+  const parameterDefinitions = bound.recipe.parameters ?? {};
   return {
     contract,
     provenance: {
@@ -852,8 +883,55 @@ export function materializeRecipeContract(bound: BoundRecipe): MaterializedRecip
     },
     renderedInstructions: bound.renderedInstructions,
     extensions: bound.recipe.extensions ?? [],
-    subRecipes: bound.recipe.subRecipes ?? [],
+    subRecipes: materializeSubRecipes(
+      bound.recipe.subRecipes ?? [],
+      bound.parameters,
+      parameterDefinitions,
+    ),
+    ...(bound.recipe.runPolicy !== undefined && { runPolicy: bound.recipe.runPolicy }),
   };
+}
+
+function materializeRecipeStopConditions(
+  runPolicy: RecipeRunPolicy | undefined,
+): GroveContract["stopConditions"] | undefined {
+  if (runPolicy === undefined) {
+    return undefined;
+  }
+
+  const stopConditions: NonNullable<GroveContract["stopConditions"]> = {
+    ...(runPolicy.maxNoImprovementRounds !== undefined && {
+      maxRoundsWithoutImprovement: runPolicy.maxNoImprovementRounds,
+    }),
+    ...(runPolicy.maxIterations !== undefined && {
+      budget: {
+        maxContributions: runPolicy.maxIterations,
+      },
+    }),
+  };
+
+  return Object.keys(stopConditions).length > 0 ? stopConditions : undefined;
+}
+
+function materializeSubRecipes(
+  subRecipes: readonly RecipeSubRecipe[],
+  parameters: Readonly<Record<string, JsonValue>>,
+  parameterDefinitions: Readonly<Record<string, RecipeParameter>>,
+): readonly RecipeSubRecipe[] {
+  return subRecipes.map((subRecipe) => ({
+    name: subRecipe.name,
+    ref: subRecipe.ref,
+    ...(subRecipe.when !== undefined && {
+      when: renderRecipeTemplate(subRecipe.when, parameters, parameterDefinitions),
+    }),
+    ...(subRecipe.parameters !== undefined && {
+      parameters: renderRecipeTemplateJsonObjectLeaves(
+        subRecipe.parameters,
+        parameters,
+        parameterDefinitions,
+      ),
+    }),
+  }));
 }
 
 export async function discoverRecipes(

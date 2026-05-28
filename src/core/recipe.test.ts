@@ -730,8 +730,12 @@ describe("materializeRecipeContract", () => {
         {
           name: "child",
           ref: "recipe:child@1.0.0",
+          when: "$" + "{parameters.target_path} != ''",
           parameters: {
             child_path: "$" + "{parameters.target_path}",
+            child_config: {
+              mode: "review $" + "{parameters.target_path}",
+            },
           },
         },
       ],
@@ -753,12 +757,44 @@ describe("materializeRecipeContract", () => {
       {
         name: "child",
         ref: "recipe:child@1.0.0",
+        when: "src/core != ''",
         parameters: {
-          child_path: "$" + "{parameters.target_path}",
+          child_path: "src/core",
+          child_config: {
+            mode: "review src/core",
+          },
         },
       },
     ]);
     expect(materialized.provenance.subRecipeDigests).toEqual([]);
+  });
+
+  test("maps max no-improvement rounds into stop conditions", () => {
+    const recipe = parseGroveRecipeObject({
+      kind: "recipe",
+      recipe_version: 1,
+      name: "policy-recipe",
+      version: "1.0.0",
+      run_policy: {
+        max_iterations: 5,
+        max_no_improvement_rounds: 2,
+        improvement_threshold: 0.05,
+        direction: "maximize",
+      },
+    });
+
+    const materialized = materializeRecipeContract(bindRecipeParameters(recipe, {}));
+
+    expect(materialized.contract.stopConditions).toEqual({
+      maxRoundsWithoutImprovement: 2,
+      budget: { maxContributions: 5 },
+    });
+    expect(materialized.runPolicy).toEqual({
+      maxIterations: 5,
+      maxNoImprovementRounds: 2,
+      improvementThreshold: 0.05,
+      direction: "maximize",
+    });
   });
 });
 

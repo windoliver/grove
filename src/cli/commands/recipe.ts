@@ -138,6 +138,7 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     renderedInstructions: materialized.renderedInstructions,
     extensions: materialized.extensions,
     subRecipes: materialized.subRecipes,
+    runPolicy: materialized.runPolicy,
     contract: materialized.contract,
     provenance: materialized.provenance,
   };

@@ -149,6 +149,10 @@ describe("recipe command", () => {
           "    ref: recipe:child@1.0.0",
           "    parameters:",
           "      child_path: $" + "{parameters.target_path}",
+          "run_policy:",
+          "  max_no_improvement_rounds: 2",
+          "  improvement_threshold: 0.05",
+          "  direction: maximize",
           "",
         ].join("\n"),
       );
@@ -175,12 +179,22 @@ describe("recipe command", () => {
           readonly parameters?: Readonly<Record<string, unknown>>;
           readonly ref: string;
         }[];
+        runPolicy?: {
+          readonly direction?: string;
+          readonly improvementThreshold?: number;
+          readonly maxNoImprovementRounds?: number;
+        };
       };
       expect(parsed.extensions[0]?.name).toBe("filesystem");
       expect(parsed.extensions[0]?.type).toBe("mcp");
       expect(parsed.subRecipes[0]?.name).toBe("child");
       expect(parsed.subRecipes[0]?.ref).toBe("recipe:child@1.0.0");
-      expect(parsed.subRecipes[0]?.parameters?.child_path).toBe("$" + "{parameters.target_path}");
+      expect(parsed.subRecipes[0]?.parameters?.child_path).toBe("src/core");
+      expect(parsed.runPolicy).toEqual({
+        maxNoImprovementRounds: 2,
+        improvementThreshold: 0.05,
+        direction: "maximize",
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
