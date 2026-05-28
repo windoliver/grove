@@ -15,16 +15,14 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { TUI_REFRESH_ROLE } from "../core/event-bus.js";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { buildBuiltInActions } from "./actions/builtin-actions.js";
+import { buildPluginActions } from "./actions/plugin-adapter.js";
+import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
+import { computeVisibleActions } from "./actions/visibility.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
-import {
-  buildPaletteItems,
-  buildPluginPaletteItems,
-  CommandPalette,
-  fuzzyMatch,
-  getBuiltInPaletteActionRegistryEntries,
-} from "./components/command-palette.js";
+import { CommandPalette } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
@@ -48,13 +46,12 @@ import {
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
-import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
+import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
-import { runTuiActionRegistration } from "./plugins/actions.js";
 import {
   collectTuiActionRegistrations,
   collectTuiPanelRegistrations,
@@ -249,7 +246,7 @@ export function App({
   const mergedActionRegistry = useMemo(
     () =>
       mergeTuiActionRegistrations({
-        builtIns: getBuiltInPaletteActionRegistryEntries(),
+        builtIns: getReservedActionRegistryEntries(),
         plugins: pluginActionRegistrations,
       }),
     [pluginActionRegistrations],
@@ -461,6 +458,21 @@ export function App({
     paletteVisible,
   );
 
+  // Poll pending questions for the answer-question palette actions.
+  const pendingQuestionsFetcher = useCallback(async (): Promise<number> => {
+    const askProvider = provider as unknown as {
+      getPendingQuestions?: () => Promise<readonly unknown[]>;
+    };
+    if (!askProvider.getPendingQuestions) return 0;
+    try {
+      return (await askProvider.getPendingQuestions()).length;
+    } catch {
+      return 0;
+    }
+  }, [provider]);
+  const { data: pendingQuestionCount, refresh: refreshPendingQuestions } =
+    useEventDrivenData<number>(pendingQuestionsFetcher, undefined, undefined, paletteVisible);
+
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
 
@@ -543,6 +555,7 @@ export function App({
     refreshPR();
     refreshDashboard();
     refreshGossip();
+    refreshPendingQuestions();
     refreshProfiles();
     refreshTerminalBuffers();
   }, [
@@ -553,6 +566,7 @@ export function App({
     refreshPR,
     refreshDashboard,
     refreshGossip,
+    refreshPendingQuestions,
     refreshProfiles,
     refreshTerminalBuffers,
   ]);
@@ -587,54 +601,6 @@ export function App({
   }, [eventBus, topology, provider, triggerGlobalRefresh]);
 
   const hasGoals = isGoalProvider(provider);
-  const corePaletteItems = useMemo(
-    () =>
-      buildPaletteItems(
-        topology,
-        activeClaims ?? [],
-        paletteSessions ?? [],
-        tmux !== undefined,
-        canSpawn,
-        true,
-        paletteParentId,
-        canDelegate ? (gossipPeers ?? undefined) : undefined,
-        agentProfiles ?? undefined,
-        hasGoals,
-      ),
-    [
-      topology,
-      activeClaims,
-      paletteSessions,
-      tmux,
-      canSpawn,
-      canDelegate,
-      paletteParentId,
-      gossipPeers,
-      agentProfiles,
-      hasGoals,
-    ],
-  );
-  const pluginPaletteItems = useMemo(
-    () => buildPluginPaletteItems(mergedActionRegistry.entries, pluginContext),
-    [mergedActionRegistry.entries, pluginContext],
-  );
-  const paletteItems = useMemo(
-    () => [...corePaletteItems, ...pluginPaletteItems],
-    [corePaletteItems, pluginPaletteItems],
-  );
-
-  // Filtered + ranked palette items — matches CommandPalette's rendering order
-  // so Enter always executes the visually selected item.
-  const filteredPaletteItems = useMemo(() => {
-    const q = ks.paletteQuery.trim();
-    if (!q) return paletteItems;
-    const ranked = paletteItems
-      .map((item) => ({ item, score: fuzzyMatch(q, item.label) }))
-      .filter((r) => r.score.match)
-      .sort((a, b) => b.score.score - a.score.score)
-      .map((r) => r.item);
-    return ranked;
-  }, [paletteItems, ks.paletteQuery]);
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
     if (!contributions) return;
@@ -686,6 +652,29 @@ export function App({
       showError(err instanceof Error ? err.message : "Failed to answer");
     }
   }, [provider, nav.state.cursor, showError]);
+
+  const answerPendingQuestion = useCallback(
+    async (verdict: "approve" | "deny") => {
+      const askProvider = provider as unknown as {
+        answerQuestion?: (cid: string, answer: string) => Promise<void>;
+        getPendingQuestions?: () => Promise<
+          readonly { cid: string; options?: readonly string[] }[]
+        >;
+      };
+      if (!askProvider.answerQuestion || !askProvider.getPendingQuestions) return;
+      try {
+        const questions = await askProvider.getPendingQuestions();
+        const selected = questions[0];
+        if (!selected) return;
+        const answer = verdict === "approve" ? (selected.options?.[0] ?? "Approved") : "Denied";
+        await askProvider.answerQuestion(selected.cid, answer);
+        showError(`Answered: ${answer}`);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Failed to answer");
+      }
+    },
+    [provider, showError],
+  );
 
   /** Send a message via the boardroom API or local provider. */
   const sendTuiMessage = useCallback(
@@ -854,11 +843,128 @@ export function App({
     [showError, spawnManager],
   );
 
+  const registerAgentProfile = useCallback(() => {
+    void (async () => {
+      try {
+        const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const dir = resolve(process.cwd(), ".grove");
+        const path = resolve(dir, "agents.json");
+        if (!existsSync(path)) {
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          const template = JSON.stringify(
+            {
+              profiles: [
+                {
+                  name: "@agent-1",
+                  role: topology?.roles[0]?.name ?? "worker",
+                  platform: "claude-code",
+                  command: "claude --dangerously-skip-permissions",
+                },
+              ],
+            },
+            null,
+            2,
+          );
+          writeFileSync(path, template);
+          showError(`Created ${path} — edit to add agent profiles`);
+        } else {
+          showError(
+            `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
+          );
+        }
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Registration failed");
+      }
+    })();
+  }, [topology, agentProfiles, showError]);
+
   const handleCommandPaletteClose = useCallback(() => {
     dispatch({ type: "ADOPT_CLEAR" });
     panels.setMode(InputMode.Normal);
     dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
+
+  const mkPluginCtx = useCallback(
+    (_c: import("./actions/types.js").ActionContext): TuiPluginContext => pluginContext,
+    [pluginContext],
+  );
+
+  const actionContext = useMemo<import("./actions/types.js").ActionContext>(
+    () => ({
+      topology,
+      sessions: paletteSessions ?? [],
+      profiles: agentProfiles ?? [],
+      gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
+      claims: activeClaims,
+      selectedSession,
+      selectedCid: nav.detailCid,
+      parentAgentId: paletteParentId,
+      pendingQuestionCount: pendingQuestionCount ?? 0,
+      hasGoals,
+      canSpawn,
+      canDelegate,
+      isPanelVisible: (panel) => panels.isVisible(panel),
+      focusPanel: (panel) => panels.focus(panel),
+      togglePanel: (panel) => panels.toggle(panel),
+      openContribution: (cid) => nav.pushDetail(cid),
+      jumpToSession: (session) => {
+        setSelectedSession(session);
+        panels.toggle(Panel.Terminal);
+      },
+      enterGoalMode: () => {
+        panels.setMode(InputMode.GoalInput);
+        dispatch({ type: "GOAL_INPUT_MODE" });
+      },
+      enterCompareMode: () => dispatch({ type: "COMPARE_TOGGLE" }),
+      addToCompare: (cid) => dispatch({ type: "COMPARE_SELECT", cid }),
+      adoptContribution: (cid, summary) => {
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+        panels.setMode(InputMode.CommandPalette);
+      },
+      answerPendingQuestion: (verdict) => void answerPendingQuestion(verdict),
+      registerAgentProfile,
+      spawn: (roleId, command, parentAgentId) =>
+        handleSpawn(roleId, command, "HEAD", parentAgentId),
+      kill: (session) => handleKill(session),
+      delegate: (peerAddress) => void handleDelegate(peerAddress),
+      showMessage: showError,
+    }),
+    [
+      topology,
+      paletteSessions,
+      agentProfiles,
+      gossipPeers,
+      canDelegate,
+      activeClaims,
+      selectedSession,
+      nav,
+      paletteParentId,
+      pendingQuestionCount,
+      hasGoals,
+      canSpawn,
+      panels,
+      answerPendingQuestion,
+      registerAgentProfile,
+      handleSpawn,
+      handleKill,
+      handleDelegate,
+      showError,
+    ],
+  );
+
+  const paletteActions = useMemo(
+    () => [
+      ...buildBuiltInActions(actionContext),
+      ...buildPluginActions(mergedActionRegistry.entries, mkPluginCtx),
+    ],
+    [actionContext, mergedActionRegistry.entries, mkPluginCtx],
+  );
+
+  const visiblePaletteActions = useMemo(
+    () => computeVisibleActions(paletteActions, actionContext, ks.paletteQuery),
+    [paletteActions, actionContext, ks.paletteQuery],
+  );
 
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
@@ -1001,68 +1107,22 @@ export function App({
       onPaletteChar: (char: string) => dispatch({ type: "PALETTE_CHAR", char }),
       onPaletteBackspace: () => dispatch({ type: "PALETTE_BACKSPACE" }),
       onPaletteSelect: () => {
-        const item = filteredPaletteItems[ks.paletteIndex];
-        if (!item?.enabled) return;
-        if (item.kind === "spawn") {
-          const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
-          const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
-          const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
-          handleSpawn(item.id, shell, "HEAD", paletteParentId);
-        } else if (item.kind === "kill") {
-          handleKill(item.id);
-        } else if (item.kind === "register") {
-          void (async () => {
-            try {
-              const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
-              const { resolve } = await import("node:path");
-              const dir = resolve(process.cwd(), ".grove");
-              const path = resolve(dir, "agents.json");
-              if (!existsSync(path)) {
-                if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-                const template = JSON.stringify(
-                  {
-                    profiles: [
-                      {
-                        name: "@agent-1",
-                        role: topology?.roles[0]?.name ?? "worker",
-                        platform: "claude-code",
-                        command: "claude --dangerously-skip-permissions",
-                      },
-                    ],
-                  },
-                  null,
-                  2,
-                );
-                writeFileSync(path, template);
-                showError(`Created ${path} — edit to add agent profiles`);
-              } else {
-                showError(
-                  `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
-                );
-              }
-            } catch (err) {
-              showError(err instanceof Error ? err.message : "Registration failed");
-            }
-          })();
-        } else if (item.kind === "delegate") {
-          void handleDelegate(item.id);
-        } else if (item.kind === "plugin-action" && item.pluginAction !== undefined) {
-          void runTuiActionRegistration(item.pluginAction, pluginContext).catch((err: unknown) => {
-            showError(err instanceof Error ? err.message : "Plugin action failed");
-          });
-        } else if (item.kind === "goal") {
-          panels.setMode(InputMode.GoalInput);
-          dispatch({ type: "GOAL_INPUT_MODE" });
-          dispatch({ type: "PALETTE_RESET" });
-          return;
-        }
+        const entry = visiblePaletteActions[ks.paletteIndex];
+        if (!entry) return;
+        const action = entry.action;
+        if (!(action.enabled?.(actionContext) ?? true)) return;
+        // Close the palette FIRST. Mode-switching actions (goal, compare, adopt)
+        // re-set their target mode inside run, landing after this Normal set.
         panels.setMode(InputMode.Normal);
         dispatch({ type: "PALETTE_RESET" });
+        void Promise.resolve(action.run(actionContext)).catch((err: unknown) => {
+          showError(err instanceof Error ? err.message : "Action failed");
+        });
       },
       onSelect: handleSelect,
       rowCount,
       pageSize: PAGE_SIZE,
-      paletteItemCount: filteredPaletteItems.length,
+      paletteItemCount: visiblePaletteActions.length,
       compareMode: ks.compareMode,
       frontierCids: () => frontierCidsRef.current,
       selectedSession,
@@ -1109,15 +1169,13 @@ export function App({
       handleSelect,
       handleApproveQuestion,
       handleDenyQuestion,
-      handleSpawn,
-      handleKill,
-      handleDelegate,
       sendTuiMessage,
       showError,
       tmux,
       selectedSession,
       rowCount,
-      filteredPaletteItems,
+      visiblePaletteActions,
+      actionContext,
       ks.compareMode,
       ks.compareCids,
       ks.searchQuery,
@@ -1126,10 +1184,6 @@ export function App({
       ks.goalBuffer,
       ks.paletteIndex,
       contributionList,
-      agentProfiles,
-      topology,
-      paletteParentId,
-      pluginContext,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
@@ -1172,17 +1226,10 @@ export function App({
           >
             <CommandPalette
               visible={paletteVisible}
-              tmux={tmux}
-              onClose={handleCommandPaletteClose}
-              onSpawn={handleSpawn}
-              onKill={handleKill}
-              topology={topology}
-              activeClaims={activeClaims ?? undefined}
-              selectedIndex={ks.paletteIndex}
-              sessions={paletteSessions ?? undefined}
-              parentAgentId={paletteParentId}
-              items={paletteItems}
+              actions={paletteActions}
+              ctx={actionContext}
               query={ks.paletteQuery}
+              selectedIndex={ks.paletteIndex}
               adoptContext={ks.adoptContext}
             />
           </box>
