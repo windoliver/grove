@@ -63,6 +63,7 @@ interface ContribOverrides {
   readonly description?: string;
   readonly scores?: Contribution["scores"];
   readonly summary?: string;
+  readonly relations?: Contribution["relations"];
 }
 
 function makeContribution(overrides: ContribOverrides = {}): Contribution {
@@ -74,7 +75,7 @@ function makeContribution(overrides: ContribOverrides = {}): Contribution {
     summary: overrides.summary ?? "A summary line",
     description: overrides.description,
     artifacts: {},
-    relations: [],
+    relations: overrides.relations ?? [],
     scores: overrides.scores,
     tags: ["alpha"],
     context: undefined,
@@ -159,6 +160,58 @@ describe("detail view (#192)", () => {
     const focusedBlock = bordered.join("\n");
     expect(focusedBlock).toContain("Scores");
     expect(focusedBlock).not.toContain("Summary");
+    renderer.unmount();
+  });
+
+  test("focusedSectionRaw=1 skips an ABSENT middle section (gap: summary + relations, no scores)", async () => {
+    // present = ["summary", "relations"] — "scores" is ABSENT but sits
+    // between them in SECTION_ORDER (index 1). focusedSectionRaw=1 must land
+    // on the 2nd PRESENT section ("relations"), NOT on SECTION_ORDER[1]
+    // ("scores", which has no data). A naive SECTION_ORDER[raw] regression
+    // would focus the absent "scores" and accent nothing / the wrong block.
+    const detail = longContribution({
+      relations: [{ targetCid: "target-cid-xyz", relationType: "derives_from" }],
+    });
+    const renderer = await renderDetail(detail, 1);
+    const bordered: string[] = [];
+    findBorderedTextBlocks(renderer.toJSON(), bordered);
+    const focusedBlock = bordered.join("\n");
+    // The 2nd present section is "relations" — it must carry the accent.
+    expect(focusedBlock).toContain("Relations");
+    expect(focusedBlock).toContain("> "); // accent ">" marker on the focused title
+    // Neither the 1st present section nor the absent "scores" may be focused.
+    expect(focusedBlock).not.toContain("Summary");
+    expect(focusedBlock).not.toContain("Scores");
+    renderer.unmount();
+  });
+
+  test("focusedSectionRaw=-1 wraps to the LAST present section", async () => {
+    // present = ["summary", "relations"] (length 2). raw=-1 -> (((-1 % 2)+2)%2)
+    // = 1 -> "relations" (the LAST present section).
+    const detail = longContribution({
+      relations: [{ targetCid: "target-cid-xyz", relationType: "derives_from" }],
+    });
+    const renderer = await renderDetail(detail, -1);
+    const bordered: string[] = [];
+    findBorderedTextBlocks(renderer.toJSON(), bordered);
+    const focusedBlock = bordered.join("\n");
+    expect(focusedBlock).toContain("Relations");
+    expect(focusedBlock).not.toContain("Summary");
+    renderer.unmount();
+  });
+
+  test("focusedSectionRaw=N wraps to the FIRST present section", async () => {
+    // present = ["summary", "relations"] (length N=2). raw=N=2 ->
+    // (((2 % 2)+2)%2) = 0 -> "summary" (the FIRST present section).
+    const detail = longContribution({
+      relations: [{ targetCid: "target-cid-xyz", relationType: "derives_from" }],
+    });
+    const renderer = await renderDetail(detail, 2);
+    const bordered: string[] = [];
+    findBorderedTextBlocks(renderer.toJSON(), bordered);
+    const focusedBlock = bordered.join("\n");
+    expect(focusedBlock).toContain("Summary");
+    expect(focusedBlock).not.toContain("Relations");
     renderer.unmount();
   });
 
