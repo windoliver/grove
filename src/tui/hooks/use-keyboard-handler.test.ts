@@ -1045,4 +1045,67 @@ describe("routeKey — detail view section navigation", () => {
     expect(log.calls).toContain("nav.cursorUp");
     expect(log.calls).not.toContain("onDetailSectionPrev");
   });
+
+  // Regression (C1): with the REAL resolved keymap, the default j->cursor_down /
+  // k->cursor_up bindings run executeKeymapAction BEFORE the hardcoded detail
+  // fallback. Without the detail guard inside executeKeymapAction, j/k in the
+  // detail overlay would call nav.cursorDown/cursorUp (production bug). These
+  // tests exercise the production path by passing resolvedKeymap.
+  test("j under resolved default keymap calls onDetailSectionNext when isDetailView is true", () => {
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("j"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionNext");
+    expect(log.calls).not.toContain("nav.cursorDown");
+  });
+
+  test("k under resolved default keymap calls onDetailSectionPrev when isDetailView is true", () => {
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("k"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onDetailSectionPrev");
+    expect(log.calls).not.toContain("nav.cursorUp");
+  });
+
+  test("j/k under resolved default keymap still navigate cursor when isDetailView is false", () => {
+    const { actions: aj, log: lj } = mockActions({
+      isDetailView: false,
+      rowCount: 5,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("j"), aj)).toBe(true);
+    expect(lj.calls).toContain("nav.cursorDown");
+    expect(lj.args["nav.cursorDown"]).toEqual([4]); // rowCount - 1
+    expect(lj.calls).not.toContain("onDetailSectionNext");
+
+    const { actions: ak, log: lk } = mockActions({
+      isDetailView: false,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("k"), ak)).toBe(true);
+    expect(lk.calls).toContain("nav.cursorUp");
+    expect(lk.calls).not.toContain("onDetailSectionPrev");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact diff-mode toggle ('s') is panel-gated (C2 negative test)
+// ---------------------------------------------------------------------------
+
+describe("routeKey — artifact diff-mode toggle is Artifact-panel gated", () => {
+  test("'s' is ignored on a non-Artifact panel under the default keymap", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Dag,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("s"), actions);
+    expect(handled).toBe(false);
+    expect(log.calls).not.toContain("onArtifactDiffModeToggle");
+  });
 });

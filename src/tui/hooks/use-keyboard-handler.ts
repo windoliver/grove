@@ -178,10 +178,6 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       if (focused !== Panel.Artifact) return false;
       actions.onArtifactDiffToggle();
       return true;
-    case "artifact_diff_mode":
-      if (focused !== Panel.Artifact) return false;
-      actions.onArtifactDiffModeToggle();
-      return true;
     case "approve":
       if (focused !== Panel.Decisions) return false;
       actions.onApproveQuestion();
@@ -191,9 +187,17 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.onDenyQuestion();
       return true;
     case "cursor_down":
+      if (actions.nav.isDetailView) {
+        actions.onDetailSectionNext();
+        return true;
+      }
       actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
       return true;
     case "cursor_up":
+      if (actions.nav.isDetailView) {
+        actions.onDetailSectionPrev();
+        return true;
+      }
       actions.nav.cursorUp();
       return true;
     case "select":

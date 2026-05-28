@@ -142,6 +142,15 @@ function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): 
     onArtifactDiffToggle: () => {
       /* noop */
     },
+    onArtifactDiffModeToggle: () => {
+      /* noop */
+    },
+    onDetailSectionNext: () => {
+      /* noop */
+    },
+    onDetailSectionPrev: () => {
+      /* noop */
+    },
     onCompareToggle: () => {
       /* noop */
     },
