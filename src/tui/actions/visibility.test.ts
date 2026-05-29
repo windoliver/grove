@@ -80,4 +80,12 @@ describe("computeVisibleActions", () => {
     ];
     expect(computeVisibleActions(actions, ctx(), "answer")).toHaveLength(0);
   });
+
+  test("no-query order puts suggested actions first, then GROUP_ORDER", () => {
+    const mk = (id: string, group: any, suggested?: boolean) =>
+      ({ id, label: id, detail: "", group, suggested, run: () => {} }) as any;
+    const actions = [mk("v", "View"), mk("n", "Navigation"), mk("s", "View", true)];
+    const out = computeVisibleActions(actions, {} as any, "").map((x) => x.action.id);
+    expect(out).toEqual(["s", "n", "v"]);
+  });
 });

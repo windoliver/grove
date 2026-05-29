@@ -32,9 +32,12 @@ export function computeVisibleActions(
   const q = query.trim();
 
   if (!q) {
-    const ordered = [...available].sort(
-      (a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group),
-    );
+    const rank = (a: Action) => (a.suggested ? 0 : 1);
+    const ordered = [...available].sort((a, b) => {
+      const r = rank(a) - rank(b);
+      if (r !== 0) return r;
+      return GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group);
+    });
     return ordered.map((action) => ({ action, matchedIndices: [] }));
   }
 
@@ -50,6 +53,10 @@ export function computeVisibleActions(
         // Keep label highlight only; a keyword-only match yields no label indices.
         if (!labelResult.match) matchedIndices = [];
       }
+    }
+    if (action.slash) {
+      const r = fuzzyMatch(q, action.slash);
+      if (r.match && r.score > best) best = r.score;
     }
     if (best >= 0) ranked.push({ action, matchedIndices, score: best });
   }
