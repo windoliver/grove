@@ -55,13 +55,6 @@ const SECTION_ORDER = [
 ] as const;
 type SectionKey = (typeof SECTION_ORDER)[number];
 
-/**
- * Coarse per-section row estimate used to derive a scroll offset that
- * keeps the focused section on screen. Need not be pixel-exact — it only
- * has to advance the scroll surface as focus moves down the ring.
- */
-const APPROX_SECTION_ROWS = 6;
-
 /** Contribution detail view component. */
 export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(function DetailView({
   provider,
@@ -180,16 +173,57 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     ? present[focusedIndexAmongPresent]
     : undefined;
 
-  // Coarse scroll offset: advance the surface as the focused section moves
-  // down the ring so the active section stays visible. Need not be exact.
-  const scrollTop = focusedIndexAmongPresent * APPROX_SECTION_ROWS;
+  // Scroll-into-view: sum the ESTIMATED rendered height of every present
+  // section ABOVE the focused one, so the focused section is scrolled to the
+  // top of the viewport. A fixed per-section estimate fails here because this
+  // view renders full (untruncated) descriptions/context — a long Summary can
+  // be hundreds of rows, so a constant offset would leave the focused section
+  // far offscreen. Line counts are a cheap proxy for rendered height (markdown
+  // may wrap longer, but the offset stays proportional to content above).
+  const countLines = (s: string | undefined): number => (s ? s.split("\n").length : 0);
+  const estimateSectionRows = (key: SectionKey): number => {
+    const TITLE_AND_MARGIN = 2;
+    switch (key) {
+      case "summary":
+        return (
+          TITLE_AND_MARGIN + countLines(summary) + (description ? countLines(description) + 1 : 0)
+        );
+      case "scores":
+        return TITLE_AND_MARGIN + Object.keys(scores ?? {}).length;
+      case "relations":
+        return TITLE_AND_MARGIN + (relations ?? []).length;
+      case "artifacts":
+        return TITLE_AND_MARGIN + Object.keys(artifacts).length;
+      case "ancestors":
+        return TITLE_AND_MARGIN + ancestors.length;
+      case "children":
+        return TITLE_AND_MARGIN + children.length;
+      case "discussion":
+        return TITLE_AND_MARGIN + Math.max(0, thread.length - 1);
+      case "context":
+        return (
+          TITLE_AND_MARGIN + countLines(context ? JSON.stringify(context, null, 2) : undefined)
+        );
+    }
+  };
+  const scrollTop = present
+    .slice(0, focusedIndexAmongPresent)
+    .reduce((sum, key) => sum + estimateSectionRows(key), 0);
 
   // Accent treatment for the focused section: a single-line border in the
-  // focus color plus a ">" title marker. Non-focused sections get nothing.
-  // During the focus-change pulse the border flashes to the warning accent.
+  // focus color plus a ">" title marker. During the focus-change pulse the
+  // border flashes to the warning accent. `border` is controlled EXPLICITLY
+  // (true/false) on every section: OpenTUI's BoxRenderable keeps its internal
+  // `border` flag set once a box has been bordered, and clearing only
+  // borderStyle/borderColor does not unset it — so omitting border props on
+  // unfocused sections would leave stale borders accumulating as focus moves.
   const focusBorderColor = pulse ? theme.warning : theme.focus;
-  const sectionProps = (key: SectionKey): { borderStyle?: "single"; borderColor?: string } =>
-    key === focusedKey ? { borderStyle: "single", borderColor: focusBorderColor } : {};
+  const sectionProps = (
+    key: SectionKey,
+  ): { border: boolean; borderStyle?: "single"; borderColor?: string } =>
+    key === focusedKey
+      ? { border: true, borderStyle: "single", borderColor: focusBorderColor }
+      : { border: false };
   const titlePrefix = (key: SectionKey): string => (key === focusedKey ? "> " : "");
 
   return (

@@ -45,11 +45,16 @@ function hasType(json: unknown, type: string): boolean {
   return (n.children ?? []).some((c) => hasType(c, type));
 }
 
-/** Collect every node carrying a border (focus accent) keyed by its text. */
+/**
+ * Collect every node that is ACTUALLY bordered (focus accent) keyed by its
+ * text. Sections now always carry an explicit `border` prop (true/false) so a
+ * stale border can't accumulate; "bordered" therefore means `border === true`
+ * (with a single-line style), not merely "border prop present".
+ */
 function findBorderedTextBlocks(json: unknown, out: string[]): void {
   if (!json || typeof json !== "object") return;
   const n = json as TestNode;
-  if (n.props && (n.props.borderStyle !== undefined || n.props.border !== undefined)) {
+  if (n.props && (n.props.border === true || n.props.borderStyle === "single")) {
     out.push(textOf(n));
   }
   for (const c of n.children ?? []) findBorderedTextBlocks(c, out);
@@ -261,6 +266,82 @@ describe("detail view (#192)", () => {
       );
     });
     expect(renderer.toJSON()).toBeDefined();
+    renderer.unmount();
+  });
+
+  // Regression (F4 / round-3 review): moving focus on the SAME renderer must
+  // move the border, not accumulate it. Every section carries an explicit
+  // `border` prop, so the previously focused section's border is cleared.
+  test("focus move on the same renderer clears the old section's border", async () => {
+    const detail = longContribution({
+      scores: { accuracy: { value: 0.9, direction: "maximize" } },
+    });
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <DetailView
+            provider={makeDetailProvider(detail)}
+            cid="c1"
+            intervalMs={0}
+            focusedSectionRaw={0}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const before: string[] = [];
+    findBorderedTextBlocks(renderer.toJSON(), before);
+    expect(before.join("\n")).toContain("Summary");
+
+    await act(async () => {
+      renderer.update(
+        (
+          <DetailView
+            provider={makeDetailProvider(detail)}
+            cid="c1"
+            intervalMs={0}
+            focusedSectionRaw={1}
+          />
+        ) as React.ReactElement,
+      );
+    });
+    const after: string[] = [];
+    findBorderedTextBlocks(renderer.toJSON(), after);
+    expect(after.join("\n")).toContain("Scores");
+    // The border MOVED — Summary is no longer the bordered (focused) section.
+    expect(after.join("\n")).not.toContain("Summary");
+    renderer.unmount();
+  });
+
+  // Regression (F5 / round-3 review): scroll offset must be content-aware. A
+  // long Summary (rendered in full) must push the focused Scores section's
+  // scrollTop well past a small constant, or it would be offscreen.
+  test("scrollTop is derived from content height so a long summary scrolls to the focused section", async () => {
+    const longDesc = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+    const detail = longContribution({
+      description: longDesc,
+      scores: { accuracy: { value: 0.9, direction: "maximize" } },
+    });
+    const renderer = await renderDetail(detail, 1); // focus "Scores" (after the long Summary)
+    const findNode = (json: unknown, type: string): TestNode | undefined => {
+      if (!json || typeof json !== "object") return undefined;
+      const n = json as TestNode;
+      if (n.type === type) return n;
+      for (const c of n.children ?? []) {
+        const f = findNode(c, type);
+        if (f) return f;
+      }
+      return undefined;
+    };
+    const scrollbox = findNode(renderer.toJSON(), "scrollbox");
+    const scrollTop = Number(scrollbox?.props?.scrollTop ?? 0);
+    // Old fixed estimate would be 6; content-aware offset must clear the
+    // ~200-line summary to reach Scores.
+    expect(scrollTop).toBeGreaterThan(150);
     renderer.unmount();
   });
 });
