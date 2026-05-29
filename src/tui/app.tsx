@@ -15,16 +15,16 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { TUI_REFRESH_ROLE } from "../core/event-bus.js";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { resolveAnswerableQuestion } from "./actions/answer-guard.js";
+import { buildBuiltInActions } from "./actions/builtin-actions.js";
+import { buildPluginActions } from "./actions/plugin-adapter.js";
+import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
+import { resolveSelectedCid } from "./actions/selection.js";
+import { computeVisibleActions } from "./actions/visibility.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
-import {
-  buildPaletteItems,
-  buildPluginPaletteItems,
-  CommandPalette,
-  fuzzyMatch,
-  getBuiltInPaletteActionRegistryEntries,
-} from "./components/command-palette.js";
+import { CommandPalette } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
@@ -48,13 +48,12 @@ import {
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
-import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
+import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
-import { runTuiActionRegistration } from "./plugins/actions.js";
 import {
   collectTuiActionRegistrations,
   collectTuiPanelRegistrations,
@@ -249,7 +248,7 @@ export function App({
   const mergedActionRegistry = useMemo(
     () =>
       mergeTuiActionRegistrations({
-        builtIns: getBuiltInPaletteActionRegistryEntries(),
+        builtIns: getReservedActionRegistryEntries(),
         plugins: pluginActionRegistrations,
       }),
     [pluginActionRegistrations],
@@ -461,6 +460,28 @@ export function App({
     paletteVisible,
   );
 
+  // Poll pending questions for the answer-question palette actions. We carry
+  // the cids (not just the count) so the approve/deny actions can pin the exact
+  // question they were shown for and revalidate it at execution time.
+  const pendingQuestionsFetcher = useCallback(async (): Promise<readonly { cid: string }[]> => {
+    const askProvider = provider as unknown as {
+      getPendingQuestions?: () => Promise<readonly { cid: string }[]>;
+    };
+    if (!askProvider.getPendingQuestions) return [];
+    try {
+      return await askProvider.getPendingQuestions();
+    } catch {
+      return [];
+    }
+  }, [provider]);
+  const { data: pendingQuestions, refresh: refreshPendingQuestions } = useEventDrivenData<
+    readonly { cid: string }[]
+  >(pendingQuestionsFetcher, undefined, undefined, paletteVisible);
+  const pendingQuestionCount = pendingQuestions?.length ?? 0;
+  // The single pending question's cid (only when exactly one) — pins the
+  // approve/deny target so a concurrent add/remove can't redirect the answer.
+  const pendingQuestionCid = pendingQuestions?.length === 1 ? pendingQuestions[0]?.cid : undefined;
+
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
 
@@ -543,6 +564,7 @@ export function App({
     refreshPR();
     refreshDashboard();
     refreshGossip();
+    refreshPendingQuestions();
     refreshProfiles();
     refreshTerminalBuffers();
   }, [
@@ -553,6 +575,7 @@ export function App({
     refreshPR,
     refreshDashboard,
     refreshGossip,
+    refreshPendingQuestions,
     refreshProfiles,
     refreshTerminalBuffers,
   ]);
@@ -587,54 +610,6 @@ export function App({
   }, [eventBus, topology, provider, triggerGlobalRefresh]);
 
   const hasGoals = isGoalProvider(provider);
-  const corePaletteItems = useMemo(
-    () =>
-      buildPaletteItems(
-        topology,
-        activeClaims ?? [],
-        paletteSessions ?? [],
-        tmux !== undefined,
-        canSpawn,
-        true,
-        paletteParentId,
-        canDelegate ? (gossipPeers ?? undefined) : undefined,
-        agentProfiles ?? undefined,
-        hasGoals,
-      ),
-    [
-      topology,
-      activeClaims,
-      paletteSessions,
-      tmux,
-      canSpawn,
-      canDelegate,
-      paletteParentId,
-      gossipPeers,
-      agentProfiles,
-      hasGoals,
-    ],
-  );
-  const pluginPaletteItems = useMemo(
-    () => buildPluginPaletteItems(mergedActionRegistry.entries, pluginContext),
-    [mergedActionRegistry.entries, pluginContext],
-  );
-  const paletteItems = useMemo(
-    () => [...corePaletteItems, ...pluginPaletteItems],
-    [corePaletteItems, pluginPaletteItems],
-  );
-
-  // Filtered + ranked palette items — matches CommandPalette's rendering order
-  // so Enter always executes the visually selected item.
-  const filteredPaletteItems = useMemo(() => {
-    const q = ks.paletteQuery.trim();
-    if (!q) return paletteItems;
-    const ranked = paletteItems
-      .map((item) => ({ item, score: fuzzyMatch(q, item.label) }))
-      .filter((r) => r.score.match)
-      .sort((a, b) => b.score.score - a.score.score)
-      .map((r) => r.item);
-    return ranked;
-  }, [paletteItems, ks.paletteQuery]);
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
     if (!contributions) return;
@@ -686,6 +661,38 @@ export function App({
       showError(err instanceof Error ? err.message : "Failed to answer");
     }
   }, [provider, nav.state.cursor, showError]);
+
+  const answerPendingQuestion = useCallback(
+    async (verdict: "approve" | "deny", expectedCid?: string) => {
+      const askProvider = provider as unknown as {
+        answerQuestion?: (cid: string, answer: string) => Promise<void>;
+        getPendingQuestions?: () => Promise<
+          readonly { cid: string; options?: readonly string[] }[]
+        >;
+      };
+      if (!askProvider.answerQuestion || !askProvider.getPendingQuestions) return;
+      try {
+        // Re-fetch and revalidate: blind-answering is only safe when exactly one
+        // question remains AND it is the same one the action was shown for. A
+        // concurrent add/remove/replace between palette render and Enter aborts
+        // here and routes the operator to the Decisions panel instead.
+        const questions = await askProvider.getPendingQuestions();
+        const selected = resolveAnswerableQuestion(questions, expectedCid);
+        if (!selected) {
+          showError("Pending questions changed — review them in the Decisions panel");
+          if (panels.isVisible(Panel.Decisions)) panels.focus(Panel.Decisions);
+          else panels.toggle(Panel.Decisions);
+          return;
+        }
+        const answer = verdict === "approve" ? (selected.options?.[0] ?? "Approved") : "Denied";
+        await askProvider.answerQuestion(selected.cid, answer);
+        showError(`Answered: ${answer}`);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Failed to answer");
+      }
+    },
+    [provider, showError, panels],
+  );
 
   /** Send a message via the boardroom API or local provider. */
   const sendTuiMessage = useCallback(
@@ -854,16 +861,224 @@ export function App({
     [showError, spawnManager],
   );
 
+  const registerAgentProfile = useCallback(() => {
+    void (async () => {
+      try {
+        const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const dir = resolve(process.cwd(), ".grove");
+        const path = resolve(dir, "agents.json");
+        if (!existsSync(path)) {
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          const template = JSON.stringify(
+            {
+              profiles: [
+                {
+                  name: "@agent-1",
+                  role: topology?.roles[0]?.name ?? "worker",
+                  platform: "claude-code",
+                  command: "claude --dangerously-skip-permissions",
+                },
+              ],
+            },
+            null,
+            2,
+          );
+          writeFileSync(path, template);
+          showError(`Created ${path} — edit to add agent profiles`);
+        } else {
+          showError(
+            `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
+          );
+        }
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Registration failed");
+      }
+    })();
+  }, [topology, agentProfiles, showError]);
+
   const handleCommandPaletteClose = useCallback(() => {
     dispatch({ type: "ADOPT_CLEAR" });
     panels.setMode(InputMode.Normal);
     dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
 
+  const mkPluginCtx = useCallback(
+    (ctx: import("./actions/types.js").ActionContext): TuiPluginContext => ({
+      // Keep the narrow plugin surface but hand plugins the panel-aware
+      // selection, not the detail-only cid baked into pluginContext.
+      ...pluginContext,
+      selectedCid: ctx.selectedCid,
+    }),
+    [pluginContext],
+  );
+
+  const actionContext = useMemo<import("./actions/types.js").ActionContext>(
+    () => ({
+      topology,
+      sessions: paletteSessions ?? [],
+      profiles: agentProfiles ?? [],
+      gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
+      claims: activeClaims,
+      selectedSession,
+      // Strict focused-panel selection (see resolveSelectedCid): Frontier row,
+      // or the open Detail, else undefined. No cross-panel detail fallback —
+      // focusing Terminal/Activity/DAG must NOT keep contribution (or plugin)
+      // actions acting on a stale open detail.
+      selectedCid: resolveSelectedCid({
+        focusedPanel: panels.state.focused,
+        cursor: nav.state.cursor,
+        frontierEntries: frontierEntriesRef.current,
+        detailCid: nav.detailCid,
+      }),
+      detailCid: nav.detailCid,
+      parentAgentId: paletteParentId,
+      pendingQuestionCount,
+      pendingQuestionCid,
+      hasGoals,
+      canSpawn,
+      canDelegate,
+      isPanelVisible: (panel) => panels.isVisible(panel),
+      focusedPanel: panels.state.focused,
+      frontierSliceCount: ks.frontierTabKeys.length,
+      focusPanel: (panel) => panels.focus(panel),
+      togglePanel: (panel) => panels.toggle(panel),
+      cyclePanelNext: () => panels.cycleNext(),
+      cyclePanelPrev: () => panels.cyclePrev(),
+      openContribution: (cid) => nav.pushDetail(cid),
+      jumpToSession: (session) => {
+        setSelectedSession(session);
+        // Reveal the Terminal panel (focus if already shown; toggle would hide).
+        if (panels.isVisible(Panel.Terminal)) panels.focus(Panel.Terminal);
+        else panels.toggle(Panel.Terminal);
+      },
+      enterGoalMode: () => {
+        panels.setMode(InputMode.GoalInput);
+        dispatch({ type: "GOAL_INPUT_MODE" });
+      },
+      // Idempotent ENTRY: only toggle when compare mode is off. Wiring straight
+      // to COMPARE_TOGGLE would turn compare OFF if invoked while already on.
+      enterCompareMode: () => {
+        if (!ks.compareMode) dispatch({ type: "COMPARE_TOGGLE" });
+      },
+      addToCompare: (cid) => {
+        // Entering compare mode clears compareCids, so if it is currently off
+        // we must toggle it ON first, then select — otherwise the operator's
+        // later COMPARE_TOGGLE would wipe the cid added here.
+        if (!ks.compareMode) dispatch({ type: "COMPARE_TOGGLE" });
+        dispatch({ type: "COMPARE_SELECT", cid });
+      },
+      adoptContribution: (cid) => {
+        // Resolve the row summary the same way the Frontier 'a' / compare-adopt
+        // paths do, so palette-adopt carries it into the spawned agent context
+        // (handleSpawn reads ks.adoptContext.summary). Empty string would spawn
+        // with a blank adoptSummary.
+        const summary =
+          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
+          contributionList.find((c) => c.cid === cid)?.summary ??
+          "";
+        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+        panels.setMode(InputMode.CommandPalette);
+      },
+      answerPendingQuestion: (verdict, expectedCid) =>
+        void answerPendingQuestion(verdict, expectedCid),
+      registerAgentProfile,
+      spawn: (roleId, command, parentAgentId) =>
+        handleSpawn(roleId, command, "HEAD", parentAgentId),
+      kill: (session) => handleKill(session),
+      delegate: (peerAddress) => void handleDelegate(peerAddress),
+      broadcastMessage: () => {
+        dispatch({ type: "BROADCAST_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      directMessage: () => {
+        dispatch({ type: "DIRECT_MESSAGE_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      refresh: refreshAll,
+      enterSearch: () => {
+        // Reveal + focus the Search panel before entering input mode — otherwise
+        // the user types into an invisible buffer (the keyboard '/' path relies
+        // on the panel already being visible). toggle adds-and-focuses when
+        // hidden; focus when already shown (toggle would hide it).
+        if (panels.isVisible(Panel.Search)) panels.focus(Panel.Search);
+        else panels.toggle(Panel.Search);
+        dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
+        panels.setMode(InputMode.SearchInput);
+      },
+      cycleZoom: () => dispatch({ type: "ZOOM_CYCLE" }),
+      resetZoom: () => dispatch({ type: "ZOOM_RESET" }),
+      toggleLayout: () => dispatch({ type: "LAYOUT_TOGGLE" }),
+      cycleViewMode: () => panels.cycleViewMode(),
+      showHelp: () => panels.setMode(InputMode.Help),
+      quit: handleQuit,
+      // Mirror the keyboard frontier-slice handlers: rotate slice, reset the
+      // cursor, and synchronously clear the entry/cid refs so a follow-up
+      // adopt/select reads the new slice (see onFrontierTabNext).
+      nextFrontierSlice: () => {
+        dispatch({ type: "FRONTIER_SLICE_NEXT" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      prevFrontierSlice: () => {
+        dispatch({ type: "FRONTIER_SLICE_PREV" });
+        nav.resetCursor();
+        frontierEntriesRef.current = [];
+        frontierCidsRef.current = [];
+      },
+      scrollTerminalToBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
+      showMessage: showError,
+    }),
+    [
+      topology,
+      paletteSessions,
+      agentProfiles,
+      gossipPeers,
+      canDelegate,
+      activeClaims,
+      selectedSession,
+      nav,
+      paletteParentId,
+      pendingQuestionCount,
+      pendingQuestionCid,
+      hasGoals,
+      canSpawn,
+      panels,
+      contributionList,
+      nav.state.cursor,
+      ks.frontierTabKeys,
+      ks.searchQuery,
+      ks.compareMode,
+      answerPendingQuestion,
+      registerAgentProfile,
+      handleSpawn,
+      handleKill,
+      handleDelegate,
+      refreshAll,
+      handleQuit,
+      showError,
+    ],
+  );
+
+  const paletteActions = useMemo(
+    () => [
+      ...buildBuiltInActions(actionContext),
+      ...buildPluginActions(mergedActionRegistry.entries, mkPluginCtx),
+    ],
+    [actionContext, mergedActionRegistry.entries, mkPluginCtx],
+  );
+
+  const visiblePaletteActions = useMemo(
+    () => computeVisibleActions(paletteActions, actionContext, ks.paletteQuery),
+    [paletteActions, actionContext, ks.paletteQuery],
+  );
+
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
-  // Complex palette execution (spawn/kill/register/delegate) and paste safety
-  // remain here because they need closure access to spawnManager, etc.
+  // Palette execution now runs through `actionContext`/`action.run`; the paste-
+  // safety path and other handlers remain here for closure access to
+  // spawnManager, etc.
   // ---------------------------------------------------------------------------
 
   const keyboardActions: KeyboardActions = useMemo(
@@ -1001,68 +1216,22 @@ export function App({
       onPaletteChar: (char: string) => dispatch({ type: "PALETTE_CHAR", char }),
       onPaletteBackspace: () => dispatch({ type: "PALETTE_BACKSPACE" }),
       onPaletteSelect: () => {
-        const item = filteredPaletteItems[ks.paletteIndex];
-        if (!item?.enabled) return;
-        if (item.kind === "spawn") {
-          const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
-          const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
-          const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
-          handleSpawn(item.id, shell, "HEAD", paletteParentId);
-        } else if (item.kind === "kill") {
-          handleKill(item.id);
-        } else if (item.kind === "register") {
-          void (async () => {
-            try {
-              const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
-              const { resolve } = await import("node:path");
-              const dir = resolve(process.cwd(), ".grove");
-              const path = resolve(dir, "agents.json");
-              if (!existsSync(path)) {
-                if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-                const template = JSON.stringify(
-                  {
-                    profiles: [
-                      {
-                        name: "@agent-1",
-                        role: topology?.roles[0]?.name ?? "worker",
-                        platform: "claude-code",
-                        command: "claude --dangerously-skip-permissions",
-                      },
-                    ],
-                  },
-                  null,
-                  2,
-                );
-                writeFileSync(path, template);
-                showError(`Created ${path} — edit to add agent profiles`);
-              } else {
-                showError(
-                  `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
-                );
-              }
-            } catch (err) {
-              showError(err instanceof Error ? err.message : "Registration failed");
-            }
-          })();
-        } else if (item.kind === "delegate") {
-          void handleDelegate(item.id);
-        } else if (item.kind === "plugin-action" && item.pluginAction !== undefined) {
-          void runTuiActionRegistration(item.pluginAction, pluginContext).catch((err: unknown) => {
-            showError(err instanceof Error ? err.message : "Plugin action failed");
-          });
-        } else if (item.kind === "goal") {
-          panels.setMode(InputMode.GoalInput);
-          dispatch({ type: "GOAL_INPUT_MODE" });
-          dispatch({ type: "PALETTE_RESET" });
-          return;
-        }
+        const entry = visiblePaletteActions[ks.paletteIndex];
+        if (!entry) return;
+        const action = entry.action;
+        if (!(action.enabled?.(actionContext) ?? true)) return;
+        // Close the palette FIRST. Mode-switching actions (goal, compare, adopt)
+        // re-set their target mode inside run, landing after this Normal set.
         panels.setMode(InputMode.Normal);
         dispatch({ type: "PALETTE_RESET" });
+        void Promise.resolve(action.run(actionContext)).catch((err: unknown) => {
+          showError(err instanceof Error ? err.message : "Action failed");
+        });
       },
       onSelect: handleSelect,
       rowCount,
       pageSize: PAGE_SIZE,
-      paletteItemCount: filteredPaletteItems.length,
+      paletteItemCount: visiblePaletteActions.length,
       compareMode: ks.compareMode,
       frontierCids: () => frontierCidsRef.current,
       selectedSession,
@@ -1109,15 +1278,13 @@ export function App({
       handleSelect,
       handleApproveQuestion,
       handleDenyQuestion,
-      handleSpawn,
-      handleKill,
-      handleDelegate,
       sendTuiMessage,
       showError,
       tmux,
       selectedSession,
       rowCount,
-      filteredPaletteItems,
+      visiblePaletteActions,
+      actionContext,
       ks.compareMode,
       ks.compareCids,
       ks.searchQuery,
@@ -1126,10 +1293,6 @@ export function App({
       ks.goalBuffer,
       ks.paletteIndex,
       contributionList,
-      agentProfiles,
-      topology,
-      paletteParentId,
-      pluginContext,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
@@ -1172,17 +1335,10 @@ export function App({
           >
             <CommandPalette
               visible={paletteVisible}
-              tmux={tmux}
-              onClose={handleCommandPaletteClose}
-              onSpawn={handleSpawn}
-              onKill={handleKill}
-              topology={topology}
-              activeClaims={activeClaims ?? undefined}
-              selectedIndex={ks.paletteIndex}
-              sessions={paletteSessions ?? undefined}
-              parentAgentId={paletteParentId}
-              items={paletteItems}
+              actions={paletteActions}
+              ctx={actionContext}
               query={ks.paletteQuery}
+              selectedIndex={ks.paletteIndex}
               adoptContext={ks.adoptContext}
             />
           </box>

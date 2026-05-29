@@ -1,9 +1,8 @@
-// src/tui/components/command-palette.test.tsx
 import { describe, expect, test } from "bun:test";
-import type { Action, ActionContext } from "../actions/types.js";
-import { computeVisibleActions } from "../actions/visibility.js";
-import { fuzzyMatch } from "./command-palette.js";
+import type { Action, ActionContext } from "./types.js";
+import { computeVisibleActions } from "./visibility.js";
 
+// Minimal ctx — only fields read by these actions matter.
 function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
   return {
     sessions: [],
@@ -49,22 +48,36 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     ...overrides,
   };
 }
+
 function act(o: Partial<Action> & Pick<Action, "id" | "group">): Action {
   return { label: o.id, detail: "", run: () => undefined, ...o };
 }
 
-describe("command palette model", () => {
-  test("fuzzyMatch still scores word-boundary bonuses", () => {
-    expect(fuzzyMatch("ft", "Focus Terminal").match).toBe(true);
-    expect(fuzzyMatch("zzz", "Focus Terminal").match).toBe(false);
-  });
-
-  test("visible list is the flat selection index space", () => {
-    const actions = [
-      act({ id: "n1", group: "Navigation", label: "nav" }),
-      act({ id: "a1", group: "Agents", label: "agent" }),
+describe("computeVisibleActions", () => {
+  test("no query: hides unavailable, orders by group", () => {
+    const actions: Action[] = [
+      act({ id: "p1", group: "Plugins", label: "plugin one" }),
+      act({ id: "n1", group: "Navigation", label: "nav one" }),
+      act({ id: "hidden", group: "Agents", label: "hidden", available: () => false }),
     ];
     const visible = computeVisibleActions(actions, ctx(), "");
-    expect(visible.map((v) => v.action.id)).toEqual(["n1", "a1"]);
+    expect(visible.map((v) => v.action.id)).toEqual(["n1", "p1"]);
+    expect(visible[0]?.matchedIndices).toEqual([]);
+  });
+
+  test("query: flat ranked, matches label or keywords", () => {
+    const actions: Action[] = [
+      act({ id: "terminal", group: "Navigation", label: "Focus Terminal" }),
+      act({ id: "vfs", group: "Navigation", label: "Focus VFS", keywords: ["files"] }),
+    ];
+    const visible = computeVisibleActions(actions, ctx(), "files");
+    expect(visible.map((v) => v.action.id)).toEqual(["vfs"]);
+  });
+
+  test("query: still respects available()", () => {
+    const actions: Action[] = [
+      act({ id: "x", group: "Workflow", label: "answer question", available: () => false }),
+    ];
+    expect(computeVisibleActions(actions, ctx(), "answer")).toHaveLength(0);
   });
 });
