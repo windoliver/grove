@@ -998,142 +998,111 @@ describe("routeKey — Frontier panel slice nav + adopt", () => {
 // ---------------------------------------------------------------------------
 
 describe("routeKey — detail view section navigation", () => {
-  test("j calls onDetailSectionNext (not nav.cursorDown) when isDetailView is true", () => {
-    const { actions, log } = mockActions({ isDetailView: true });
-    const handled = routeKey(keyEvent("j"), actions);
-    expect(handled).toBe(true);
+  // Detail section nav fires ONLY when the Detail panel is FOCUSED (i.e. the
+  // DetailView is the visible panel). `isDetailView` alone is insufficient: in
+  // the default tab layout only the focused panel renders, and opening a
+  // contribution pushes a detail CID WITHOUT focusing Detail — so routing on
+  // isDetailView would mutate a hidden detail while another panel is on screen.
+  test("j moves the detail section when the Detail panel is focused", () => {
+    const { actions, log } = mockActions({ isDetailView: true, focused: Panel.Detail });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionNext");
     expect(log.calls).not.toContain("nav.cursorDown");
   });
 
-  test("down arrow calls onDetailSectionNext when isDetailView is true", () => {
-    const { actions, log } = mockActions({ isDetailView: true });
-    const handled = routeKey(keyEvent("down"), actions);
-    expect(handled).toBe(true);
+  test("down arrow moves the detail section when Detail is focused", () => {
+    const { actions, log } = mockActions({ isDetailView: true, focused: Panel.Detail });
+    expect(routeKey(keyEvent("down"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionNext");
-    expect(log.calls).not.toContain("nav.cursorDown");
   });
 
-  test("k calls onDetailSectionPrev (not nav.cursorUp) when isDetailView is true", () => {
-    const { actions, log } = mockActions({ isDetailView: true });
-    const handled = routeKey(keyEvent("k"), actions);
-    expect(handled).toBe(true);
+  test("k moves the detail section backward when Detail is focused", () => {
+    const { actions, log } = mockActions({ isDetailView: true, focused: Panel.Detail });
+    expect(routeKey(keyEvent("k"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionPrev");
     expect(log.calls).not.toContain("nav.cursorUp");
   });
 
-  test("up arrow calls onDetailSectionPrev when isDetailView is true", () => {
-    const { actions, log } = mockActions({ isDetailView: true });
-    const handled = routeKey(keyEvent("up"), actions);
-    expect(handled).toBe(true);
+  test("up arrow moves the detail section backward when Detail is focused", () => {
+    const { actions, log } = mockActions({ isDetailView: true, focused: Panel.Detail });
+    expect(routeKey(keyEvent("up"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionPrev");
-    expect(log.calls).not.toContain("nav.cursorUp");
   });
 
-  test("j calls nav.cursorDown (not onDetailSectionNext) when isDetailView is false", () => {
-    const { actions, log } = mockActions({ isDetailView: false, rowCount: 5 });
-    const handled = routeKey(keyEvent("j"), actions);
-    expect(handled).toBe(true);
+  test("j moves the row cursor (not section) when Detail is focused but isDetailView is false", () => {
+    // Detail panel focused but showing its dashboard (no contribution opened):
+    // j/k move the dashboard row cursor, not detail sections.
+    const { actions, log } = mockActions({
+      isDetailView: false,
+      focused: Panel.Detail,
+      rowCount: 5,
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
     expect(log.calls).toContain("nav.cursorDown");
     expect(log.calls).not.toContain("onDetailSectionNext");
   });
 
-  test("k calls nav.cursorUp (not onDetailSectionPrev) when isDetailView is false", () => {
-    const { actions, log } = mockActions({ isDetailView: false });
-    const handled = routeKey(keyEvent("k"), actions);
-    expect(handled).toBe(true);
-    expect(log.calls).toContain("nav.cursorUp");
-    expect(log.calls).not.toContain("onDetailSectionPrev");
-  });
-
-  // Regression (C1): with the REAL resolved keymap, the default j->cursor_down /
-  // k->cursor_up bindings run executeKeymapAction BEFORE the hardcoded detail
-  // fallback. Without the detail guard inside executeKeymapAction, j/k in the
-  // detail overlay would call nav.cursorDown/cursorUp (production bug). These
-  // tests exercise the production path by passing resolvedKeymap.
-  test("j under resolved default keymap calls onDetailSectionNext when isDetailView is true", () => {
+  // Regression (C1): under the REAL resolved keymap, j/k bound to
+  // cursor_down/up must still reach detail-section nav when the Detail panel is
+  // focused — the focused-Detail guard runs BEFORE the keymap dispatch.
+  test("j under resolved default keymap moves the section when Detail is focused", () => {
     const { actions, log } = mockActions({
       isDetailView: true,
+      focused: Panel.Detail,
       resolvedKeymap: resolveBuiltinKeymap("default"),
     });
-    const handled = routeKey(keyEvent("j"), actions);
-    expect(handled).toBe(true);
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionNext");
     expect(log.calls).not.toContain("nav.cursorDown");
   });
 
-  test("k under resolved default keymap calls onDetailSectionPrev when isDetailView is true", () => {
+  test("k under resolved default keymap moves the section backward when Detail is focused", () => {
     const { actions, log } = mockActions({
       isDetailView: true,
+      focused: Panel.Detail,
       resolvedKeymap: resolveBuiltinKeymap("default"),
     });
-    const handled = routeKey(keyEvent("k"), actions);
-    expect(handled).toBe(true);
+    expect(routeKey(keyEvent("k"), actions)).toBe(true);
     expect(log.calls).toContain("onDetailSectionPrev");
     expect(log.calls).not.toContain("nav.cursorUp");
   });
 
-  test("j/k under resolved default keymap still navigate cursor when isDetailView is false", () => {
-    const { actions: aj, log: lj } = mockActions({
-      isDetailView: false,
-      rowCount: 5,
-      resolvedKeymap: resolveBuiltinKeymap("default"),
-    });
-    expect(routeKey(keyEvent("j"), aj)).toBe(true);
-    expect(lj.calls).toContain("nav.cursorDown");
-    expect(lj.args["nav.cursorDown"]).toEqual([4]); // rowCount - 1
-    expect(lj.calls).not.toContain("onDetailSectionNext");
-
-    const { actions: ak, log: lk } = mockActions({
-      isDetailView: false,
-      resolvedKeymap: resolveBuiltinKeymap("default"),
-    });
-    expect(routeKey(keyEvent("k"), ak)).toBe(true);
-    expect(lk.calls).toContain("nav.cursorUp");
-    expect(lk.calls).not.toContain("onDetailSectionPrev");
-  });
-
-  // Regression (F3 / round-1 review): detail view is MODAL for section nav.
-  // When detail is open but a non-Detail panel still holds focus, the panel's
-  // keymap layer must NOT steal j/k. With Terminal focused, the default keymap
-  // binds j/k -> terminal_scroll_down/up in the panel layer; the modal guard
-  // (placed before the keymap dispatch) must redirect them to section nav.
-  test("j/k redirect to detail section nav even when Terminal panel is focused", () => {
-    const { actions, log } = mockActions({
-      isDetailView: true,
-      focused: Panel.Terminal,
-      resolvedKeymap: resolveBuiltinKeymap("default"),
-    });
-    expect(routeKey(keyEvent("j"), actions)).toBe(true);
-    expect(log.calls).toContain("onDetailSectionNext");
-    expect(log.calls).not.toContain("onTerminalScrollDown");
-
-    const { actions: ak, log: lk } = mockActions({
-      isDetailView: true,
-      focused: Panel.Terminal,
-      resolvedKeymap: resolveBuiltinKeymap("default"),
-    });
-    expect(routeKey(keyEvent("k"), ak)).toBe(true);
-    expect(lk.calls).toContain("onDetailSectionPrev");
-    expect(lk.calls).not.toContain("onTerminalScrollUp");
-  });
-
-  test("j redirects to detail section nav even when Artifact panel is focused", () => {
-    const { actions, log } = mockActions({
-      isDetailView: true,
-      focused: Panel.Artifact,
-      resolvedKeymap: resolveBuiltinKeymap("default"),
-    });
-    expect(routeKey(keyEvent("j"), actions)).toBe(true);
-    expect(log.calls).toContain("onDetailSectionNext");
-  });
-
-  test("detail modal guard does NOT swallow a mid-sequence leader prefix", () => {
-    // While a Space-leader prefix is pending, j must continue the keymap
-    // sequence (or miss), NOT be eaten by the detail modal guard.
+  // Regression (F9 / round-7 review): detail nav must NOT hijack a VISIBLE
+  // non-Detail panel. With a detail CID pushed but DAG focused (tab layout
+  // renders DAG, not Detail), j/k move the DAG row cursor — not a hidden
+  // detail section.
+  test("j moves the DAG cursor (not detail) when DAG is focused with a detail CID pushed", () => {
     const { actions, log } = mockActions({
       isDetailView: true,
       focused: Panel.Dag,
+      rowCount: 5,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
+    expect(log.calls).toContain("nav.cursorDown");
+    expect(log.args["nav.cursorDown"]).toEqual([4]); // rowCount - 1
+    expect(log.calls).not.toContain("onDetailSectionNext");
+  });
+
+  // Regression (F9): with detail pushed but TERMINAL focused/visible, j scrolls
+  // the terminal (its panel-layer binding), NOT a hidden detail section.
+  test("j scrolls the terminal (not detail) when Terminal is focused with a detail CID pushed", () => {
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Terminal,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
+    expect(log.calls).toContain("onTerminalScrollDown");
+    expect(log.calls).not.toContain("onDetailSectionNext");
+  });
+
+  test("detail section guard does NOT swallow a mid-sequence leader prefix", () => {
+    // While a Space-leader prefix is pending (Detail focused), j must continue
+    // the keymap sequence, NOT be eaten by the detail-section guard.
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Detail,
       resolvedKeymap: resolveBuiltinKeymap("default"),
       keymapPrefix: ["space"],
     });

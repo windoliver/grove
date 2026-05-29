@@ -191,17 +191,11 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.onDenyQuestion();
       return true;
     case "cursor_down":
-      if (actions.nav.isDetailView) {
-        actions.onDetailSectionNext();
-        return true;
-      }
+      // Detail-section nav is handled by the focused-Detail guard in routeKey
+      // (before the keymap); here cursor_down always moves the row cursor.
       actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
       return true;
     case "cursor_up":
-      if (actions.nav.isDetailView) {
-        actions.onDetailSectionPrev();
-        return true;
-      }
       actions.nav.cursorUp();
       return true;
     case "select":
@@ -427,14 +421,21 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Detail overlay is MODAL for section navigation: intercept j/k/arrows
-  // BEFORE the resolved keymap so panel-specific bindings (e.g.
-  // terminal_scroll_down/up, bound to j/k in the Terminal layer) cannot steal
-  // them when a non-Detail panel retains focus while detail is open. Opening
-  // detail only pushes nav state — it does not change panel focus — so without
-  // this guard the focused panel's keymap layer wins. Skipped while a leader
-  // prefix is mid-sequence so Space-chords still resolve.
-  if (mode === InputMode.Normal && actions.nav.isDetailView && keymapPrefix.length === 0) {
+  // Detail section navigation: j/k/arrows move the focused detail section,
+  // intercepted BEFORE the resolved keymap so a panel-layer binding (e.g.
+  // terminal_scroll_down/up on j/k) can't steal them. Gated on the Detail
+  // panel actually being FOCUSED — `isDetailView` alone is insufficient
+  // because opening a contribution only pushes a detail CID and does not focus
+  // Detail; in the default tab layout only the focused panel is rendered, so
+  // routing on isDetailView would mutate a HIDDEN detail while the user looks
+  // at DAG/Terminal/Frontier. Skipped mid leader-prefix so Space-chords still
+  // resolve.
+  if (
+    mode === InputMode.Normal &&
+    actions.nav.isDetailView &&
+    focused === Panel.Detail &&
+    keymapPrefix.length === 0
+  ) {
     if (input === "j" || input === "down") {
       actions.onDetailSectionNext();
       return true;
@@ -640,18 +641,6 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
     return true;
-  }
-
-  // Detail overlay: j/k move the focused section (no row cursor in detail).
-  if (actions.nav.isDetailView) {
-    if (input === "j" || input === "down") {
-      actions.onDetailSectionNext();
-      return true;
-    }
-    if (input === "k" || input === "up") {
-      actions.onDetailSectionPrev();
-      return true;
-    }
   }
 
   // Within-panel navigation
