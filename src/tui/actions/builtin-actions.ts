@@ -278,7 +278,7 @@ function workflowActions(): readonly Action[] {
       group: "Workflow",
       keywords: ["answer", "approve", "question", "ask"],
       available: (c) => c.pendingQuestionCount === 1,
-      run: (c) => c.answerPendingQuestion("approve"),
+      run: (c) => c.answerPendingQuestion("approve", c.pendingQuestionCid),
     },
     {
       id: "workflow.deny-question",
@@ -287,7 +287,7 @@ function workflowActions(): readonly Action[] {
       group: "Workflow",
       keywords: ["answer", "deny", "question", "ask"],
       available: (c) => c.pendingQuestionCount === 1,
-      run: (c) => c.answerPendingQuestion("deny"),
+      run: (c) => c.answerPendingQuestion("deny", c.pendingQuestionCid),
     },
     {
       id: "workflow.review-questions",

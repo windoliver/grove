@@ -56,6 +56,8 @@ export interface ActionContext {
   readonly detailCid?: string | undefined;
   readonly parentAgentId?: string | undefined;
   readonly pendingQuestionCount: number;
+  /** CID of the sole pending question (only when exactly one) — pins approve/deny. */
+  readonly pendingQuestionCid?: string | undefined;
   readonly hasGoals: boolean;
   readonly canSpawn: boolean;
   readonly canDelegate: boolean;
@@ -77,7 +79,7 @@ export interface ActionContext {
   readonly addToCompare: (cid: string) => void;
   /** Begin adopting a contribution; the summary is resolved from the cid. */
   readonly adoptContribution: (cid: string) => void;
-  readonly answerPendingQuestion: (verdict: "approve" | "deny") => void;
+  readonly answerPendingQuestion: (verdict: "approve" | "deny", expectedCid?: string) => void;
   readonly registerAgentProfile: () => void;
   readonly spawn: (roleId: string, command: string, parentAgentId?: string) => void;
   readonly kill: (session: string) => void;

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { TUI_REFRESH_ROLE } from "../core/event-bus.js";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { resolveAnswerableQuestion } from "./actions/answer-guard.js";
 import { buildBuiltInActions } from "./actions/builtin-actions.js";
 import { buildPluginActions } from "./actions/plugin-adapter.js";
 import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
@@ -459,20 +460,27 @@ export function App({
     paletteVisible,
   );
 
-  // Poll pending questions for the answer-question palette actions.
-  const pendingQuestionsFetcher = useCallback(async (): Promise<number> => {
+  // Poll pending questions for the answer-question palette actions. We carry
+  // the cids (not just the count) so the approve/deny actions can pin the exact
+  // question they were shown for and revalidate it at execution time.
+  const pendingQuestionsFetcher = useCallback(async (): Promise<readonly { cid: string }[]> => {
     const askProvider = provider as unknown as {
-      getPendingQuestions?: () => Promise<readonly unknown[]>;
+      getPendingQuestions?: () => Promise<readonly { cid: string }[]>;
     };
-    if (!askProvider.getPendingQuestions) return 0;
+    if (!askProvider.getPendingQuestions) return [];
     try {
-      return (await askProvider.getPendingQuestions()).length;
+      return await askProvider.getPendingQuestions();
     } catch {
-      return 0;
+      return [];
     }
   }, [provider]);
-  const { data: pendingQuestionCount, refresh: refreshPendingQuestions } =
-    useEventDrivenData<number>(pendingQuestionsFetcher, undefined, undefined, paletteVisible);
+  const { data: pendingQuestions, refresh: refreshPendingQuestions } = useEventDrivenData<
+    readonly { cid: string }[]
+  >(pendingQuestionsFetcher, undefined, undefined, paletteVisible);
+  const pendingQuestionCount = pendingQuestions?.length ?? 0;
+  // The single pending question's cid (only when exactly one) — pins the
+  // approve/deny target so a concurrent add/remove can't redirect the answer.
+  const pendingQuestionCid = pendingQuestions?.length === 1 ? pendingQuestions[0]?.cid : undefined;
 
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
@@ -655,7 +663,7 @@ export function App({
   }, [provider, nav.state.cursor, showError]);
 
   const answerPendingQuestion = useCallback(
-    async (verdict: "approve" | "deny") => {
+    async (verdict: "approve" | "deny", expectedCid?: string) => {
       const askProvider = provider as unknown as {
         answerQuestion?: (cid: string, answer: string) => Promise<void>;
         getPendingQuestions?: () => Promise<
@@ -664,9 +672,18 @@ export function App({
       };
       if (!askProvider.answerQuestion || !askProvider.getPendingQuestions) return;
       try {
+        // Re-fetch and revalidate: blind-answering is only safe when exactly one
+        // question remains AND it is the same one the action was shown for. A
+        // concurrent add/remove/replace between palette render and Enter aborts
+        // here and routes the operator to the Decisions panel instead.
         const questions = await askProvider.getPendingQuestions();
-        const selected = questions[0];
-        if (!selected) return;
+        const selected = resolveAnswerableQuestion(questions, expectedCid);
+        if (!selected) {
+          showError("Pending questions changed — review them in the Decisions panel");
+          if (panels.isVisible(Panel.Decisions)) panels.focus(Panel.Decisions);
+          else panels.toggle(Panel.Decisions);
+          return;
+        }
         const answer = verdict === "approve" ? (selected.options?.[0] ?? "Approved") : "Denied";
         await askProvider.answerQuestion(selected.cid, answer);
         showError(`Answered: ${answer}`);
@@ -674,7 +691,7 @@ export function App({
         showError(err instanceof Error ? err.message : "Failed to answer");
       }
     },
-    [provider, showError],
+    [provider, showError, panels],
   );
 
   /** Send a message via the boardroom API or local provider. */
@@ -916,7 +933,8 @@ export function App({
       }),
       detailCid: nav.detailCid,
       parentAgentId: paletteParentId,
-      pendingQuestionCount: pendingQuestionCount ?? 0,
+      pendingQuestionCount,
+      pendingQuestionCid,
       hasGoals,
       canSpawn,
       canDelegate,
@@ -962,7 +980,8 @@ export function App({
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         panels.setMode(InputMode.CommandPalette);
       },
-      answerPendingQuestion: (verdict) => void answerPendingQuestion(verdict),
+      answerPendingQuestion: (verdict, expectedCid) =>
+        void answerPendingQuestion(verdict, expectedCid),
       registerAgentProfile,
       spawn: (roleId, command, parentAgentId) =>
         handleSpawn(roleId, command, "HEAD", parentAgentId),
@@ -1022,6 +1041,7 @@ export function App({
       nav,
       paletteParentId,
       pendingQuestionCount,
+      pendingQuestionCid,
       hasGoals,
       canSpawn,
       panels,
