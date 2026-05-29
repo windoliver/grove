@@ -165,6 +165,21 @@ function formatHexDump(buf: Buffer): string {
 }
 
 /**
+ * Split artifact text into unified-diff content lines.
+ *
+ * An empty file is ZERO lines (not one blank line), and a single trailing
+ * newline is the line terminator, not an extra blank line — so `""` -> `[]`
+ * and `"a\nb\n"` -> `["a", "b"]`. Without this, empty/added/deleted artifacts
+ * would emit bogus hunks (e.g. a removed blank line for a pure addition).
+ */
+function toDiffLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
  * Compute a simple unified diff between two text strings.
  *
  * Uses a basic line-by-line longest common subsequence (LCS) approach.
@@ -186,8 +201,8 @@ export function computeUnifiedDiff(
 ): string {
   // OOM hardening: cap inputs before the O(m*n) LCS. Truncate (never silently)
   // and append a visible marker to the diff body so the cut is observable.
-  const rawParentLines = parentText.split("\n");
-  const rawChildLines = childText.split("\n");
+  const rawParentLines = toDiffLines(parentText);
+  const rawChildLines = toDiffLines(childText);
   const parentTruncated = rawParentLines.length > MAX_DIFF_LINES;
   const childTruncated = rawChildLines.length > MAX_DIFF_LINES;
   const parentLines = parentTruncated ? rawParentLines.slice(0, MAX_DIFF_LINES) : rawParentLines;
@@ -253,12 +268,17 @@ export function computeUnifiedDiff(
     }
   }
 
-  const result: string[] = [
-    `--- ${parentLabel}`,
-    `+++ ${childLabel}`,
-    `@@ -1,${oldCount} +1,${newCount} @@`,
-    ...diffLines,
-  ];
+  const result: string[] = [`--- ${parentLabel}`, `+++ ${childLabel}`];
+  // No body => no change (e.g. identical or two empty files): emit just the
+  // file headers with no hunk. parsePatch returns zero hunks and does not
+  // throw. Emitting a hunk here would fabricate a change.
+  if (diffLines.length > 0) {
+    // A zero-count side starts at line 0 (unified-diff convention for an
+    // added/deleted file), e.g. `@@ -0,0 +1,3 @@` for a pure addition.
+    const oldStart = oldCount === 0 ? 0 : 1;
+    const newStart = newCount === 0 ? 0 : 1;
+    result.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...diffLines);
+  }
   return result.join("\n");
 }
 

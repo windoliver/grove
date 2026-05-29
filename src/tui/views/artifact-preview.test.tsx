@@ -218,16 +218,45 @@ describe("computeUnifiedDiff parser contract (C4)", () => {
     expect(Number(match?.[2])).toBe(ctx);
   });
 
-  test("pure additions emit a valid header (old count = 0 context, new count = additions)", () => {
+  // Regression (F7 / round-5 review): empty / pure-add / pure-delete files must
+  // not fabricate blank-line hunks. A zero-count side starts at line 0
+  // (unified-diff convention), and two empty files produce NO hunk.
+  test("pure additions emit a 0-line old side (@@ -0,0 +1,N @@)", () => {
     const out = computeUnifiedDiff("", "x\ny\nz", "p", "c");
     const { header, body } = splitDiff(out);
-    expect(header).toBeDefined();
-    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
-    expect(match).not.toBeNull();
-    const expectedOld = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length;
-    const expectedNew = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length;
-    expect(Number(match?.[1])).toBe(expectedOld);
-    expect(Number(match?.[2])).toBe(expectedNew);
+    const m = (header ?? "").match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/);
+    expect(m).not.toBeNull();
+    expect(Number(m?.[1])).toBe(0); // old start
+    expect(Number(m?.[2])).toBe(0); // old count (no removed/context lines)
+    expect(body.every((l) => l.startsWith("+"))).toBe(true);
+    expect(Number(m?.[4])).toBe(body.length); // new count == additions
+  });
+
+  test("pure deletions emit a 0-line new side (@@ -1,N +0,0 @@)", () => {
+    const out = computeUnifiedDiff("x\ny\nz", "", "p", "c");
+    const { header, body } = splitDiff(out);
+    const m = (header ?? "").match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/);
+    expect(m).not.toBeNull();
+    expect(Number(m?.[3])).toBe(0); // new start
+    expect(Number(m?.[4])).toBe(0); // new count
+    expect(body.every((l) => l.startsWith("-"))).toBe(true);
+    expect(Number(m?.[2])).toBe(body.length); // old count == deletions
+  });
+
+  test("two empty files produce NO hunk (no phantom blank-line diff)", () => {
+    const out = computeUnifiedDiff("", "", "p", "c");
+    expect(splitDiff(out).header).toBeUndefined();
+    expect(out).toBe("--- p\n+++ c");
+  });
+
+  test("a trailing newline is the line terminator, not an extra blank line", () => {
+    // "a\nb\n" and "a\nb" are the SAME two lines -> no change, 2 context rows.
+    const out = computeUnifiedDiff("a\nb\n", "a\nb", "p", "c");
+    const { header, body } = splitDiff(out);
+    const m = (header ?? "").match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/);
+    expect(body.every((l) => l.startsWith(" "))).toBe(true);
+    expect(Number(m?.[2])).toBe(2);
+    expect(Number(m?.[4])).toBe(2);
   });
 
   test("oversized input is capped to MAX_DIFF_LINES with a visible truncation marker", () => {
@@ -236,14 +265,13 @@ describe("computeUnifiedDiff parser contract (C4)", () => {
     const out = computeUnifiedDiff("", big, "p", "c");
     const { header, body } = splitDiff(out);
     expect(header).toBeDefined();
-    // A visible truncation marker is present in the body.
     expect(out).toContain("truncated");
     // Counts still match the actual emitted body (parsePatch validates this).
-    const match = (header ?? "").match(/^@@ -1,(\d+) \+1,(\d+) @@$/);
-    expect(match).not.toBeNull();
+    const m = (header ?? "").match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/);
+    expect(m).not.toBeNull();
     const expectedOld = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length;
     const expectedNew = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length;
-    expect(Number(match?.[1])).toBe(expectedOld);
-    expect(Number(match?.[2])).toBe(expectedNew);
+    expect(Number(m?.[2])).toBe(expectedOld);
+    expect(Number(m?.[4])).toBe(expectedNew);
   });
 });
