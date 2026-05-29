@@ -950,7 +950,15 @@ export function App({
         if (!ks.compareMode) dispatch({ type: "COMPARE_TOGGLE" });
         dispatch({ type: "COMPARE_SELECT", cid });
       },
-      adoptContribution: (cid, summary) => {
+      adoptContribution: (cid) => {
+        // Resolve the row summary the same way the Frontier 'a' / compare-adopt
+        // paths do, so palette-adopt carries it into the spawned agent context
+        // (handleSpawn reads ks.adoptContext.summary). Empty string would spawn
+        // with a blank adoptSummary.
+        const summary =
+          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
+          contributionList.find((c) => c.cid === cid)?.summary ??
+          "";
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         panels.setMode(InputMode.CommandPalette);
       },
@@ -1017,6 +1025,7 @@ export function App({
       hasGoals,
       canSpawn,
       panels,
+      contributionList,
       nav.state.cursor,
       ks.frontierTabKeys,
       ks.searchQuery,

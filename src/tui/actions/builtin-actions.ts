@@ -340,7 +340,7 @@ function contributionActions(): readonly Action[] {
       keywords: ["adopt", "build on"],
       available: hasSelection,
       run: (c) => {
-        if (c.selectedCid) c.adoptContribution(c.selectedCid, "");
+        if (c.selectedCid) c.adoptContribution(c.selectedCid);
       },
     },
   ];

@@ -87,6 +87,14 @@ describe("buildBuiltInActions", () => {
     expect(sel).toContain("contrib.adopt");
   });
 
+  test("contrib.adopt runs adoptContribution with the selected cid (summary resolved by app)", () => {
+    const calls: string[] = [];
+    const c = ctx({ selectedCid: "bafySEL", adoptContribution: (cid) => calls.push(cid) });
+    const adopt = buildBuiltInActions(c).find((a) => a.id === "contrib.adopt");
+    adopt?.run(c);
+    expect(calls).toEqual(["bafySEL"]);
+  });
+
   test("contrib.open is disabled when the highlighted cid is already the open detail", () => {
     const open = buildBuiltInActions(ctx()).find((a) => a.id === "contrib.open");
     // Highlighted row differs from open detail (or no detail) → enabled.

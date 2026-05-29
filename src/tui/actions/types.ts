@@ -75,7 +75,8 @@ export interface ActionContext {
   readonly enterGoalMode: () => void;
   readonly enterCompareMode: () => void;
   readonly addToCompare: (cid: string) => void;
-  readonly adoptContribution: (cid: string, summary: string) => void;
+  /** Begin adopting a contribution; the summary is resolved from the cid. */
+  readonly adoptContribution: (cid: string) => void;
   readonly answerPendingQuestion: (verdict: "approve" | "deny") => void;
   readonly registerAgentProfile: () => void;
   readonly spawn: (roleId: string, command: string, parentAgentId?: string) => void;
