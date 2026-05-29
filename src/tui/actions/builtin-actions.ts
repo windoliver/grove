@@ -32,6 +32,7 @@ function keymapMigratedActions(): readonly Action[] {
       detail: "view",
       group: "View",
       keywords: ["palette", "command"],
+      suggested: true,
       run: (c) => c.openPalette(),
     },
     {
@@ -223,6 +224,7 @@ function agentActions(): readonly Action[] {
       detail: "message",
       group: "Agents",
       keywords: ["message", "broadcast", "all", "tell"],
+      slash: "/broadcast",
       run: (c) => c.broadcastMessage(),
     },
     {
@@ -231,6 +233,7 @@ function agentActions(): readonly Action[] {
       detail: "message",
       group: "Agents",
       keywords: ["message", "direct", "dm", "tell"],
+      slash: "/dm",
       run: (c) => c.directMessage(),
     },
   ];
@@ -281,6 +284,7 @@ function viewActions(): readonly Action[] {
       detail: "view",
       group: "View",
       keywords: ["refresh", "reload", "update"],
+      slash: "/refresh",
       run: (c) => c.refresh(),
     },
     {
@@ -289,6 +293,8 @@ function viewActions(): readonly Action[] {
       detail: "view",
       group: "View",
       keywords: ["search", "find", "filter"],
+      slash: "/search",
+      suggested: true,
       run: (c) => c.enterSearch(),
     },
     {
@@ -329,6 +335,7 @@ function viewActions(): readonly Action[] {
       detail: "view",
       group: "View",
       keywords: ["help", "keys", "shortcuts", "?"],
+      slash: "/help",
       run: (c) => c.showHelp(),
     },
     {
@@ -337,6 +344,7 @@ function viewActions(): readonly Action[] {
       detail: "view",
       group: "View",
       keywords: ["quit", "exit", "close"],
+      slash: "/quit",
       run: (c) => c.quit(),
     },
   ];
@@ -350,6 +358,8 @@ function workflowActions(): readonly Action[] {
       detail: "Set or update the session goal for all agents",
       group: "Workflow",
       keywords: ["goal", "objective"],
+      slash: "/goal",
+      suggested: true,
       available: (c) => c.hasGoals,
       run: (c) => c.enterGoalMode(),
     },
@@ -395,6 +405,7 @@ function workflowActions(): readonly Action[] {
       detail: "compare",
       group: "Workflow",
       keywords: ["compare", "diff"],
+      slash: "/compare",
       run: (c) => c.enterCompareMode(),
     },
     {
