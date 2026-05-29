@@ -1021,15 +1021,16 @@ Replace the P2 stub with:
     await this.sleep(this.backoffBaseMs * 2 ** entry.respawns);
     entry.respawns += 1;
 
-    const handle = this.runtimeFactory();
-    const session = await handle.spawn(config.role, config);
-    // Carry durable identity + seq across the PID change; only the live
-    // handle and session are replaced. A fresh handle means a fresh
-    // session/new — the dead wireSessionId is never reused (#319).
-    entry.handle = handle;
+    // Respawn WITHIN the shared runtime (Phase 2 adopted one shared AcpRuntime
+    // for all slots — see the design doc's "Implementation note"). A fresh
+    // sharedRuntime.spawn() does a fresh session/new ⇒ a NEW wireSessionId,
+    // never the dead one (#319). The handle stays `this.sharedRuntime`; only
+    // entry.session is replaced. routeEvent() demuxes events by the new
+    // session id, so seq stamping continues from the preserved entry.lastSeq
+    // with no reset. Re-register onDisconnect for the new session.
+    const session = await this.sharedRuntime.spawn(config.role, config);
     entry.session = session;
     entry.phase = "running";
-    this.wireSink(entry);
     this.attachDisconnect(entry);
     this.emit({
       kind: "resumed",
@@ -1041,7 +1042,7 @@ Replace the P2 stub with:
   }
 ```
 
-(Mutating `entry` in place keeps `lastSeq`/`acpxRecordId`/`respawns`; `wireSink` re-stamps from the preserved `lastSeq`.)
+(Mutating `entry` in place keeps `lastSeq`/`acpxRecordId`/`respawns`. There is NO `entry.handle` swap and NO `wireSink` call — the shared runtime's single sink + `routeEvent`/`entryForSession` already re-stamp seq for the new session id from the preserved `entry.lastSeq`.)
 
 - [ ] **Step 4: Run**
 
@@ -1499,7 +1500,7 @@ git commit -m "test(e2e): kill-PID respawn + SessionLost under grove up (#273)"
 
 - **Seq lives at the eventSink**, not `publishTurnToNexus` (which has no production caller). The supervisor wraps each child's `setAcpEventSink`; `entry.lastSeq` survives respawn because `handleDisconnect` mutates the entry in place.
 - **No double-drain risk:** `watchTurn` only awaits `result`; nothing else drains `messages` in production. Task 5.2 verifies the supervisor sink is the active one through `spawn-manager`.
-- **`wireSessionId` reuse prevented:** each respawn calls `runtimeFactory()` → a brand-new `AcpRuntime` → fresh `session/new`.
+- **`wireSessionId` reuse prevented:** each respawn calls `sharedRuntime.spawn()` → a fresh `session/new` ⇒ a new `wireSessionId`, never the dead one (the shared runtime learns a distinct wire id per spawn).
 - **`reconcileRunning` race** (`task-controller.ts:312`): respawn-aware `listSessions()` (the entry's live session) + the `Resuming` condition keep the controller from prematurely calling `failLostSession()`. If the TaskController runs in the E2E, assert the task stays `Running` through a respawn.
 - **Open implementation question (resolve in P5):** confirm exactly how agent events reach the durable Nexus stream so the E2E's "monotonic seq" assertion observes the supervisor-stamped `seq` (trace the live eventSink → store/EventBus path; `publishTurnToNexus` appears dead). Surface findings in the PR.
 - **Orphan reaping** across grove restarts is out of scope (design OQ4).

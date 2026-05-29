@@ -91,6 +91,8 @@ These were confirmed by reading the source, not the issue text. Several issue re
 
 The supervisor is **runtime-level and decoupled**: it knows about processes, slots, turns, and seq — not about claims, tasks, or conditions. It emits typed respawn-lifecycle events; the wiring layer translates those into `AgentTask` conditions and lease releases. This keeps the supervisor unit-testable with zero store dependencies and puts `SessionLost` where grove actually stores conditions.
 
+> **Implementation note (2026-05-29, Phase 2):** The supervisor owns **one shared `AcpRuntime`** for all slots, not a separate `AcpRuntime` per slot. Rationale: grove's current `AcpRuntime` is the in-process ACP *client* that already spawns one **agent-adapter subprocess per `spawn()` call** — so process-per-slot isolation (the issue's actual intent) is preserved even with a shared client object, exactly as `SessionOrchestrator` already shares one runtime across many agents. A shared runtime also gives a single, naturally-monotonic session-id counter (two fresh `AcpRuntime`s both start at 0 and collide on same-role/same-ms ids) and a single event sink the supervisor demuxes by `sessionId` to stamp per-slot `seq`. `AcpxRegistryEntry.handle` therefore points at the shared runtime; respawn (Phase 3) replaces the slot's **session** via `sharedRuntime.spawn()` again (a fresh `session/new` ⇒ new `wireSessionId`, never the dead one), not the runtime object. This satisfies the issue's "don't share one acpx instance across slots" at the level that matters — each slot still drives its own adapter child process.
+
 ### Types (new `src/core/acpx-supervisor.ts`)
 
 ```ts
