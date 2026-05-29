@@ -1206,6 +1206,7 @@ export function App({
     mkPluginCtxRef.current = mkPluginCtx;
   }, [mkPluginCtx]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: built once on purpose — static built-ins are enumerated here while live state flows via the ctx passed to list/byId/run; plugin entries are read through refs.
   const registry = useMemo(() => {
     const r = createActionRegistry();
     registerBuiltInActions(r, actionContext); // ctx unused for static enumeration
@@ -1213,8 +1214,6 @@ export function App({
       buildPluginActions(pluginEntriesRef.current, mkPluginCtxRef.current),
     );
     return r;
-    // Built once; live state flows via the ctx passed to list/byId/run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Feed the resolved keymap's keybind labels to the registry so palette rows
@@ -1447,13 +1446,11 @@ export function App({
       actionContext,
       registry,
       ks.compareMode,
-      ks.compareCids,
       ks.searchQuery,
       ks.messageBuffer,
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
-      contributionList,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
