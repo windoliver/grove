@@ -69,12 +69,14 @@ export type AcpRuntimeEvent =
       readonly sessionId: string;
       readonly turnId: string;
       readonly message: Message;
+      readonly seq?: number | undefined;
     }
   | {
       readonly kind: "result";
       readonly sessionId: string;
       readonly turnId: string;
       readonly result: Result;
+      readonly seq?: number | undefined;
     };
 
 export type AcpRuntimeEventSink = (event: AcpRuntimeEvent) => void;
