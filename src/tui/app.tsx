@@ -886,7 +886,12 @@ export function App({
   }, [panels]);
 
   const mkPluginCtx = useCallback(
-    (_c: import("./actions/types.js").ActionContext): TuiPluginContext => pluginContext,
+    (ctx: import("./actions/types.js").ActionContext): TuiPluginContext => ({
+      // Keep the narrow plugin surface but hand plugins the panel-aware
+      // selection, not the detail-only cid baked into pluginContext.
+      ...pluginContext,
+      selectedCid: ctx.selectedCid,
+    }),
     [pluginContext],
   );
 
@@ -898,19 +903,19 @@ export function App({
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
       selectedSession,
-      // The contribution the operator would act on — resolved by FOCUSED PANEL,
-      // because each panel keeps its cursor→cid mapping in a different place:
-      //   Frontier  → frontierEntriesRef (its own per-slice entry list)
-      //   Activity  → contributionList (populated by Activity/Dashboard)
-      //   otherwise → the open detail (nav.detailCid)
-      // Sourcing from contributionList unconditionally aliased a Frontier row's
-      // cursor index onto an unrelated Activity row → wrong adopt/compare target.
+      // The contribution the operator would act on, resolved by FOCUSED PANEL.
+      // Frontier keeps its own per-slice cursor→cid list in frontierEntriesRef;
+      // a row miss (empty/loading/stale slice, out-of-range cursor) yields
+      // undefined so the contribution actions DISAPPEAR rather than silently
+      // acting on the open detail. Every other panel acts on the open detail
+      // (nav.detailCid) — the only other unambiguous contribution selection.
+      // (Activity is intentionally NOT a source: the rendered Activity panel
+      // doesn't populate contributionList, so indexing it would alias a stale
+      // DAG/Dashboard row.)
       selectedCid:
         panels.state.focused === Panel.Frontier
-          ? (frontierEntriesRef.current[nav.state.cursor]?.cid ?? nav.detailCid)
-          : panels.state.focused === Panel.Activity
-            ? (contributionList[nav.state.cursor]?.cid ?? nav.detailCid)
-            : nav.detailCid,
+          ? frontierEntriesRef.current[nav.state.cursor]?.cid
+          : nav.detailCid,
       detailCid: nav.detailCid,
       parentAgentId: paletteParentId,
       pendingQuestionCount: pendingQuestionCount ?? 0,
@@ -1014,7 +1019,6 @@ export function App({
       hasGoals,
       canSpawn,
       panels,
-      contributionList,
       nav.state.cursor,
       ks.frontierTabKeys,
       ks.searchQuery,
