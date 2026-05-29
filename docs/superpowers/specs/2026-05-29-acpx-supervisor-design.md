@@ -213,7 +213,7 @@ Dependency order: **P1 → P2 → P3 → P4 → P5.** P4 can start once P2 lands
 ## Open questions (for review)
 
 - **OQ1 — slot key source.** Confirm `AgentTask.spec.id` as the canonical `slotId` from `TaskController`, and the `grove-<role>-<n>` form from `SessionOrchestrator`. A role working N independent tasks ⇒ N slots/processes — confirm that's intended.
-- **OQ2 — orchestrator adoption scope.** Is P5 (making `SessionOrchestrator`/`TaskController` actually spawn through the supervisor) part of #273, or a follow-up once P1–P4 land behind the runtime seam?
+- **OQ2 — orchestrator adoption scope.** *Resolved 2026-05-29: in scope for #273.* P5 (making `SessionOrchestrator`/`TaskController` spawn through the supervisor) ships as part of this work, proven by the kill-PID E2E.
 - **OQ3 — `seq` placement.** Stamp `seq` in the payload of every `acp.message`/`acp.result`, or only at turn boundaries? (Plan assumes per-event.) Confirm consumers want per-event seq now vs. forward-compat only.
 - **OQ4 — registry persistence / orphan reaping** across grove restarts: in scope later, or rely on lease expiry + manual reap? (Plan defers.)
 - **OQ5 — feature flag.** Gate adoption behind a `GROVE_SUPERVISOR=1`-style flag for one release (mirroring the `GROVE_RUNTIME` cutover), defaulting off until the E2E is green?
