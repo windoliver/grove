@@ -10,6 +10,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { KeyEvent } from "@opentui/core";
+import { buildBuiltInActions } from "../actions/builtin-actions.js";
+import { createActionRegistry } from "../actions/registry.js";
+import type { ActionContext } from "../actions/types.js";
 import { resolveKeymapWithOverrides } from "../keymap/keymap.js";
 import { loadKeybindings, REMAPPABLE_ACTIONS } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
@@ -61,14 +64,31 @@ function keyEvent(name: string, opts?: { ctrl?: boolean }): KeyEvent {
   } as unknown as KeyEvent;
 }
 
-function mockActions(overrides?: Partial<{ mode: InputMode; focused: Panel }>): KeyboardActions {
+function mockActions(
+  overrides?: Partial<{ mode: InputMode; focused: Panel; onQuit: () => void }>,
+): KeyboardActions {
   const panelState: PanelFocusState = {
     focused: overrides?.focused ?? Panel.Dag,
     visibleOperator: new Set(),
     mode: overrides?.mode ?? InputMode.Normal,
     viewMode: "grid",
   };
+  const onQuit = overrides?.onQuit ?? (() => undefined);
+  // Registry-backed keymap dispatch surface (#275 Task 8). The keymap's quit
+  // binding resolves to the `view.quit` action, which calls actionContext.quit;
+  // wire that to the mock's onQuit so the integration tests observe a quit.
+  const actionContext = {
+    focusedPanel: overrides?.focused ?? Panel.Dag,
+    frontierSliceCount: 1,
+    isPanelVisible: () => false,
+    quit: onQuit,
+  } as unknown as ActionContext;
+  const registry = createActionRegistry();
+  for (const action of buildBuiltInActions(actionContext)) registry.register(action);
   return {
+    registry,
+    actionContext,
+    onActionError: () => undefined,
     panels: {
       state: panelState,
       focus: () => {
@@ -343,11 +363,14 @@ describe("routeKey — keybinding override integration", () => {
   test("remapped quit key triggers onQuit", () => {
     let quitCalled = false;
     const overrides = { quit: "Q" };
+    // Pass onQuit INTO mockActions so the registry's view.quit action (the
+    // target of the remapped quit keybind) delegates to it via actionContext.
     const actions: KeyboardActions = {
-      ...mockActions(),
-      onQuit: () => {
-        quitCalled = true;
-      },
+      ...mockActions({
+        onQuit: () => {
+          quitCalled = true;
+        },
+      }),
       resolvedKeymap: resolveKeymapWithOverrides("default", overrides),
     };
 
@@ -359,10 +382,11 @@ describe("routeKey — keybinding override integration", () => {
   test("non-overridden legacy key does not bypass the active keymap", () => {
     let quitCalled = false;
     const actions: KeyboardActions = {
-      ...mockActions(),
-      onQuit: () => {
-        quitCalled = true;
-      },
+      ...mockActions({
+        onQuit: () => {
+          quitCalled = true;
+        },
+      }),
       resolvedKeymap: resolveKeymapWithOverrides("default", {}),
     };
 
