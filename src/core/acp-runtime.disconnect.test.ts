@@ -104,4 +104,25 @@ describe("AcpRuntime disconnect detection", () => {
 
     expect(seen).toHaveLength(0);
   });
+
+  test("an in-flight send() settles with stopReason=error when the agent dies mid-turn", async () => {
+    const { launchOverride, triggerExit } = makeDisconnectableAgent();
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    // prompt() in the stub never resolves, so this turn stays in flight.
+    const turn = await rt.send(session, "do work");
+
+    // Let the send chain reach connection.prompt() before the process dies.
+    await new Promise((r) => setTimeout(r, 10));
+    triggerExit({ exitCode: null, signal: "SIGKILL" });
+
+    const result = await turn.result;
+    expect(result.stopReason).toBe("error");
+    expect((await rt.listSessions())[0]?.status).toBe("crashed");
+  });
 });
