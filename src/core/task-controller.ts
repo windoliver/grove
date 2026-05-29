@@ -497,7 +497,7 @@ function transition(
   };
 }
 
-function upsertCondition(
+export function upsertCondition(
   conditions: readonly Condition[],
   desired: Condition,
 ): readonly Condition[] {
