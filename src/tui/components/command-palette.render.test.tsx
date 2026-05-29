@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { buildBuiltInActions } from "../actions/builtin-actions.js";
+import { spawnSource } from "../actions/dynamic-sources.js";
 import type { ActionContext } from "../actions/types.js";
 import { theme } from "../theme.js";
 import { CommandPalette } from "./command-palette.js";
@@ -182,7 +183,8 @@ describe("CommandPalette render (#194)", () => {
       claims: [],
       profiles: [{ name: "@rev", role: "reviewer", platform: "claude-code" }],
     });
-    const actions = buildBuiltInActions(c);
+    // Spawn actions are now dynamic (#275) — include spawnSource alongside statics.
+    const actions = [...buildBuiltInActions(c), ...spawnSource(c)];
     const spawn = actions.find((a) => a.id === "agent.spawn.reviewer");
     // Sanity: this action is indeed disabled in this context.
     expect(spawn?.enabled?.(c)).toBe(false);

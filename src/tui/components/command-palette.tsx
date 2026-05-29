@@ -10,6 +10,7 @@
 
 import React, { useMemo } from "react";
 import type { Action, ActionContext, ActionGroup } from "../actions/types.js";
+import { resolveEnabled } from "../actions/types.js";
 import { computeVisibleActions } from "../actions/visibility.js";
 import { theme } from "../theme.js";
 
@@ -79,6 +80,10 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     if (!visible) return null;
     const idx = selectedIndex ?? 0;
 
+    // Compute the disabled reason for the currently-selected row (shown in footer).
+    const selected = visibleActions[idx]?.action;
+    const selectedReason = selected ? resolveEnabled(selected, ctx).reason : undefined;
+
     // When no query, compute the group header to print before each item.
     const headerBefore: (ActionGroup | undefined)[] = [];
     if (!q) {
@@ -115,7 +120,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
         <box flexDirection="column" paddingLeft={1}>
           {visibleActions.map(({ action, matchedIndices }, i) => {
             const isSelected = i === idx;
-            const dimmed = !(action.enabled?.(ctx) ?? true);
+            const dimmed = !resolveEnabled(action, ctx).enabled;
             const labelColor = isSelected ? theme.focus : dimmed ? theme.disabled : theme.text;
             const detailColor = isSelected
               ? theme.focus
@@ -140,14 +145,18 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
                     <text color={labelColor}>{action.label}</text>
                   )}
                   {action.detail ? <text color={detailColor}> [{action.detail}]</text> : null}
+                  {action.keybind ? (
+                    <text color={theme.secondary}>{`  ${action.keybind}`}</text>
+                  ) : null}
                 </box>
               </box>
             );
           })}
         </box>
 
-        <box marginTop={1} paddingLeft={1}>
+        <box marginTop={1} paddingLeft={1} flexDirection="column">
           <text color={theme.secondary}>[j/k] navigate [Enter] execute [Esc] close</text>
+          {selectedReason ? <text color={theme.disabled}>{selectedReason}</text> : null}
         </box>
       </box>
     );
