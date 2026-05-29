@@ -9,6 +9,8 @@ export type ActionGroup =
   | "Workflow"
   | "View"
   | "Contributions"
+  | "Prompts"
+  | "Skills"
   | "Plugins";
 
 /** Fixed display order for groups when no query is active. */
@@ -18,6 +20,8 @@ export const GROUP_ORDER: readonly ActionGroup[] = [
   "Workflow",
   "View",
   "Contributions",
+  "Prompts",
+  "Skills",
   "Plugins",
 ];
 
@@ -112,9 +116,31 @@ export interface Action {
   readonly group: ActionGroup;
   /** Extra fuzzy-match terms beyond the label. */
   readonly keywords?: readonly string[] | undefined;
+  /** Slash trigger, e.g. "/cancel". Source of truth for the slash surfaces. */
+  readonly slash?: string | undefined;
+  /** Palette shows suggested actions first when the filter is empty. */
+  readonly suggested?: boolean | undefined;
+  /** Filled by the registry from the resolved keymap — never authored here. */
+  readonly keybind?: string | undefined;
   /** Relevance gate. False → item is HIDDEN entirely. Default: visible. */
   readonly available?: ((ctx: ActionContext) => boolean) | undefined;
-  /** Capability gate. False → item shown but GREYED and not executable. */
-  readonly enabled?: ((ctx: ActionContext) => boolean) | undefined;
-  readonly run: (ctx: ActionContext) => void | Promise<void>;
+  /** Capability gate. boolean OR { enabled, reason } for a greyed footer note. */
+  readonly enabled?:
+    | ((ctx: ActionContext) => boolean | { enabled: boolean; reason?: string })
+    | undefined;
+  readonly run: (ctx: ActionContext, args?: readonly string[]) => void | Promise<void>;
 }
+
+/** Normalize the boolean | object `enabled` union to a single shape. */
+export function resolveEnabled(
+  action: Action,
+  ctx: ActionContext,
+): { enabled: boolean; reason?: string } {
+  const result = action.enabled?.(ctx);
+  if (result === undefined) return { enabled: true };
+  if (typeof result === "boolean") return { enabled: result };
+  return result;
+}
+
+/** A dynamic source of actions resolved at invocation time. */
+export type DynamicSource = (ctx: ActionContext) => readonly Action[];
