@@ -7,12 +7,15 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { buildBuiltInActions } from "../actions/builtin-actions.js";
+import { createActionRegistry } from "../actions/registry.js";
+import type { Action, ActionContext } from "../actions/types.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "../app-reducer.js";
-import type { ResolvedKeymap } from "../keymap/keymap.js";
+import type { KeyBinding, ResolvedKeymap } from "../keymap/keymap.js";
 import { resolveBuiltinKeymap, resolveKeymapWithOverrides } from "../keymap/keymap.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
-import { nextZoom, routeKey } from "./use-keyboard-handler.js";
+import { dispatchKeymapBinding, nextZoom, routeKey } from "./use-keyboard-handler.js";
 import type { PanelFocusState } from "./use-panel-focus.js";
 import { InputMode, Panel } from "./use-panel-focus.js";
 
@@ -156,9 +159,110 @@ function mockActions(overrides?: {
     resolvedKeymap: overrides?.resolvedKeymap,
     keymapPrefix: overrides?.keymapPrefix ?? [],
     onKeymapPrefixChange: (prefix) => record("onKeymapPrefixChange", prefix),
+    ...keymapDispatch(overrides, record),
   };
 
   return { actions, log };
+}
+
+/**
+ * Build the registry-backed keymap dispatch surface for the mock. The migrated
+ * keymap actions delegate to capabilities on `actionContext`; here we wire those
+ * capabilities to the same `record()` log (under the legacy callback names) so
+ * the existing routeKey tests that exercise the keymap "match" path keep
+ * observing the same behavior. The cursor/select gating that will live in
+ * app.tsx (Task 8) is replicated here for the same reason.
+ */
+function keymapDispatch(
+  overrides:
+    | {
+        focused?: Panel;
+        compareMode?: boolean;
+        isDetailView?: boolean;
+        rowCount?: number;
+      }
+    | undefined,
+  record: (name: string, ...args: unknown[]) => void,
+): Pick<KeyboardActions, "registry" | "actionContext" | "onActionError"> {
+  const focused = overrides?.focused ?? Panel.Dag;
+  const isDetailView = overrides?.isDetailView ?? false;
+  const rowCount = overrides?.rowCount ?? 10;
+  const compareMode = overrides?.compareMode ?? false;
+  // The row-select gating that will live in app.tsx (Task 8). Shared by the
+  // `selectRow` capability AND by `compareSelect` when compare mode is off, so
+  // Enter still selects a Frontier row when not comparing.
+  const doRowSelect = (): void => {
+    if (!isDetailView && focused !== Panel.Claims && rowCount > 0) record("onSelect", 0);
+  };
+
+  const actionContext = {
+    focusedPanel: focused,
+    frontierSliceCount: 1,
+    isPanelVisible: () => false,
+    // View / system
+    quit: () => record("onQuit"),
+    showHelp: () => record("panels.setMode", InputMode.Help),
+    openPalette: () => {
+      record("onSpawnPalette");
+      record("panels.setMode", InputMode.CommandPalette);
+    },
+    refresh: () => record("onRefresh"),
+    cycleZoom: () => record("onZoomCycle"),
+    resetZoom: () => record("onZoomReset"),
+    toggleLayout: () => record("onLayoutToggle"),
+    cycleViewMode: () => record("panels.cycleViewMode"),
+    enterSearch: () => record("onSearchStart"),
+    // Panels
+    focusPanel: (p: Panel) => record("panels.focus", p),
+    togglePanel: (p: Panel) => record("panels.toggle", p),
+    cyclePanelNext: () => record("panels.cycleNext"),
+    cyclePanelPrev: () => record("panels.cyclePrev"),
+    // Messaging
+    broadcastMessage: () => record("onBroadcastMode"),
+    directMessage: () => record("onDirectMessageMode"),
+    // Workflow / approvals
+    enterCompareMode: () => record("onCompareToggle"),
+    answerPendingQuestion: () => undefined,
+    // Migrated capabilities
+    enterTerminalInput: () => record("panels.setMode", InputMode.TerminalInput),
+    artifactPrev: () => record("onArtifactPrev"),
+    artifactNext: () => record("onArtifactNext"),
+    artifactDiffToggle: () => record("onArtifactDiffToggle"),
+    artifactDiffModeToggle: () => record("onArtifactDiffModeToggle"),
+    cursorDown: () => {
+      if (focused === Panel.Detail && isDetailView) record("onDetailSectionNext");
+      else record("nav.cursorDown", Math.max(0, rowCount - 1));
+    },
+    cursorUp: () => {
+      if (focused === Panel.Detail && isDetailView) record("onDetailSectionPrev");
+      else record("nav.cursorUp");
+    },
+    selectRow: doRowSelect,
+    pageNext: () => record("nav.nextPage"),
+    pagePrev: () => record("nav.prevPage"),
+    vfsNavigate: () => record("onVfsNavigate"),
+    terminalScrollUp: () => record("onTerminalScrollUp"),
+    terminalScrollDown: () => record("onTerminalScrollDown"),
+    scrollTerminalToBottom: () => record("onTerminalScrollBottom"),
+    nextFrontierSlice: () => record("onFrontierTabNext"),
+    prevFrontierSlice: () => record("onFrontierTabPrev"),
+    compareSelect: () => {
+      if (compareMode) record("onCompareSelect");
+      else doRowSelect();
+    },
+    compareAdoptA: () => record("onCompareAdopt", "a"),
+    compareAdoptB: () => record("onCompareAdopt", "b"),
+    frontierAdopt: () => record("onFrontierAdopt"),
+  } as unknown as ActionContext;
+
+  const registry = createActionRegistry();
+  for (const action of buildBuiltInActions(actionContext)) registry.register(action);
+
+  return {
+    registry,
+    actionContext,
+    onActionError: (message: string) => record("onActionError", message),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,5 +1272,76 @@ describe("routeKey — artifact diff-mode toggle is Artifact-panel gated", () =>
     const handled = routeKey(keyEvent("s"), actions);
     expect(handled).toBe(true);
     expect(log.calls).toContain("onArtifactDiffModeToggle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatchKeymapBinding — registry-backed keymap dispatch (#275 Task 5)
+// ---------------------------------------------------------------------------
+
+describe("dispatchKeymapBinding", () => {
+  const refreshBinding = {
+    id: "refresh",
+    action: "refresh",
+    sequence: ["r"],
+    label: "Refresh",
+    context: "global",
+    layer: "normal",
+    preferred: true,
+  } as KeyBinding;
+
+  test("runs the registry action for a binding", () => {
+    let ran = false;
+    const r = createActionRegistry();
+    r.register({
+      id: "view.refresh",
+      label: "Refresh",
+      detail: "",
+      group: "View",
+      run: () => {
+        ran = true;
+      },
+    } as Action);
+    expect(dispatchKeymapBinding(refreshBinding, r, {} as ActionContext, () => {})).toBe(true);
+    expect(ran).toBe(true);
+  });
+
+  test("skips disabled actions", () => {
+    let ran = false;
+    const r = createActionRegistry();
+    r.register({
+      id: "view.refresh",
+      label: "Refresh",
+      detail: "",
+      group: "View",
+      enabled: () => false,
+      run: () => {
+        ran = true;
+      },
+    } as Action);
+    expect(dispatchKeymapBinding(refreshBinding, r, {} as ActionContext, () => {})).toBe(false);
+    expect(ran).toBe(false);
+  });
+
+  test("skips actions whose available gate is false", () => {
+    let ran = false;
+    const r = createActionRegistry();
+    r.register({
+      id: "view.refresh",
+      label: "Refresh",
+      detail: "",
+      group: "View",
+      available: () => false,
+      run: () => {
+        ran = true;
+      },
+    } as Action);
+    expect(dispatchKeymapBinding(refreshBinding, r, {} as ActionContext, () => {})).toBe(false);
+    expect(ran).toBe(false);
+  });
+
+  test("returns false for a binding with no registered action", () => {
+    const r = createActionRegistry();
+    expect(dispatchKeymapBinding(refreshBinding, r, {} as ActionContext, () => {})).toBe(false);
   });
 });

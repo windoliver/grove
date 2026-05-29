@@ -105,6 +105,26 @@ export interface ActionContext {
   readonly prevFrontierSlice: () => void;
   readonly scrollTerminalToBottom: () => void;
   readonly showMessage: (message: string) => void;
+
+  // Keymap-migrated capabilities (#275)
+  readonly enterTerminalInput: () => void;
+  readonly artifactPrev: () => void;
+  readonly artifactNext: () => void;
+  readonly artifactDiffToggle: () => void;
+  readonly artifactDiffModeToggle: () => void;
+  readonly cursorDown: () => void;
+  readonly cursorUp: () => void;
+  readonly selectRow: () => void;
+  readonly pageNext: () => void;
+  readonly pagePrev: () => void;
+  readonly vfsNavigate: () => void;
+  readonly terminalScrollUp: () => void;
+  readonly terminalScrollDown: () => void;
+  readonly compareSelect: () => void;
+  readonly compareAdoptA: () => void;
+  readonly compareAdoptB: () => void;
+  readonly frontierAdopt: () => void;
+  readonly openPalette: () => void;
 }
 
 /** A single unified palette action. */

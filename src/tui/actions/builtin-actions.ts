@@ -14,7 +14,161 @@ export function buildBuiltInActions(_ctx: ActionContext): readonly Action[] {
     ...workflowActions(),
     ...viewActions(),
     ...contributionActions(),
+    ...keymapMigratedActions(),
   ]);
+}
+
+/**
+ * Actions migrated from the legacy keymap dispatch switch (#275). Each is thin —
+ * it delegates to a capability on the context. Focus gates are expressed via
+ * `available`, which the keymap dispatcher treats as "not handled" so the old
+ * focus-gate fall-through behavior is preserved.
+ */
+function keymapMigratedActions(): readonly Action[] {
+  const actions: Action[] = [
+    {
+      id: "view.palette",
+      label: "Open command palette",
+      detail: "view",
+      group: "View",
+      keywords: ["palette", "command"],
+      run: (c) => c.openPalette(),
+    },
+    {
+      id: "nav.terminal.input",
+      label: "Enter terminal input",
+      detail: "terminal",
+      group: "Navigation",
+      keywords: ["terminal", "input", "type"],
+      available: (c) => c.focusedPanel === Panel.Terminal,
+      run: (c) => c.enterTerminalInput(),
+    },
+    {
+      id: "artifact.prev",
+      label: "Previous artifact",
+      detail: "artifact",
+      group: "View",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.artifactPrev(),
+    },
+    {
+      id: "artifact.next",
+      label: "Next artifact",
+      detail: "artifact",
+      group: "View",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.artifactNext(),
+    },
+    {
+      id: "artifact.diff",
+      label: "Toggle artifact diff",
+      detail: "artifact",
+      group: "View",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.artifactDiffToggle(),
+    },
+    {
+      id: "artifact.diff-mode",
+      label: "Cycle artifact diff mode",
+      detail: "artifact",
+      group: "View",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.artifactDiffModeToggle(),
+    },
+    {
+      id: "nav.cursor-down",
+      label: "Move cursor down",
+      detail: "nav",
+      group: "Navigation",
+      run: (c) => c.cursorDown(),
+    },
+    {
+      id: "nav.cursor-up",
+      label: "Move cursor up",
+      detail: "nav",
+      group: "Navigation",
+      run: (c) => c.cursorUp(),
+    },
+    {
+      id: "nav.select",
+      label: "Select row",
+      detail: "nav",
+      group: "Navigation",
+      run: (c) => c.selectRow(),
+    },
+    {
+      id: "nav.page-next",
+      label: "Next page",
+      detail: "nav",
+      group: "Navigation",
+      run: (c) => c.pageNext(),
+    },
+    {
+      id: "nav.page-prev",
+      label: "Previous page",
+      detail: "nav",
+      group: "Navigation",
+      run: (c) => c.pagePrev(),
+    },
+    {
+      id: "nav.vfs-navigate",
+      label: "Open VFS entry",
+      detail: "vfs",
+      group: "Navigation",
+      available: (c) => c.focusedPanel === Panel.Vfs,
+      run: (c) => c.vfsNavigate(),
+    },
+    {
+      id: "nav.terminal.scroll-up",
+      label: "Scroll terminal up",
+      detail: "terminal",
+      group: "Navigation",
+      available: (c) => c.focusedPanel === Panel.Terminal,
+      run: (c) => c.terminalScrollUp(),
+    },
+    {
+      id: "nav.terminal.scroll-down",
+      label: "Scroll terminal down",
+      detail: "terminal",
+      group: "Navigation",
+      available: (c) => c.focusedPanel === Panel.Terminal,
+      run: (c) => c.terminalScrollDown(),
+    },
+    {
+      id: "workflow.compare-select",
+      label: "Select for compare",
+      detail: "compare",
+      group: "Workflow",
+      available: (c) => c.focusedPanel === Panel.Frontier,
+      run: (c) => c.compareSelect(),
+    },
+    {
+      id: "workflow.compare-adopt-a",
+      label: "Adopt compare A",
+      detail: "compare",
+      group: "Workflow",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.compareAdoptA(),
+    },
+    {
+      id: "workflow.compare-adopt-b",
+      label: "Adopt compare B",
+      detail: "compare",
+      group: "Workflow",
+      available: (c) => c.focusedPanel === Panel.Artifact,
+      run: (c) => c.compareAdoptB(),
+    },
+    {
+      id: "contrib.frontier-adopt",
+      label: "Adopt frontier entry",
+      detail: "frontier",
+      group: "Contributions",
+      keywords: ["adopt", "frontier"],
+      available: (c) => c.focusedPanel === Panel.Frontier,
+      run: (c) => c.frontierAdopt(),
+    },
+  ];
+  return actions;
 }
 
 function navigationActions(): readonly Action[] {

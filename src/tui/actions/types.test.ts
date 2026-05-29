@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GROUP_ORDER, resolveEnabled, type Action, type ActionContext } from "./types.js";
+import { type Action, type ActionContext, GROUP_ORDER, resolveEnabled } from "./types.js";
 
 describe("action types", () => {
   test("GROUP_ORDER lists all groups in display order", () => {
