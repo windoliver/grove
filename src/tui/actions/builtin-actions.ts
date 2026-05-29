@@ -314,6 +314,9 @@ function contributionActions(): readonly Action[] {
       group: "Contributions",
       keywords: ["open", "detail", "contribution"],
       available: hasSelection,
+      // Greyed when the highlighted contribution is already the open detail —
+      // re-opening it would just push a duplicate nav entry.
+      enabled: (c) => c.selectedCid !== c.detailCid,
       run: (c) => {
         if (c.selectedCid) c.openContribution(c.selectedCid);
       },

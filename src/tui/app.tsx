@@ -898,7 +898,12 @@ export function App({
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
       selectedSession,
-      selectedCid: nav.detailCid,
+      // The contribution the operator would act on: the highlighted feed/DAG
+      // row (same source handleSelect uses), falling back to the open detail.
+      // Sourcing from nav.detailCid alone hid contrib actions unless a detail
+      // was already open and made "open" re-push the same cid.
+      selectedCid: contributionList[nav.state.cursor]?.cid ?? nav.detailCid,
+      detailCid: nav.detailCid,
       parentAgentId: paletteParentId,
       pendingQuestionCount: pendingQuestionCount ?? 0,
       hasGoals,
@@ -923,7 +928,13 @@ export function App({
         dispatch({ type: "GOAL_INPUT_MODE" });
       },
       enterCompareMode: () => dispatch({ type: "COMPARE_TOGGLE" }),
-      addToCompare: (cid) => dispatch({ type: "COMPARE_SELECT", cid }),
+      addToCompare: (cid) => {
+        // Entering compare mode clears compareCids, so if it is currently off
+        // we must toggle it ON first, then select — otherwise the operator's
+        // later COMPARE_TOGGLE would wipe the cid added here.
+        if (!ks.compareMode) dispatch({ type: "COMPARE_TOGGLE" });
+        dispatch({ type: "COMPARE_SELECT", cid });
+      },
       adoptContribution: (cid, summary) => {
         dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
         panels.setMode(InputMode.CommandPalette);
@@ -991,8 +1002,11 @@ export function App({
       hasGoals,
       canSpawn,
       panels,
+      contributionList,
+      nav.state.cursor,
       ks.frontierTabKeys,
       ks.searchQuery,
+      ks.compareMode,
       answerPendingQuestion,
       registerAgentProfile,
       handleSpawn,

@@ -50,7 +50,10 @@ export interface ActionContext {
   /** Active claims, or null when scoped session can't see them. */
   readonly claims: readonly Claim[] | null;
   readonly selectedSession?: string | undefined;
+  /** CID of the highlighted contribution (cursor row), or the open detail. */
   readonly selectedCid?: string | undefined;
+  /** CID of the currently-open detail view, if any (distinct from selectedCid). */
+  readonly detailCid?: string | undefined;
   readonly parentAgentId?: string | undefined;
   readonly pendingQuestionCount: number;
   readonly hasGoals: boolean;

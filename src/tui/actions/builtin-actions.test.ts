@@ -87,6 +87,15 @@ describe("buildBuiltInActions", () => {
     expect(sel).toContain("contrib.adopt");
   });
 
+  test("contrib.open is disabled when the highlighted cid is already the open detail", () => {
+    const open = buildBuiltInActions(ctx()).find((a) => a.id === "contrib.open");
+    // Highlighted row differs from open detail (or no detail) → enabled.
+    expect(open?.enabled?.(ctx({ selectedCid: "bafyAAA", detailCid: undefined }))).toBe(true);
+    expect(open?.enabled?.(ctx({ selectedCid: "bafyAAA", detailCid: "bafyBBB" }))).toBe(true);
+    // Highlighted row IS the open detail → disabled (re-open would duplicate).
+    expect(open?.enabled?.(ctx({ selectedCid: "bafyAAA", detailCid: "bafyAAA" }))).toBe(false);
+  });
+
   test("kill action per live session; jump-to-session per session", () => {
     const present = ids(ctx({ sessions: ["grove-reviewer-1"] }));
     expect(present).toContain("agent.kill.grove-reviewer-1");
