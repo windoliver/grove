@@ -277,6 +277,11 @@ export function App({
     [provider, topology, selectedSession, nav.detailCid, ks.layoutMode, showError],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: nav.detailCid is an intentional reset trigger — not read in the body, but a change means a new contribution opened, so the focused detail section must reset to the top.
+  useEffect(() => {
+    dispatch({ type: "DETAIL_SECTION_RESET" });
+  }, [nav.detailCid]);
+
   useEffect(() => {
     for (const diagnostic of mergedActionRegistry.diagnostics) {
       showError(diagnostic.message);
@@ -1105,6 +1110,9 @@ export function App({
       onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
       onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
       onArtifactDiffToggle: () => dispatch({ type: "ARTIFACT_DIFF_TOGGLE" }),
+      onArtifactDiffModeToggle: () => dispatch({ type: "ARTIFACT_DIFF_MODE_TOGGLE" }),
+      onDetailSectionNext: () => dispatch({ type: "DETAIL_SECTION_NEXT" }),
+      onDetailSectionPrev: () => dispatch({ type: "DETAIL_SECTION_PREV" }),
       onCompareToggle: () => dispatch({ type: "COMPARE_TOGGLE" }),
       onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
       onCompareAdopt: (side: "a" | "b") => {
@@ -1373,6 +1381,8 @@ export function App({
           vfsNavigateTrigger={ks.vfsNavigateTrigger}
           artifactIndex={ks.artifactIndex}
           showArtifactDiff={ks.showArtifactDiff}
+          artifactDiffMode={ks.artifactDiffMode}
+          detailFocusedSection={ks.detailFocusedSection}
           activeClaims={activeClaims ?? undefined}
           searchQuery={
             panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery

@@ -93,6 +93,10 @@ export interface PanelManagerProps {
   readonly artifactIndex?: number | undefined;
   /** Whether to show diff view in the Artifact panel. */
   readonly showArtifactDiff?: boolean | undefined;
+  /** Diff rendering mode for the Artifact panel. */
+  readonly artifactDiffMode?: "inline" | "split" | undefined;
+  /** Raw focused-section index for the Detail overlay (view applies modulo). */
+  readonly detailFocusedSection?: number | undefined;
   /** Pre-fetched active claims from the parent poller (avoids double polling). */
   readonly activeClaims?: readonly import("../../core/models.js").Claim[] | undefined;
   /** Current search query for the Search panel. */
@@ -182,6 +186,8 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     vfsNavigateTrigger,
     artifactIndex,
     showArtifactDiff,
+    artifactDiffMode,
+    detailFocusedSection,
     activeClaims,
     searchQuery,
     isSearchInputMode,
@@ -297,7 +303,12 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
           );
         case Panel.Detail:
           return showDetail ? (
-            <DetailView provider={provider} cid={nav.detailCid ?? ""} intervalMs={intervalMs} />
+            <DetailView
+              provider={provider}
+              cid={nav.detailCid ?? ""}
+              intervalMs={intervalMs}
+              focusedSectionRaw={detailFocusedSection ?? 0}
+            />
           ) : (
             <DashboardView
               provider={provider}
@@ -388,6 +399,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               }
               parentCid={parentCid}
               showDiff={showArtifactDiff}
+              diffMode={artifactDiffMode ?? "inline"}
               intervalMs={intervalMs}
               active={isPanelVisible(panelState, Panel.Artifact)}
             />

@@ -31,6 +31,7 @@ export type TuiActionId =
   | "artifact_prev"
   | "artifact_next"
   | "artifact_diff"
+  | "artifact_diff_mode"
   | "approve"
   | "deny"
   | "broadcast"
@@ -75,6 +76,7 @@ export const NON_PANEL_TARGET_ACTION_IDS: readonly NonPanelTargetActionId[] = [
   "artifact_prev",
   "artifact_next",
   "artifact_diff",
+  "artifact_diff_mode",
   "approve",
   "deny",
   "broadcast",

@@ -36,6 +36,7 @@ export interface KeyboardActions {
   readonly onArtifactPrev: () => void;
   readonly onArtifactNext: () => void;
   readonly onArtifactDiffToggle: () => void;
+  readonly onArtifactDiffModeToggle: () => void;
   readonly onCompareToggle: () => void;
   readonly onCompareSelect: (cid: string) => void;
   readonly onCompareAdopt: (side: "a" | "b") => void;
@@ -59,6 +60,8 @@ export interface KeyboardActions {
   readonly onPaletteSelect: () => void;
   readonly onPaletteChar: (char: string) => void;
   readonly onPaletteBackspace: () => void;
+  readonly onDetailSectionNext: () => void;
+  readonly onDetailSectionPrev: () => void;
   readonly onZoomCycle: () => void;
   readonly onZoomReset: () => void;
   readonly onTerminalScrollUp: () => void;
@@ -175,6 +178,10 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       if (focused !== Panel.Artifact) return false;
       actions.onArtifactDiffToggle();
       return true;
+    case "artifact_diff_mode":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactDiffModeToggle();
+      return true;
     case "approve":
       if (focused !== Panel.Decisions) return false;
       actions.onApproveQuestion();
@@ -184,9 +191,22 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.onDenyQuestion();
       return true;
     case "cursor_down":
+      // When the Detail panel is focused AND showing a contribution, the row
+      // cursor becomes detail-section navigation. Specializing the cursor_down
+      // ACTION (rather than intercepting the raw key) keeps detail nav on the
+      // keymap path, so user keybinding overrides are respected: remap j away
+      // from cursor_down and j stops moving detail sections.
+      if (focused === Panel.Detail && actions.nav.isDetailView) {
+        actions.onDetailSectionNext();
+        return true;
+      }
       actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
       return true;
     case "cursor_up":
+      if (focused === Panel.Detail && actions.nav.isDetailView) {
+        actions.onDetailSectionPrev();
+        return true;
+      }
       actions.nav.cursorUp();
       return true;
     case "select":
@@ -566,6 +586,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onArtifactDiffToggle();
       return true;
     }
+    if (input === "s") {
+      actions.onArtifactDiffModeToggle();
+      return true;
+    }
   }
 
   // Approve/Deny pending question (Decisions panel)
@@ -603,6 +627,21 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
     return true;
+  }
+
+  // Detail section navigation — no-keymap fallback only (reached when no
+  // resolvedKeymap is present, so the cursor_down/up specialization above
+  // didn't run). Gated on the Detail panel being focused + showing a
+  // contribution.
+  if (actions.nav.isDetailView && focused === Panel.Detail) {
+    if (input === "j" || input === "down") {
+      actions.onDetailSectionNext();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.onDetailSectionPrev();
+      return true;
+    }
   }
 
   // Within-panel navigation

@@ -8,8 +8,9 @@
  * - Empty artifacts: styled empty state with artifact name and hint
  */
 
-import React, { createElement, useCallback, useMemo } from "react";
+import React, { useCallback, useMemo } from "react";
 import { DataStatus } from "../components/data-status.js";
+import { useAccentPulse } from "../hooks/use-accent-pulse.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
@@ -26,6 +27,13 @@ const MAX_HEX_BYTES = 256;
 
 /** Bytes per row in hex dump display. */
 const HEX_BYTES_PER_ROW = 16;
+
+/**
+ * Maximum number of lines fed into the O(m*n) LCS diff. The unified-diff path
+ * is now the headline render for artifact comparison, so guard it against OOM:
+ * inputs beyond this are truncated (with a visible marker) before diffing.
+ */
+const MAX_DIFF_LINES = 2000;
 
 /** Extensions considered text-based. */
 const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -157,19 +165,48 @@ function formatHexDump(buf: Buffer): string {
 }
 
 /**
+ * Split artifact text into unified-diff content lines.
+ *
+ * An empty file is ZERO lines (not one blank line), and a single trailing
+ * newline is the line terminator, not an extra blank line — so `""` -> `[]`
+ * and `"a\nb\n"` -> `["a", "b"]`. Without this, empty/added/deleted artifacts
+ * would emit bogus hunks (e.g. a removed blank line for a pure addition).
+ */
+function toDiffLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
  * Compute a simple unified diff between two text strings.
  *
  * Uses a basic line-by-line longest common subsequence (LCS) approach.
  * Suitable for small artifacts displayed in the TUI.
+ *
+ * The output is a valid unified-diff string accepted by the "diff" package's
+ * parsePatch (used by the OpenTUI <diff> intrinsic): `--- parent`, `+++ child`,
+ * a single `@@ -1,old +1,new @@` hunk header, then the body. parsePatch
+ * REQUIRES the hunk header and validates the declared line counts against the
+ * body, so the counts are computed from the actual emitted body lines.
+ *
+ * Exported for unit testing of that parser contract.
  */
-function computeUnifiedDiff(
+export function computeUnifiedDiff(
   parentText: string,
   childText: string,
   parentLabel: string,
   childLabel: string,
 ): string {
-  const parentLines = parentText.split("\n");
-  const childLines = childText.split("\n");
+  // OOM hardening: cap inputs before the O(m*n) LCS. Truncate (never silently)
+  // and append a visible marker to the diff body so the cut is observable.
+  const rawParentLines = toDiffLines(parentText);
+  const rawChildLines = toDiffLines(childText);
+  const parentTruncated = rawParentLines.length > MAX_DIFF_LINES;
+  const childTruncated = rawChildLines.length > MAX_DIFF_LINES;
+  const parentLines = parentTruncated ? rawParentLines.slice(0, MAX_DIFF_LINES) : rawParentLines;
+  const childLines = childTruncated ? rawChildLines.slice(0, MAX_DIFF_LINES) : rawChildLines;
 
   // Build LCS table
   const m = parentLines.length;
@@ -188,8 +225,7 @@ function computeUnifiedDiff(
     }
   }
 
-  // Backtrack to produce diff lines
-  const result: string[] = [`--- ${parentLabel}`, `+++ ${childLabel}`];
+  // Backtrack to produce diff body lines
   const diffLines: string[] = [];
   let i = m;
   let j = n;
@@ -209,7 +245,40 @@ function computeUnifiedDiff(
   }
 
   diffLines.reverse();
-  result.push(...diffLines);
+
+  // Visible (never silent) truncation marker, emitted as a context line so it
+  // is counted equally toward both old and new line counts.
+  if (parentTruncated || childTruncated) {
+    diffLines.push(` ... (diff truncated to first ${MAX_DIFF_LINES} lines)`);
+  }
+
+  // parsePatch requires a hunk header and validates its declared line counts
+  // against the body. Compute the counts from the ACTUAL emitted body lines so
+  // they always match: old = context + removals, new = context + additions.
+  let oldCount = 0;
+  let newCount = 0;
+  for (const line of diffLines) {
+    if (line.startsWith(" ")) {
+      oldCount++;
+      newCount++;
+    } else if (line.startsWith("-")) {
+      oldCount++;
+    } else if (line.startsWith("+")) {
+      newCount++;
+    }
+  }
+
+  const result: string[] = [`--- ${parentLabel}`, `+++ ${childLabel}`];
+  // No body => no change (e.g. identical or two empty files): emit just the
+  // file headers with no hunk. parsePatch returns zero hunks and does not
+  // throw. Emitting a hunk here would fabricate a change.
+  if (diffLines.length > 0) {
+    // A zero-count side starts at line 0 (unified-diff convention for an
+    // added/deleted file), e.g. `@@ -0,0 +1,3 @@` for a pure addition.
+    const oldStart = oldCount === 0 ? 0 : 1;
+    const newStart = newCount === 0 ? 0 : 1;
+    result.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...diffLines);
+  }
   return result.join("\n");
 }
 
@@ -246,6 +315,8 @@ export interface ArtifactPreviewProps {
   readonly parentCid?: string | undefined;
   /** Whether to show diff view instead of content view. */
   readonly showDiff?: boolean | undefined;
+  /** Diff rendering mode: inline (unified) or side-by-side (split). */
+  readonly diffMode?: "inline" | "split" | undefined;
   /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
   readonly intervalMs?: number;
   readonly active: boolean;
@@ -265,6 +336,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
     artifactIndex,
     parentCid,
     showDiff,
+    diffMode = "inline",
     active,
   }: ArtifactPreviewProps): React.ReactNode {
     const artifactProvider = provider.capabilities.artifacts
@@ -307,6 +379,10 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       undefined,
       active && showDiff === true && parentCid !== undefined,
     );
+
+    // Focus-change accent pulse (#192): a brief (~150ms) warning-colored flash
+    // on the header each time the selected artifact changes.
+    const pulse = useAccentPulse(artifactIndex);
 
     // Build artifact selector header
     const selectorHeader = useMemo((): string => {
@@ -405,19 +481,21 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       return { header, body, renderAs: "text" };
     }, [cid, artifactName, artifactProvider, data, loading, error]);
 
-    // Compute diff body
-    const diffBody = useMemo((): string | undefined => {
-      if (!showDiff || !parentCid) return undefined;
-      if (diffLoading && !diffData) return "Loading diff...";
-      if (diffError && !diffData) return `Diff error: ${diffError.message}`;
-      if (!diffData) return "(no diff data)";
+    // Whether the diff view is the active surface (vs. content render).
+    const showDiffView = Boolean(showDiff && parentCid);
+
+    // The successful diff is rendered via the <diff> intrinsic, which parses a
+    // unified-diff-format STRING (see Diff.d.ts). computeUnifiedDiff produces
+    // exactly that string. Loading/error/no-data are rendered as <text> below.
+    const unifiedDiff = useMemo((): string | undefined => {
+      if (!showDiffView || !diffData) return undefined;
       return computeUnifiedDiff(
         diffData.parentText,
         diffData.childText,
-        `parent (${parentCid.slice(0, 8)})`,
+        `parent (${(parentCid ?? "").slice(0, 8)})`,
         `child (${(cid ?? "").slice(0, 8)})`,
       );
-    }, [showDiff, parentCid, cid, diffData, diffLoading, diffError]);
+    }, [showDiffView, parentCid, cid, diffData]);
 
     if (!cid || !artifactName) {
       return (
@@ -438,21 +516,48 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
           </box>
         )}
         <box marginBottom={1} flexDirection="row">
-          <text color={theme.focus}>{preview.header}</text>
+          <text color={pulse ? theme.warning : theme.focus}>{preview.header}</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (
             <text color={showDiff ? theme.warning : theme.secondary}>
-              {showDiff ? "  [DIFF ON]" : "  [d]iff"}
+              {showDiff ? `  [DIFF ${diffMode}]  [s]plit/inline` : "  [d]iff"}
             </text>
           )}
         </box>
         <box flexGrow={1}>
-          {diffBody !== undefined ? (
-            // Diff view — plain text, typically contains unified diff output
-            createElement(
-              "scrollbox" as string,
-              { flexGrow: 1 },
-              React.createElement("text", {}, diffBody),
+          {showDiffView ? (
+            // Diff view — rendered via OpenTUI <diff> intrinsic (unified/split).
+            // Loading/error/no-data fall back to plain text.
+            diffLoading && !diffData ? (
+              <text>Loading diff...</text>
+            ) : diffError && !diffData ? (
+              <text color={theme.error}>{`Diff error: ${diffError.message}`}</text>
+            ) : !diffData || unifiedDiff === undefined ? (
+              <text opacity={0.5}>(no diff data)</text>
+            ) : !unifiedDiff.includes("\n@@ ") ? (
+              // Header-only diff = no changes (identical or two empty files).
+              // Render an explicit state rather than feeding an empty diff to
+              // the <diff> intrinsic: DiffRenderable.buildView early-returns for
+              // zero-hunk input WITHOUT clearing its existing child renderables,
+              // so a reused instance would keep showing the PREVIOUS comparison.
+              <box paddingTop={1}>
+                <text color={theme.secondary} italic>
+                  (no changes between the two versions)
+                </text>
+              </box>
+            ) : (
+              React.createElement(
+                "scrollbox" as string,
+                { flexGrow: 1 },
+                React.createElement("diff" as string, {
+                  // Remount when the comparison identity changes so OpenTUI
+                  // can't carry stale left/right renderables across artifacts.
+                  key: `${parentCid ?? ""}:${cid ?? ""}:${artifactName ?? ""}`,
+                  diff: unifiedDiff,
+                  view: diffMode === "split" ? "split" : "unified",
+                  filetype: detectLanguage(artifactName ?? ""),
+                }),
+              )
             )
           ) : preview.renderAs === "empty" ? (
             // Empty artifact — styled empty state
@@ -466,17 +571,17 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             </box>
           ) : preview.renderAs === "markdown" ? (
             // Markdown — rendered via OpenTUI <markdown>
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
-              createElement("markdown" as string, {}, preview.body),
+              React.createElement("markdown" as string, {}, preview.body),
             )
           ) : preview.renderAs === "code" ? (
             // Code — syntax-highlighted via OpenTUI <code>
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
-              createElement(
+              React.createElement(
                 "code" as string,
                 { language: preview.language ?? "text" },
                 preview.body,
@@ -484,14 +589,14 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             )
           ) : preview.renderAs === "hex" ? (
             // Binary hex dump — monospace plain text
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
               React.createElement("text", { color: theme.secondary }, preview.body),
             )
           ) : (
             // Plain text
-            createElement(
+            React.createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
               React.createElement("text", {}, preview.body),

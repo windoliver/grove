@@ -378,6 +378,15 @@
       "panel": "artifact"
     },
     {
+      "id": "artifact_diff_mode",
+      "action": "artifact_diff_mode",
+      "sequence": "s",
+      "label": "Toggle artifact diff split/inline",
+      "context": "panel",
+      "layer": "panel",
+      "panel": "artifact"
+    },
+    {
       "id": "compare_adopt_a",
       "action": "compare_adopt_a",
       "sequence": "a",

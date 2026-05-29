@@ -19,6 +19,7 @@ import { ConditionChips } from "../components/condition-chips.js";
 import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useAccentPulse } from "../hooks/use-accent-pulse.js";
 import { useEntity } from "../hooks/use-entity.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
@@ -29,13 +30,37 @@ export interface DetailProps {
   readonly provider: TuiDataProvider;
   readonly cid: string;
   readonly intervalMs: number;
+  /**
+   * Raw focused-section index. The view maps it onto the list of
+   * *present* sections via modulo, so the parent reducer can advance it
+   * freely (positive or negative) without knowing which sections have
+   * data. See {@link SECTION_ORDER}.
+   */
+  readonly focusedSectionRaw?: number | undefined;
 }
+
+/**
+ * Focus-ring order for detail sections. The focus cursor iterates only
+ * the sections that currently have data (see `present` below).
+ */
+const SECTION_ORDER = [
+  "summary",
+  "scores",
+  "relations",
+  "artifacts",
+  "ancestors",
+  "children",
+  "discussion",
+  "context",
+] as const;
+type SectionKey = (typeof SECTION_ORDER)[number];
 
 /** Contribution detail view component. */
 export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(function DetailView({
   provider,
   cid,
   intervalMs,
+  focusedSectionRaw,
 }: DetailProps): React.ReactNode {
   const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
@@ -66,6 +91,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     undefined,
     true,
   );
+
+  // Focus-change accent pulse (#192): a brief (~150ms) warning-colored flash
+  // on the focused section border each time the focused section changes.
+  const pulse = useAccentPulse(focusedSectionRaw);
 
   // Body source: prefer the informer-cached entity when available, else
   // project from the polled detail.
@@ -113,6 +142,109 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   const agent = entity.spec.agent;
   const createdAt = entity.metadata.creationTimestamp ?? "";
 
+  // Which sections currently carry data — mirrors each block's render
+  // guard below. Drives the focus ring and the scroll-into-view offset.
+  const sectionHasData = (key: SectionKey): boolean => {
+    switch (key) {
+      case "summary":
+        return true;
+      case "scores":
+        return !!scores && Object.keys(scores).length > 0;
+      case "relations":
+        return (relations ?? []).length > 0;
+      case "artifacts":
+        return Object.keys(artifacts).length > 0;
+      case "ancestors":
+        return ancestors.length > 0;
+      case "children":
+        return children.length > 0;
+      case "discussion":
+        return thread.length > 1;
+      case "context":
+        return !!context && Object.keys(context).length > 0;
+    }
+  };
+  const present = SECTION_ORDER.filter(sectionHasData);
+  const raw = focusedSectionRaw ?? 0;
+  const focusedIndexAmongPresent = present.length
+    ? ((raw % present.length) + present.length) % present.length
+    : 0;
+  const focusedKey: SectionKey | undefined = present.length
+    ? present[focusedIndexAmongPresent]
+    : undefined;
+
+  // Scroll-into-view: sum the ESTIMATED rendered height of every present
+  // section ABOVE the focused one, so the focused section is scrolled to the
+  // top of the viewport. A fixed per-section estimate fails here because this
+  // view renders full (untruncated) descriptions/context — a long Summary can
+  // be hundreds of rows.
+  //
+  // The estimate is WRAP-AWARE: terminals wrap long lines, so a single long
+  // paragraph/JSON value (few newlines) still occupies many visual rows. We
+  // can't read the live panel width at this layer (OpenTUI's
+  // `useTerminalDimensions` throws without a live renderer, which would break
+  // tests), so we assume a conservative column width. Assuming a NARROW width
+  // over-estimates wrapped rows, which biases the offset so the focused
+  // section lands at/near the top of the viewport rather than below the fold
+  // (an over-scroll merely trims the section's first row; an under-scroll
+  // hides it entirely).
+  const ASSUMED_COLS = 80;
+  const wrappedRows = (s: string | undefined): number => {
+    if (!s) return 0;
+    return s
+      .split("\n")
+      .reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / ASSUMED_COLS)), 0);
+  };
+  /** Wrap-aware rows for a list section whose items are rendered one per row. */
+  const listRows = (items: readonly string[]): number =>
+    items.reduce((rows, item) => rows + wrappedRows(item), 0);
+  const estimateSectionRows = (key: SectionKey): number => {
+    const TITLE_AND_MARGIN = 2;
+    switch (key) {
+      case "summary":
+        return (
+          TITLE_AND_MARGIN + wrappedRows(summary) + (description ? wrappedRows(description) + 1 : 0)
+        );
+      case "scores":
+        return TITLE_AND_MARGIN + Object.keys(scores ?? {}).length;
+      case "relations":
+        return TITLE_AND_MARGIN + (relations ?? []).length;
+      case "artifacts":
+        return TITLE_AND_MARGIN + Object.keys(artifacts).length;
+      case "ancestors":
+        return TITLE_AND_MARGIN + listRows(ancestors.map((a) => a.summary ?? ""));
+      case "children":
+        return TITLE_AND_MARGIN + listRows(children.map((c) => c.summary ?? ""));
+      case "discussion":
+        return (
+          TITLE_AND_MARGIN + listRows(thread.slice(1).map((n) => n.contribution.summary ?? ""))
+        );
+      case "context":
+        return (
+          TITLE_AND_MARGIN + wrappedRows(context ? JSON.stringify(context, null, 2) : undefined)
+        );
+    }
+  };
+  const scrollTop = present
+    .slice(0, focusedIndexAmongPresent)
+    .reduce((sum, key) => sum + estimateSectionRows(key), 0);
+
+  // Accent treatment for the focused section: a single-line border in the
+  // focus color plus a ">" title marker. During the focus-change pulse the
+  // border flashes to the warning accent. `border` is controlled EXPLICITLY
+  // (true/false) on every section: OpenTUI's BoxRenderable keeps its internal
+  // `border` flag set once a box has been bordered, and clearing only
+  // borderStyle/borderColor does not unset it — so omitting border props on
+  // unfocused sections would leave stale borders accumulating as focus moves.
+  const focusBorderColor = pulse ? theme.warning : theme.focus;
+  const sectionProps = (
+    key: SectionKey,
+  ): { border: boolean; borderStyle?: "single"; borderColor?: string } =>
+    key === focusedKey
+      ? { border: true, borderStyle: "single", borderColor: focusBorderColor }
+      : { border: false };
+  const titlePrefix = (key: SectionKey): string => (key === focusedKey ? "> " : "");
+
   return (
     <box flexDirection="column">
       <ConditionChips conditions={entity.conditions} />
@@ -127,117 +259,123 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         )}
       </box>
 
-      <box flexDirection="column" marginBottom={1}>
-        <text>
-          Kind: {kind} Mode: {mode} Created: {formatTimestamp(createdAt)}
-        </text>
-        <text>
-          Agent: {agent?.agentName ?? agent?.agentId ?? "unknown"}
-          {agent?.model ? ` (${agent.model})` : ""}
-          {agent?.platform ? ` on ${agent.platform}` : ""}
-        </text>
-        {(tags ?? []).length > 0 && <text>Tags: {(tags ?? []).join(", ")}</text>}
-      </box>
-
-      {/* Outcome annotation */}
-      {outcome && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>Outcome</text>
-          <text>
-            Status: {outcome.status} By: {outcome.evaluatedBy} At:{" "}
-            {formatTimestamp(outcome.evaluatedAt)}
-          </text>
-          {outcome.reason && <text opacity={0.5}>Reason: {outcome.reason}</text>}
-          {outcome.baselineCid && (
-            <text opacity={0.5}>Baseline: {truncateCid(outcome.baselineCid)}</text>
-          )}
-        </box>
-      )}
-
-      <box flexDirection="column" marginBottom={1}>
-        <text>Summary</text>
-        <markdown>{summary}</markdown>
-        {description && (
-          <box marginTop={1}>
-            <markdown>{description.slice(0, 500)}</markdown>
-          </box>
-        )}
-      </box>
-
-      {scores && Object.keys(scores).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>Scores</text>
-          {Object.entries(scores).map(([name, score]) => (
-            <text key={name}>
-              {name}: {formatScore(score)} ({score.direction})
-            </text>
-          ))}
-        </box>
-      )}
-
-      {(relations ?? []).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Relations (${(relations ?? []).length})`}</text>
-          {(relations ?? []).map((r, i) => (
-            <text key={`rel-${String(i)}`}>
-              {r.relationType} → {truncateCid(r.targetCid)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {Object.keys(artifacts).length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Artifacts (${Object.keys(artifacts).length})`}</text>
-          {Object.entries(artifacts).map(([name, hash]) => (
-            <text key={name}>
-              {name}: {truncateCid(hash)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {ancestors.length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Ancestors (${ancestors.length})`}</text>
-          {ancestors.map((a) => (
-            <text key={a.cid}>
-              {truncateCid(a.cid)} [{a.kind}] {a.summary.slice(0, 50)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {children.length > 0 && (
-        <box flexDirection="column" marginBottom={1}>
-          <text>{`Children (${children.length})`}</text>
-          {children.map((ch) => (
-            <text key={ch.cid}>
-              {truncateCid(ch.cid)} [{ch.kind}] {ch.summary.slice(0, 50)}
-            </text>
-          ))}
-        </box>
-      )}
-
-      {thread.length > 1 && (
+      {React.createElement(
+        "scrollbox" as string,
+        { flexGrow: 1, scrollTop },
         <box flexDirection="column">
-          <text>{`Discussion (${thread.length - 1} replies)`}</text>
-          {thread.slice(1).map((node) => (
-            <text key={node.contribution.cid}>
-              {"  ".repeat(node.depth)}
-              {truncateCid(node.contribution.cid)} {node.contribution.summary.slice(0, 40)} [
-              {node.contribution.agent.agentName ?? node.contribution.agent.agentId}]{" "}
-              {formatTimestamp(node.contribution.createdAt)}
+          <box flexDirection="column" marginBottom={1}>
+            <text>
+              Kind: {kind} Mode: {mode} Created: {formatTimestamp(createdAt)}
             </text>
-          ))}
-        </box>
-      )}
+            <text>
+              Agent: {agent?.agentName ?? agent?.agentId ?? "unknown"}
+              {agent?.model ? ` (${agent.model})` : ""}
+              {agent?.platform ? ` on ${agent.platform}` : ""}
+            </text>
+            {(tags ?? []).length > 0 && <text>Tags: {(tags ?? []).join(", ")}</text>}
+          </box>
 
-      {context && Object.keys(context).length > 0 && (
-        <box flexDirection="column" marginTop={1}>
-          <text>Context</text>
-          <text opacity={0.5}>{JSON.stringify(context, null, 2).slice(0, 300)}</text>
-        </box>
+          {/* Outcome annotation */}
+          {outcome && (
+            <box flexDirection="column" marginBottom={1}>
+              <text>Outcome</text>
+              <text>
+                Status: {outcome.status} By: {outcome.evaluatedBy} At:{" "}
+                {formatTimestamp(outcome.evaluatedAt)}
+              </text>
+              {outcome.reason && <text opacity={0.5}>Reason: {outcome.reason}</text>}
+              {outcome.baselineCid && (
+                <text opacity={0.5}>Baseline: {truncateCid(outcome.baselineCid)}</text>
+              )}
+            </box>
+          )}
+
+          <box flexDirection="column" marginBottom={1} {...sectionProps("summary")}>
+            <text>{`${titlePrefix("summary")}Summary`}</text>
+            <markdown>{summary}</markdown>
+            {description && (
+              <box marginTop={1}>
+                <markdown>{description}</markdown>
+              </box>
+            )}
+          </box>
+
+          {scores && Object.keys(scores).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("scores")}>
+              <text>{`${titlePrefix("scores")}Scores`}</text>
+              {Object.entries(scores).map(([name, score]) => (
+                <text key={name}>
+                  {name}: {formatScore(score)} ({score.direction})
+                </text>
+              ))}
+            </box>
+          )}
+
+          {(relations ?? []).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("relations")}>
+              <text>{`${titlePrefix("relations")}Relations (${(relations ?? []).length})`}</text>
+              {(relations ?? []).map((r, i) => (
+                <text key={`rel-${String(i)}`}>
+                  {r.relationType} → {truncateCid(r.targetCid)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {Object.keys(artifacts).length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("artifacts")}>
+              <text>{`${titlePrefix("artifacts")}Artifacts (${Object.keys(artifacts).length})`}</text>
+              {Object.entries(artifacts).map(([name, hash]) => (
+                <text key={name}>
+                  {name}: {truncateCid(hash)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {ancestors.length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("ancestors")}>
+              <text>{`${titlePrefix("ancestors")}Ancestors (${ancestors.length})`}</text>
+              {ancestors.map((a) => (
+                <text key={a.cid}>
+                  {truncateCid(a.cid)} [{a.kind}] {a.summary}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {children.length > 0 && (
+            <box flexDirection="column" marginBottom={1} {...sectionProps("children")}>
+              <text>{`${titlePrefix("children")}Children (${children.length})`}</text>
+              {children.map((ch) => (
+                <text key={ch.cid}>
+                  {truncateCid(ch.cid)} [{ch.kind}] {ch.summary}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {thread.length > 1 && (
+            <box flexDirection="column" {...sectionProps("discussion")}>
+              <text>{`${titlePrefix("discussion")}Discussion (${thread.length - 1} replies)`}</text>
+              {thread.slice(1).map((node) => (
+                <text key={node.contribution.cid}>
+                  {"  ".repeat(node.depth)}
+                  {truncateCid(node.contribution.cid)} {node.contribution.summary} [
+                  {node.contribution.agent.agentName ?? node.contribution.agent.agentId}]{" "}
+                  {formatTimestamp(node.contribution.createdAt)}
+                </text>
+              ))}
+            </box>
+          )}
+
+          {context && Object.keys(context).length > 0 && (
+            <box flexDirection="column" marginTop={1} {...sectionProps("context")}>
+              <text>{`${titlePrefix("context")}Context`}</text>
+              <text opacity={0.5}>{JSON.stringify(context, null, 2)}</text>
+            </box>
+          )}
+        </box>,
       )}
     </box>
   );
