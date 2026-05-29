@@ -108,12 +108,18 @@ agent_topology:
 #   base_delay_ms: 10000
 #   max_backoff_ms: 300000
 
-# Lifecycle hooks — shell commands run at key points.
+# Admission — pre-contribution validation chain.
 #
-# hooks:
-#   after_checkout: "echo 'Workspace ready'"
-#   before_contribute: "bun test"
-#   after_contribute: "echo 'Contribution submitted'"
+# admission:
+#   - type: shell
+#     name: test
+#     command: "bun test"
+#     on_fail: reject
+#   - type: metric_check
+#     name: coverage_floor
+#     metric: coverage
+#     direction: maximize
+#     min_value: 0.8
 ---
 
 # swirling-sparking-sketch

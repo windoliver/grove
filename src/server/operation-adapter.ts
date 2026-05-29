@@ -20,11 +20,14 @@ import type { ServerDeps } from "./deps.js";
  *
  * The `onEntityWrite` hook is wired here to forward Entity-write events
  * (#287/#292) into the WatchHub on `deps.watchHub`. The per-request
- * `namespace` field is NOT set here — route handlers must inject it from
- * the auth context (`c.get("namespace")`) before invoking an operation,
- * since the watch protocol scopes events per-namespace.
+ * `namespace` is normally injected by route handlers from the auth context
+ * (`c.get("namespace")`) before invoking an operation, since the watch
+ * protocol scopes events per-namespace. Callers that build a scoped
+ * `ServerDeps` may provide it here; the adapter forwards it as both
+ * operation namespace and admission zone ID.
  */
 export function toOperationDeps(deps: ServerDeps): OperationDeps {
+  const zoneId = deps.zoneId ?? deps.namespace;
   return {
     contributionStore: deps.contributionStore,
     claimStore: deps.claimStore,
@@ -39,6 +42,22 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
       : {}),
     ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
+    ...(deps.hookRunner !== undefined ? { hookRunner: deps.hookRunner } : {}),
+    ...(deps.hookCwd !== undefined ? { hookCwd: deps.hookCwd } : {}),
+    ...(deps.admissionPermissionResolver !== undefined
+      ? { admissionPermissionResolver: deps.admissionPermissionResolver }
+      : {}),
+    ...(deps.admissionGovernanceEvaluator !== undefined
+      ? { admissionGovernanceEvaluator: deps.admissionGovernanceEvaluator }
+      : {}),
+    ...(deps.blueprintHashSource !== undefined
+      ? { blueprintHashSource: deps.blueprintHashSource }
+      : {}),
+    ...(deps.artifactSignatureVerifier !== undefined
+      ? { artifactSignatureVerifier: deps.artifactSignatureVerifier }
+      : {}),
+    ...(deps.namespace !== undefined ? { namespace: deps.namespace } : {}),
+    ...(zoneId !== undefined ? { zoneId } : {}),
     onEntityWrite: (event) => {
       deps.watchHub.recordWrite(event);
       // Cross-process dedupe (#292): record this write so the matching

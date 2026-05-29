@@ -187,6 +187,6 @@ function sanitizeMetricName(name: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
   const stripped = name.replace(/[\x00-\x1f\x7f]/g, "").trim();
   return stripped.length > MAX_METRIC_LABEL_LEN
-    ? stripped.slice(0, MAX_METRIC_LABEL_LEN - 1) + "…"
+    ? `${stripped.slice(0, MAX_METRIC_LABEL_LEN - 1)}…`
     : stripped;
 }

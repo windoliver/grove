@@ -357,6 +357,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     //    Shared bootstrap: session.config > GROVE.md > no enforcement.
     //    See src/cli/utils/resolve-contract.ts for the full precedence chain.
     const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+    const { LocalHookRunner } = await import("../../local/hook-runner.js");
     const { resolveContract } = await import("../utils/resolve-contract.js");
     const contract = await resolveContract({
       goalSessionStore: new SqliteGoalSessionStore(db),
@@ -486,6 +487,8 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       frontier,
       idempotencyStore,
       ...(contract !== undefined ? { contract } : {}),
+      hookRunner: new LocalHookRunner(),
+      hookCwd: groveRoot,
     };
 
     const input: ContributeInput = {

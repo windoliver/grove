@@ -8,6 +8,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type {
+  AdmissionGovernanceEvaluator,
+  AdmissionPermissionResolver,
+  ArtifactSignatureVerifier,
+  BlueprintHashSource,
+} from "../core/admission/types.js";
 import type { GroveContract } from "../core/contract.js";
 import { parseGroveContract } from "../core/contract.js";
 import type { CreditsService } from "../core/credits.js";
@@ -17,9 +23,11 @@ import {
   FrontierRewardService,
   frontierRewardEligibleMetrics,
 } from "../core/frontier-reward-service.js";
+import type { HookRunner } from "../core/hooks.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "./fs-cas.js";
+import { LocalHookRunner } from "./hook-runner.js";
 import type { SqliteBountyStore } from "./sqlite-bounty-store.js";
 import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import type { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
@@ -91,6 +99,13 @@ export interface LocalRuntime {
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
   readonly contract: GroveContract | undefined;
+  readonly hookRunner: HookRunner;
+  readonly hookCwd: string;
+  readonly admissionPermissionResolver: AdmissionPermissionResolver | undefined;
+  readonly admissionGovernanceEvaluator: AdmissionGovernanceEvaluator | undefined;
+  readonly blueprintHashSource: BlueprintHashSource | undefined;
+  readonly artifactSignatureVerifier: ArtifactSignatureVerifier | undefined;
+  readonly zoneId: string | undefined;
   /** Call after writing a contribution to invalidate the frontier cache. */
   readonly onContributionWrite: () => void;
   /** Absolute path to the project root (parent of .grove). */
@@ -129,6 +144,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     ...(envSessionId ? { sessionId: envSessionId } : {}),
   });
   const cas = new FsCas(casPath);
+  const hookRunner = new LocalHookRunner();
 
   const baseFrontier = new DefaultFrontierCalculator(stores.contributionStore);
   const frontier: FrontierCalculator =
@@ -168,15 +184,6 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   }
 
   let workspace: LocalWorkspaceManager | undefined;
-  if (createWorkspace) {
-    workspace = new LocalWorkspaceManager({
-      groveRoot: groveDir,
-      db: stores.db,
-      contributionStore: stores.contributionStore,
-      cas,
-    });
-  }
-
   let contract: GroveContract | undefined;
   try {
     if (shouldParseContract) {
@@ -213,6 +220,17 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     throw err;
   }
 
+  if (createWorkspace) {
+    workspace = new LocalWorkspaceManager({
+      groveRoot: groveDir,
+      db: stores.db,
+      contributionStore: stores.contributionStore,
+      cas,
+      hookRunner,
+      ...(contract?.hooks !== undefined ? { hooksConfig: contract.hooks } : {}),
+    });
+  }
+
   const frontierRewardService = new FrontierRewardService({
     frontier,
     bountyStore: stores.bountyStore,
@@ -237,6 +255,13 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     frontier,
     workspace,
     contract,
+    hookRunner,
+    hookCwd: groveRoot,
+    admissionPermissionResolver: undefined,
+    admissionGovernanceEvaluator: undefined,
+    blueprintHashSource: undefined,
+    artifactSignatureVerifier: undefined,
+    zoneId: undefined,
     onContributionWrite,
     groveRoot,
     close: () => {

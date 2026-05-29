@@ -15,6 +15,7 @@
  */
 
 import type { CasMutationResult, CasOpts, ContentStore } from "./cas.js";
+import { computeContributionContentHash } from "./content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "./entity.js";
 import {
   ArtifactLimitError,
@@ -41,6 +42,7 @@ import type {
   ClaimStore,
   ContributionPutManyOutcome,
   ContributionPutOutcome,
+  ContributionPutResult,
   ContributionQuery,
   ContributionStore,
   CountSinceQuery,
@@ -182,10 +184,12 @@ export class EnforcingContributionStore implements ContributionStore {
 
   put = async (contribution: Contribution): Promise<ContributionPutOutcome> => {
     return this.writeMutex.runExclusive(async () => {
-      // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
-      const existing = await this.inner.get(contribution.cid);
+      // Idempotent: if the contribution is already stored by CID or logical
+      // content hash, skip enforcement. Admission audit metadata changes the
+      // CID while preserving the logical content hash.
+      const existing = await this.findExistingContribution(contribution);
       if (existing !== undefined) {
-        return this.inner.put(contribution);
+        return this.duplicatePutResult(contribution, existing);
       }
 
       await this.enforceContributionLimits(contribution, 0, []);
@@ -227,11 +231,11 @@ export class EnforcingContributionStore implements ContributionStore {
     cowriteFn: () => void,
   ): Promise<ContributionPutOutcome> => {
     return this.writeMutex.runExclusive(async () => {
-      const existing = await this.inner.get(contribution.cid);
+      const existing = await this.findExistingContribution(contribution);
       if (existing !== undefined) {
         // Idempotent: contribution already present, skip enforcement and
         // the cowrite (no handoffs to insert for an existing row).
-        return { cid: existing.cid, isNew: false, contribution: existing };
+        return this.duplicatePutResult(contribution, existing);
       }
 
       await this.enforceContributionLimits(contribution, 0, []);
@@ -338,6 +342,26 @@ export class EnforcingContributionStore implements ContributionStore {
   // ========================================================================
   // Private enforcement
   // ========================================================================
+
+  private async findExistingContribution(
+    contribution: Contribution,
+  ): Promise<Contribution | undefined> {
+    const existingByCid = await this.inner.get(contribution.cid);
+    if (existingByCid !== undefined) return existingByCid;
+
+    const getByContentHash = this.inner.getByContentHash;
+    if (getByContentHash === undefined) return undefined;
+
+    return getByContentHash.call(this.inner, computeContributionContentHash(contribution));
+  }
+
+  private duplicatePutResult(
+    contribution: Contribution,
+    existing: Contribution,
+  ): ContributionPutResult {
+    this.preWriteHooks.delete(contribution.cid);
+    return { cid: existing.cid, isNew: false, contribution: existing };
+  }
 
   private async enforceContributionLimits(
     contribution: Contribution,

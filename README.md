@@ -422,6 +422,7 @@ surfaces. It defines:
 - Grove metadata (name, description, mode)
 - Metric definitions and score directions
 - Gates for contribution acceptance
+- Admission rules for pre-contribution validation and audit evidence
 - Stop conditions for agent loops
 - Concurrency and execution limits
 - Lifecycle hooks

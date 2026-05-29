@@ -299,6 +299,7 @@ export function operationDepsForSession(
 
   return {
     ...baseDeps,
+    ...(sessionId !== undefined ? { namespace: undefined } : {}),
     contributionStore: scopedContributionStore,
     frontier: scopedFrontier,
     frontierRewardService: sessionId === undefined ? baseDeps.frontierRewardService : undefined,

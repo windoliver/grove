@@ -80,6 +80,8 @@ describe("MCP deps parity with LocalRuntime", () => {
       workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
+      hookRunner: runtime.hookRunner,
+      hookCwd: runtime.hookCwd,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
       runtimeSkillService,
@@ -95,6 +97,8 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeDefined();
     expect(toOperationDeps(deps).frontierRewardService).toBe(runtime.frontierRewardService);
+    expect(toOperationDeps(deps).hookRunner).toBe(runtime.hookRunner);
+    expect(toOperationDeps(deps).hookCwd).toBe(runtime.hookCwd);
   });
 
   test("HTTP MCP deps construction includes goalSessionStore", () => {
@@ -112,6 +116,8 @@ describe("MCP deps parity with LocalRuntime", () => {
       workspace: requireWorkspace(runtime),
       contract: runtime.contract,
       onContributionWrite: runtime.onContributionWrite,
+      hookRunner: runtime.hookRunner,
+      hookCwd: runtime.hookCwd,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
       watchHub: new WatchHub(),
@@ -125,6 +131,8 @@ describe("MCP deps parity with LocalRuntime", () => {
     expect(toOperationDeps(deps).timelineStore).toBe(runtime.timelineStore);
     expect(deps.runtimeSkillService).toBeUndefined();
     expect(toOperationDeps(deps).frontierRewardService).toBeUndefined();
+    expect(toOperationDeps(deps).hookRunner).toBe(runtime.hookRunner);
+    expect(toOperationDeps(deps).hookCwd).toBe(runtime.hookCwd);
   });
 
   test("toOperationDeps forwards sessionOwnerRef", () => {
@@ -144,6 +152,27 @@ describe("MCP deps parity with LocalRuntime", () => {
     };
 
     expect(toOperationDeps(deps).sessionOwnerRef).toEqual(ownerRef);
+  });
+
+  test("toOperationDeps forwards admission zoneId without watch namespace", () => {
+    const deps: McpDeps = {
+      contributionStore: runtime.contributionStore,
+      claimStore: runtime.claimStore,
+      timelineStore: runtime.timelineStore,
+      bountyStore: runtime.bountyStore,
+      cas: runtime.cas,
+      frontier: runtime.frontier,
+      workspace: requireWorkspace(runtime),
+      workspaceBoundary: runtime.groveRoot,
+      goalSessionStore: runtime.goalSessionStore,
+      zoneId: "zone-only",
+      watchHub: new WatchHub(),
+    };
+
+    const opDeps = toOperationDeps(deps);
+
+    expect(opDeps.zoneId).toBe("zone-only");
+    expect(opDeps.namespace).toBeUndefined();
   });
 
   test("sessionToOwnerRef derives owner refs from session metadata", () => {

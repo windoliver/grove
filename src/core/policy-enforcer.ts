@@ -82,6 +82,10 @@ export interface StopCheckResult {
   readonly degraded?: boolean | undefined;
 }
 
+export interface PolicyEnforcerOptions {
+  readonly skipGateEnforcement?: boolean | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // PolicyEnforcer
 // ---------------------------------------------------------------------------
@@ -96,6 +100,7 @@ export class PolicyEnforcer {
   private readonly config: SessionRuntimeConfig;
   private readonly contributionStore: ContributionStore;
   private readonly outcomeStore: OutcomeStore | undefined;
+  private readonly skipGateEnforcement: boolean;
 
   /**
    * Lazily-populated cache of best scores per metric.
@@ -111,10 +116,12 @@ export class PolicyEnforcer {
     config: SessionRuntimeConfig,
     contributionStore: ContributionStore,
     outcomeStore?: OutcomeStore | undefined,
+    options?: PolicyEnforcerOptions | undefined,
   ) {
     this.config = config;
     this.contributionStore = contributionStore;
     this.outcomeStore = outcomeStore;
+    this.skipGateEnforcement = options?.skipGateEnforcement ?? false;
   }
 
   /**
@@ -171,7 +178,7 @@ export class PolicyEnforcer {
     }
 
     // 2. Score requirements (evaluation mode only)
-    if (contribution.mode === ContributionMode.Evaluation) {
+    if (contribution.mode === ContributionMode.Evaluation && !this.skipGateEnforcement) {
       const scoreViolations = this.enforceScoreRequirements(contribution);
       for (const v of scoreViolations) {
         if (strict) {
@@ -227,7 +234,11 @@ export class PolicyEnforcer {
     }
 
     // 6. Gate checks (evaluation mode only)
-    if (contribution.mode === ContributionMode.Evaluation && this.config.gates !== undefined) {
+    if (
+      contribution.mode === ContributionMode.Evaluation &&
+      this.config.gates !== undefined &&
+      !this.skipGateEnforcement
+    ) {
       const gateViolations = await this.enforceGates(contribution);
       for (const v of gateViolations) {
         if (strict) {

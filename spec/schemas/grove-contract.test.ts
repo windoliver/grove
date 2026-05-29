@@ -38,6 +38,71 @@ function validV2Contract(overrides?: Record<string, unknown>): Record<string, un
   };
 }
 
+/** Minimal valid v3 grove contract. */
+function validV3Contract(overrides?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    contract_version: 3,
+    name: "test-grove-v3",
+    ...overrides,
+  };
+}
+
+function allAdmissionRuleVariants(): readonly Record<string, unknown>[] {
+  return [
+    {
+      type: "shell",
+      name: "lint",
+      command: "bun run check",
+      timeout: 60,
+      on_fail: "reject",
+    },
+    {
+      type: "metric_check",
+      name: "coverage_floor",
+      metric: "coverage",
+      direction: "maximize",
+      min_value: 0.8,
+      max_value: 1,
+    },
+    {
+      type: "artifact_required",
+      name: "report_required",
+      artifact: "report.json",
+    },
+    {
+      type: "relation_required",
+      name: "review_required",
+      relation_type: "reviews",
+    },
+    {
+      type: "blueprint_hash",
+      name: "blueprint_matches",
+      blueprint: "plans/feature.md",
+      expected_hash: "blake3:abc",
+      on_mismatch: "reject",
+    },
+    {
+      type: "artifact_signature",
+      name: "signed_release",
+      artifact: "release.tar",
+      require_signer_in: ["platform-team", "release-team"],
+    },
+    {
+      type: "rebac_permission",
+      name: "can_contribute",
+      permission: "contribute",
+      object_type: "session",
+      object_id_context_key: "session_id",
+    },
+    {
+      type: "governance_policy",
+      name: "fraud_score_ok",
+      policy: "fraud_score_below",
+      max_score: 0.4,
+    },
+  ];
+}
+
 /** Extract YAML frontmatter from a GROVE.md file. */
 function extractFrontmatter(filePath: string): Record<string, unknown> {
   const content = readFileSync(filePath, "utf-8");
@@ -81,6 +146,17 @@ describe("grove-contract schema — valid contracts", () => {
 
   test("accepts seed as descriptive ref", () => {
     expect(validate(validContract({ seed: "initial-baseline-run" }))).toBe(true);
+  });
+
+  test("schema accepts all admission rule variants", () => {
+    const contract = validV3Contract({
+      metrics: {
+        coverage: { direction: "maximize" },
+      },
+      admission: allAdmissionRuleVariants(),
+    });
+
+    expect(validate(contract)).toBe(true);
   });
 });
 
@@ -1137,5 +1213,17 @@ describe("grove-contract schema — version-specific constraints", () => {
 
   test("v2 rejects claim_policy section", () => {
     expect(validate(validV2Contract({ claim_policy: { default_lease_seconds: 300 } }))).toBe(false);
+  });
+
+  test("v1 rejects admission section", () => {
+    expect(validate(validContract({ admission: [allAdmissionRuleVariants()[0]] }))).toBe(false);
+  });
+
+  test("v2 accepts admission section", () => {
+    expect(validate(validV2Contract({ admission: allAdmissionRuleVariants() }))).toBe(true);
+  });
+
+  test("v3 accepts admission section", () => {
+    expect(validate(validV3Contract({ admission: allAdmissionRuleVariants() }))).toBe(true);
   });
 });

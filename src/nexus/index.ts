@@ -27,6 +27,7 @@ export {
 export { LruCache } from "./lru-cache.js";
 export type { FailureKind, FailureMode } from "./mock-client.js";
 export { MockNexusClient } from "./mock-client.js";
+export * from "./nexus-admission-adapters.js";
 export { NexusCas } from "./nexus-cas.js";
 export { NexusClaimStore } from "./nexus-claim-store.js";
 export { NexusContributionStore } from "./nexus-contribution-store.js";
@@ -42,6 +43,7 @@ export {
   NexusMessageDelivery,
 } from "./nexus-inbox-client.js";
 export { NexusOutcomeStore } from "./nexus-outcome-store.js";
+export * from "./nexus-rpc-client.js";
 export type {
   ResolvedSkillCatalogRoot,
   ResolveNexusSkillCatalogRootOptions,

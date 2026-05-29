@@ -53,6 +53,12 @@
       },
       "maxItems": 20
     },
+    "admission": {
+      "type": "array",
+      "description": "Pre-contribution admission rules. Mutators run first, then validators inspect the final post-mutation contribution input before storage.",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/admissionRule" }
+    },
     "stop_conditions": {
       "$ref": "#/$defs/stop_conditions"
     },
@@ -103,7 +109,8 @@
             { "required": ["gossip"] },
             { "required": ["outcome_policy"] },
             { "required": ["topology"] },
-            { "required": ["agent_topology"] }
+            { "required": ["agent_topology"] },
+            { "required": ["admission"] }
           ]
         }
       }
@@ -219,6 +226,193 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "admissionRule": {
+      "description": "A pre-contribution admission rule. The 'type' field determines which other fields are required.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "name", "command"],
+          "properties": {
+            "type": { "const": "shell" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "on_fail": {
+              "type": "string",
+              "enum": ["reject", "warn"]
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "metric"],
+          "properties": {
+            "type": { "const": "metric_check" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "metric": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "maxLength": 64
+            },
+            "direction": {
+              "$ref": "https://grove.dev/schemas/contribution.json#/$defs/score_direction"
+            },
+            "min_value": {
+              "type": "number"
+            },
+            "max_value": {
+              "type": "number"
+            }
+          },
+          "anyOf": [{ "required": ["min_value"] }, { "required": ["max_value"] }],
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "artifact"],
+          "properties": {
+            "type": { "const": "artifact_required" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "artifact": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "relation_type"],
+          "properties": {
+            "type": { "const": "relation_required" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "relation_type": {
+              "type": "string",
+              "enum": ["derives_from", "responds_to", "reviews", "reproduces", "adopts"]
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "blueprint"],
+          "properties": {
+            "type": { "const": "blueprint_hash" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "blueprint": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "expected_hash": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "on_mismatch": {
+              "const": "reject"
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "require_signer_in"],
+          "properties": {
+            "type": { "const": "artifact_signature" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "artifact": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "require_signer_in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "permission", "object_type"],
+          "properties": {
+            "type": { "const": "rebac_permission" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "permission": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "object_type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "object_id_context_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "policy"],
+          "properties": {
+            "type": { "const": "governance_policy" },
+            "name": {
+              "$ref": "#/$defs/admissionRuleName"
+            },
+            "policy": {
+              "type": "string",
+              "enum": ["constraint_check", "fraud_score_below", "governance_status_clean"]
+            },
+            "max_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "admissionRuleName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "maxLength": 128
     },
     "stop_conditions": {
       "type": "object",

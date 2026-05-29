@@ -20,8 +20,10 @@ import {
   ScoreDirection,
 } from "../../src/core/models.js";
 import type { AgentTopology } from "../../src/core/topology.js";
+import { createLocalRuntime } from "../../src/local/runtime.js";
 import { PagesStore } from "../../src/tui/data/pages-store.js";
 import { PagesStoreProvider } from "../../src/tui/hooks/use-screen-stack.js";
+import { LocalDataProvider } from "../../src/tui/local-provider.js";
 import type { TuiDataProvider, TuiHandoffProvider } from "../../src/tui/provider.js";
 import { RunningView } from "../../src/tui/screens/running-view.js";
 
@@ -334,9 +336,68 @@ const topology: AgentTopology = {
   ],
 };
 
+interface HarnessData {
+  readonly provider: TuiDataProvider;
+  readonly topology: AgentTopology;
+  readonly goal: string;
+  readonly sessionId: string;
+  readonly sessionStartedAt?: string;
+  readonly activeRoles: readonly string[];
+  readonly agentFailures?: ReadonlyMap<string, string> | undefined;
+  readonly cleanup: () => void;
+}
+
+function createHarnessData(): HarnessData {
+  const groveDir = process.env.GROVE_HANDOFFS_HARNESS_GROVE_DIR;
+  if (!groveDir) {
+    return {
+      provider: mockProvider,
+      topology,
+      goal: "Review loop: coder=codex, reviewer=claude; validate handoff recovery",
+      sessionId: SESSION_ID,
+      sessionStartedAt: STARTED_AT,
+      activeRoles: ["coder", "reviewer"],
+      agentFailures: new Map([["reviewer", "claude ACP runtime unavailable"]]),
+      cleanup: () => mockProvider.close(),
+    };
+  }
+
+  const runtime = createLocalRuntime({
+    groveDir,
+    frontierCacheTtlMs: 0,
+    workspace: false,
+    parseContract: true,
+  });
+  const provider = new LocalDataProvider({
+    contributionStore: runtime.contributionStore,
+    claimStore: runtime.claimStore,
+    agentTaskStore: runtime.agentTaskStore,
+    frontier: runtime.frontier,
+    groveName: runtime.contract?.name ?? "grove-handoffs",
+    outcomeStore: runtime.outcomeStore,
+    bountyStore: runtime.bountyStore,
+    cas: runtime.cas,
+    goalSessionStore: runtime.goalSessionStore,
+    handoffStore: runtime.handoffStore,
+    timelineStore: runtime.timelineStore,
+    backendLabel: `local (${groveDir})`,
+  });
+
+  return {
+    provider,
+    topology: runtime.contract?.topology ?? topology,
+    goal: `Real handoffs from ${groveDir}`,
+    sessionId: process.env.GROVE_SESSION_ID ?? SESSION_ID,
+    sessionStartedAt: undefined,
+    activeRoles: (runtime.contract?.topology ?? topology).roles.map((role) => role.name),
+    cleanup: () => runtime.close(),
+  };
+}
+
 async function main(): Promise<void> {
   const { DialogProvider } = await import("@opentui-ui/dialog/react");
   const { Toaster } = await import("@opentui-ui/toast/react");
+  const harness = createHarnessData();
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -350,14 +411,14 @@ async function main(): Promise<void> {
     <DialogProvider>
       <PagesStoreProvider store={pagesStore}>
         <RunningView
-          provider={mockProvider}
+          provider={harness.provider}
           intervalMs={1000}
-          topology={topology}
-          goal="Review loop: coder=codex, reviewer=claude; validate handoff recovery"
-          sessionId={SESSION_ID}
-          sessionStartedAt={STARTED_AT}
-          activeRoles={["coder", "reviewer"]}
-          agentFailures={new Map([["reviewer", "claude ACP runtime unavailable"]])}
+          topology={harness.topology}
+          goal={harness.goal}
+          sessionId={harness.sessionId}
+          sessionStartedAt={harness.sessionStartedAt}
+          activeRoles={harness.activeRoles}
+          agentFailures={harness.agentFailures}
           onEnterInspect={() => {
             /* no-op */
           }}
@@ -376,6 +437,7 @@ async function main(): Promise<void> {
 
   await new Promise((resolve) => setTimeout(resolve, 120_000));
   renderer.destroy();
+  harness.cleanup();
 }
 
 main().catch((error: unknown) => {

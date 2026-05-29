@@ -6,6 +6,7 @@
  * transport-specific error format.
  */
 
+import { AdmissionRejectError } from "../admission/errors.js";
 import {
   ArtifactLimitError,
   ClaimConflictError,
@@ -172,6 +173,21 @@ export function fromGroveError(error: unknown): OperationErr {
       details: {
         requestedSeconds: error.requestedSeconds,
         maxSeconds: error.maxSeconds,
+      },
+    });
+  }
+
+  if (error instanceof AdmissionRejectError) {
+    return err({
+      code: OperationErrorCode.PolicyViolation,
+      message: error.message,
+      details: {
+        violationType: "admission_rejected",
+        ruleName: error.ruleName,
+        ruleType: error.ruleType,
+        reason: error.reason,
+        ...(error.evidence !== undefined ? { evidence: error.evidence } : {}),
+        ...(error.audit !== undefined ? { admissionAudit: error.audit } : {}),
       },
     });
   }

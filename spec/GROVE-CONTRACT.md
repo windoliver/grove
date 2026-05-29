@@ -49,16 +49,18 @@ Free-form prose for human/agent-readable context...
 
 ## Contract Version
 
-Every GROVE.md MUST include a `contract_version` field. Two versions
+Every GROVE.md MUST include a `contract_version` field. Three versions
 are currently supported:
 
 - **Version 1**: Legacy format with `claim_policy` for basic claim
   coordination. Suitable for simple groves with minimal enforcement.
 - **Version 2**: Extended format with `concurrency`, `execution`,
-  `rate_limits`, and `retry` sections for fine-grained control.
+  `rate_limits`, `retry`, and `admission` sections for fine-grained control.
+- **Version 3**: Current format. Uses Version 2 fields and renames
+  `topology` to `agent_topology`.
 
 V1 contracts are auto-migrated to V2 types at parse time. New groves
-SHOULD use version 2.
+SHOULD use version 3.
 
 Unknown properties are **rejected** (strict validation). This catches
 typos immediately rather than silently ignoring misspelled fields like
@@ -70,7 +72,7 @@ typos immediately rather than silently ignoring misspelled fields like
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `contract_version` | Yes | integer | `1` or `2` |
+| `contract_version` | Yes | integer | `1`, `2`, or `3` |
 | `name` | Yes | string | Human/agent-readable name (1-128 chars) |
 | `description` | No | string | What this grove is about (max 1024 chars) |
 | `mode` | No | enum | Default contribution mode: `evaluation` or `exploration` |
@@ -192,6 +194,88 @@ Maximum 20 gates per grove.
 
 ---
 
+## Admission
+
+`admission:` defines pre-contribution admission rules. Grove runs mutators first
+and validators second. Validators inspect the final post-mutation contribution
+input and reject before the contribution is stored.
+
+Admission is available in `contract_version: 2` and `contract_version: 3`.
+Version 1 contracts reject `admission:` because v1 predates the unified
+admission chain.
+
+Legacy `hooks.before_contribute` and `gates:` are normalized into admission
+validators for compatibility. New contracts should prefer explicit
+`admission:` rules for ordering and audit clarity.
+
+```yaml
+admission:
+  - type: metric_check
+    name: coverage_floor
+    metric: coverage
+    min_value: 0.8
+  - type: rebac_permission
+    name: can_contribute
+    permission: contribute
+    object_type: session
+    object_id_context_key: session_id
+  - type: governance_policy
+    name: governance_clean
+    policy: governance_status_clean
+```
+
+### Rule Types
+
+Every admission rule requires `type` and `name`. Rule names must match
+`^[a-z][a-z0-9_-]*$` and must be unique within the `admission:` array. The
+portable JSON Schema validates rule shape; Grove's contract parser enforces
+cross-rule uniqueness.
+
+| Type | Purpose | Required fields | Optional fields |
+|------|---------|-----------------|-----------------|
+| `shell` | Run a local shell validator through the hook runner | `command` | `timeout`, `on_fail` (`reject` or `warn`) |
+| `metric_check` | Require a submitted score to stay within bounds | `metric`, one of `min_value` or `max_value` | `direction` |
+| `artifact_required` | Require a named artifact to be present | `artifact` | - |
+| `relation_required` | Require a relation of a given type | `relation_type` | - |
+| `blueprint_hash` | Compare an external blueprint hash with an expected hash | `blueprint` | `expected_hash`, `on_mismatch` (`reject`) |
+| `artifact_signature` | Ask a verifier to validate artifact signatures | `require_signer_in` | `artifact` |
+| `rebac_permission` | Ask a ReBAC delegate whether the agent may contribute | `permission`, `object_type` | `object_id_context_key` |
+| `governance_policy` | Ask a governance delegate whether policy permits the contribution | `policy` | `max_score` |
+
+`relation_type` accepts the standard contribution relation types:
+`derives_from`, `responds_to`, `reviews`, `reproduces`, and `adopts`.
+`governance_policy` accepts `constraint_check`, `fraud_score_below`, and
+`governance_status_clean`.
+
+### Delegate-Backed Rules
+
+`rebac_permission`, `governance_policy`, `blueprint_hash`, and
+`artifact_signature` call runtime delegates. If the required delegate is not
+configured, the rule rejects the contribution. Delegate failures are converted
+to admission rejections with evidence so callers receive a normal validation
+failure instead of an uncaught transport error.
+
+For `rebac_permission`, the checked subject is the contribution agent. If
+`object_id_context_key` is present, Grove reads the object id from
+`contribution.context[object_id_context_key]`; otherwise it uses the contribution
+summary as the fallback object id. The request namespace is passed to ReBAC as
+`zoneId`.
+
+For `governance_policy`, Grove passes the contribution, agent id, configured
+policy, optional `max_score`, and request namespace as `zoneId`. HTTP
+session-scoped writes still pass `zoneId` even though they intentionally do not
+emit namespace-scoped watch events.
+
+### Audit
+
+Accepted contributions receive `context.admission` containing the admission
+audit. The audit includes `version`, `accepted`, `evaluatedAt`, per-rule
+results, and annotations such as shell exit codes or observed metric values.
+Rejected contributions are not stored; the rejection response includes the
+failed rule, reason, evidence, and the audit accumulated before rejection.
+
+---
+
 ## Stop Conditions
 
 The `stop_conditions` section defines when the grove should stop
@@ -308,8 +392,8 @@ relation of each listed type.
 ## Claim Policy (V1 only)
 
 The `claim_policy` section configures claim coordination behavior.
-This is a **version 1** feature — version 2 contracts use
-`concurrency`, `execution`, `rate_limits`, and `retry` instead.
+This is a **version 1** feature. Version 2 and 3 contracts use
+`concurrency`, `execution`, `rate_limits`, `retry`, and `admission` instead.
 
 ```yaml
 claim_policy:
