@@ -55,6 +55,10 @@ export interface ActionContext {
   readonly claims: readonly Claim[] | null;
   /** Bundled MCP prompts available to surface as palette actions. */
   readonly mcpPrompts?: readonly import("../provider.js").PromptInfo[] | undefined;
+  /** Skills available to surface as palette actions (bundled + topology-derived). */
+  readonly availableSkills?: readonly import("../provider.js").SkillInfo[] | undefined;
+  /** Role of the selected agent slot — scopes which role-tagged skills are shown. */
+  readonly selectedAgentRole?: string | undefined;
   readonly selectedSession?: string | undefined;
   /** CID of the highlighted contribution (cursor row), or the open detail. */
   readonly selectedCid?: string | undefined;
@@ -92,6 +96,8 @@ export interface ActionContext {
   readonly delegate: (peerAddress: string) => void;
   /** Deliver a prompt template to the selected agent via the messaging/IPC path. */
   readonly runPrompt: (template: string, session: string) => void;
+  /** Ask the selected agent to acquire a skill via the messaging/IPC path. */
+  readonly requestSkill: (skillName: string, session: string) => void;
   // Messaging
   readonly broadcastMessage: () => void;
   readonly directMessage: () => void;

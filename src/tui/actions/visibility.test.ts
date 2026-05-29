@@ -48,6 +48,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     // Keymap-migrated capabilities (#275)
     openPalette: () => undefined,
     runPrompt: () => undefined,
+    requestSkill: () => undefined,
     enterTerminalInput: () => undefined,
     artifactPrev: () => undefined,
     artifactNext: () => undefined,

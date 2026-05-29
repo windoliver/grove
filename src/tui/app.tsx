@@ -74,8 +74,10 @@ import {
   isGitHubProvider,
   isGoalProvider,
   type PromptInfo,
+  type SkillInfo,
   type TuiDataProvider,
   type TuiPromptProvider,
+  type TuiSkillProvider,
 } from "./provider.js";
 import { mintTokenForCompensation } from "./safety/internal/compensation.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
@@ -508,6 +510,72 @@ export function App({
     undefined,
     hasPrompts && paletteVisible,
   );
+
+  // Fetch bundled (global) skills for the "Skills" palette group. Like prompts,
+  // only when the provider advertises the capability AND the palette is open.
+  // These are role-less — topology-declared role scoping is merged in below.
+  const hasSkills = provider.capabilities.skills;
+  const skillsFetcher = useCallback(async (): Promise<readonly SkillInfo[]> => {
+    if (!hasSkills) return [];
+    const sp = provider as Partial<TuiSkillProvider>;
+    if (!sp.listAvailableSkills) return [];
+    try {
+      return await sp.listAvailableSkills();
+    } catch {
+      return [];
+    }
+  }, [provider, hasSkills]);
+  const { data: bundledSkills } = useEventDrivenData<readonly SkillInfo[]>(
+    skillsFetcher,
+    undefined,
+    undefined,
+    hasSkills && paletteVisible,
+  );
+
+  // Assemble availableSkills: merge topology-derived role-tagged skills with the
+  // bundled (role-less) skills, deduped by name. A skill declared by one or more
+  // topology roles carries the union of those role names; a purely-bundled skill
+  // stays role-less so it surfaces for every selected slot.
+  const availableSkills = useMemo<readonly SkillInfo[]>(() => {
+    const byName = new Map<string, { name: string; description?: string; roles?: string[] }>();
+    for (const role of topology?.roles ?? []) {
+      for (const skill of role.skills ?? []) {
+        const existing = byName.get(skill);
+        if (existing) {
+          existing.roles = [...(existing.roles ?? []), role.name];
+        } else {
+          byName.set(skill, { name: skill, roles: [role.name] });
+        }
+      }
+    }
+    for (const skill of bundledSkills ?? []) {
+      const existing = byName.get(skill.name);
+      if (existing) {
+        // Topology-declared skill that is also bundled: keep its role scoping but
+        // fill in a description from the bundled listing if it lacks one.
+        if (existing.description === undefined && skill.description !== undefined) {
+          existing.description = skill.description;
+        }
+      } else {
+        byName.set(skill.name, {
+          name: skill.name,
+          ...(skill.description !== undefined && { description: skill.description }),
+          ...(skill.roles !== undefined && { roles: [...skill.roles] }),
+        });
+      }
+    }
+    return [...byName.values()];
+  }, [topology, bundledSkills]);
+
+  // Role of the selected agent slot. The agent id IS the topology role name
+  // (see handleSpawn: topology.roles.find(r => r.name === agentId)), so map
+  // selectedSession → agentId → matching role name. Falls back to the raw
+  // agent id when no topology role matches (so global skills still apply).
+  const selectedAgentRole = useMemo<string | undefined>(() => {
+    if (selectedSession === undefined) return undefined;
+    const agentId = agentIdFromSession(selectedSession) ?? selectedSession;
+    return topology?.roles.find((r) => r.name === agentId)?.name ?? agentId;
+  }, [selectedSession, topology]);
 
   // Poll pending questions for the answer-question palette actions. We carry
   // the cids (not just the count) so the approve/deny actions can pin the exact
@@ -1010,6 +1078,8 @@ export function App({
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
       mcpPrompts: mcpPrompts ?? [],
+      availableSkills,
+      selectedAgentRole,
       selectedSession,
       // Strict focused-panel selection (see resolveSelectedCid): Frontier row,
       // or the open Detail, else undefined. No cross-panel detail fallback —
@@ -1085,6 +1155,16 @@ export function App({
         if (!template) return;
         const recipient = agentIdFromSession(session) ?? session;
         void sendTuiMessage(recipient, template);
+      },
+      // Ask the selected agent to acquire a skill through the same messaging/IPC
+      // path as runPrompt (sendTuiMessage → provider.sendMessage / boardroom
+      // POST). Never tmux send-keys. The agent uses grove_request_skill to fetch.
+      requestSkill: (skillName, session) => {
+        const recipient = agentIdFromSession(session) ?? session;
+        void sendTuiMessage(
+          recipient,
+          `Please acquire the "${skillName}" skill (use grove_request_skill).`,
+        );
       },
       broadcastMessage: () => {
         dispatch({ type: "BROADCAST_MODE" });
@@ -1202,6 +1282,8 @@ export function App({
       canDelegate,
       activeClaims,
       mcpPrompts,
+      availableSkills,
+      selectedAgentRole,
       selectedSession,
       nav,
       paletteParentId,

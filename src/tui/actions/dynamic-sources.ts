@@ -90,6 +90,27 @@ export const promptSource: DynamicSource = (ctx) =>
     }),
   );
 
+export const skillSource: DynamicSource = (ctx) => {
+  if (ctx.selectedSession === undefined) return [];
+  const role = ctx.selectedAgentRole;
+  return (ctx.availableSkills ?? [])
+    .filter((s) => s.roles === undefined || role === undefined || s.roles.includes(role))
+    .map(
+      (s): Action => ({
+        id: `skill.request.${s.name}`,
+        label: `Request skill: ${s.name}`,
+        detail: s.description ?? "skill",
+        group: "Skills",
+        slash: `/skill ${s.name}`,
+        keywords: ["skill", "request", s.name],
+        available: (c) => c.selectedSession !== undefined,
+        run: (c) => {
+          if (c.selectedSession) c.requestSkill(s.name, c.selectedSession);
+        },
+      }),
+    );
+};
+
 function spawnAllowed(ctx: ActionContext, role: string): boolean {
   if (!ctx.topology) return true; // no topology constraints to enforce
   if (ctx.claims === null) return false; // scoped session: conservative

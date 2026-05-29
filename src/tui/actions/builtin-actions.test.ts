@@ -64,6 +64,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     frontierAdopt: () => undefined,
     openPalette: () => undefined,
     runPrompt: () => undefined,
+    requestSkill: () => undefined,
     ...overrides,
   };
 }

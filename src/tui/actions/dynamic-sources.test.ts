@@ -4,6 +4,7 @@ import {
   killSource,
   promptSource,
   sessionNavSource,
+  skillSource,
   spawnSource,
 } from "./dynamic-sources.js";
 import type { ActionContext } from "./types.js";
@@ -15,6 +16,7 @@ const baseCtx = (over: Partial<ActionContext>): ActionContext =>
     gossipPeers: [],
     claims: [],
     mcpPrompts: [],
+    availableSkills: [],
     pendingQuestionCount: 0,
     hasGoals: false,
     canSpawn: true,
@@ -23,6 +25,9 @@ const baseCtx = (over: Partial<ActionContext>): ActionContext =>
     focusedPanel: 0,
     frontierSliceCount: 0,
     runPrompt: () => {
+      /* noop */
+    },
+    requestSkill: () => {
       /* noop */
     },
     ...over,
@@ -126,6 +131,45 @@ describe("dynamic sources", () => {
     });
     promptSource(ctx)[0]?.run(ctx);
     expect(delivered).toEqual({ text: "do triage", session: "s1" });
+  });
+
+  test("skillSource scopes to the selected agent's role skills", () => {
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      selectedAgentRole: "reviewer",
+      availableSkills: [
+        { name: "code-review", roles: ["reviewer"] },
+        { name: "writing", roles: ["author"] },
+      ],
+    });
+    expect(skillSource(ctx).map((a) => a.id)).toEqual(["skill.request.code-review"]);
+    expect(skillSource(ctx)[0]?.group).toBe("Skills");
+  });
+
+  test("skillSource includes role-less (global) skills", () => {
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      selectedAgentRole: "reviewer",
+      availableSkills: [{ name: "grove" }],
+    });
+    expect(skillSource(ctx).map((a) => a.id)).toEqual(["skill.request.grove"]);
+  });
+
+  test("skillSource is empty without a selected session", () => {
+    expect(skillSource(baseCtx({ availableSkills: [{ name: "x" }] }))).toEqual([]);
+  });
+
+  test("skillSource run requests the skill for the selected session", () => {
+    let req: { name: string; session: string } | undefined;
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      availableSkills: [{ name: "grove" }],
+      requestSkill: (name: string, session: string) => {
+        req = { name, session };
+      },
+    });
+    skillSource(ctx)[0]?.run(ctx);
+    expect(req).toEqual({ name: "grove", session: "s1" });
   });
 
   test("two profiles sharing a role produce a single (de-duped) spawn action", () => {

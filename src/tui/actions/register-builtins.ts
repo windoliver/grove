@@ -4,6 +4,7 @@ import {
   killSource,
   promptSource,
   sessionNavSource,
+  skillSource,
   spawnSource,
 } from "./dynamic-sources.js";
 import type { ActionRegistry } from "./registry.js";
@@ -21,4 +22,5 @@ export function registerBuiltInActions(registry: ActionRegistry, emptyCtx: Actio
   registry.registerDynamic("agent.kill.", killSource);
   registry.registerDynamic("agent.delegate.", delegateSource);
   registry.registerDynamic("prompt.", promptSource);
+  registry.registerDynamic("skill.request.", skillSource);
 }
