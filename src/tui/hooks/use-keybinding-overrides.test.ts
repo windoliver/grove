@@ -213,6 +213,18 @@ function mockActions(
     onGoalBackspace: () => {
       /* noop */
     },
+    onSlashCommandOpen: () => {
+      /* noop */
+    },
+    onSlashSubmit: () => {
+      /* noop */
+    },
+    onSlashChar: () => {
+      /* noop */
+    },
+    onSlashBackspace: () => {
+      /* noop */
+    },
     onBroadcastMode: () => {
       /* noop */
     },

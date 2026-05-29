@@ -86,7 +86,7 @@ export const OPERATOR_PANELS: readonly Panel[] = [
 // Input mode
 // ---------------------------------------------------------------------------
 
-/** Input mode hierarchy: command palette > help > search input > message input > goal input > terminal input > normal. */
+/** Input mode hierarchy: command palette > help > search input > message input > goal input > slash command > terminal input > normal. */
 export const InputMode = {
   Normal: "normal",
   TerminalInput: "terminal_input",
@@ -94,6 +94,7 @@ export const InputMode = {
   SearchInput: "search_input",
   MessageInput: "message_input",
   GoalInput: "goal_input",
+  SlashCommand: "slash_command",
   Help: "help",
 } as const;
 export type InputMode = (typeof InputMode)[keyof typeof InputMode];

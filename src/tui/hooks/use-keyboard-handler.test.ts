@@ -126,6 +126,10 @@ function mockActions(overrides?: {
     onGoalSubmit: () => record("onGoalSubmit"),
     onGoalChar: (char) => record("onGoalChar", char),
     onGoalBackspace: () => record("onGoalBackspace"),
+    onSlashCommandOpen: () => record("onSlashCommandOpen"),
+    onSlashSubmit: () => record("onSlashSubmit"),
+    onSlashChar: (char) => record("onSlashChar", char),
+    onSlashBackspace: () => record("onSlashBackspace"),
     onBroadcastMode: () => record("onBroadcastMode"),
     onDirectMessageMode: () => record("onDirectMessageMode"),
     onApproveQuestion: () => record("onApproveQuestion"),
@@ -691,6 +695,60 @@ describe("routeKey — search input mode", () => {
     const { actions, log } = mockActions({ focused: Panel.Search });
     routeKey(keyEvent("/"), actions);
     expect(log.calls).not.toContain("onSlashPaletteOpen");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slash command-line mode (`:` prompt) — #275 Task 11
+// ---------------------------------------------------------------------------
+
+describe("routeKey — slash command-line mode", () => {
+  test(": in Normal mode opens the slash command line", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    const handled = routeKey(keyEvent(":"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onSlashCommandOpen");
+  });
+
+  test(": does NOT conflict with the slash palette opener (/)", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    routeKey(keyEvent(":"), actions);
+    // `:` opens the dedicated command line, NOT the slash-filtered palette.
+    expect(log.calls).toContain("onSlashCommandOpen");
+    expect(log.calls).not.toContain("onSlashPaletteOpen");
+  });
+
+  test("single char in SlashCommand mode adds to the buffer", () => {
+    const { actions, log } = mockActions({ mode: InputMode.SlashCommand });
+    const handled = routeKey(keyEvent("a"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onSlashChar");
+    expect(log.args.onSlashChar).toEqual(["a"]);
+  });
+
+  test("space in SlashCommand mode adds a space (for args)", () => {
+    const { actions, log } = mockActions({ mode: InputMode.SlashCommand });
+    routeKey(keyEvent("space"), actions);
+    expect(log.calls).toContain("onSlashChar");
+    expect(log.args.onSlashChar).toEqual([" "]);
+  });
+
+  test("Enter in SlashCommand mode submits", () => {
+    const { actions, log } = mockActions({ mode: InputMode.SlashCommand });
+    routeKey(keyEvent("return"), actions);
+    expect(log.calls).toContain("onSlashSubmit");
+  });
+
+  test("backspace in SlashCommand mode removes a char", () => {
+    const { actions, log } = mockActions({ mode: InputMode.SlashCommand });
+    routeKey(keyEvent("backspace"), actions);
+    expect(log.calls).toContain("onSlashBackspace");
+  });
+
+  test("Escape in SlashCommand mode exits to Normal mode", () => {
+    const { actions, log } = mockActions({ mode: InputMode.SlashCommand });
+    routeKey(keyEvent("escape"), actions);
+    expect(log.args["panels.setMode"]).toEqual([InputMode.Normal]);
   });
 });
 

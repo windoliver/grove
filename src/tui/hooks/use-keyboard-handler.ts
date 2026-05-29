@@ -57,6 +57,11 @@ export interface KeyboardActions {
   readonly onGoalSubmit: () => void;
   readonly onGoalChar: (char: string) => void;
   readonly onGoalBackspace: () => void;
+  /** Opens the dedicated `:` slash command-line (Normal-mode `:`). */
+  readonly onSlashCommandOpen: () => void;
+  readonly onSlashSubmit: () => void;
+  readonly onSlashChar: (char: string) => void;
+  readonly onSlashBackspace: () => void;
   readonly onApproveQuestion: () => void;
   readonly onDenyQuestion: () => void;
   readonly onSendKeys: (key: string) => void;
@@ -303,6 +308,27 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Slash command-line mode (`:` prompt) — mirrors the GoalInput block.
+  if (mode === InputMode.SlashCommand) {
+    if (input === "return") {
+      actions.onSlashSubmit();
+      return true;
+    }
+    if (input === "backspace") {
+      actions.onSlashBackspace();
+      return true;
+    }
+    if (input === "space") {
+      actions.onSlashChar(" ");
+      return true;
+    }
+    if (input && input.length === 1 && !isCtrl) {
+      actions.onSlashChar(input);
+      return true;
+    }
+    return true;
+  }
+
   const resolvedKeymap = actions.resolvedKeymap;
   if (mode === InputMode.Normal && resolvedKeymap !== undefined) {
     const token = keyEventToToken(key);
@@ -427,6 +453,15 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Search input mode entry
   if (input === "/" && focused === Panel.Search) {
     actions.onSearchStart();
+    return true;
+  }
+
+  // Dedicated slash command-line entry: `:` in Normal mode opens the `:` prompt
+  // (vim-style). Submit prepends `/` and resolves via the slash index. `:` is
+  // not bound in the default keymap, so the keymap dispatch above returns a
+  // miss and falls through here.
+  if (input === ":" && mode === InputMode.Normal) {
+    actions.onSlashCommandOpen();
     return true;
   }
 

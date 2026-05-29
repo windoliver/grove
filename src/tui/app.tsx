@@ -21,6 +21,7 @@ import { registerBuiltInActions } from "./actions/register-builtins.js";
 import { createActionRegistry } from "./actions/registry.js";
 import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
 import { resolveSelectedCid } from "./actions/selection.js";
+import { buildSlashIndex, resolveSlash } from "./actions/slash-index.js";
 import { resolveEnabled } from "./actions/types.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -29,6 +30,7 @@ import { CommandPalette } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { LeaderOverlay } from "./components/leader-overlay.js";
+import { SlashInput } from "./components/slash-input.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
@@ -164,6 +166,9 @@ export function App({
   // When true, the command palette is shown pre-filtered to slash actions
   // (entered via Normal-mode `/`). Reset on every palette close path (#275).
   const [slashMode, setSlashMode] = useState(false);
+  // Dedicated `:` slash command-line buffer + last resolution error (#275 Task 11).
+  const [slashBuffer, setSlashBuffer] = useState("");
+  const [slashError, setSlashError] = useState<string | undefined>(undefined);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
   const resolvedKeymapRef = useRef(resolvedKeymap);
 
@@ -1238,6 +1243,37 @@ export function App({
   }, [registry, actionContext, ks.paletteQuery, slashMode]);
 
   // ---------------------------------------------------------------------------
+  // Dedicated `:` slash command-line (#275 Task 11). Opened with `:`; the buffer
+  // is typed WITHOUT the leading slash (`quit`, `skill foo`). On submit we
+  // prepend `/` and resolve via the slash index built from the registry's
+  // current slash actions, then run the resolved action with its parsed args.
+  // ---------------------------------------------------------------------------
+  const handleSlashCommandOpen = useCallback(() => {
+    setSlashBuffer("");
+    setSlashError(undefined);
+    panels.setMode(InputMode.SlashCommand);
+  }, [panels]);
+  const handleSlashChar = useCallback((c: string) => setSlashBuffer((b) => b + c), []);
+  const handleSlashBackspace = useCallback(() => setSlashBuffer((b) => b.slice(0, -1)), []);
+  const handleSlashSubmit = useCallback(() => {
+    const index = buildSlashIndex(registry.list(actionContext));
+    const resolution = resolveSlash(index, `/${slashBuffer}`);
+    if (resolution === undefined) {
+      setSlashError(`Unknown command: /${slashBuffer.split(/\s+/)[0] ?? ""}`);
+      return;
+    }
+    const action = registry.byId(resolution.id, actionContext);
+    setSlashBuffer("");
+    setSlashError(undefined);
+    panels.setMode(InputMode.Normal);
+    if (action) {
+      void Promise.resolve(action.run(actionContext, resolution.args)).catch((e) =>
+        showError(e instanceof Error ? e.message : "Command failed"),
+      );
+    }
+  }, [registry, actionContext, slashBuffer, panels, showError]);
+
+  // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
   // Palette execution now runs through `actionContext`/`action.run`; the paste-
   // safety path and other handlers remain here for closure access to
@@ -1337,6 +1373,10 @@ export function App({
       },
       onGoalChar: (char: string) => dispatch({ type: "GOAL_CHAR", char }),
       onGoalBackspace: () => dispatch({ type: "GOAL_BACKSPACE" }),
+      onSlashCommandOpen: handleSlashCommandOpen,
+      onSlashSubmit: handleSlashSubmit,
+      onSlashChar: handleSlashChar,
+      onSlashBackspace: handleSlashBackspace,
       onBroadcastMode: () => {
         dispatch({ type: "BROADCAST_MODE" });
         panels.setMode(InputMode.MessageInput);
@@ -1432,6 +1472,10 @@ export function App({
       handleQuit,
       handleSpawnPalette,
       handleSlashPaletteOpen,
+      handleSlashCommandOpen,
+      handleSlashSubmit,
+      handleSlashChar,
+      handleSlashBackspace,
       handleCommandPaletteClose,
       handleSelect,
       handleCompareAdopt,
@@ -1516,6 +1560,11 @@ export function App({
                 ? `Goal: ${ks.goalBuffer}`
                 : undefined
           }
+        />
+        <SlashInput
+          visible={panels.state.mode === InputMode.SlashCommand}
+          buffer={slashBuffer}
+          error={slashError}
         />
         <PanelManager
           provider={provider}
