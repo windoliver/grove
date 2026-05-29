@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { RuntimeSkillsConfig } from "./config.js";
 import type { RuntimeSkillSessionStore } from "./session.js";
@@ -175,6 +175,61 @@ function relativeTargets(workspacePath: string, targets: readonly string[]): rea
 
 const SESSION_PERSIST_RETRY_MESSAGE =
   "Runtime skill workspace install succeeded, but session persistence failed; fix or recover session state, then retry grove_request_skill.";
+
+export interface AvailableSkill {
+  readonly name: string;
+  readonly source: "bundled" | "topology";
+}
+
+/** Names of bundled skills: subdirectories of `dir` that contain a SKILL.md. */
+export async function listBundledSkillNames(dir: string): Promise<readonly string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for (const entry of entries.sort()) {
+    try {
+      const s = await stat(join(dir, entry));
+      if (!s.isDirectory()) continue;
+      const skillFile = await stat(join(dir, entry, "SKILL.md"));
+      if (skillFile.isFile()) names.push(entry);
+    } catch {
+      // skip non-skill entries
+    }
+  }
+  return names;
+}
+
+/** The repo-bundled skills directory (contains one subdir per skill). */
+export function resolveRepoSkillsDir(): string {
+  return new URL("../../skills/", import.meta.url).pathname;
+}
+
+/**
+ * Available skills = bundled (from the repo skills/ dir) merged with the given
+ * topology-declared skills, deduped by name (bundled wins on conflict).
+ */
+export async function listAvailableSkills(
+  topologySkills: readonly string[] = [],
+): Promise<readonly AvailableSkill[]> {
+  const bundled = await listBundledSkillNames(resolveRepoSkillsDir());
+  const seen = new Set<string>();
+  const out: AvailableSkill[] = [];
+  for (const name of bundled) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, source: "bundled" });
+  }
+  for (const name of topologySkills) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, source: "topology" });
+  }
+  return out;
+}
 
 export class DefaultRuntimeSkillAcquisitionService implements RuntimeSkillAcquisitionService {
   private readonly deps: RuntimeSkillAcquisitionDeps;
