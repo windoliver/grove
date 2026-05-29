@@ -152,6 +152,61 @@ describe("artifact diff rendering (#192)", () => {
     expect(renderer.toJSON()).toBeDefined();
     renderer.unmount();
   });
+
+  // Regression (F8 / round-6 review): a no-change diff (identical/empty files)
+  // must render an explicit "(no changes)" state, NOT feed an empty diff to the
+  // <diff> intrinsic — DiffRenderable.buildView early-returns for zero hunks
+  // without clearing prior child renderables, so a reused instance would show
+  // the PREVIOUS comparison (a false diff).
+  test("no-change diff renders an explicit (no changes) state, not a <diff>", async () => {
+    const capabilities = { artifacts: true } as unknown as ProviderCapabilities;
+    const provider = {
+      capabilities,
+      getArtifactMeta: async (): Promise<ArtifactMeta> => ({
+        sizeBytes: 0,
+        mediaType: "text/plain",
+      }),
+      getArtifact: async (): Promise<Buffer> => Buffer.from(""),
+      // Two EMPTY files -> computeUnifiedDiff emits header-only output (no @@
+      // hunk), which is the no-hunk case that must NOT reach the <diff>
+      // intrinsic. (Identical NON-empty files still produce an all-context
+      // hunk and correctly render via <diff>.)
+      diffArtifacts: async () => ({ parent: "", child: "" }),
+    } as unknown as TuiDataProvider;
+
+    const textIncludes = (json: unknown, needle: string): boolean => {
+      if (json == null) return false;
+      if (typeof json === "string") return json.includes(needle);
+      if (Array.isArray(json)) return json.some((c) => textIncludes(c, needle));
+      return textIncludes((json as TestNode).children, needle);
+    };
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <ArtifactPreviewView
+            provider={provider}
+            cid="childcid01"
+            artifactName="a.txt"
+            parentCid="parentcid9"
+            showDiff
+            diffMode="inline"
+            active
+          />
+        ) as React.ReactElement,
+      );
+    });
+    // Flush until the diff data resolves and the no-change state renders.
+    for (let i = 0; i < 20 && !textIncludes(renderer.toJSON(), "no changes"); i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(findNode(renderer.toJSON(), "diff")).toBeUndefined();
+    expect(textIncludes(renderer.toJSON(), "(no changes")).toBe(true);
+    renderer.unmount();
+  });
 });
 
 // ---------------------------------------------------------------------------

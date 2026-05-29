@@ -534,11 +534,25 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
               <text color={theme.error}>{`Diff error: ${diffError.message}`}</text>
             ) : !diffData || unifiedDiff === undefined ? (
               <text opacity={0.5}>(no diff data)</text>
+            ) : !unifiedDiff.includes("\n@@ ") ? (
+              // Header-only diff = no changes (identical or two empty files).
+              // Render an explicit state rather than feeding an empty diff to
+              // the <diff> intrinsic: DiffRenderable.buildView early-returns for
+              // zero-hunk input WITHOUT clearing its existing child renderables,
+              // so a reused instance would keep showing the PREVIOUS comparison.
+              <box paddingTop={1}>
+                <text color={theme.secondary} italic>
+                  (no changes between the two versions)
+                </text>
+              </box>
             ) : (
               React.createElement(
                 "scrollbox" as string,
                 { flexGrow: 1 },
                 React.createElement("diff" as string, {
+                  // Remount when the comparison identity changes so OpenTUI
+                  // can't carry stale left/right renderables across artifacts.
+                  key: `${parentCid ?? ""}:${cid ?? ""}:${artifactName ?? ""}`,
                   diff: unifiedDiff,
                   view: diffMode === "split" ? "split" : "unified",
                   filetype: detectLanguage(artifactName ?? ""),
