@@ -1,20 +1,23 @@
-import { checkSpawn } from "../agents/spawn-validator.js";
 import { CORE_PANELS, OPERATOR_PANELS, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
 import type { Action, ActionContext } from "./types.js";
 
-/** Build the full set of built-in actions from the current context. */
-export function buildBuiltInActions(ctx: ActionContext): readonly Action[] {
+/**
+ * Build the full set of built-in STATIC actions. Per-entity actions (session
+ * nav, spawn, kill, delegate) live in dynamic-sources.ts; the `ctx` parameter is
+ * retained so callers can pass a snapshot, but the static set ignores it.
+ */
+export function buildBuiltInActions(_ctx: ActionContext): readonly Action[] {
   return Object.freeze([
-    ...navigationActions(ctx),
+    ...navigationActions(),
     ...focusedPanelActions(),
-    ...agentActions(ctx),
+    ...agentActions(),
     ...workflowActions(),
     ...viewActions(),
     ...contributionActions(),
   ]);
 }
 
-function navigationActions(ctx: ActionContext): readonly Action[] {
+function navigationActions(): readonly Action[] {
   const actions: Action[] = [];
   // Core panels are always visible (focus only); operator panels open-or-focus.
   for (const panel of [...CORE_PANELS, ...OPERATOR_PANELS]) {
@@ -30,16 +33,6 @@ function navigationActions(ctx: ActionContext): readonly Action[] {
         c.isPanelVisible(panel as Panel)
           ? c.focusPanel(panel as Panel)
           : c.togglePanel(panel as Panel),
-    });
-  }
-  for (const session of ctx.sessions) {
-    actions.push({
-      id: `nav.session.${session}`,
-      label: `Jump to session ${session}`,
-      detail: "session",
-      group: "Navigation",
-      keywords: ["session", "agent", "jump"],
-      run: (c) => c.jumpToSession(session),
     });
   }
   actions.push(
@@ -63,72 +56,13 @@ function navigationActions(ctx: ActionContext): readonly Action[] {
   return actions;
 }
 
-function agentActions(ctx: ActionContext): readonly Action[] {
-  const actions: Action[] = [];
-
-  // Spawn from profiles first, then topology roles not covered by a profile.
-  const profileRoles = new Set<string>();
-  if (ctx.canSpawn) {
-    for (const profile of ctx.profiles) {
-      // De-dupe by role: two profiles sharing a role would otherwise emit a
-      // duplicate `agent.spawn.<role>` id. First profile for a role wins.
-      if (profileRoles.has(profile.role)) continue;
-      profileRoles.add(profile.role);
-      const role = profile.role;
-      actions.push({
-        id: `agent.spawn.${role}`,
-        label: `Spawn ${profile.name} [${profile.platform}]`,
-        detail: spawnDetail(ctx, role),
-        group: "Agents",
-        keywords: ["spawn", "agent", role],
-        enabled: (c) => spawnAllowed(c, role),
-        run: (c) => {
-          const command =
-            profile.command ?? topologyCommand(c, role) ?? process.env.SHELL ?? "bash";
-          c.spawn(role, command, c.parentAgentId);
-        },
-      });
-    }
-    for (const role of ctx.topology?.roles ?? []) {
-      if (profileRoles.has(role.name)) continue;
-      const name = role.name;
-      actions.push({
-        id: `agent.spawn.${name}`,
-        label: `Spawn ${name}`,
-        detail: spawnDetail(ctx, name),
-        group: "Agents",
-        keywords: ["spawn", "agent", name],
-        enabled: (c) => spawnAllowed(c, name),
-        run: (c) => c.spawn(name, role.command ?? process.env.SHELL ?? "bash", c.parentAgentId),
-      });
-    }
-  }
-
-  for (const session of ctx.sessions) {
-    actions.push({
-      id: `agent.kill.${session}`,
-      label: `Kill ${session}`,
-      detail: "running",
-      group: "Agents",
-      keywords: ["kill", "stop", "agent"],
-      run: (c) => c.kill(session),
-    });
-  }
-
-  for (const peer of ctx.gossipPeers) {
-    if (peer.freeSlots <= 0) continue;
-    actions.push({
-      id: `agent.delegate.${peer.address}`,
-      label: `Delegate to ${peer.peerId} (${peer.freeSlots} free)`,
-      detail: "delegate",
-      group: "Agents",
-      keywords: ["delegate", "peer"],
-      available: (c) => c.canDelegate,
-      run: (c) => c.delegate(peer.address),
-    });
-  }
-
-  actions.push(
+/**
+ * Static agent actions. Per-entity spawn/kill/delegate actions are emitted by
+ * the dynamic sources in dynamic-sources.ts; only the always-present messaging
+ * actions remain here.
+ */
+function agentActions(): readonly Action[] {
+  return [
     {
       id: "agent.broadcast",
       label: "Broadcast message to all agents",
@@ -145,9 +79,7 @@ function agentActions(ctx: ActionContext): readonly Action[] {
       keywords: ["message", "direct", "dm", "tell"],
       run: (c) => c.directMessage(),
     },
-  );
-
-  return actions;
+  ];
 }
 
 /**
@@ -362,29 +294,4 @@ function contributionActions(): readonly Action[] {
       },
     },
   ];
-}
-
-function spawnAllowed(ctx: ActionContext, role: string): boolean {
-  if (!ctx.topology) return true; // no topology constraints to enforce
-  if (ctx.claims === null) return false; // scoped session: conservative
-  return checkSpawn(ctx.topology, role, ctx.claims, ctx.parentAgentId).allowed;
-}
-
-/**
- * Capacity/edge summary shown next to a spawn action, e.g. "1/3 → reviewer".
- * Falls back to "spawn" when topology constraints can't be evaluated (no
- * topology, or scoped session where claims are unavailable).
- */
-function spawnDetail(ctx: ActionContext, role: string): string {
-  if (!ctx.topology || ctx.claims === null) return "spawn";
-  const check = checkSpawn(ctx.topology, role, ctx.claims, ctx.parentAgentId);
-  const max = check.maxInstances !== undefined ? String(check.maxInstances) : "∞";
-  const suffix = !check.allowed ? " (at capacity)" : "";
-  const edges = ctx.topology.roles.find((r) => r.name === role)?.edges;
-  const edgeSuffix = edges && edges.length > 0 ? ` → ${edges.map((e) => e.target).join(", ")}` : "";
-  return `${check.currentInstances}/${max}${suffix}${edgeSuffix}`;
-}
-
-function topologyCommand(ctx: ActionContext, role: string): string | undefined {
-  return ctx.topology?.roles.find((r) => r.name === role)?.command;
 }

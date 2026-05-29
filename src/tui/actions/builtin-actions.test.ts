@@ -114,54 +114,9 @@ describe("buildBuiltInActions", () => {
     expect(open?.enabled?.(ctx({ selectedCid: "bafyAAA", detailCid: "bafyAAA" }))).toBe(false);
   });
 
-  test("kill action per live session; jump-to-session per session", () => {
-    const present = ids(ctx({ sessions: ["grove-reviewer-1"] }));
-    expect(present).toContain("agent.kill.grove-reviewer-1");
-    expect(present).toContain("nav.session.grove-reviewer-1");
-  });
-
-  test("spawn from profile is present but disabled at capacity", () => {
-    const c = ctx({
-      canSpawn: true,
-      profiles: [{ name: "@rev", role: "reviewer", platform: "claude-code" }],
-    });
-    const spawn = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.reviewer");
-    expect(spawn).toBeDefined();
-    expect(spawn?.enabled?.(c) ?? true).toBe(true);
-  });
-
-  test("spawn detail shows capacity and edges from topology", () => {
-    const topology = {
-      roles: [
-        { name: "planner", maxInstances: 3, edges: [{ target: "reviewer" }] },
-        { name: "reviewer", maxInstances: 1 },
-      ],
-    } as unknown as ActionContext["topology"];
-    const c = ctx({ canSpawn: true, topology, claims: [] });
-    const planner = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.planner");
-    expect(planner?.detail).toBe("0/3 → reviewer");
-    const reviewer = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.reviewer");
-    expect(reviewer?.detail).toBe("0/1");
-  });
-
-  test("spawn detail falls back to 'spawn' without topology", () => {
-    const c = ctx({
-      canSpawn: true,
-      profiles: [{ name: "@w", role: "worker", platform: "claude-code" }],
-    });
-    const spawn = buildBuiltInActions(c).find((a) => a.id === "agent.spawn.worker");
-    expect(spawn?.detail).toBe("spawn");
-  });
-
-  test("delegate only available when canDelegate and peer has free slots", () => {
-    const peers = [{ peerId: "p1", address: "http://p1", freeSlots: 2 }];
-    expect(ids(ctx({ canDelegate: false, gossipPeers: peers }))).not.toContain(
-      "agent.delegate.http://p1",
-    );
-    expect(ids(ctx({ canDelegate: true, gossipPeers: peers }))).toContain(
-      "agent.delegate.http://p1",
-    );
-  });
+  // NOTE: per-entity action tests (session nav, spawn capacity/detail/de-dupe,
+  // kill, delegate) moved to dynamic-sources.test.ts — those actions are now
+  // emitted by dynamic sources, not buildBuiltInActions.
 
   test("messaging actions are always offered in the Agents group", () => {
     const actions = buildBuiltInActions(ctx());
@@ -213,20 +168,8 @@ describe("buildBuiltInActions", () => {
     expect(present).toContain("view.help");
   });
 
-  test("two profiles sharing a role produce a single (de-duped) spawn action", () => {
-    const c = ctx({
-      canSpawn: true,
-      profiles: [
-        { name: "@a", role: "reviewer", platform: "claude-code" },
-        { name: "@b", role: "reviewer", platform: "codex" },
-      ],
-    });
-    const spawnIds = buildBuiltInActions(c)
-      .map((a) => a.id)
-      .filter((id) => id === "agent.spawn.reviewer");
-    expect(spawnIds).toHaveLength(1);
-    // All ids across the full catalog are unique.
-    const all = buildBuiltInActions(c).map((a) => a.id);
+  test("static catalog ids are unique", () => {
+    const all = buildBuiltInActions(ctx()).map((a) => a.id);
     expect(new Set(all).size).toBe(all.length);
   });
 });

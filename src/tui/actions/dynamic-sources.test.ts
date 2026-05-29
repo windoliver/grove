@@ -1,0 +1,108 @@
+import { describe, expect, test } from "bun:test";
+import { delegateSource, killSource, sessionNavSource, spawnSource } from "./dynamic-sources.js";
+import type { ActionContext } from "./types.js";
+
+const baseCtx = (over: Partial<ActionContext>): ActionContext =>
+  ({
+    sessions: [],
+    profiles: [],
+    gossipPeers: [],
+    claims: [],
+    pendingQuestionCount: 0,
+    hasGoals: false,
+    canSpawn: true,
+    canDelegate: false,
+    isPanelVisible: () => false,
+    focusedPanel: 0,
+    frontierSliceCount: 0,
+    ...over,
+  }) as ActionContext;
+
+describe("dynamic sources", () => {
+  test("sessionNavSource emits one nav action per session", () => {
+    expect(sessionNavSource(baseCtx({ sessions: ["s1", "s2"] })).map((a) => a.id)).toEqual([
+      "nav.session.s1",
+      "nav.session.s2",
+    ]);
+  });
+
+  test("killSource emits one kill action per session", () => {
+    expect(killSource(baseCtx({ sessions: ["s1"] })).map((a) => a.id)).toEqual(["agent.kill.s1"]);
+  });
+
+  test("spawnSource is empty when canSpawn is false", () => {
+    expect(spawnSource(baseCtx({ canSpawn: false, profiles: [] }))).toEqual([]);
+  });
+
+  test("delegateSource skips peers with no free slots", () => {
+    const ctx = baseCtx({
+      canDelegate: true,
+      gossipPeers: [
+        { peerId: "p1", address: "a1", freeSlots: 0 },
+        { peerId: "p2", address: "a2", freeSlots: 2 },
+      ],
+    });
+    expect(delegateSource(ctx).map((a) => a.id)).toEqual(["agent.delegate.a2"]);
+  });
+
+  // --- moved from builtin-actions.test.ts (per-entity assertions) ---
+
+  test("spawn from profile is present but enabled at capacity check", () => {
+    const ctx = baseCtx({
+      canSpawn: true,
+      profiles: [{ name: "@rev", role: "reviewer", platform: "claude-code" }],
+    });
+    const spawn = spawnSource(ctx).find((a) => a.id === "agent.spawn.reviewer");
+    expect(spawn).toBeDefined();
+    expect(spawn?.enabled?.(ctx) ?? true).toBe(true);
+  });
+
+  test("spawn detail shows capacity and edges from topology", () => {
+    const topology = {
+      roles: [
+        { name: "planner", maxInstances: 3, edges: [{ target: "reviewer" }] },
+        { name: "reviewer", maxInstances: 1 },
+      ],
+    } as unknown as ActionContext["topology"];
+    const ctx = baseCtx({ canSpawn: true, topology, claims: [] });
+    const planner = spawnSource(ctx).find((a) => a.id === "agent.spawn.planner");
+    expect(planner?.detail).toBe("0/3 → reviewer");
+    const reviewer = spawnSource(ctx).find((a) => a.id === "agent.spawn.reviewer");
+    expect(reviewer?.detail).toBe("0/1");
+  });
+
+  test("spawn detail falls back to 'spawn' without topology", () => {
+    const ctx = baseCtx({
+      canSpawn: true,
+      profiles: [{ name: "@w", role: "worker", platform: "claude-code" }],
+    });
+    const spawn = spawnSource(ctx).find((a) => a.id === "agent.spawn.worker");
+    expect(spawn?.detail).toBe("spawn");
+  });
+
+  test("delegate only available when canDelegate and peer has free slots", () => {
+    const peers = [{ peerId: "p1", address: "http://p1", freeSlots: 2 }];
+    const notDelegating = baseCtx({ canDelegate: false, gossipPeers: peers });
+    const delegate = delegateSource(notDelegating).find((a) => a.id === "agent.delegate.http://p1");
+    expect(delegate).toBeDefined();
+    expect(delegate?.available?.(notDelegating) ?? true).toBe(false);
+
+    const delegating = baseCtx({ canDelegate: true, gossipPeers: peers });
+    const delegate2 = delegateSource(delegating).find((a) => a.id === "agent.delegate.http://p1");
+    expect(delegate2?.available?.(delegating) ?? true).toBe(true);
+  });
+
+  test("two profiles sharing a role produce a single (de-duped) spawn action", () => {
+    const ctx = baseCtx({
+      canSpawn: true,
+      profiles: [
+        { name: "@a", role: "reviewer", platform: "claude-code" },
+        { name: "@b", role: "reviewer", platform: "codex" },
+      ],
+    });
+    const spawnIds = spawnSource(ctx)
+      .map((a) => a.id)
+      .filter((id) => id === "agent.spawn.reviewer");
+    expect(spawnIds).toHaveLength(1);
+  });
+});
