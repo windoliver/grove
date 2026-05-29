@@ -1,8 +1,10 @@
 import { AcpRuntime, type AcpRuntimeOptions } from "./acp-runtime.js";
+import { AcpxSupervisor } from "./acpx-supervisor.js";
 import type { AgentRuntime } from "./agent-runtime.js";
 
 export interface SelectRuntimeOptions {
   readonly env?: { readonly GROVE_RUNTIME?: string | undefined };
+  readonly supervisorEnv?: { readonly GROVE_SUPERVISOR?: string | undefined };
   readonly acpx?: { agent?: string; logDir?: string };
   readonly acp?: AcpRuntimeOptions;
 }
@@ -11,6 +13,10 @@ export function selectRuntime(options: SelectRuntimeOptions = {}): AgentRuntime 
   const flag = options.env?.GROVE_RUNTIME ?? process.env.GROVE_RUNTIME;
   const normalized = flag?.trim().toLowerCase();
   if (normalized === undefined || normalized === "" || normalized === "acp") {
+    const supervisorFlag = options.supervisorEnv?.GROVE_SUPERVISOR ?? process.env.GROVE_SUPERVISOR;
+    if (supervisorFlag === "1") {
+      return new AcpxSupervisor({ runtimeFactory: (): AcpRuntime => new AcpRuntime(options.acp) });
+    }
     return new AcpRuntime(options.acp);
   }
   throw new Error(
