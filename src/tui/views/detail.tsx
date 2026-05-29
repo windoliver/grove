@@ -177,16 +177,33 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   // section ABOVE the focused one, so the focused section is scrolled to the
   // top of the viewport. A fixed per-section estimate fails here because this
   // view renders full (untruncated) descriptions/context — a long Summary can
-  // be hundreds of rows, so a constant offset would leave the focused section
-  // far offscreen. Line counts are a cheap proxy for rendered height (markdown
-  // may wrap longer, but the offset stays proportional to content above).
-  const countLines = (s: string | undefined): number => (s ? s.split("\n").length : 0);
+  // be hundreds of rows.
+  //
+  // The estimate is WRAP-AWARE: terminals wrap long lines, so a single long
+  // paragraph/JSON value (few newlines) still occupies many visual rows. We
+  // can't read the live panel width at this layer (OpenTUI's
+  // `useTerminalDimensions` throws without a live renderer, which would break
+  // tests), so we assume a conservative column width. Assuming a NARROW width
+  // over-estimates wrapped rows, which biases the offset so the focused
+  // section lands at/near the top of the viewport rather than below the fold
+  // (an over-scroll merely trims the section's first row; an under-scroll
+  // hides it entirely).
+  const ASSUMED_COLS = 80;
+  const wrappedRows = (s: string | undefined): number => {
+    if (!s) return 0;
+    return s
+      .split("\n")
+      .reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / ASSUMED_COLS)), 0);
+  };
+  /** Wrap-aware rows for a list section whose items are rendered one per row. */
+  const listRows = (items: readonly string[]): number =>
+    items.reduce((rows, item) => rows + wrappedRows(item), 0);
   const estimateSectionRows = (key: SectionKey): number => {
     const TITLE_AND_MARGIN = 2;
     switch (key) {
       case "summary":
         return (
-          TITLE_AND_MARGIN + countLines(summary) + (description ? countLines(description) + 1 : 0)
+          TITLE_AND_MARGIN + wrappedRows(summary) + (description ? wrappedRows(description) + 1 : 0)
         );
       case "scores":
         return TITLE_AND_MARGIN + Object.keys(scores ?? {}).length;
@@ -195,14 +212,16 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
       case "artifacts":
         return TITLE_AND_MARGIN + Object.keys(artifacts).length;
       case "ancestors":
-        return TITLE_AND_MARGIN + ancestors.length;
+        return TITLE_AND_MARGIN + listRows(ancestors.map((a) => a.summary ?? ""));
       case "children":
-        return TITLE_AND_MARGIN + children.length;
+        return TITLE_AND_MARGIN + listRows(children.map((c) => c.summary ?? ""));
       case "discussion":
-        return TITLE_AND_MARGIN + Math.max(0, thread.length - 1);
+        return (
+          TITLE_AND_MARGIN + listRows(thread.slice(1).map((n) => n.contribution.summary ?? ""))
+        );
       case "context":
         return (
-          TITLE_AND_MARGIN + countLines(context ? JSON.stringify(context, null, 2) : undefined)
+          TITLE_AND_MARGIN + wrappedRows(context ? JSON.stringify(context, null, 2) : undefined)
         );
     }
   };

@@ -344,4 +344,33 @@ describe("detail view (#192)", () => {
     expect(scrollTop).toBeGreaterThan(150);
     renderer.unmount();
   });
+
+  // Regression (F6 / round-4 review): a single very long description LINE (few
+  // newlines) wraps across many terminal rows. A newline-only estimate would
+  // count it as 1 row and leave Scores offscreen; the wrap-aware estimate must
+  // account for the wrapped height.
+  test("scrollTop is wrap-aware: one very long description line still scrolls past it", async () => {
+    const longLine = "X".repeat(2400); // no newlines -> wraps to ~30 rows at 80 cols
+    const detail = longContribution({
+      description: longLine,
+      scores: { accuracy: { value: 0.9, direction: "maximize" } },
+    });
+    const renderer = await renderDetail(detail, 1); // focus "Scores" after the wrapped Summary
+    const findNode = (json: unknown, type: string): TestNode | undefined => {
+      if (!json || typeof json !== "object") return undefined;
+      const n = json as TestNode;
+      if (n.type === type) return n;
+      for (const c of n.children ?? []) {
+        const f = findNode(c, type);
+        if (f) return f;
+      }
+      return undefined;
+    };
+    const scrollbox = findNode(renderer.toJSON(), "scrollbox");
+    const scrollTop = Number(scrollbox?.props?.scrollTop ?? 0);
+    // A newline-only estimate would yield ~5; wrap-aware must clear the wrapped
+    // 2400-char summary (~30 rows at 80 cols).
+    expect(scrollTop).toBeGreaterThan(25);
+    renderer.unmount();
+  });
 });
