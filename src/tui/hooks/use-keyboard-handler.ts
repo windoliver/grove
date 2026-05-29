@@ -178,6 +178,10 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       if (focused !== Panel.Artifact) return false;
       actions.onArtifactDiffToggle();
       return true;
+    case "artifact_diff_mode":
+      if (focused !== Panel.Artifact) return false;
+      actions.onArtifactDiffModeToggle();
+      return true;
     case "approve":
       if (focused !== Panel.Decisions) return false;
       actions.onApproveQuestion();

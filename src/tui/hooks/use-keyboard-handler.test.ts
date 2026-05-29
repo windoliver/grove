@@ -1156,4 +1156,19 @@ describe("routeKey — artifact diff-mode toggle is Artifact-panel gated", () =>
     expect(handled).toBe(false);
     expect(log.calls).not.toContain("onArtifactDiffModeToggle");
   });
+
+  // Regression (round-2 review, high): 's' MUST reach onArtifactDiffModeToggle
+  // under the PRODUCTION resolved keymap (App always supplies one). Before the
+  // fix, the default keymap had no 's' binding, so resolveKeySequence returned
+  // "miss" -> routeKey returned false BEFORE the hardcoded Artifact 's'
+  // fallback could run, making the split/inline toggle unreachable in the TUI.
+  test("'s' toggles diff mode on the Artifact panel under the resolved default keymap", () => {
+    const { actions, log } = mockActions({
+      focused: Panel.Artifact,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    const handled = routeKey(keyEvent("s"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onArtifactDiffModeToggle");
+  });
 });
