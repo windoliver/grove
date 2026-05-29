@@ -427,6 +427,7 @@ export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
 export interface PromptInfo {
   readonly name: string;
   readonly description?: string | undefined;
+  readonly template?: string | undefined;
   readonly arguments?: readonly { name: string; required?: boolean }[] | undefined;
 }
 

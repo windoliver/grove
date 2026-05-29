@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { delegateSource, killSource, sessionNavSource, spawnSource } from "./dynamic-sources.js";
+import {
+  delegateSource,
+  killSource,
+  promptSource,
+  sessionNavSource,
+  spawnSource,
+} from "./dynamic-sources.js";
 import type { ActionContext } from "./types.js";
 
 const baseCtx = (over: Partial<ActionContext>): ActionContext =>
@@ -8,6 +14,7 @@ const baseCtx = (over: Partial<ActionContext>): ActionContext =>
     profiles: [],
     gossipPeers: [],
     claims: [],
+    mcpPrompts: [],
     pendingQuestionCount: 0,
     hasGoals: false,
     canSpawn: true,
@@ -15,6 +22,9 @@ const baseCtx = (over: Partial<ActionContext>): ActionContext =>
     isPanelVisible: () => false,
     focusedPanel: 0,
     frontierSliceCount: 0,
+    runPrompt: () => {
+      /* noop */
+    },
     ...over,
   }) as ActionContext;
 
@@ -90,6 +100,32 @@ describe("dynamic sources", () => {
     const delegating = baseCtx({ canDelegate: true, gossipPeers: peers });
     const delegate2 = delegateSource(delegating).find((a) => a.id === "agent.delegate.http://p1");
     expect(delegate2?.available?.(delegating) ?? true).toBe(true);
+  });
+
+  test("promptSource emits a Prompts-group action per prompt, gated on selected session", () => {
+    const withSession = baseCtx({
+      selectedSession: "s1",
+      mcpPrompts: [{ name: "triage", description: "Triage", template: "do triage" }],
+    });
+    const actions = promptSource(withSession);
+    expect(actions.map((a) => a.id)).toEqual(["prompt.triage"]);
+    expect(actions[0]?.group).toBe("Prompts");
+    // available is false without a selected session
+    const noSession = baseCtx({ mcpPrompts: [{ name: "triage", template: "x" }] });
+    expect(actions[0]?.available?.(noSession)).toBe(false);
+  });
+
+  test("promptSource run delivers the template to the selected session", () => {
+    let delivered: { text: string; session: string } | undefined;
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      mcpPrompts: [{ name: "triage", template: "do triage" }],
+      runPrompt: (text: string, session: string) => {
+        delivered = { text, session };
+      },
+    });
+    promptSource(ctx)[0]?.run(ctx);
+    expect(delivered).toEqual({ text: "do triage", session: "s1" });
   });
 
   test("two profiles sharing a role produce a single (de-duped) spawn action", () => {

@@ -50,6 +50,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     showMessage: () => undefined,
     // Keymap-migrated capabilities (#275)
     openPalette: () => undefined,
+    runPrompt: () => undefined,
     enterTerminalInput: () => undefined,
     artifactPrev: () => undefined,
     artifactNext: () => undefined,

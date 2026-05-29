@@ -74,6 +74,22 @@ export const delegateSource: DynamicSource = (ctx) =>
       run: (c) => c.delegate(peer.address),
     }));
 
+export const promptSource: DynamicSource = (ctx) =>
+  (ctx.mcpPrompts ?? []).map(
+    (p): Action => ({
+      id: `prompt.${p.name}`,
+      label: `Prompt: ${p.name}`,
+      detail: p.description ?? "prompt",
+      group: "Prompts",
+      slash: `/prompt:${p.name}`,
+      keywords: ["prompt", p.name],
+      available: (c) => c.selectedSession !== undefined,
+      run: (c) => {
+        if (c.selectedSession) c.runPrompt(p.template ?? "", c.selectedSession);
+      },
+    }),
+  );
+
 function spawnAllowed(ctx: ActionContext, role: string): boolean {
   if (!ctx.topology) return true; // no topology constraints to enforce
   if (ctx.claims === null) return false; // scoped session: conservative

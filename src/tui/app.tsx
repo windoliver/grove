@@ -73,7 +73,9 @@ import {
   isCostProvider,
   isGitHubProvider,
   isGoalProvider,
+  type PromptInfo,
   type TuiDataProvider,
+  type TuiPromptProvider,
 } from "./provider.js";
 import { mintTokenForCompensation } from "./safety/internal/compensation.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
@@ -484,6 +486,27 @@ export function App({
     undefined,
     undefined,
     paletteVisible,
+  );
+
+  // Fetch bundled MCP prompts for the "Prompts" palette group. Only when the
+  // provider advertises the capability AND the palette is open (the actions are
+  // session-scoped and only meaningful while operating the palette).
+  const hasPrompts = provider.capabilities.prompts;
+  const promptsFetcher = useCallback(async (): Promise<readonly PromptInfo[]> => {
+    if (!hasPrompts) return [];
+    const pp = provider as Partial<TuiPromptProvider>;
+    if (!pp.listMcpPrompts) return [];
+    try {
+      return await pp.listMcpPrompts();
+    } catch {
+      return [];
+    }
+  }, [provider, hasPrompts]);
+  const { data: mcpPrompts } = useEventDrivenData<readonly PromptInfo[]>(
+    promptsFetcher,
+    undefined,
+    undefined,
+    hasPrompts && paletteVisible,
   );
 
   // Poll pending questions for the answer-question palette actions. We carry
@@ -986,6 +1009,7 @@ export function App({
       profiles: agentProfiles ?? [],
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
+      mcpPrompts: mcpPrompts ?? [],
       selectedSession,
       // Strict focused-panel selection (see resolveSelectedCid): Frontier row,
       // or the open Detail, else undefined. No cross-panel detail fallback —
@@ -1053,6 +1077,15 @@ export function App({
         handleSpawn(roleId, command, "HEAD", parentAgentId),
       kill: (session) => handleKill(session),
       delegate: (peerAddress) => void handleDelegate(peerAddress),
+      // Deliver the prompt template to the selected agent through the proper
+      // messaging/IPC path (sendTuiMessage → provider.sendMessage / boardroom
+      // POST). Never tmux send-keys. The recipient is the agent id derived from
+      // the session, matching the direct-message flow.
+      runPrompt: (template, session) => {
+        if (!template) return;
+        const recipient = agentIdFromSession(session) ?? session;
+        void sendTuiMessage(recipient, template);
+      },
       broadcastMessage: () => {
         dispatch({ type: "BROADCAST_MODE" });
         panels.setMode(InputMode.MessageInput);
@@ -1168,6 +1201,7 @@ export function App({
       gossipPeers,
       canDelegate,
       activeClaims,
+      mcpPrompts,
       selectedSession,
       nav,
       paletteParentId,
@@ -1186,6 +1220,7 @@ export function App({
       handleSpawn,
       handleKill,
       handleDelegate,
+      sendTuiMessage,
       refreshAll,
       handleQuit,
       showError,

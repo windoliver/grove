@@ -131,7 +131,7 @@ export class LocalDataProvider
 
   async listMcpPrompts(): Promise<readonly PromptInfo[]> {
     const defs = await listBundledPrompts();
-    return defs.map((d) => ({ name: d.name, description: d.description }));
+    return defs.map((d) => ({ name: d.name, description: d.description, template: d.template }));
   }
 
   // ---------------------------------------------------------------------------

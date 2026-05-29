@@ -1,5 +1,11 @@
 import { buildBuiltInActions } from "./builtin-actions.js";
-import { delegateSource, killSource, sessionNavSource, spawnSource } from "./dynamic-sources.js";
+import {
+  delegateSource,
+  killSource,
+  promptSource,
+  sessionNavSource,
+  spawnSource,
+} from "./dynamic-sources.js";
 import type { ActionRegistry } from "./registry.js";
 import type { ActionContext } from "./types.js";
 
@@ -14,4 +20,5 @@ export function registerBuiltInActions(registry: ActionRegistry, emptyCtx: Actio
   registry.registerDynamic("agent.spawn.", spawnSource);
   registry.registerDynamic("agent.kill.", killSource);
   registry.registerDynamic("agent.delegate.", delegateSource);
+  registry.registerDynamic("prompt.", promptSource);
 }
