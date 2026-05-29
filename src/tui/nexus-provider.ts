@@ -13,6 +13,7 @@ import type { PeerInfo } from "../core/gossip/types.js";
 import type { Contribution } from "../core/models.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import { listBundledPrompts } from "../mcp/prompts.js";
 import type { NexusClient } from "../nexus/client.js";
 import type { NexusConfig } from "../nexus/config.js";
 import { resolveConfig } from "../nexus/config.js";
@@ -28,11 +29,13 @@ import type {
   ArtifactMeta,
   FsEntry,
   GoalData,
+  PromptInfo,
   ProviderCapabilities,
   SessionRecord,
   TuiArtifactProvider,
   TuiBountyProvider,
   TuiGossipProvider,
+  TuiPromptProvider,
   TuiVfsProvider,
 } from "./provider.js";
 import {
@@ -76,7 +79,12 @@ export interface NexusProviderConfig {
 /** TUI data provider backed by Nexus VFS. */
 export class NexusDataProvider
   extends StoreBackedProvider
-  implements TuiArtifactProvider, TuiVfsProvider, TuiBountyProvider, TuiGossipProvider
+  implements
+    TuiArtifactProvider,
+    TuiVfsProvider,
+    TuiBountyProvider,
+    TuiGossipProvider,
+    TuiPromptProvider
 {
   readonly capabilities: ProviderCapabilities;
 
@@ -143,6 +151,7 @@ export class NexusDataProvider
       sessions: true, // Always available via NexusSessionStore
       // Handoffs are in local grove.db (written by MCP, readable from SQLite)
       handoffs: !!config.handoffStore,
+      prompts: true,
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
@@ -493,6 +502,15 @@ export class NexusDataProvider
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // TuiPromptProvider
+  // ---------------------------------------------------------------------------
+
+  async listMcpPrompts(): Promise<readonly PromptInfo[]> {
+    const defs = await listBundledPrompts();
+    return defs.map((d) => ({ name: d.name, description: d.description }));
+  }
 
   protected override closeExtra(): void {
     this.bountyStore.close();

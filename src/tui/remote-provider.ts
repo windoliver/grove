@@ -101,6 +101,7 @@ export class RemoteDataProvider
     goals: true,
     sessions: true,
     handoffs: true, // Available via GET /api/handoffs on the local grove server
+    prompts: false,
   };
 
   readonly baseUrl: string;

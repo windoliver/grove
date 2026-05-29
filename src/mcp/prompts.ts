@@ -7,6 +7,11 @@ export interface PromptDefinition {
   readonly template: string;
 }
 
+/** Load the prompts bundled in the repo `prompts/` directory. */
+export async function listBundledPrompts(): Promise<readonly PromptDefinition[]> {
+  return loadPromptDefinitions(new URL("../../prompts/", import.meta.url).pathname);
+}
+
 /** Load each *.md / *.txt file in `dir` as a named prompt (name = file stem). */
 export async function loadPromptDefinitions(dir: string): Promise<readonly PromptDefinition[]> {
   let entries: string[];

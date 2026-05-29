@@ -213,4 +213,14 @@ describe("LocalDataProvider specific", () => {
     // Just verify the method exists
     expect(typeof provider.close).toBe("function");
   });
+
+  test("capabilities.prompts is true", () => {
+    expect(provider.capabilities.prompts).toBe(true);
+  });
+
+  test("listMcpPrompts returns bundled prompts including coder", async () => {
+    const prompts = await provider.listMcpPrompts();
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(prompts.map((p) => p.name)).toContain("coder");
+  });
 });

@@ -43,6 +43,7 @@ export interface ProviderCapabilities {
   readonly goals: boolean;
   readonly sessions: boolean;
   readonly handoffs: boolean;
+  readonly prompts: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +421,18 @@ export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
     typeof candidate.resendHandoff === "function" &&
     typeof candidate.rerouteHandoff === "function"
   );
+}
+
+/** Prompt info returned by listMcpPrompts. */
+export interface PromptInfo {
+  readonly name: string;
+  readonly description?: string | undefined;
+  readonly arguments?: readonly { name: string; required?: boolean }[] | undefined;
+}
+
+/** MCP prompt listing — available when capabilities.prompts is true. */
+export interface TuiPromptProvider {
+  listMcpPrompts(): Promise<readonly PromptInfo[]>;
 }
 
 /** Goal management — available when capabilities.goals is true. */
