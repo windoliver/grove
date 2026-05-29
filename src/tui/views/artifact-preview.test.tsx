@@ -246,21 +246,4 @@ describe("computeUnifiedDiff parser contract (C4)", () => {
     expect(Number(match?.[1])).toBe(expectedOld);
     expect(Number(match?.[2])).toBe(expectedNew);
   });
-
-  // Optional stronger check: resolve the "diff" package by absolute path and
-  // assert parsePatch actually accepts the output (does not throw, hunks=1).
-  test("parsePatch (diff@8) accepts computeUnifiedDiff output without throwing", async () => {
-    const diffMod = (await import(
-      "/Users/tafeng/grove/node_modules/.bun/diff@8.0.2/node_modules/diff/libesm/index.js"
-    )) as { parsePatch: (s: string) => Array<{ hunks: unknown[] }> };
-    const out = computeUnifiedDiff(
-      "parent line\nshared\n",
-      "child line\nshared\n",
-      "parent",
-      "child",
-    );
-    const parsed = diffMod.parsePatch(out);
-    expect(parsed.length).toBe(1);
-    expect(parsed[0]?.hunks.length).toBe(1);
-  });
 });

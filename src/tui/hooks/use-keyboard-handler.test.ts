@@ -1092,6 +1092,54 @@ describe("routeKey — detail view section navigation", () => {
     expect(lk.calls).toContain("nav.cursorUp");
     expect(lk.calls).not.toContain("onDetailSectionPrev");
   });
+
+  // Regression (F3 / round-1 review): detail view is MODAL for section nav.
+  // When detail is open but a non-Detail panel still holds focus, the panel's
+  // keymap layer must NOT steal j/k. With Terminal focused, the default keymap
+  // binds j/k -> terminal_scroll_down/up in the panel layer; the modal guard
+  // (placed before the keymap dispatch) must redirect them to section nav.
+  test("j/k redirect to detail section nav even when Terminal panel is focused", () => {
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Terminal,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
+    expect(log.calls).toContain("onDetailSectionNext");
+    expect(log.calls).not.toContain("onTerminalScrollDown");
+
+    const { actions: ak, log: lk } = mockActions({
+      isDetailView: true,
+      focused: Panel.Terminal,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("k"), ak)).toBe(true);
+    expect(lk.calls).toContain("onDetailSectionPrev");
+    expect(lk.calls).not.toContain("onTerminalScrollUp");
+  });
+
+  test("j redirects to detail section nav even when Artifact panel is focused", () => {
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Artifact,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
+    expect(log.calls).toContain("onDetailSectionNext");
+  });
+
+  test("detail modal guard does NOT swallow a mid-sequence leader prefix", () => {
+    // While a Space-leader prefix is pending, j must continue the keymap
+    // sequence (or miss), NOT be eaten by the detail modal guard.
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Dag,
+      resolvedKeymap: resolveBuiltinKeymap("default"),
+      keymapPrefix: ["space"],
+    });
+    routeKey(keyEvent("j"), actions);
+    expect(log.calls).not.toContain("onDetailSectionNext");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -423,6 +423,24 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Detail overlay is MODAL for section navigation: intercept j/k/arrows
+  // BEFORE the resolved keymap so panel-specific bindings (e.g.
+  // terminal_scroll_down/up, bound to j/k in the Terminal layer) cannot steal
+  // them when a non-Detail panel retains focus while detail is open. Opening
+  // detail only pushes nav state — it does not change panel focus — so without
+  // this guard the focused panel's keymap layer wins. Skipped while a leader
+  // prefix is mid-sequence so Space-chords still resolve.
+  if (mode === InputMode.Normal && actions.nav.isDetailView && keymapPrefix.length === 0) {
+    if (input === "j" || input === "down") {
+      actions.onDetailSectionNext();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.onDetailSectionPrev();
+      return true;
+    }
+  }
+
   const resolvedKeymap = actions.resolvedKeymap;
   if (mode === InputMode.Normal && resolvedKeymap !== undefined) {
     const token = keyEventToToken(key);

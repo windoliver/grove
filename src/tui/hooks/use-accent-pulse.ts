@@ -45,6 +45,7 @@ export function useAccentPulse(trigger: number | undefined, durationMs = 150): b
   const timeline = useTimeline({ duration: durationMs });
   const [pulse, setPulse] = useState(false);
   const prevRef = useRef<number | undefined>(trigger);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `timeline` is deliberately excluded from the deps. @opentui/react returns a NEW Timeline instance every render, so including it would re-run this effect on the setPulse(true) re-render — cleanup would clearTimeout the fallback timer before it fires, then the effect early-returns (prevRef already equals trigger), leaving no timer and the pulse stuck on permanently. We only (re)pulse when `trigger`/`durationMs` change; the timeline captured at that point is the correct one to animate.
   useEffect(() => {
     const next = trigger;
     // Skip the initial mount / no-change re-renders: only pulse when the
@@ -82,6 +83,6 @@ export function useAccentPulse(trigger: number | undefined, durationMs = 150): b
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [trigger, timeline, durationMs]);
+  }, [trigger, durationMs]);
   return pulse;
 }

@@ -65,4 +65,31 @@ describe("useAccentPulse (#192)", () => {
     expect(typeof lastPulse).toBe("boolean");
     renderer.unmount();
   });
+
+  // Regression (F3 / round-1 review): after a trigger change the pulse must
+  // return to false within ~durationMs. The original effect listed the
+  // per-render `timeline` instance in its deps, so setPulse(true)'s re-render
+  // re-ran the effect, cleared the fallback timer, then early-returned —
+  // leaving the pulse stuck on permanently. With deps [trigger, durationMs]
+  // the fallback timer survives and clears the pulse.
+  test("pulse returns to false within ~durationMs after a trigger change (no stuck-on)", async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create((<Harness trigger={0} />) as React.ReactElement);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Change the trigger -> pulse flips true.
+    await act(async () => {
+      renderer.update((<Harness trigger={1} />) as React.ReactElement);
+    });
+    // Wait past the fallback clear (durationMs default 150 + 20 slack).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+    expect(lastPulse).toBe(false);
+    renderer.unmount();
+  });
 });
