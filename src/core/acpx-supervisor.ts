@@ -162,18 +162,60 @@ export class AcpxSupervisor implements AgentRuntime {
     });
   }
 
-  // Respawn logic lands in Phase 3. For now a disconnect marks the slot dead.
   private async handleDisconnect(
     entry: AcpxRegistryEntry,
     _err: AgentDisconnectedError,
   ): Promise<void> {
-    entry.phase = "dead";
+    if (entry.phase !== "running") return;
+    const config = this.configs.get(entry.key.slotId);
+    if (!config) return;
+
+    entry.phase = "resuming";
     this.emit({
-      kind: "dead",
+      kind: "resuming",
       key: entry.key,
       acpxRecordId: entry.acpxRecordId,
-      reason: "disconnected",
+      deadSessionId: entry.session.id,
       respawns: entry.respawns,
+    });
+
+    try {
+      await entry.handle.close(entry.session);
+    } catch {
+      /* dead child; ignore */
+    }
+
+    if (entry.respawns >= this.maxRespawns) {
+      entry.phase = "dead";
+      this.emit({
+        kind: "dead",
+        key: entry.key,
+        acpxRecordId: entry.acpxRecordId,
+        reason: `exceeded maxRespawns=${this.maxRespawns}`,
+        respawns: entry.respawns,
+      });
+      return;
+    }
+
+    await this.sleep(this.backoffBaseMs * 2 ** entry.respawns);
+    entry.respawns += 1;
+
+    // Respawn WITHIN the shared runtime: a fresh sharedRuntime.spawn() does a
+    // fresh session/new => a NEW wireSessionId (never the dead one, #319). The
+    // handle stays this.sharedRuntime; only entry.session is replaced.
+    // routeEvent() demuxes by the new session id, so seq stamping continues
+    // from the preserved entry.lastSeq with no reset. Re-register onDisconnect
+    // for the new session.
+    const session = await this.sharedRuntime.spawn(config.role, config);
+    entry.session = session;
+    entry.phase = "running";
+    this.attachDisconnect(entry);
+    this.emit({
+      kind: "resumed",
+      key: entry.key,
+      acpxRecordId: entry.acpxRecordId,
+      newSessionId: session.id,
+      lastSeq: entry.lastSeq,
     });
   }
 
