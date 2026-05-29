@@ -18,6 +18,7 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import { buildBuiltInActions } from "./actions/builtin-actions.js";
 import { buildPluginActions } from "./actions/plugin-adapter.js";
 import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
+import { resolveSelectedCid } from "./actions/selection.js";
 import { computeVisibleActions } from "./actions/visibility.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -903,19 +904,16 @@ export function App({
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
       selectedSession,
-      // The contribution the operator would act on, resolved by FOCUSED PANEL.
-      // Frontier keeps its own per-slice cursor→cid list in frontierEntriesRef;
-      // a row miss (empty/loading/stale slice, out-of-range cursor) yields
-      // undefined so the contribution actions DISAPPEAR rather than silently
-      // acting on the open detail. Every other panel acts on the open detail
-      // (nav.detailCid) — the only other unambiguous contribution selection.
-      // (Activity is intentionally NOT a source: the rendered Activity panel
-      // doesn't populate contributionList, so indexing it would alias a stale
-      // DAG/Dashboard row.)
-      selectedCid:
-        panels.state.focused === Panel.Frontier
-          ? frontierEntriesRef.current[nav.state.cursor]?.cid
-          : nav.detailCid,
+      // Strict focused-panel selection (see resolveSelectedCid): Frontier row,
+      // or the open Detail, else undefined. No cross-panel detail fallback —
+      // focusing Terminal/Activity/DAG must NOT keep contribution (or plugin)
+      // actions acting on a stale open detail.
+      selectedCid: resolveSelectedCid({
+        focusedPanel: panels.state.focused,
+        cursor: nav.state.cursor,
+        frontierEntries: frontierEntriesRef.current,
+        detailCid: nav.detailCid,
+      }),
       detailCid: nav.detailCid,
       parentAgentId: paletteParentId,
       pendingQuestionCount: pendingQuestionCount ?? 0,
