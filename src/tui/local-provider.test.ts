@@ -223,4 +223,14 @@ describe("LocalDataProvider specific", () => {
     expect(prompts.length).toBeGreaterThan(0);
     expect(prompts.map((p) => p.name)).toContain("coder");
   });
+
+  test("capabilities.skills is true", () => {
+    expect(provider.capabilities.skills).toBe(true);
+  });
+
+  test("listAvailableSkills returns a non-empty array including 'grove'", async () => {
+    const skills = await provider.listAvailableSkills();
+    expect(skills.length).toBeGreaterThan(0);
+    expect(skills.map((s) => s.name)).toContain("grove");
+  });
 });

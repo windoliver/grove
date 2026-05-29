@@ -22,6 +22,7 @@ const HANDOFFS_CAPABILITY: ProviderCapabilities = {
   sessions: false,
   handoffs: true,
   prompts: false,
+  skills: false,
 };
 
 function handoff(overrides?: Partial<Handoff>): Handoff {

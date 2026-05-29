@@ -36,6 +36,7 @@ function baseCapabilities(sessions: boolean) {
     sessions,
     handoffs: false,
     prompts: false,
+    skills: false,
   };
 }
 

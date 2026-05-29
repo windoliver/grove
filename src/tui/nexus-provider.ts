@@ -11,6 +11,7 @@ import type { BountyQuery } from "../core/bounty-store.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { PeerInfo } from "../core/gossip/types.js";
 import type { Contribution } from "../core/models.js";
+import { listAvailableSkills } from "../core/runtime-skill-acquisition.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import { listBundledPrompts } from "../mcp/prompts.js";
@@ -32,10 +33,12 @@ import type {
   PromptInfo,
   ProviderCapabilities,
   SessionRecord,
+  SkillInfo,
   TuiArtifactProvider,
   TuiBountyProvider,
   TuiGossipProvider,
   TuiPromptProvider,
+  TuiSkillProvider,
   TuiVfsProvider,
 } from "./provider.js";
 import {
@@ -84,7 +87,8 @@ export class NexusDataProvider
     TuiVfsProvider,
     TuiBountyProvider,
     TuiGossipProvider,
-    TuiPromptProvider
+    TuiPromptProvider,
+    TuiSkillProvider
 {
   readonly capabilities: ProviderCapabilities;
 
@@ -152,6 +156,7 @@ export class NexusDataProvider
       // Handoffs are in local grove.db (written by MCP, readable from SQLite)
       handoffs: !!config.handoffStore,
       prompts: true,
+      skills: true,
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
@@ -510,6 +515,15 @@ export class NexusDataProvider
   async listMcpPrompts(): Promise<readonly PromptInfo[]> {
     const defs = await listBundledPrompts();
     return defs.map((d) => ({ name: d.name, description: d.description, template: d.template }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiSkillProvider
+  // ---------------------------------------------------------------------------
+
+  async listAvailableSkills(): Promise<readonly SkillInfo[]> {
+    const skills = await listAvailableSkills();
+    return skills.map((s) => ({ name: s.name }));
   }
 
   protected override closeExtra(): void {

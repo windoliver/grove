@@ -72,6 +72,7 @@ function makeMockProvider(): TuiDataProvider & {
       sessions: false,
       handoffs: false,
       prompts: false,
+      skills: false,
     },
 
     async getDashboard() {

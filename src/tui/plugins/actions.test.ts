@@ -19,6 +19,7 @@ function providerStub(): TuiDataProvider {
       sessions: false,
       handoffs: false,
       prompts: false,
+      skills: false,
     },
     getDashboard: async () => {
       throw new Error("getDashboard not used");

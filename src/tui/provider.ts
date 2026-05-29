@@ -44,6 +44,7 @@ export interface ProviderCapabilities {
   readonly sessions: boolean;
   readonly handoffs: boolean;
   readonly prompts: boolean;
+  readonly skills: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +435,18 @@ export interface PromptInfo {
 /** MCP prompt listing — available when capabilities.prompts is true. */
 export interface TuiPromptProvider {
   listMcpPrompts(): Promise<readonly PromptInfo[]>;
+}
+
+/** Skill info returned by listAvailableSkills. */
+export interface SkillInfo {
+  readonly name: string;
+  readonly description?: string | undefined;
+  readonly roles?: readonly string[] | undefined;
+}
+
+/** Skill listing — available when capabilities.skills is true. */
+export interface TuiSkillProvider {
+  listAvailableSkills(): Promise<readonly SkillInfo[]>;
 }
 
 /** Goal management — available when capabilities.goals is true. */
