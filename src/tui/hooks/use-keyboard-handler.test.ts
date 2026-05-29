@@ -1109,6 +1109,35 @@ describe("routeKey — detail view section navigation", () => {
     routeKey(keyEvent("j"), actions);
     expect(log.calls).not.toContain("onDetailSectionNext");
   });
+
+  // Regression (F10 / round-8 review): detail section nav goes through the
+  // keymap (it specializes the cursor_down/up ACTIONS), so user keybinding
+  // OVERRIDES are respected. Remap cursor_down to Ctrl+n and refresh to j:
+  // pressing j in Detail must run refresh, NOT detail nav; Ctrl+n must run
+  // detail nav.
+  test("keymap overrides win over detail section nav (j remapped to refresh)", () => {
+    const overridden = resolveKeymapWithOverrides("default", {
+      cursor_down: "ctrl+n",
+      refresh: "j",
+    });
+    const { actions, log } = mockActions({
+      isDetailView: true,
+      focused: Panel.Detail,
+      resolvedKeymap: overridden,
+    });
+    expect(routeKey(keyEvent("j"), actions)).toBe(true);
+    expect(log.calls).toContain("onRefresh");
+    expect(log.calls).not.toContain("onDetailSectionNext");
+
+    // The remapped key (Ctrl+n -> cursor_down) now drives detail section nav.
+    const { actions: a2, log: l2 } = mockActions({
+      isDetailView: true,
+      focused: Panel.Detail,
+      resolvedKeymap: overridden,
+    });
+    expect(routeKey(keyEvent("n", { ctrl: true }), a2)).toBe(true);
+    expect(l2.calls).toContain("onDetailSectionNext");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -191,11 +191,22 @@ export function executeKeymapAction(binding: KeyBinding, actions: KeyboardAction
       actions.onDenyQuestion();
       return true;
     case "cursor_down":
-      // Detail-section nav is handled by the focused-Detail guard in routeKey
-      // (before the keymap); here cursor_down always moves the row cursor.
+      // When the Detail panel is focused AND showing a contribution, the row
+      // cursor becomes detail-section navigation. Specializing the cursor_down
+      // ACTION (rather than intercepting the raw key) keeps detail nav on the
+      // keymap path, so user keybinding overrides are respected: remap j away
+      // from cursor_down and j stops moving detail sections.
+      if (focused === Panel.Detail && actions.nav.isDetailView) {
+        actions.onDetailSectionNext();
+        return true;
+      }
       actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
       return true;
     case "cursor_up":
+      if (focused === Panel.Detail && actions.nav.isDetailView) {
+        actions.onDetailSectionPrev();
+        return true;
+      }
       actions.nav.cursorUp();
       return true;
     case "select":
@@ -421,31 +432,6 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Detail section navigation: j/k/arrows move the focused detail section,
-  // intercepted BEFORE the resolved keymap so a panel-layer binding (e.g.
-  // terminal_scroll_down/up on j/k) can't steal them. Gated on the Detail
-  // panel actually being FOCUSED — `isDetailView` alone is insufficient
-  // because opening a contribution only pushes a detail CID and does not focus
-  // Detail; in the default tab layout only the focused panel is rendered, so
-  // routing on isDetailView would mutate a HIDDEN detail while the user looks
-  // at DAG/Terminal/Frontier. Skipped mid leader-prefix so Space-chords still
-  // resolve.
-  if (
-    mode === InputMode.Normal &&
-    actions.nav.isDetailView &&
-    focused === Panel.Detail &&
-    keymapPrefix.length === 0
-  ) {
-    if (input === "j" || input === "down") {
-      actions.onDetailSectionNext();
-      return true;
-    }
-    if (input === "k" || input === "up") {
-      actions.onDetailSectionPrev();
-      return true;
-    }
-  }
-
   const resolvedKeymap = actions.resolvedKeymap;
   if (mode === InputMode.Normal && resolvedKeymap !== undefined) {
     const token = keyEventToToken(key);
@@ -641,6 +627,21 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
     return true;
+  }
+
+  // Detail section navigation — no-keymap fallback only (reached when no
+  // resolvedKeymap is present, so the cursor_down/up specialization above
+  // didn't run). Gated on the Detail panel being focused + showing a
+  // contribution.
+  if (actions.nav.isDetailView && focused === Panel.Detail) {
+    if (input === "j" || input === "down") {
+      actions.onDetailSectionNext();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.onDetailSectionPrev();
+      return true;
+    }
   }
 
   // Within-panel navigation
