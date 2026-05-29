@@ -32,13 +32,14 @@ describe("AgentRuntime contract (MockRuntime)", () => {
     expect(rt.sendCalls[0]!.message).toBe("implement auth");
   });
 
-  test("close marks session as stopped", async () => {
+  test("close records the call and removes session from listSessions", async () => {
     const rt = new MockRuntime();
     const session = await rt.spawn("coder", config);
     await rt.close(session);
     expect(rt.closeCalls).toHaveLength(1);
+    // Closed sessions are removed from the active list (matches AgentRuntime contract).
     const sessions = await rt.listSessions();
-    expect(sessions[0]!.status).toBe("stopped");
+    expect(sessions.some((s) => s.id === session.id)).toBe(false);
   });
 
   test("onIdle callback fires when triggered", async () => {

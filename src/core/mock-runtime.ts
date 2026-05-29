@@ -71,10 +71,7 @@ export class MockRuntime implements AgentRuntime {
 
   async close(session: AgentSession): Promise<void> {
     this.closeCalls.push({ sessionId: session.id });
-    const s = this.sessions.get(session.id);
-    if (s) {
-      this.sessions.set(session.id, { ...s, status: "stopped" });
-    }
+    this.sessions.delete(session.id);
   }
 
   onIdle(session: AgentSession, callback: () => void): void {
