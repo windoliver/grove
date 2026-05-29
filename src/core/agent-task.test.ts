@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgentTaskConditionType,
   AgentTaskPhase,
   type AgentTaskView,
   agentTaskViewToEntity,
@@ -43,6 +44,13 @@ function taskView(overrides: Partial<AgentTaskView> = {}): AgentTaskView {
     ...overrides,
   };
 }
+
+describe("AgentTaskConditionType", () => {
+  test("includes Resuming and SessionLost", () => {
+    expect(AgentTaskConditionType.Resuming).toBe("Resuming");
+    expect(AgentTaskConditionType.SessionLost).toBe("SessionLost");
+  });
+});
 
 describe("AgentTask entity projection", () => {
   test("projects split spec/status into an Entity envelope", () => {
