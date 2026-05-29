@@ -28,6 +28,14 @@ function getRegisteredToolNames(server: McpServer): string[] {
   return Object.keys(internal._registeredTools).sort();
 }
 
+/** Extract the list of registered prompt names from a McpServer instance. */
+function getRegisteredPromptNames(server: McpServer): string[] {
+  const internal = server as unknown as {
+    _registeredPrompts: Record<string, unknown>;
+  };
+  return Object.keys(internal._registeredPrompts).sort();
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -323,5 +331,43 @@ describe("createMcpServer preset scoping", () => {
     expect(names).toContain("grove_send_message");
     expect(names).toContain("grove_create_plan");
     expect(names).toContain("grove_goal");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt registration tests
+// ---------------------------------------------------------------------------
+
+describe("createMcpServer prompt registration", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("no promptsDir → no prompts registered", async () => {
+    const server = await createMcpServer(deps);
+    expect(getRegisteredPromptNames(server)).toEqual([]);
+  });
+
+  test("promptsDir pointing at repo prompts/ → registers coder/coordinator/reviewer", async () => {
+    const promptsDir = new URL("../../prompts/", import.meta.url).pathname;
+    const server = await createMcpServer(deps, { promptsDir });
+    const names = getRegisteredPromptNames(server);
+    expect(names).toContain("coder");
+    expect(names).toContain("coordinator");
+    expect(names).toContain("reviewer");
+    expect(names.length).toBeGreaterThan(0);
+  });
+
+  test("promptsDir pointing at missing dir → no prompts registered (no error)", async () => {
+    const server = await createMcpServer(deps, { promptsDir: "/no/such/dir" });
+    expect(getRegisteredPromptNames(server)).toEqual([]);
   });
 });
