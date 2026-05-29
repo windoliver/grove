@@ -118,6 +118,7 @@ function renderPalette(props: {
   ctx: ActionContext;
   query?: string;
   selectedIndex?: number;
+  slashMode?: boolean;
 }): TestRenderer.ReactTestRendererJSON {
   let renderer!: TestRenderer.ReactTestRenderer;
   testAct(() => {
@@ -128,6 +129,7 @@ function renderPalette(props: {
         ctx: props.ctx,
         query: props.query,
         selectedIndex: props.selectedIndex ?? 0,
+        slashMode: props.slashMode,
       }),
     );
   });
@@ -150,6 +152,41 @@ describe("command palette model", () => {
     ];
     const visible = computeVisibleActions(actions, ctx(), "");
     expect(visible.map((v) => v.action.id)).toEqual(["n1", "a1"]);
+  });
+});
+
+describe("CommandPalette — slashMode", () => {
+  test("slashMode renders only actions with a slash field", () => {
+    const actions: readonly Action[] = [
+      act({ id: "n1", group: "Navigation", label: "Plain Nav Action" }),
+      act({ id: "w1", group: "Workflow", label: "Cancel Run", slash: "/cancel" }),
+    ];
+    const json = renderPalette({ actions, ctx: ctx(), selectedIndex: 0, slashMode: true });
+    const text = allText(json);
+    // The slash action is present...
+    expect(text).toContain("Cancel Run");
+    // ...the non-slash action is filtered out.
+    expect(text).not.toContain("Plain Nav Action");
+  });
+
+  test("without slashMode all actions render (slash + non-slash)", () => {
+    const actions: readonly Action[] = [
+      act({ id: "n1", group: "Navigation", label: "Plain Nav Action" }),
+      act({ id: "w1", group: "Workflow", label: "Cancel Run", slash: "/cancel" }),
+    ];
+    const json = renderPalette({ actions, ctx: ctx(), selectedIndex: 0 });
+    const text = allText(json);
+    expect(text).toContain("Cancel Run");
+    expect(text).toContain("Plain Nav Action");
+  });
+
+  test("slashMode renders a slash-commands header hint", () => {
+    const actions: readonly Action[] = [
+      act({ id: "w1", group: "Workflow", label: "Cancel Run", slash: "/cancel" }),
+    ];
+    const json = renderPalette({ actions, ctx: ctx(), selectedIndex: 0, slashMode: true });
+    const text = allText(json);
+    expect(text).toContain("Slash");
   });
 });
 

@@ -31,6 +31,8 @@ export interface KeyboardActions {
   readonly nav: NavigationActions;
   readonly onQuit: () => void;
   readonly onSpawnPalette: () => void;
+  /** Opens the command palette pre-filtered to slash actions (Normal-mode `/`). */
+  readonly onSlashPaletteOpen: () => void;
   /** Called whenever the command palette is dismissed (any path). Clears
    *  adoptContext + palette state so leftover targets don't leak into the
    *  next unrelated spawn. */
@@ -411,6 +413,14 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Terminal input mode entry
   if (input === "i" && focused === Panel.Terminal) {
     actions.panels.setMode(InputMode.TerminalInput);
+    return true;
+  }
+
+  // Slash command palette entry: `/` in Normal mode off the Search panel opens
+  // the palette pre-filtered to slash actions. Placed BEFORE the search-panel
+  // `/` so the search behavior is preserved when the Search panel is focused.
+  if (input === "/" && mode === InputMode.Normal && focused !== Panel.Search) {
+    actions.onSlashPaletteOpen();
     return true;
   }
 

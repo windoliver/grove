@@ -147,6 +147,9 @@ function mockActions(
     onSpawnPalette: () => {
       /* noop */
     },
+    onSlashPaletteOpen: () => {
+      /* noop */
+    },
     onPaletteClose: () => {
       /* noop */
     },

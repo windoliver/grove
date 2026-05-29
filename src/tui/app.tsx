@@ -161,6 +161,9 @@ export function App({
     [userConfig?.keymapPreset, keybindingOverrides],
   );
   const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
+  // When true, the command palette is shown pre-filtered to slash actions
+  // (entered via Normal-mode `/`). Reset on every palette close path (#275).
+  const [slashMode, setSlashMode] = useState(false);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
   const resolvedKeymapRef = useRef(resolvedKeymap);
 
@@ -917,6 +920,7 @@ export function App({
 
   const handleCommandPaletteClose = useCallback(() => {
     dispatch({ type: "ADOPT_CLEAR" });
+    setSlashMode(false);
     panels.setMode(InputMode.Normal);
     dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
@@ -924,11 +928,22 @@ export function App({
   // Defensive open: clear any stale adopt target (set by a prior 'a'-on-Frontier
   // press dismissed through a non-onPaletteClose path) before resetting palette
   // state. Shared by the Ctrl+P/m keyboard path AND the keymap `view.palette`
-  // capability (openPalette).
+  // capability (openPalette). Always clears slashMode so a regular palette open
+  // never inherits a stale slash-filter from a prior `/` open.
   const handleSpawnPalette = useCallback(() => {
     dispatch({ type: "ADOPT_CLEAR" });
+    setSlashMode(false);
     dispatch({ type: "PALETTE_RESET" });
   }, []);
+
+  // Normal-mode `/`: open the palette pre-filtered to slash actions. Reuses the
+  // defensive open (resets adopt + palette state, clears slashMode) then turns
+  // slash mode on and switches into the palette mode.
+  const handleSlashPaletteOpen = useCallback(() => {
+    handleSpawnPalette();
+    setSlashMode(true);
+    panels.setMode(InputMode.CommandPalette);
+  }, [handleSpawnPalette, panels]);
 
   // Adopt one side of a 2-way compare. Reads frontier/contribution summaries
   // from the synchronous refs (race-safety: same discipline as the 'a' adopt
@@ -1212,13 +1227,16 @@ export function App({
   // active (flat ranked), else `list` (grouped, available-gated). This is the
   // SAME flat list the palette renders AND the index space onPaletteSelect /
   // paletteItemCount address — keep them sharing this one array.
-  const filteredActions = useMemo(
-    () =>
-      ks.paletteQuery.trim()
-        ? registry.search(ks.paletteQuery, actionContext)
-        : registry.list(actionContext),
-    [registry, actionContext, ks.paletteQuery],
-  );
+  const filteredActions = useMemo(() => {
+    const base = ks.paletteQuery.trim()
+      ? registry.search(ks.paletteQuery, actionContext)
+      : registry.list(actionContext);
+    // In slash mode the palette renders only slash actions; the parent MUST
+    // apply the same filter so paletteItemCount / onPaletteSelect address the
+    // exact list the palette displays (the palette's internal slash filter is
+    // then an idempotent no-op on this already-filtered input).
+    return slashMode ? base.filter((a) => a.slash) : base;
+  }, [registry, actionContext, ks.paletteQuery, slashMode]);
 
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
@@ -1233,6 +1251,7 @@ export function App({
       nav,
       onQuit: handleQuit,
       onSpawnPalette: handleSpawnPalette,
+      onSlashPaletteOpen: handleSlashPaletteOpen,
       onPaletteClose: handleCommandPaletteClose,
       onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
       onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
@@ -1413,6 +1432,7 @@ export function App({
       nav,
       handleQuit,
       handleSpawnPalette,
+      handleSlashPaletteOpen,
       handleCommandPaletteClose,
       handleSelect,
       handleCompareAdopt,
@@ -1481,6 +1501,7 @@ export function App({
               query={ks.paletteQuery}
               selectedIndex={ks.paletteIndex}
               adoptContext={ks.adoptContext}
+              slashMode={slashMode}
             />
           </box>
         )}

@@ -63,6 +63,8 @@ export interface CommandPaletteProps {
   readonly query?: string | undefined;
   readonly selectedIndex?: number | undefined;
   readonly adoptContext?: { readonly targetCid: string; readonly summary: string } | undefined;
+  /** When true, show only actions that declare a `slash` trigger (#275). */
+  readonly slashMode?: boolean | undefined;
 }
 
 export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = React.memo(
@@ -73,9 +75,13 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     query,
     selectedIndex,
     adoptContext,
+    slashMode,
   }: CommandPaletteProps): React.ReactNode {
     const q = (query ?? "").trim();
-    const visibleActions = useMemo(() => computeVisibleActions(actions, ctx, q), [actions, ctx, q]);
+    // In slash mode, restrict to actions that declare a `slash` trigger BEFORE
+    // visibility/fuzzy computation so the flat index space matches the display.
+    const source = slashMode ? actions.filter((a) => a.slash) : actions;
+    const visibleActions = useMemo(() => computeVisibleActions(source, ctx, q), [source, ctx, q]);
 
     if (!visible) return null;
     const idx = selectedIndex ?? 0;
@@ -97,7 +103,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     return (
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>
         <box flexDirection="row">
-          <text color={theme.focus}>Command Palette</text>
+          <text color={theme.focus}>{slashMode ? "Slash commands" : "Command Palette"}</text>
           {adoptContext ? (
             <text color={theme.compare}>{` Adopt: ${adoptContext.targetCid.slice(0, 12)}…`}</text>
           ) : null}

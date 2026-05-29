@@ -106,6 +106,7 @@ function mockActions(overrides?: {
     },
     onQuit: () => record("onQuit"),
     onSpawnPalette: () => record("onSpawnPalette"),
+    onSlashPaletteOpen: () => record("onSlashPaletteOpen"),
     onPaletteClose: () => record("onPaletteClose"),
     onVfsNavigate: () => record("onVfsNavigate"),
     onArtifactPrev: () => record("onArtifactPrev"),
@@ -675,6 +676,21 @@ describe("routeKey — search input mode", () => {
     const { actions, log } = mockActions({ focused: Panel.Search });
     routeKey(keyEvent("/"), actions);
     expect(log.calls).toContain("onSearchStart");
+  });
+
+  test("/ in Normal mode (non-Search panel) opens the slash palette", () => {
+    const { actions, log } = mockActions({ focused: Panel.Dag });
+    const handled = routeKey(keyEvent("/"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onSlashPaletteOpen");
+    // Must NOT start a search when not on the Search panel.
+    expect(log.calls).not.toContain("onSearchStart");
+  });
+
+  test("/ in Search panel does NOT open the slash palette", () => {
+    const { actions, log } = mockActions({ focused: Panel.Search });
+    routeKey(keyEvent("/"), actions);
+    expect(log.calls).not.toContain("onSlashPaletteOpen");
   });
 });
 
