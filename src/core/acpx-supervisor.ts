@@ -198,18 +198,24 @@ export class AcpxSupervisor implements AgentRuntime {
     }
 
     await this.sleep(this.backoffBaseMs * 2 ** entry.respawns);
-    entry.respawns += 1;
+    const nextRespawns = entry.respawns + 1;
 
     // Respawn WITHIN the shared runtime: a fresh sharedRuntime.spawn() does a
     // fresh session/new => a NEW wireSessionId (never the dead one, #319). The
-    // handle stays this.sharedRuntime; only entry.session is replaced.
-    // routeEvent() demuxes by the new session id, so seq stamping continues
-    // from the preserved entry.lastSeq with no reset. Re-register onDisconnect
-    // for the new session.
+    // handle stays this.sharedRuntime; only the registry entry is replaced with
+    // a new object so callers holding the old entry reference retain the dead
+    // session.id (enables seq-continuity testing). routeEvent() demuxes by the
+    // new session id, so seq stamping continues from the preserved lastSeq with
+    // no reset. Re-register onDisconnect for the new session.
     const session = await this.sharedRuntime.spawn(config.role, config);
-    entry.session = session;
-    entry.phase = "running";
-    this.attachDisconnect(entry);
+    const newEntry: AcpxRegistryEntry = {
+      ...entry,
+      session,
+      phase: "running",
+      respawns: nextRespawns,
+    };
+    this.registry.set(entry.key.slotId, newEntry);
+    this.attachDisconnect(newEntry);
     this.emit({
       kind: "resumed",
       key: entry.key,

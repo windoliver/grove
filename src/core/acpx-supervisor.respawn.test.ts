@@ -72,4 +72,52 @@ describe("AcpxSupervisor respawn", () => {
     expect(sup.get(key.slotId)?.phase).toBe("dead");
     expect(events.some((e) => e.kind === "dead")).toBe(true);
   });
+
+  test("seq is strictly increasing across turns and respawn (no reset)", async () => {
+    const onPrompt: DisconnectableHandlers["onPrompt"] = async ({ sessionId, agentSide }) => {
+      await agentSide.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+      });
+      return { stopReason: "end_turn" };
+    };
+    const { sup, triggers } = build(5, { onPrompt });
+    const seqs: number[] = [];
+    sup.setAcpEventSink((event) => {
+      if (event.seq !== undefined) seqs.push(event.seq);
+    });
+
+    const entry = await sup.ensure(key, cfg);
+
+    // Turn 1 on the original session — completes, emitting events.
+    const t1 = await sup.send(entry.session, "one");
+    for await (const _ of t1.messages) {
+      /* drain */
+    }
+    await t1.result;
+    const seqsBeforeRespawn = seqs.length;
+    expect(seqsBeforeRespawn).toBeGreaterThan(0);
+
+    // Kill, await respawn.
+    triggers[0]?.({ signal: "SIGKILL" });
+    await new Promise((r) => setTimeout(r, 50));
+    const resumed = sup.get(key.slotId);
+    expect(resumed?.session.id).not.toBe(entry.session.id);
+
+    // Turn 2 on the NEW session.
+    const t2 = await sup.send(resumed?.session ?? entry.session, "two");
+    for await (const _ of t2.messages) {
+      /* drain */
+    }
+    await t2.result;
+
+    // No reset: strictly increasing across the whole capture.
+    expect(seqs.length).toBeGreaterThan(seqsBeforeRespawn);
+    const strictlyIncreasing = seqs.every((v, i) => i === 0 || v > (seqs[i - 1] ?? -1));
+    expect(strictlyIncreasing).toBe(true);
+    // The first post-respawn event did not reset to 0.
+    expect(seqs[seqsBeforeRespawn]).toBeGreaterThanOrEqual(seqsBeforeRespawn);
+
+    await sup.stop(key.slotId, "cleanup");
+  });
 });
