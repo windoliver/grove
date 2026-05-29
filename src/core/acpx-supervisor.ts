@@ -7,6 +7,7 @@ import type {
   AgentSession,
 } from "./agent-runtime.js";
 import type { AgentSessionEntity } from "./entity.js";
+import { agentSessionToEntity } from "./entity.js";
 
 export interface AcpxKey {
   readonly slotId: string;
@@ -77,6 +78,7 @@ export class AcpxSupervisor implements AgentRuntime {
   private readonly mintRecordId: () => string;
   private downstreamSink: AcpRuntimeEventSink | undefined;
   private counter = 0;
+  private recordCounter = 0;
 
   constructor(options: AcpxSupervisorOptions = {}) {
     const factory = options.runtimeFactory ?? ((): AcpRuntime => new AcpRuntime());
@@ -84,7 +86,7 @@ export class AcpxSupervisor implements AgentRuntime {
     this.maxRespawns = options.maxRespawns ?? DEFAULT_MAX_RESPAWNS;
     this.backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this.sleep = options.sleep ?? ((ms): Promise<void> => new Promise((r) => setTimeout(r, ms)));
-    this.mintRecordId = options.mintRecordId ?? ((): string => `acpx-rec-${this.counter++}`);
+    this.mintRecordId = options.mintRecordId ?? ((): string => `acpx-rec-${this.recordCounter++}`);
     // Wire a single aggregated event sink on the shared runtime.
     this.sharedRuntime.setAcpEventSink((event: AcpRuntimeEvent) => {
       this.routeEvent(event);
@@ -243,10 +245,8 @@ export class AcpxSupervisor implements AgentRuntime {
   }
 
   async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
-    const all = await Promise.all(
-      [...this.registry.values()].map((e) => e.handle.listSessionEntities()),
-    );
-    return all.flat();
+    const sessions = await this.listSessions();
+    return sessions.map((s) => agentSessionToEntity(s));
   }
 
   async isAvailable(): Promise<boolean> {

@@ -60,6 +60,18 @@ describe("AcpxSupervisor registry", () => {
     expect((await sup.listSessions()).some((s) => s.id === session.id)).toBe(false);
   });
 
+  test("listSessionEntities returns one entity per slot (no duplicates)", async () => {
+    const sup = makeSupervisor();
+    await sup.ensure(key, cfg);
+    await sup.ensure({ ...key, slotId: "task-2" }, cfg);
+    const entities = await sup.listSessionEntities();
+    expect(entities).toHaveLength(2);
+    const ids = entities.map((e) => e.id).sort();
+    expect(new Set(ids).size).toBe(2); // no duplicate ids
+    await sup.stop("task-1", "cleanup");
+    await sup.stop("task-2", "cleanup");
+  });
+
   test("setAcpEventSink: child events reach the downstream sink with a seq", async () => {
     const seqs: number[] = [];
     const sup = makeSupervisor();
