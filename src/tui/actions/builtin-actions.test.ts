@@ -72,11 +72,21 @@ describe("buildBuiltInActions", () => {
     expect(ids(ctx({ hasGoals: true }))).toContain("workflow.set-goal");
   });
 
-  test("answer-question actions only available when a question is pending", () => {
-    expect(ids(ctx())).not.toContain("workflow.approve-question");
-    const pending = ids(ctx({ pendingQuestionCount: 1 }));
-    expect(pending).toContain("workflow.approve-question");
-    expect(pending).toContain("workflow.deny-question");
+  test("approve/deny only with exactly one pending; multiple routes to Decisions review", () => {
+    // None pending → no question actions at all.
+    const none = ids(ctx());
+    expect(none).not.toContain("workflow.approve-question");
+    expect(none).not.toContain("workflow.review-questions");
+    // Exactly one → unambiguous approve/deny, no review-routing.
+    const one = ids(ctx({ pendingQuestionCount: 1 }));
+    expect(one).toContain("workflow.approve-question");
+    expect(one).toContain("workflow.deny-question");
+    expect(one).not.toContain("workflow.review-questions");
+    // Multiple → no blind approve/deny; route to the Decisions panel instead.
+    const many = ids(ctx({ pendingQuestionCount: 3 }));
+    expect(many).not.toContain("workflow.approve-question");
+    expect(many).not.toContain("workflow.deny-question");
+    expect(many).toContain("workflow.review-questions");
   });
 
   test("contribution actions only available when a contribution is selected", () => {

@@ -267,13 +267,17 @@ function workflowActions(): readonly Action[] {
       available: (c) => c.hasGoals,
       run: (c) => c.enterGoalMode(),
     },
+    // Approve/deny are offered ONLY when exactly one question is pending — then
+    // there is no ambiguity about which one is answered. With multiple pending,
+    // a blind global answer could unblock the wrong prompt, so we route the
+    // operator to the Decisions panel (cursor-scoped) instead.
     {
       id: "workflow.approve-question",
       label: "Approve pending question",
       detail: "approvals",
       group: "Workflow",
       keywords: ["answer", "approve", "question", "ask"],
-      available: (c) => c.pendingQuestionCount > 0,
+      available: (c) => c.pendingQuestionCount === 1,
       run: (c) => c.answerPendingQuestion("approve"),
     },
     {
@@ -282,8 +286,22 @@ function workflowActions(): readonly Action[] {
       detail: "approvals",
       group: "Workflow",
       keywords: ["answer", "deny", "question", "ask"],
-      available: (c) => c.pendingQuestionCount > 0,
+      available: (c) => c.pendingQuestionCount === 1,
       run: (c) => c.answerPendingQuestion("deny"),
+    },
+    {
+      id: "workflow.review-questions",
+      label: "Review pending questions",
+      detail: "approvals",
+      group: "Workflow",
+      keywords: ["answer", "question", "ask", "decisions", "review", "approvals"],
+      // Multiple pending → don't blind-answer; open the Decisions panel where
+      // the cursor selects exactly which question to approve/deny.
+      available: (c) => c.pendingQuestionCount > 1,
+      run: (c) =>
+        c.isPanelVisible(Panel.Decisions)
+          ? c.focusPanel(Panel.Decisions)
+          : c.togglePanel(Panel.Decisions),
     },
     {
       id: "workflow.compare",
