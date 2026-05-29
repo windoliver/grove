@@ -898,11 +898,19 @@ export function App({
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
       selectedSession,
-      // The contribution the operator would act on: the highlighted feed/DAG
-      // row (same source handleSelect uses), falling back to the open detail.
-      // Sourcing from nav.detailCid alone hid contrib actions unless a detail
-      // was already open and made "open" re-push the same cid.
-      selectedCid: contributionList[nav.state.cursor]?.cid ?? nav.detailCid,
+      // The contribution the operator would act on — resolved by FOCUSED PANEL,
+      // because each panel keeps its cursor→cid mapping in a different place:
+      //   Frontier  → frontierEntriesRef (its own per-slice entry list)
+      //   Activity  → contributionList (populated by Activity/Dashboard)
+      //   otherwise → the open detail (nav.detailCid)
+      // Sourcing from contributionList unconditionally aliased a Frontier row's
+      // cursor index onto an unrelated Activity row → wrong adopt/compare target.
+      selectedCid:
+        panels.state.focused === Panel.Frontier
+          ? (frontierEntriesRef.current[nav.state.cursor]?.cid ?? nav.detailCid)
+          : panels.state.focused === Panel.Activity
+            ? (contributionList[nav.state.cursor]?.cid ?? nav.detailCid)
+            : nav.detailCid,
       detailCid: nav.detailCid,
       parentAgentId: paletteParentId,
       pendingQuestionCount: pendingQuestionCount ?? 0,
@@ -927,7 +935,11 @@ export function App({
         panels.setMode(InputMode.GoalInput);
         dispatch({ type: "GOAL_INPUT_MODE" });
       },
-      enterCompareMode: () => dispatch({ type: "COMPARE_TOGGLE" }),
+      // Idempotent ENTRY: only toggle when compare mode is off. Wiring straight
+      // to COMPARE_TOGGLE would turn compare OFF if invoked while already on.
+      enterCompareMode: () => {
+        if (!ks.compareMode) dispatch({ type: "COMPARE_TOGGLE" });
+      },
       addToCompare: (cid) => {
         // Entering compare mode clears compareCids, so if it is currently off
         // we must toggle it ON first, then select — otherwise the operator's
