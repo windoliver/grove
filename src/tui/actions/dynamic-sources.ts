@@ -101,7 +101,7 @@ export const skillSource: DynamicSource = (ctx) => {
         label: `Request skill: ${s.name}`,
         detail: s.description ?? "skill",
         group: "Skills",
-        slash: `/skill ${s.name}`,
+        slash: `/skill:${s.name}`,
         keywords: ["skill", "request", s.name],
         available: (c) => c.selectedSession !== undefined,
         run: (c) => {

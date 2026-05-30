@@ -398,6 +398,9 @@ export function App({
   // Poll tmux sessions — used by command palette, agent count, split pane,
   // and transcript search. Always active when tmux is available (fix #3).
   const paletteVisible = panels.state.mode === InputMode.CommandPalette;
+  // Prompts/skills are reachable via BOTH the command palette and the ':'
+  // command-line (SlashCommand mode), so their data must load for either surface.
+  const slashSurfacesOpen = paletteVisible || panels.state.mode === InputMode.SlashCommand;
   const sessionsFetcher = useCallback(async () => {
     if (!tmux) return [] as readonly string[];
     const available = await tmux.isAvailable();
@@ -508,7 +511,7 @@ export function App({
     promptsFetcher,
     undefined,
     undefined,
-    hasPrompts && paletteVisible,
+    hasPrompts && slashSurfacesOpen,
   );
 
   // Fetch bundled (global) skills for the "Skills" palette group. Like prompts,
@@ -529,7 +532,7 @@ export function App({
     skillsFetcher,
     undefined,
     undefined,
-    hasSkills && paletteVisible,
+    hasSkills && slashSurfacesOpen,
   );
 
   // Assemble availableSkills: merge topology-derived role-tagged skills with the
@@ -1380,6 +1383,10 @@ export function App({
       return;
     }
     const action = registry.byId(resolution.id, actionContext);
+    if (action && !resolveEnabled(action, actionContext).enabled) {
+      setSlashError(`Command not available: /${slashBuffer.split(/\s+/)[0] ?? ""}`);
+      return;
+    }
     setSlashBuffer("");
     setSlashError(undefined);
     panels.setMode(InputMode.Normal);

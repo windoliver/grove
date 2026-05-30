@@ -7,6 +7,7 @@ import {
   skillSource,
   spawnSource,
 } from "./dynamic-sources.js";
+import { buildSlashIndex, resolveSlash } from "./slash-index.js";
 import type { ActionContext } from "./types.js";
 
 const baseCtx = (over: Partial<ActionContext>): ActionContext =>
@@ -153,6 +154,26 @@ describe("dynamic sources", () => {
       availableSkills: [{ name: "grove" }],
     });
     expect(skillSource(ctx).map((a) => a.id)).toEqual(["skill.request.grove"]);
+  });
+
+  test("skillSource uses the colon slash form so it resolves via the ':' command-line", () => {
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      availableSkills: [{ name: "grove" }],
+    });
+    expect(skillSource(ctx)[0]?.slash).toBe("/skill:grove");
+  });
+
+  test("colon-form skill slash is resolvable via the command-line index", () => {
+    const ctx = baseCtx({
+      selectedSession: "s1",
+      availableSkills: [{ name: "grove" }],
+    });
+    const index = buildSlashIndex(skillSource(ctx));
+    expect(resolveSlash(index, "/skill:grove")).toEqual({
+      id: "skill.request.grove",
+      args: [],
+    });
   });
 
   test("skillSource is empty without a selected session", () => {

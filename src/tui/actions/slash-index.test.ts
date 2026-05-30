@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { skillSource } from "./dynamic-sources.js";
 import { buildSlashIndex, resolveSlash } from "./slash-index.js";
-import type { Action } from "./types.js";
+import type { Action, ActionContext } from "./types.js";
 
 const a = (id: string, slash?: string): Action =>
   ({ id, label: id, detail: "", group: "View", slash, run: () => {} }) as Action;
@@ -23,5 +24,17 @@ describe("resolveSlash", () => {
   });
   test("returns undefined for unknown command", () => {
     expect(resolveSlash(buildSlashIndex([]), "/nope")).toBeUndefined();
+  });
+
+  test("resolves the colon-joined skill slash from skillSource", () => {
+    const ctx = {
+      selectedSession: "s1",
+      availableSkills: [{ name: "grove" }],
+    } as unknown as ActionContext;
+    const idx = buildSlashIndex(skillSource(ctx));
+    expect(resolveSlash(idx, "/skill:grove")).toEqual({
+      id: "skill.request.grove",
+      args: [],
+    });
   });
 });
