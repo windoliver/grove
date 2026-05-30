@@ -1,6 +1,6 @@
 import { fuzzyMatch } from "./fuzzy.js";
-import { computeVisibleActions } from "./visibility.js";
 import type { Action, ActionContext, DynamicSource } from "./types.js";
+import { computeVisibleActions } from "./visibility.js";
 
 export interface ActionRegistry {
   register(action: Action): void;
