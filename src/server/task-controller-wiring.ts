@@ -60,8 +60,17 @@ export function createTaskControllerWiring(
       onDead: async (slotId): Promise<void> => {
         const active = await options.claimStore.listClaims({ status: "active" });
         for (const claim of active) {
-          if (claim.context?.agentTaskId === slotId) {
+          if (claim.context?.agentTaskId !== slotId) continue;
+          try {
             await options.claimStore.release(claim.claimId);
+          } catch (err) {
+            // Isolate per-claim failures: one release error must not strand the
+            // agent's other leases. The claim reconciler expires the rest.
+            process.stderr.write(
+              `[grove] supervisor onDead: failed to release claim ${claim.claimId}: ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            );
           }
         }
       },
