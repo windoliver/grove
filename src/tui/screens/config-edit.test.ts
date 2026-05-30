@@ -107,6 +107,12 @@ describe("setNumericField", () => {
     expect(config.stopConditions?.targetMetric).toEqual({ metric: "latency", value: 12.5 });
   });
 
+  test("rejects a non-finite targetMetric.value", () => {
+    const { config, error } = setNumericField(FULL, "stop.targetMetric.value", "Infinity");
+    expect(error).toBeDefined();
+    expect(config).toBe(FULL);
+  });
+
   test("does not mutate the input contract", () => {
     const snapshot = JSON.parse(JSON.stringify(FULL));
     setNumericField(FULL, "concurrency.maxActiveClaims", "9");

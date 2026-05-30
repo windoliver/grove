@@ -176,7 +176,7 @@ export function setNumericField(
     value = undefined;
   } else {
     const parsed = bounds.integer ? parseInteger(trimmed) : Number(trimmed);
-    if (parsed === undefined || Number.isNaN(parsed)) {
+    if (parsed === undefined || !Number.isFinite(parsed)) {
       return { config, error: bounds.integer ? "must be a whole number" : "must be a number" };
     }
     if (bounds.min !== undefined && parsed < bounds.min) {
