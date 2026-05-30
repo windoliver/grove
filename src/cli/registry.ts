@@ -99,6 +99,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["summary", "description", "result", "score", "tag", "json"],
   },
   {
+    name: "eval",
+    description: "Run the eval harness against a contribution and report scores",
+    flags: ["frontier", "latest", "eval-command", "submit", "summary", "timeout", "json"],
+  },
+  {
     name: "claim",
     description: "Claim work to prevent duplication",
     flags: ["lease", "intent", "agent-id", "json"],

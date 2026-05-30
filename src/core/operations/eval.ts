@@ -24,6 +24,7 @@
 
 import { spawn } from "node:child_process";
 
+import { hookCommand, hookTimeout } from "../hooks.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
 import { err, OperationErrorCode, ok, validationErr } from "./result.js";
@@ -192,16 +193,18 @@ async function runEvalSubprocess(
 
 /** Run the eval harness against a target CID and return structured scores. */
 export async function evalOperation(
-  _deps: OperationDeps,
+  deps: OperationDeps,
   input: EvalInput,
 ): Promise<OperationResult<EvalResult>> {
   const { targetCid, evalCommand, timeoutMs } = input;
 
-  // Resolve the command to run.
-  const command = evalCommand;
+  // Resolve the command to run: explicit input overrides the contract's
+  // `hooks.eval` entry (string or { cmd, timeout } object form).
+  const hookEntry = deps.contract?.hooks?.eval;
+  const command = evalCommand ?? (hookEntry !== undefined ? hookCommand(hookEntry) : undefined);
   if (!command) {
     return validationErr(
-      "evalCommand is required: provide it as input or configure evaluation.eval_command in GROVE.md",
+      "evalCommand is required: provide it as input or configure hooks.eval in GROVE.md",
     );
   }
 
@@ -211,8 +214,10 @@ export async function evalOperation(
     return validationErr("targetCid must be a non-empty string");
   }
 
-  // Resolve timeout: input > contract (future) > default.
-  const resolvedTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Resolve timeout: input > contract hook timeout > default.
+  const resolvedTimeout =
+    timeoutMs ??
+    (hookEntry !== undefined ? hookTimeout(hookEntry, DEFAULT_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS);
 
   try {
     const { scores, exitCode, timedOut, rawTail } = await runEvalSubprocess(

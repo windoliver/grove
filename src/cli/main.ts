@@ -167,6 +167,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "eval",
+      description: "Run the eval harness against a contribution and report scores",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleEval } = await import("./commands/eval.js");
+        await handleEval(args, groveOverride);
+      },
+    },
+    {
       name: "thread",
       description: "View a discussion thread",
       needsStore: false,
@@ -647,6 +656,7 @@ Contributions:
   grove review <cid>                   Review a contribution
   grove discuss [cid] <msg>            Post a discussion or reply
   grove reproduce <cid>                Submit a reproduction attempt
+  grove eval <cid> [--submit]          Run the eval harness and report scores
 
 Navigation:
   grove log [-n <count>]               Recent contributions

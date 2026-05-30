@@ -1344,3 +1344,35 @@ admission:
     ).toThrow("default_lease_seconds");
   });
 });
+
+// ---------------------------------------------------------------------------
+// hooks.eval — benchmark harness hook (#211)
+// ---------------------------------------------------------------------------
+
+describe("hooks.eval contract config", () => {
+  test("parses the eval hook in string form", () => {
+    const content = `---
+contract_version: 2
+name: eval-grove
+hooks:
+  eval: bash eval/eval.sh
+---
+`;
+    const contract = parseGroveContract(content);
+    expect(contract.hooks?.eval).toBe("bash eval/eval.sh");
+  });
+
+  test("parses the eval hook in { cmd, timeout } object form", () => {
+    const content = `---
+contract_version: 2
+name: eval-grove
+hooks:
+  eval:
+    cmd: python eval.py
+    timeout: 600000
+---
+`;
+    const contract = parseGroveContract(content);
+    expect(contract.hooks?.eval).toEqual({ cmd: "python eval.py", timeout: 600000 });
+  });
+});
