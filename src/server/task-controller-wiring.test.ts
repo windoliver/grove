@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AcpxTurn } from "../acp/types.js";
 import { AcpRuntime } from "../core/acp-runtime.js";
-import { AcpxSupervisor } from "../core/acpx-supervisor.js";
+import { type AcpxRespawnEvent, AcpxSupervisor } from "../core/acpx-supervisor.js";
 import { makeInProcessLaunchOverride } from "../core/acpx-test-support.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import { AgentTaskPhase } from "../core/agent-task.js";
@@ -97,6 +97,9 @@ function fakeTaskStore() {
   const patches: CapturedPatch[] = [];
   return {
     store: {
+      async putAgentTaskSpec() {
+        return undefined as never;
+      },
       async patchAgentTaskStatus(id: string, patch: AgentTaskStatusPatch) {
         patches.push({ id, patch });
         return undefined as never; // wiring ignores the return value
@@ -107,10 +110,15 @@ function fakeTaskStore() {
           status: { phase: AgentTaskPhase.Running, conditions: [], observedGeneration: 1 },
         } as never;
       },
+      async listAgentTasks() {
+        return [] as never;
+      },
       async listAgentTaskEntities() {
         return [] as never;
       },
-      close() {},
+      close() {
+        // no-op stub
+      },
     },
     patches,
   };
@@ -175,7 +183,9 @@ function fakeClaimStore() {
       async cleanCompleted() {
         return 0;
       },
-      close() {},
+      close() {
+        // no-op stub
+      },
     },
     released,
   };
@@ -191,7 +201,7 @@ describe("createTaskControllerWiring + AcpxSupervisor", () => {
     });
 
     // Spy on onRespawn to verify wiring is registered
-    const onRespawnCalls: Array<(e: Parameters<typeof supervisor.onRespawn>[0]) => void> = [];
+    const onRespawnCalls: Array<(e: AcpxRespawnEvent) => void> = [];
     const origOnRespawn = supervisor.onRespawn.bind(supervisor);
     supervisor.onRespawn = (cb) => {
       onRespawnCalls.push(cb);
@@ -341,7 +351,7 @@ describe("createTaskControllerWiring + AcpxSupervisor — onDead lease release",
       runtimeFactory: () => new AcpRuntime({ launchOverride: makeInProcessLaunchOverride() }),
     });
 
-    const onRespawnCalls: Array<(e: Parameters<typeof supervisor.onRespawn>[0]) => void> = [];
+    const onRespawnCalls: Array<(e: AcpxRespawnEvent) => void> = [];
     const origOnRespawn = supervisor.onRespawn.bind(supervisor);
     supervisor.onRespawn = (cb) => {
       onRespawnCalls.push(cb);

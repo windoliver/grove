@@ -155,7 +155,9 @@ async function pollTask(
   while (Date.now() < deadline) {
     last = await getTask(baseUrl, token);
     if (last && predicate(last)) {
-      console.log(`[${phase}] matched: phase=${last.status.phase} session=${last.status.sessionId}`);
+      console.log(
+        `[${phase}] matched: phase=${last.status.phase} session=${last.status.sessionId}`,
+      );
       return last;
     }
     await sleep(750);
@@ -199,7 +201,13 @@ async function main(): Promise<void> {
   execSync("git init -q", { cwd: workdir });
   execSync("git commit -q --allow-empty -m init", {
     cwd: workdir,
-    env: { ...process.env, GIT_AUTHOR_NAME: "e2e", GIT_AUTHOR_EMAIL: "e2e@example.com", GIT_COMMITTER_NAME: "e2e", GIT_COMMITTER_EMAIL: "e2e@example.com" },
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "e2e",
+      GIT_AUTHOR_EMAIL: "e2e@example.com",
+      GIT_COMMITTER_NAME: "e2e",
+      GIT_COMMITTER_EMAIL: "e2e@example.com",
+    },
   });
 
   // Initialize a grove project (preset gives server keys + .grove scaffold).
@@ -222,7 +230,9 @@ async function main(): Promise<void> {
   const keysPath = join(workdir, ".grove", "server-keys.yaml");
   let token = "";
   if (existsSync(keysPath)) {
-    const parsed = parseYaml(readFileSync(keysPath, "utf-8")) as { keys?: Array<{ token?: string }> };
+    const parsed = parseYaml(readFileSync(keysPath, "utf-8")) as {
+      keys?: Array<{ token?: string }>;
+    };
     token = parsed.keys?.[0]?.token ?? "";
   }
   const baseUrl = `http://127.0.0.1:${SERVER_PORT}`;

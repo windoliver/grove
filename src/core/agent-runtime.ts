@@ -107,16 +107,17 @@ export interface AgentRuntime {
 
 /** Thrown when an agent subprocess exits unexpectedly (not via close()). */
 export class AgentDisconnectedError extends Error {
-  constructor(
-    readonly info: {
-      readonly sessionId: string;
-      readonly role: string;
-      readonly exitCode?: number | null | undefined;
-      readonly signal?: NodeJS.Signals | null | undefined;
-      readonly lastRequestId?: string | undefined;
-    },
-  ) {
+  readonly info: {
+    readonly sessionId: string;
+    readonly role: string;
+    readonly exitCode?: number | null | undefined;
+    readonly signal?: NodeJS.Signals | null | undefined;
+    readonly lastRequestId?: string | undefined;
+  };
+
+  constructor(info: AgentDisconnectedError["info"]) {
     super(`agent ${info.role} (${info.sessionId}) disconnected`);
     this.name = "AgentDisconnectedError";
+    this.info = info;
   }
 }
