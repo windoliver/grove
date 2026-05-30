@@ -11,8 +11,10 @@ import type { BountyQuery } from "../core/bounty-store.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { PeerInfo } from "../core/gossip/types.js";
 import type { Contribution } from "../core/models.js";
+import { listAvailableSkills } from "../core/runtime-skill-acquisition.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import { listBundledPrompts } from "../mcp/prompts.js";
 import type { NexusClient } from "../nexus/client.js";
 import type { NexusConfig } from "../nexus/config.js";
 import { resolveConfig } from "../nexus/config.js";
@@ -28,11 +30,15 @@ import type {
   ArtifactMeta,
   FsEntry,
   GoalData,
+  PromptInfo,
   ProviderCapabilities,
   SessionRecord,
+  SkillInfo,
   TuiArtifactProvider,
   TuiBountyProvider,
   TuiGossipProvider,
+  TuiPromptProvider,
+  TuiSkillProvider,
   TuiVfsProvider,
 } from "./provider.js";
 import {
@@ -76,7 +82,13 @@ export interface NexusProviderConfig {
 /** TUI data provider backed by Nexus VFS. */
 export class NexusDataProvider
   extends StoreBackedProvider
-  implements TuiArtifactProvider, TuiVfsProvider, TuiBountyProvider, TuiGossipProvider
+  implements
+    TuiArtifactProvider,
+    TuiVfsProvider,
+    TuiBountyProvider,
+    TuiGossipProvider,
+    TuiPromptProvider,
+    TuiSkillProvider
 {
   readonly capabilities: ProviderCapabilities;
 
@@ -143,6 +155,8 @@ export class NexusDataProvider
       sessions: true, // Always available via NexusSessionStore
       // Handoffs are in local grove.db (written by MCP, readable from SQLite)
       handoffs: !!config.handoffStore,
+      prompts: true,
+      skills: true,
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
@@ -493,6 +507,24 @@ export class NexusDataProvider
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // TuiPromptProvider
+  // ---------------------------------------------------------------------------
+
+  async listMcpPrompts(): Promise<readonly PromptInfo[]> {
+    const defs = await listBundledPrompts();
+    return defs.map((d) => ({ name: d.name, description: d.description, template: d.template }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiSkillProvider
+  // ---------------------------------------------------------------------------
+
+  async listAvailableSkills(): Promise<readonly SkillInfo[]> {
+    const skills = await listAvailableSkills();
+    return skills.map((s) => ({ name: s.name }));
+  }
 
   protected override closeExtra(): void {
     this.bountyStore.close();

@@ -250,6 +250,8 @@ const ALL_CAPABILITIES_FALSE: ProviderCapabilities = {
   goals: false,
   sessions: false,
   handoffs: false,
+  prompts: false,
+  skills: false,
 };
 
 const TEST_TOPOLOGY: AgentTopology = {

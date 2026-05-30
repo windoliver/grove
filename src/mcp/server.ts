@@ -13,6 +13,7 @@ import { registerAskUserTools } from "@grove/ask-user";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { McpDeps } from "./deps.js";
+import { loadPromptDefinitions } from "./prompts.js";
 import { registerBountyTools } from "./tools/bounties.js";
 import { registerClaimTools } from "./tools/claims.js";
 import { registerContributionTools } from "./tools/contributions.js";
@@ -67,6 +68,11 @@ export interface McpPresetConfig {
    * Default: "stdio" (backwards-compatible for existing callers).
    */
   readonly transport?: "stdio" | "http";
+  /**
+   * Directory containing *.md / *.txt prompt templates to expose as MCP
+   * prompts. When omitted no prompts are registered.
+   */
+  readonly promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +96,7 @@ export interface McpPresetConfig {
 export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): Promise<McpServer> {
   const server = new McpServer(
     { name: "grove-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, prompts: {} } },
   );
 
   // Contribution + done tools are always registered (core functionality).
@@ -125,6 +131,16 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
 
   // ask_user is always registered (core functionality).
   await registerAskUserTools(server);
+
+  // Register prompts from promptsDir when configured.
+  const promptsDir = preset?.promptsDir;
+  if (promptsDir !== undefined) {
+    for (const def of await loadPromptDefinitions(promptsDir)) {
+      server.registerPrompt(def.name, { title: def.name, description: def.description }, () => ({
+        messages: [{ role: "user", content: { type: "text", text: def.template } }],
+      }));
+    }
+  }
 
   return server;
 }

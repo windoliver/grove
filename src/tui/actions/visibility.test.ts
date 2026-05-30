@@ -45,6 +45,27 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     prevFrontierSlice: () => undefined,
     scrollTerminalToBottom: () => undefined,
     showMessage: () => undefined,
+    // Keymap-migrated capabilities (#275)
+    openPalette: () => undefined,
+    runPrompt: () => undefined,
+    requestSkill: () => undefined,
+    enterTerminalInput: () => undefined,
+    artifactPrev: () => undefined,
+    artifactNext: () => undefined,
+    artifactDiffToggle: () => undefined,
+    artifactDiffModeToggle: () => undefined,
+    cursorDown: () => undefined,
+    cursorUp: () => undefined,
+    selectRow: () => undefined,
+    pageNext: () => undefined,
+    pagePrev: () => undefined,
+    vfsNavigate: () => undefined,
+    terminalScrollUp: () => undefined,
+    terminalScrollDown: () => undefined,
+    compareSelect: () => undefined,
+    compareAdoptA: () => undefined,
+    compareAdoptB: () => undefined,
+    frontierAdopt: () => undefined,
     ...overrides,
   };
 }
@@ -79,5 +100,13 @@ describe("computeVisibleActions", () => {
       act({ id: "x", group: "Workflow", label: "answer question", available: () => false }),
     ];
     expect(computeVisibleActions(actions, ctx(), "answer")).toHaveLength(0);
+  });
+
+  test("no-query order puts suggested actions first, then GROUP_ORDER", () => {
+    const mk = (id: string, group: any, suggested?: boolean) =>
+      ({ id, label: id, detail: "", group, suggested, run: () => {} }) as any;
+    const actions = [mk("v", "View"), mk("n", "Navigation"), mk("s", "View", true)];
+    const out = computeVisibleActions(actions, {} as any, "").map((x) => x.action.id);
+    expect(out).toEqual(["s", "n", "v"]);
   });
 });

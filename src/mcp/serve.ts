@@ -843,6 +843,9 @@ try {
   // enable with GROVE_MCP_EVAL_ENABLED=true (stdio) or AUTH_TOKEN +
   // GROVE_MCP_EVAL_ENABLED=true (HTTP — enforced in serve-http.ts).
   const evalEnabled = process.env.GROVE_MCP_EVAL_ENABLED === "true";
+  // Repo-root prompts/ dir, relative to this file (src/mcp/serve.ts). Registers
+  // bundled prompt templates for prompts/list; degrades to [] on a missing dir.
+  const promptsDir = new URL("../../prompts/", import.meta.url).pathname;
   preset =
     contractMode === "evaluation"
       ? {
@@ -857,6 +860,7 @@ try {
           plans: true,
           goals: true,
           eval: evalEnabled,
+          promptsDir,
         }
       : {
           queries: true,
@@ -870,6 +874,7 @@ try {
           plans: false,
           goals: true,
           eval: evalEnabled,
+          promptsDir,
         };
 
   close = () => {

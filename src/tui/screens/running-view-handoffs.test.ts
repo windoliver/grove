@@ -19,6 +19,8 @@ const HANDOFFS_CAPABILITY: ProviderCapabilities = {
   goals: false,
   sessions: false,
   handoffs: true,
+  prompts: false,
+  skills: false,
 };
 
 function agentTask(role: string, sessionId: string, phase: AgentTaskPhase): AgentTaskView {

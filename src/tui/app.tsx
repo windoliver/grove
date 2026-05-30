@@ -16,17 +16,21 @@ import { TUI_REFRESH_ROLE } from "../core/event-bus.js";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { resolveAnswerableQuestion } from "./actions/answer-guard.js";
-import { buildBuiltInActions } from "./actions/builtin-actions.js";
 import { buildPluginActions } from "./actions/plugin-adapter.js";
+import { registerBuiltInActions } from "./actions/register-builtins.js";
+import { createActionRegistry } from "./actions/registry.js";
 import { getReservedActionRegistryEntries } from "./actions/reserved-ids.js";
 import { resolveSelectedCid } from "./actions/selection.js";
-import { computeVisibleActions } from "./actions/visibility.js";
+import { buildSlashIndex, resolveSlash } from "./actions/slash-index.js";
+import { resolveEnabled } from "./actions/types.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { INITIAL_KEYBOARD_STATE, tuiReducer } from "./app-reducer.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
+import { LeaderOverlay } from "./components/leader-overlay.js";
+import { SlashInput } from "./components/slash-input.js";
 import { type ScreenContext, StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
@@ -51,6 +55,8 @@ import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import { resolveKeymapWithOverrides } from "./keymap/keymap.js";
+import { resolvedKeymapBindings } from "./keymap/keymap-action-map.js";
+import { LEADER_CHORD_TIMEOUT_MS } from "./keymap/leader-chord.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import { getBuiltInTuiRegistryEntries } from "./panels/panel-registry.js";
@@ -67,7 +73,11 @@ import {
   isCostProvider,
   isGitHubProvider,
   isGoalProvider,
+  type PromptInfo,
+  type SkillInfo,
   type TuiDataProvider,
+  type TuiPromptProvider,
+  type TuiSkillProvider,
 } from "./provider.js";
 import { mintTokenForCompensation } from "./safety/internal/compensation.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
@@ -157,6 +167,12 @@ export function App({
     [userConfig?.keymapPreset, keybindingOverrides],
   );
   const [keymapPrefix, setKeymapPrefix] = useState<readonly string[]>([]);
+  // When true, the command palette is shown pre-filtered to slash actions
+  // (entered via Normal-mode `/`). Reset on every palette close path (#275).
+  const [slashMode, setSlashMode] = useState(false);
+  // Dedicated `:` slash command-line buffer + last resolution error (#275 Task 11).
+  const [slashBuffer, setSlashBuffer] = useState("");
+  const [slashError, setSlashError] = useState<string | undefined>(undefined);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
   const resolvedKeymapRef = useRef(resolvedKeymap);
 
@@ -165,6 +181,15 @@ export function App({
     resolvedKeymapRef.current = resolvedKeymap;
     setKeymapPrefix([]);
   }, [resolvedKeymap]);
+
+  // Leader-chord auto-cancel: once a prefix is armed, clear it after the
+  // window elapses so a half-typed sequence doesn't leave the keymap stuck in
+  // a pending state. Any prefix change resets the timer (cleanup runs first).
+  useEffect(() => {
+    if (keymapPrefix.length === 0) return;
+    const t = setTimeout(() => setKeymapPrefix([]), LEADER_CHORD_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [keymapPrefix]);
 
   // Restore persisted state on first load.
   // restoredRef gates both restore AND save — save must not run before restore.
@@ -373,6 +398,9 @@ export function App({
   // Poll tmux sessions — used by command palette, agent count, split pane,
   // and transcript search. Always active when tmux is available (fix #3).
   const paletteVisible = panels.state.mode === InputMode.CommandPalette;
+  // Prompts/skills are reachable via BOTH the command palette and the ':'
+  // command-line (SlashCommand mode), so their data must load for either surface.
+  const slashSurfacesOpen = paletteVisible || panels.state.mode === InputMode.SlashCommand;
   const sessionsFetcher = useCallback(async () => {
     if (!tmux) return [] as readonly string[];
     const available = await tmux.isAvailable();
@@ -464,6 +492,93 @@ export function App({
     undefined,
     paletteVisible,
   );
+
+  // Fetch bundled MCP prompts for the "Prompts" palette group. Only when the
+  // provider advertises the capability AND the palette is open (the actions are
+  // session-scoped and only meaningful while operating the palette).
+  const hasPrompts = provider.capabilities.prompts;
+  const promptsFetcher = useCallback(async (): Promise<readonly PromptInfo[]> => {
+    if (!hasPrompts) return [];
+    const pp = provider as Partial<TuiPromptProvider>;
+    if (!pp.listMcpPrompts) return [];
+    try {
+      return await pp.listMcpPrompts();
+    } catch {
+      return [];
+    }
+  }, [provider, hasPrompts]);
+  const { data: mcpPrompts } = useEventDrivenData<readonly PromptInfo[]>(
+    promptsFetcher,
+    undefined,
+    undefined,
+    hasPrompts && slashSurfacesOpen,
+  );
+
+  // Fetch bundled (global) skills for the "Skills" palette group. Like prompts,
+  // only when the provider advertises the capability AND the palette is open.
+  // These are role-less — topology-declared role scoping is merged in below.
+  const hasSkills = provider.capabilities.skills;
+  const skillsFetcher = useCallback(async (): Promise<readonly SkillInfo[]> => {
+    if (!hasSkills) return [];
+    const sp = provider as Partial<TuiSkillProvider>;
+    if (!sp.listAvailableSkills) return [];
+    try {
+      return await sp.listAvailableSkills();
+    } catch {
+      return [];
+    }
+  }, [provider, hasSkills]);
+  const { data: bundledSkills } = useEventDrivenData<readonly SkillInfo[]>(
+    skillsFetcher,
+    undefined,
+    undefined,
+    hasSkills && slashSurfacesOpen,
+  );
+
+  // Assemble availableSkills: merge topology-derived role-tagged skills with the
+  // bundled (role-less) skills, deduped by name. A skill declared by one or more
+  // topology roles carries the union of those role names; a purely-bundled skill
+  // stays role-less so it surfaces for every selected slot.
+  const availableSkills = useMemo<readonly SkillInfo[]>(() => {
+    const byName = new Map<string, { name: string; description?: string; roles?: string[] }>();
+    for (const role of topology?.roles ?? []) {
+      for (const skill of role.skills ?? []) {
+        const existing = byName.get(skill);
+        if (existing) {
+          existing.roles = [...(existing.roles ?? []), role.name];
+        } else {
+          byName.set(skill, { name: skill, roles: [role.name] });
+        }
+      }
+    }
+    for (const skill of bundledSkills ?? []) {
+      const existing = byName.get(skill.name);
+      if (existing) {
+        // Topology-declared skill that is also bundled: keep its role scoping but
+        // fill in a description from the bundled listing if it lacks one.
+        if (existing.description === undefined && skill.description !== undefined) {
+          existing.description = skill.description;
+        }
+      } else {
+        byName.set(skill.name, {
+          name: skill.name,
+          ...(skill.description !== undefined && { description: skill.description }),
+          ...(skill.roles !== undefined && { roles: [...skill.roles] }),
+        });
+      }
+    }
+    return [...byName.values()];
+  }, [topology, bundledSkills]);
+
+  // Role of the selected agent slot. The agent id IS the topology role name
+  // (see handleSpawn: topology.roles.find(r => r.name === agentId)), so map
+  // selectedSession → agentId → matching role name. Falls back to the raw
+  // agent id when no topology role matches (so global skills still apply).
+  const selectedAgentRole = useMemo<string | undefined>(() => {
+    if (selectedSession === undefined) return undefined;
+    const agentId = agentIdFromSession(selectedSession) ?? selectedSession;
+    return topology?.roles.find((r) => r.name === agentId)?.name ?? agentId;
+  }, [selectedSession, topology]);
 
   // Poll pending questions for the answer-question palette actions. We carry
   // the cids (not just the count) so the approve/deny actions can pin the exact
@@ -904,9 +1019,49 @@ export function App({
 
   const handleCommandPaletteClose = useCallback(() => {
     dispatch({ type: "ADOPT_CLEAR" });
+    setSlashMode(false);
     panels.setMode(InputMode.Normal);
     dispatch({ type: "PALETTE_RESET" });
   }, [panels]);
+
+  // Defensive open: clear any stale adopt target (set by a prior 'a'-on-Frontier
+  // press dismissed through a non-onPaletteClose path) before resetting palette
+  // state. Shared by the Ctrl+P/m keyboard path AND the keymap `view.palette`
+  // capability (openPalette). Always clears slashMode so a regular palette open
+  // never inherits a stale slash-filter from a prior `/` open.
+  const handleSpawnPalette = useCallback(() => {
+    dispatch({ type: "ADOPT_CLEAR" });
+    setSlashMode(false);
+    dispatch({ type: "PALETTE_RESET" });
+  }, []);
+
+  // Normal-mode `/`: open the palette pre-filtered to slash actions. Reuses the
+  // defensive open (resets adopt + palette state, clears slashMode) then turns
+  // slash mode on and switches into the palette mode.
+  const handleSlashPaletteOpen = useCallback(() => {
+    handleSpawnPalette();
+    setSlashMode(true);
+    panels.setMode(InputMode.CommandPalette);
+  }, [handleSpawnPalette, panels]);
+
+  // Adopt one side of a 2-way compare. Reads frontier/contribution summaries
+  // from the synchronous refs (race-safety: same discipline as the 'a' adopt
+  // path). Shared by the Artifact a/b keyboard path AND the keymap
+  // compare-adopt-a/b capabilities.
+  const handleCompareAdopt = useCallback(
+    (side: "a" | "b") => {
+      const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
+      if (!cid) return;
+      const summary =
+        frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
+        contributionList.find((c) => c.cid === cid)?.summary ??
+        "";
+      dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
+      dispatch({ type: "COMPARE_ADOPT" });
+      panels.setMode(InputMode.CommandPalette);
+    },
+    [ks.compareCids, contributionList, panels],
+  );
 
   const mkPluginCtx = useCallback(
     (ctx: import("./actions/types.js").ActionContext): TuiPluginContext => ({
@@ -925,6 +1080,9 @@ export function App({
       profiles: agentProfiles ?? [],
       gossipPeers: canDelegate ? (gossipPeers ?? []) : [],
       claims: activeClaims,
+      mcpPrompts: mcpPrompts ?? [],
+      availableSkills,
+      selectedAgentRole,
       selectedSession,
       // Strict focused-panel selection (see resolveSelectedCid): Frontier row,
       // or the open Detail, else undefined. No cross-panel detail fallback —
@@ -992,6 +1150,25 @@ export function App({
         handleSpawn(roleId, command, "HEAD", parentAgentId),
       kill: (session) => handleKill(session),
       delegate: (peerAddress) => void handleDelegate(peerAddress),
+      // Deliver the prompt template to the selected agent through the proper
+      // messaging/IPC path (sendTuiMessage → provider.sendMessage / boardroom
+      // POST). Never tmux send-keys. The recipient is the agent id derived from
+      // the session, matching the direct-message flow.
+      runPrompt: (template, session) => {
+        if (!template) return;
+        const recipient = agentIdFromSession(session) ?? session;
+        void sendTuiMessage(recipient, template);
+      },
+      // Ask the selected agent to acquire a skill through the same messaging/IPC
+      // path as runPrompt (sendTuiMessage → provider.sendMessage / boardroom
+      // POST). Never tmux send-keys. The agent uses grove_request_skill to fetch.
+      requestSkill: (skillName, session) => {
+        const recipient = agentIdFromSession(session) ?? session;
+        void sendTuiMessage(
+          recipient,
+          `Please acquire the "${skillName}" skill (use grove_request_skill).`,
+        );
+      },
       broadcastMessage: () => {
         dispatch({ type: "BROADCAST_MODE" });
         panels.setMode(InputMode.MessageInput);
@@ -1034,6 +1211,71 @@ export function App({
       },
       scrollTerminalToBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
       showMessage: showError,
+
+      // Keymap-migrated capabilities (#275). Each mirrors the body of the old
+      // `executeKeymapAction` switch (deleted in use-keyboard-handler.ts) so
+      // the keymap dispatch path preserves identical behavior. Focus gates for
+      // the panel-scoped ones live on the action's `available` (builtin-actions),
+      // so these bodies only carry the residual in-handler conditionals that
+      // the old switch had (e.g. cursor_down's detail-section specialization).
+      openPalette: () => {
+        handleSpawnPalette();
+        panels.setMode(InputMode.CommandPalette);
+      },
+      enterTerminalInput: () => panels.setMode(InputMode.TerminalInput),
+      artifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
+      artifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
+      artifactDiffToggle: () => dispatch({ type: "ARTIFACT_DIFF_TOGGLE" }),
+      artifactDiffModeToggle: () => dispatch({ type: "ARTIFACT_DIFF_MODE_TOGGLE" }),
+      cursorDown: () => {
+        if (panels.state.focused === Panel.Detail && nav.isDetailView)
+          dispatch({ type: "DETAIL_SECTION_NEXT" });
+        else nav.cursorDown(Math.max(0, rowCount - 1));
+      },
+      cursorUp: () => {
+        if (panels.state.focused === Panel.Detail && nav.isDetailView)
+          dispatch({ type: "DETAIL_SECTION_PREV" });
+        else nav.cursorUp();
+      },
+      selectRow: () => {
+        if (!nav.isDetailView && panels.state.focused !== Panel.Claims && rowCount > 0)
+          handleSelect(nav.state.cursor);
+      },
+      pageNext: () => {
+        const hasFullPage = rowCount >= PAGE_SIZE;
+        const totalItems = hasFullPage
+          ? nav.state.pageOffset + rowCount + 1
+          : nav.state.pageOffset + rowCount;
+        nav.nextPage(PAGE_SIZE, totalItems);
+      },
+      pagePrev: () => nav.prevPage(PAGE_SIZE),
+      vfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
+      terminalScrollUp: () => dispatch({ type: "TERMINAL_SCROLL_UP" }),
+      terminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
+      compareSelect: () => {
+        if (panels.state.focused === Panel.Frontier && ks.compareMode) {
+          const cid = frontierCidsRef.current[nav.state.cursor];
+          if (cid) dispatch({ type: "COMPARE_SELECT", cid });
+        } else if (!nav.isDetailView && panels.state.focused !== Panel.Claims && rowCount > 0) {
+          // Preserve "Enter selects a Frontier row when compare is off".
+          handleSelect(nav.state.cursor);
+        }
+      },
+      compareAdoptA: () => {
+        if (panels.state.focused === Panel.Artifact && ks.compareMode) handleCompareAdopt("a");
+      },
+      compareAdoptB: () => {
+        if (panels.state.focused === Panel.Artifact && ks.compareMode) handleCompareAdopt("b");
+      },
+      frontierAdopt: () => {
+        if (panels.state.focused === Panel.Frontier && !ks.compareMode) {
+          const e = frontierEntriesRef.current[nav.state.cursor];
+          if (e) {
+            dispatch({ type: "ADOPT_SET", targetCid: e.cid, summary: e.summary });
+            panels.setMode(InputMode.CommandPalette);
+          }
+        }
+      },
     }),
     [
       topology,
@@ -1042,6 +1284,9 @@ export function App({
       gossipPeers,
       canDelegate,
       activeClaims,
+      mcpPrompts,
+      availableSkills,
+      selectedAgentRole,
       selectedSession,
       nav,
       paletteParentId,
@@ -1060,24 +1305,97 @@ export function App({
       handleSpawn,
       handleKill,
       handleDelegate,
+      sendTuiMessage,
       refreshAll,
       handleQuit,
       showError,
+      rowCount,
+      handleSelect,
+      handleSpawnPalette,
+      handleCompareAdopt,
     ],
   );
 
-  const paletteActions = useMemo(
-    () => [
-      ...buildBuiltInActions(actionContext),
-      ...buildPluginActions(mergedActionRegistry.entries, mkPluginCtx),
-    ],
-    [actionContext, mergedActionRegistry.entries, mkPluginCtx],
-  );
+  // Build the unified action registry ONCE. Static built-ins are enumerated
+  // up front (their run/enabled receive the LIVE ctx at call time, so the
+  // empty-snapshot ctx passed here is fine — see register-builtins.ts), and the
+  // plugin actions are registered as a dynamic source reading a ref so newly
+  // loaded extensions still surface without rebuilding the registry. Live app
+  // state flows through the `actionContext` handed to list/byId/search/run.
+  const pluginEntriesRef = useRef(mergedActionRegistry.entries);
+  useEffect(() => {
+    pluginEntriesRef.current = mergedActionRegistry.entries;
+  }, [mergedActionRegistry.entries]);
+  const mkPluginCtxRef = useRef(mkPluginCtx);
+  useEffect(() => {
+    mkPluginCtxRef.current = mkPluginCtx;
+  }, [mkPluginCtx]);
 
-  const visiblePaletteActions = useMemo(
-    () => computeVisibleActions(paletteActions, actionContext, ks.paletteQuery),
-    [paletteActions, actionContext, ks.paletteQuery],
-  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: built once on purpose — static built-ins are enumerated here while live state flows via the ctx passed to list/byId/run; plugin entries are read through refs.
+  const registry = useMemo(() => {
+    const r = createActionRegistry();
+    registerBuiltInActions(r, actionContext); // ctx unused for static enumeration
+    r.registerDynamic("plugin.", () =>
+      buildPluginActions(pluginEntriesRef.current, mkPluginCtxRef.current),
+    );
+    return r;
+  }, []);
+
+  // Feed the resolved keymap's keybind labels to the registry so palette rows
+  // can show their shortcut (and so the cheatsheet stays in sync with overrides).
+  useEffect(() => {
+    registry.setBindings(resolvedKeymapBindings(resolvedKeymap));
+  }, [registry, resolvedKeymap]);
+
+  // Palette items come straight from the registry: `search` when a query is
+  // active (flat ranked), else `list` (grouped, available-gated). This is the
+  // SAME flat list the palette renders AND the index space onPaletteSelect /
+  // paletteItemCount address — keep them sharing this one array.
+  const filteredActions = useMemo(() => {
+    const base = ks.paletteQuery.trim()
+      ? registry.search(ks.paletteQuery, actionContext)
+      : registry.list(actionContext);
+    // In slash mode the palette renders only slash actions; the parent MUST
+    // apply the same filter so paletteItemCount / onPaletteSelect address the
+    // exact list the palette displays (the palette's internal slash filter is
+    // then an idempotent no-op on this already-filtered input).
+    return slashMode ? base.filter((a) => a.slash) : base;
+  }, [registry, actionContext, ks.paletteQuery, slashMode]);
+
+  // ---------------------------------------------------------------------------
+  // Dedicated `:` slash command-line (#275 Task 11). Opened with `:`; the buffer
+  // is typed WITHOUT the leading slash (`quit`, `skill foo`). On submit we
+  // prepend `/` and resolve via the slash index built from the registry's
+  // current slash actions, then run the resolved action with its parsed args.
+  // ---------------------------------------------------------------------------
+  const handleSlashCommandOpen = useCallback(() => {
+    setSlashBuffer("");
+    setSlashError(undefined);
+    panels.setMode(InputMode.SlashCommand);
+  }, [panels]);
+  const handleSlashChar = useCallback((c: string) => setSlashBuffer((b) => b + c), []);
+  const handleSlashBackspace = useCallback(() => setSlashBuffer((b) => b.slice(0, -1)), []);
+  const handleSlashSubmit = useCallback(() => {
+    const index = buildSlashIndex(registry.list(actionContext));
+    const resolution = resolveSlash(index, `/${slashBuffer}`);
+    if (resolution === undefined) {
+      setSlashError(`Unknown command: /${slashBuffer.split(/\s+/)[0] ?? ""}`);
+      return;
+    }
+    const action = registry.byId(resolution.id, actionContext);
+    if (action && !resolveEnabled(action, actionContext).enabled) {
+      setSlashError(`Command not available: /${slashBuffer.split(/\s+/)[0] ?? ""}`);
+      return;
+    }
+    setSlashBuffer("");
+    setSlashError(undefined);
+    panels.setMode(InputMode.Normal);
+    if (action) {
+      void Promise.resolve(action.run(actionContext, resolution.args)).catch((e) =>
+        showError(e instanceof Error ? e.message : "Command failed"),
+      );
+    }
+  }, [registry, actionContext, slashBuffer, panels, showError]);
 
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
@@ -1091,13 +1409,8 @@ export function App({
       panels,
       nav,
       onQuit: handleQuit,
-      onSpawnPalette: () => {
-        // Defensive: opening a fresh palette must not inherit a stale adopt
-        // target from a previous 'a'-on-Frontier press that was dismissed
-        // through a path other than onPaletteClose.
-        dispatch({ type: "ADOPT_CLEAR" });
-        dispatch({ type: "PALETTE_RESET" });
-      },
+      onSpawnPalette: handleSpawnPalette,
+      onSlashPaletteOpen: handleSlashPaletteOpen,
       onPaletteClose: handleCommandPaletteClose,
       onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
       onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
@@ -1115,19 +1428,7 @@ export function App({
       onDetailSectionPrev: () => dispatch({ type: "DETAIL_SECTION_PREV" }),
       onCompareToggle: () => dispatch({ type: "COMPARE_TOGGLE" }),
       onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
-      onCompareAdopt: (side: "a" | "b") => {
-        const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
-        if (!cid) return;
-        // Read from refs (synchronous current value) — same race-safety
-        // discipline as the 'a' adopt path.
-        const summary =
-          frontierEntriesRef.current.find((e) => e.cid === cid)?.summary ??
-          contributionList.find((c) => c.cid === cid)?.summary ??
-          "";
-        dispatch({ type: "ADOPT_SET", targetCid: cid, summary });
-        dispatch({ type: "COMPARE_ADOPT" });
-        panels.setMode(InputMode.CommandPalette);
-      },
+      onCompareAdopt: handleCompareAdopt,
       onSearchStart: () => {
         dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
         panels.setMode(InputMode.SearchInput);
@@ -1196,6 +1497,10 @@ export function App({
       },
       onGoalChar: (char: string) => dispatch({ type: "GOAL_CHAR", char }),
       onGoalBackspace: () => dispatch({ type: "GOAL_BACKSPACE" }),
+      onSlashCommandOpen: handleSlashCommandOpen,
+      onSlashSubmit: handleSlashSubmit,
+      onSlashChar: handleSlashChar,
+      onSlashBackspace: handleSlashBackspace,
       onBroadcastMode: () => {
         dispatch({ type: "BROADCAST_MODE" });
         panels.setMode(InputMode.MessageInput);
@@ -1224,10 +1529,11 @@ export function App({
       onPaletteChar: (char: string) => dispatch({ type: "PALETTE_CHAR", char }),
       onPaletteBackspace: () => dispatch({ type: "PALETTE_BACKSPACE" }),
       onPaletteSelect: () => {
-        const entry = visiblePaletteActions[ks.paletteIndex];
-        if (!entry) return;
-        const action = entry.action;
-        if (!(action.enabled?.(actionContext) ?? true)) return;
+        // filteredActions is the registry's flat, already-visible Action[] —
+        // ks.paletteIndex addresses it directly (no { action } wrapper now).
+        const action = filteredActions[ks.paletteIndex];
+        if (!action) return;
+        if (!resolveEnabled(action, actionContext).enabled) return;
         // Close the palette FIRST. Mode-switching actions (goal, compare, adopt)
         // re-set their target mode inside run, landing after this Normal set.
         panels.setMode(InputMode.Normal);
@@ -1239,7 +1545,7 @@ export function App({
       onSelect: handleSelect,
       rowCount,
       pageSize: PAGE_SIZE,
-      paletteItemCount: visiblePaletteActions.length,
+      paletteItemCount: filteredActions.length,
       compareMode: ks.compareMode,
       frontierCids: () => frontierCidsRef.current,
       selectedSession,
@@ -1277,13 +1583,26 @@ export function App({
       // (refs are mutated synchronously by handleFrontierEntriesChanged and
       // by slice-nav handlers; state-based values would lag by one render).
       frontierEntries: () => frontierEntriesRef.current,
+      // Registry-backed keymap dispatch (#275): routeKey resolves a keymap
+      // binding → action id → registry.byId(ctx).run(ctx). The migrated
+      // capabilities on actionContext carry the old switch's behavior.
+      registry,
+      actionContext,
+      onActionError: showError,
     }),
     [
       panels,
       nav,
       handleQuit,
+      handleSpawnPalette,
+      handleSlashPaletteOpen,
+      handleSlashCommandOpen,
+      handleSlashSubmit,
+      handleSlashChar,
+      handleSlashBackspace,
       handleCommandPaletteClose,
       handleSelect,
+      handleCompareAdopt,
       handleApproveQuestion,
       handleDenyQuestion,
       sendTuiMessage,
@@ -1291,16 +1610,15 @@ export function App({
       tmux,
       selectedSession,
       rowCount,
-      visiblePaletteActions,
+      filteredActions,
       actionContext,
+      registry,
       ks.compareMode,
-      ks.compareCids,
       ks.searchQuery,
       ks.messageBuffer,
       ks.messageRecipients,
       ks.goalBuffer,
       ks.paletteIndex,
-      contributionList,
       resolvedKeymap,
       keymapPrefix,
       refreshAll,
@@ -1343,11 +1661,12 @@ export function App({
           >
             <CommandPalette
               visible={paletteVisible}
-              actions={paletteActions}
+              actions={filteredActions}
               ctx={actionContext}
               query={ks.paletteQuery}
               selectedIndex={ks.paletteIndex}
               adoptContext={ks.adoptContext}
+              slashMode={slashMode}
             />
           </box>
         )}
@@ -1365,6 +1684,11 @@ export function App({
                 ? `Goal: ${ks.goalBuffer}`
                 : undefined
           }
+        />
+        <SlashInput
+          visible={panels.state.mode === InputMode.SlashCommand}
+          buffer={slashBuffer}
+          error={slashError}
         />
         <PanelManager
           provider={provider}
@@ -1404,6 +1728,9 @@ export function App({
           registryEntries={mergedPanelRegistry.entries}
           pluginContext={pluginContext}
         />
+        {!paletteVisible && keymapPrefix.length > 0 ? (
+          <LeaderOverlay prefix={keymapPrefix} bindings={resolvedKeymap.bindings} />
+        ) : null}
         <StatusBar
           mode={panels.state.mode}
           screenContext={screenContext}

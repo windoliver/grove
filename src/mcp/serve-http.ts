@@ -1345,9 +1345,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     try {
       // Runtime skill acquisition mutates the caller workspace and requires
       // stdio's per-agent role/cwd binding. HTTP MCP intentionally omits it.
+      // promptsDir: repo-root prompts/ relative to this file (src/mcp/serve-http.ts)
+      // so prompts/list exposes the bundled templates; degrades to [] if absent.
       server = await createMcpServer(scopedDeps, {
         eval: evalEnabled,
         transport: "http",
+        promptsDir: new URL("../../prompts/", import.meta.url).pathname,
       });
     } catch (err) {
       acquiredScope.release();

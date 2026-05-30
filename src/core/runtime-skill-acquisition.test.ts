@@ -6,6 +6,8 @@ import type { RuntimeSkillsConfig } from "./config.js";
 import type { RuntimeSkillResolver } from "./runtime-skill-acquisition.js";
 import {
   DefaultRuntimeSkillAcquisitionService,
+  listAvailableSkills,
+  listBundledSkillNames,
   RuntimeSkillAcquisitionError,
 } from "./runtime-skill-acquisition.js";
 import type { RuntimeSkillSessionStore } from "./session.js";
@@ -344,5 +346,23 @@ describe("DefaultRuntimeSkillAcquisitionService", () => {
         caller: { role: "coder", workspacePath: workspace },
       }),
     ).rejects.toMatchObject({ code: "CATALOG_UNAVAILABLE" });
+  });
+});
+
+describe("listAvailableSkills (#275)", () => {
+  test("includes the bundled grove skill", async () => {
+    const skills = await listAvailableSkills();
+    expect(skills.map((s) => s.name)).toContain("grove");
+    expect(skills.find((s) => s.name === "grove")?.source).toBe("bundled");
+  });
+  test("merges topology skills and dedupes (bundled wins)", async () => {
+    const skills = await listAvailableSkills(["custom-role-skill", "grove"]);
+    const names = skills.map((s) => s.name);
+    expect(names).toContain("custom-role-skill");
+    expect(names.filter((n) => n === "grove").length).toBe(1); // deduped
+    expect(skills.find((s) => s.name === "custom-role-skill")?.source).toBe("topology");
+  });
+  test("listBundledSkillNames returns [] for a missing dir", async () => {
+    expect(await listBundledSkillNames("/no/such/dir")).toEqual([]);
   });
 });

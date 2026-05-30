@@ -10,6 +10,7 @@
 
 import React, { useMemo } from "react";
 import type { Action, ActionContext, ActionGroup } from "../actions/types.js";
+import { resolveEnabled } from "../actions/types.js";
 import { computeVisibleActions } from "../actions/visibility.js";
 import { theme } from "../theme.js";
 
@@ -62,6 +63,8 @@ export interface CommandPaletteProps {
   readonly query?: string | undefined;
   readonly selectedIndex?: number | undefined;
   readonly adoptContext?: { readonly targetCid: string; readonly summary: string } | undefined;
+  /** When true, show only actions that declare a `slash` trigger (#275). */
+  readonly slashMode?: boolean | undefined;
 }
 
 export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = React.memo(
@@ -72,12 +75,20 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     query,
     selectedIndex,
     adoptContext,
+    slashMode,
   }: CommandPaletteProps): React.ReactNode {
     const q = (query ?? "").trim();
-    const visibleActions = useMemo(() => computeVisibleActions(actions, ctx, q), [actions, ctx, q]);
+    // In slash mode, restrict to actions that declare a `slash` trigger BEFORE
+    // visibility/fuzzy computation so the flat index space matches the display.
+    const source = slashMode ? actions.filter((a) => a.slash) : actions;
+    const visibleActions = useMemo(() => computeVisibleActions(source, ctx, q), [source, ctx, q]);
 
     if (!visible) return null;
     const idx = selectedIndex ?? 0;
+
+    // Compute the disabled reason for the currently-selected row (shown in footer).
+    const selected = visibleActions[idx]?.action;
+    const selectedReason = selected ? resolveEnabled(selected, ctx).reason : undefined;
 
     // When no query, compute the group header to print before each item.
     const headerBefore: (ActionGroup | undefined)[] = [];
@@ -92,7 +103,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     return (
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>
         <box flexDirection="row">
-          <text color={theme.focus}>Command Palette</text>
+          <text color={theme.focus}>{slashMode ? "Slash commands" : "Command Palette"}</text>
           {adoptContext ? (
             <text color={theme.compare}>{` Adopt: ${adoptContext.targetCid.slice(0, 12)}…`}</text>
           ) : null}
@@ -115,7 +126,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
         <box flexDirection="column" paddingLeft={1}>
           {visibleActions.map(({ action, matchedIndices }, i) => {
             const isSelected = i === idx;
-            const dimmed = !(action.enabled?.(ctx) ?? true);
+            const dimmed = !resolveEnabled(action, ctx).enabled;
             const labelColor = isSelected ? theme.focus : dimmed ? theme.disabled : theme.text;
             const detailColor = isSelected
               ? theme.focus
@@ -140,14 +151,18 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
                     <text color={labelColor}>{action.label}</text>
                   )}
                   {action.detail ? <text color={detailColor}> [{action.detail}]</text> : null}
+                  {action.keybind ? (
+                    <text color={theme.secondary}>{`  ${action.keybind}`}</text>
+                  ) : null}
                 </box>
               </box>
             );
           })}
         </box>
 
-        <box marginTop={1} paddingLeft={1}>
+        <box marginTop={1} paddingLeft={1} flexDirection="column">
           <text color={theme.secondary}>[j/k] navigate [Enter] execute [Esc] close</text>
+          {selectedReason ? <text color={theme.disabled}>{selectedReason}</text> : null}
         </box>
       </box>
     );

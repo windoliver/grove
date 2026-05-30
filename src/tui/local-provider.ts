@@ -10,12 +10,18 @@ import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery, BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
 import type { Contribution } from "../core/models.js";
+import { listAvailableSkills } from "../core/runtime-skill-acquisition.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import { listBundledPrompts } from "../mcp/prompts.js";
 import type {
   ArtifactMeta,
+  PromptInfo,
   ProviderCapabilities,
+  SkillInfo,
   TuiArtifactProvider,
   TuiBountyProvider,
+  TuiPromptProvider,
+  TuiSkillProvider,
 } from "./provider.js";
 import { StoreBackedProvider, type StoreBackedProviderDeps } from "./store-backed-provider.js";
 
@@ -38,7 +44,7 @@ export interface LocalProviderDeps extends StoreBackedProviderDeps {
 /** TUI data provider backed by local SQLite stores. */
 export class LocalDataProvider
   extends StoreBackedProvider
-  implements TuiArtifactProvider, TuiBountyProvider
+  implements TuiArtifactProvider, TuiBountyProvider, TuiPromptProvider, TuiSkillProvider
 {
   protected readonly mode = "local";
 
@@ -64,6 +70,8 @@ export class LocalDataProvider
       goals: deps.goalSessionStore !== undefined,
       sessions: deps.goalSessionStore !== undefined,
       handoffs: deps.handoffStore !== undefined,
+      prompts: true,
+      skills: true,
     };
   }
 
@@ -119,6 +127,24 @@ export class LocalDataProvider
   async listBounties(query?: BountyQuery): Promise<readonly Bounty[]> {
     if (!this.bountyStore) return [];
     return this.bountyStore.listBounties(query);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiPromptProvider
+  // ---------------------------------------------------------------------------
+
+  async listMcpPrompts(): Promise<readonly PromptInfo[]> {
+    const defs = await listBundledPrompts();
+    return defs.map((d) => ({ name: d.name, description: d.description, template: d.template }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiSkillProvider
+  // ---------------------------------------------------------------------------
+
+  async listAvailableSkills(): Promise<readonly SkillInfo[]> {
+    const skills = await listAvailableSkills();
+    return skills.map((s) => ({ name: s.name }));
   }
 
   // ---------------------------------------------------------------------------

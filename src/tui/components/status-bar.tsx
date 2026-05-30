@@ -53,6 +53,7 @@ const MODE_LABELS: Record<InputMode, string> = {
   search_input: "SEARCH",
   message_input: "MESSAGE",
   goal_input: "GOAL",
+  slash_command: "SLASH",
   help: "HELP",
 };
 

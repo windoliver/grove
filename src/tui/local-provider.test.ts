@@ -213,4 +213,24 @@ describe("LocalDataProvider specific", () => {
     // Just verify the method exists
     expect(typeof provider.close).toBe("function");
   });
+
+  test("capabilities.prompts is true", () => {
+    expect(provider.capabilities.prompts).toBe(true);
+  });
+
+  test("listMcpPrompts returns bundled prompts including coder", async () => {
+    const prompts = await provider.listMcpPrompts();
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(prompts.map((p) => p.name)).toContain("coder");
+  });
+
+  test("capabilities.skills is true", () => {
+    expect(provider.capabilities.skills).toBe(true);
+  });
+
+  test("listAvailableSkills returns a non-empty array including 'grove'", async () => {
+    const skills = await provider.listAvailableSkills();
+    expect(skills.length).toBeGreaterThan(0);
+    expect(skills.map((s) => s.name)).toContain("grove");
+  });
 });

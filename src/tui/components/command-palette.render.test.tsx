@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { buildBuiltInActions } from "../actions/builtin-actions.js";
+import { spawnSource } from "../actions/dynamic-sources.js";
 import type { ActionContext } from "../actions/types.js";
 import { theme } from "../theme.js";
 import { CommandPalette } from "./command-palette.js";
@@ -59,6 +60,27 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     prevFrontierSlice: () => undefined,
     scrollTerminalToBottom: () => undefined,
     showMessage: () => undefined,
+    // Keymap-migrated capabilities (#275)
+    openPalette: () => undefined,
+    runPrompt: () => undefined,
+    requestSkill: () => undefined,
+    enterTerminalInput: () => undefined,
+    artifactPrev: () => undefined,
+    artifactNext: () => undefined,
+    artifactDiffToggle: () => undefined,
+    artifactDiffModeToggle: () => undefined,
+    cursorDown: () => undefined,
+    cursorUp: () => undefined,
+    selectRow: () => undefined,
+    pageNext: () => undefined,
+    pagePrev: () => undefined,
+    vfsNavigate: () => undefined,
+    terminalScrollUp: () => undefined,
+    terminalScrollDown: () => undefined,
+    compareSelect: () => undefined,
+    compareAdoptA: () => undefined,
+    compareAdoptB: () => undefined,
+    frontierAdopt: () => undefined,
     ...overrides,
   };
 }
@@ -182,7 +204,8 @@ describe("CommandPalette render (#194)", () => {
       claims: [],
       profiles: [{ name: "@rev", role: "reviewer", platform: "claude-code" }],
     });
-    const actions = buildBuiltInActions(c);
+    // Spawn actions are now dynamic (#275) — include spawnSource alongside statics.
+    const actions = [...buildBuiltInActions(c), ...spawnSource(c)];
     const spawn = actions.find((a) => a.id === "agent.spawn.reviewer");
     // Sanity: this action is indeed disabled in this context.
     expect(spawn?.enabled?.(c)).toBe(false);

@@ -6,12 +6,15 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
+import type { ActionRegistry } from "../actions/registry.js";
+import { type ActionContext, resolveEnabled } from "../actions/types.js";
 import {
   type KeyBinding,
   keyEventToToken,
   type ResolvedKeymap,
   resolveKeySequence,
 } from "../keymap/keymap.js";
+import { bindingToActionId } from "../keymap/keymap-action-map.js";
 import type { ZoomLevel } from "../panels/panel-manager.js";
 import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { isHelpToggleKey } from "./shared-keyboard-core.js";
@@ -28,6 +31,8 @@ export interface KeyboardActions {
   readonly nav: NavigationActions;
   readonly onQuit: () => void;
   readonly onSpawnPalette: () => void;
+  /** Opens the command palette pre-filtered to slash actions (Normal-mode `/`). */
+  readonly onSlashPaletteOpen: () => void;
   /** Called whenever the command palette is dismissed (any path). Clears
    *  adoptContext + palette state so leftover targets don't leak into the
    *  next unrelated spawn. */
@@ -52,6 +57,11 @@ export interface KeyboardActions {
   readonly onGoalSubmit: () => void;
   readonly onGoalChar: (char: string) => void;
   readonly onGoalBackspace: () => void;
+  /** Opens the dedicated `:` slash command-line (Normal-mode `:`). */
+  readonly onSlashCommandOpen: () => void;
+  readonly onSlashSubmit: () => void;
+  readonly onSlashChar: (char: string) => void;
+  readonly onSlashBackspace: () => void;
   readonly onApproveQuestion: () => void;
   readonly onDenyQuestion: () => void;
   readonly onSendKeys: (key: string) => void;
@@ -90,6 +100,12 @@ export interface KeyboardActions {
   readonly resolvedKeymap?: ResolvedKeymap | undefined;
   readonly keymapPrefix?: readonly string[] | undefined;
   readonly onKeymapPrefixChange?: (prefix: readonly string[]) => void;
+  /** Registry that resolves a keymap binding to an action (#275). */
+  readonly registry: ActionRegistry;
+  /** Context the resolved action runs against (read state + capabilities). */
+  readonly actionContext: ActionContext;
+  /** Reports an error thrown by an async action's run(). */
+  readonly onActionError: (message: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,173 +124,33 @@ export function nextZoom(current: ZoomLevel): ZoomLevel {
   }
 }
 
-export function executeKeymapAction(binding: KeyBinding, actions: KeyboardActions): boolean {
-  const focused = actions.panels.state.focused;
-  switch (binding.action) {
-    case "quit":
-      actions.onQuit();
-      return true;
-    case "help":
-      actions.panels.setMode(InputMode.Help);
-      return true;
-    case "palette":
-      actions.onSpawnPalette();
-      actions.panels.setMode(InputMode.CommandPalette);
-      return true;
-    case "refresh":
-      actions.onRefresh();
-      return true;
-    case "zoom_cycle":
-      actions.onZoomCycle();
-      return true;
-    case "zoom_reset":
-      actions.onZoomReset();
-      return true;
-    case "layout_toggle":
-      actions.onLayoutToggle();
-      return true;
-    case "view_cycle":
-      actions.panels.cycleViewMode();
-      return true;
-    case "cycle_panel_next":
-      actions.panels.cycleNext();
-      return true;
-    case "cycle_panel_prev":
-      actions.panels.cyclePrev();
-      return true;
-    case "focus_panel":
-      actions.panels.focus(binding.panel);
-      return true;
-    case "toggle_panel":
-      actions.panels.toggle(binding.panel);
-      return true;
-    case "broadcast":
-      actions.onBroadcastMode();
-      return true;
-    case "direct_message":
-      actions.onDirectMessageMode();
-      return true;
-    case "search_start":
-      if (focused !== Panel.Search) return false;
-      actions.onSearchStart();
-      return true;
-    case "terminal_input":
-      if (focused !== Panel.Terminal) return false;
-      actions.panels.setMode(InputMode.TerminalInput);
-      return true;
-    case "compare_toggle":
-      if (focused !== Panel.Frontier) return false;
-      actions.onCompareToggle();
-      return true;
-    case "artifact_prev":
-      if (focused !== Panel.Artifact) return false;
-      actions.onArtifactPrev();
-      return true;
-    case "artifact_next":
-      if (focused !== Panel.Artifact) return false;
-      actions.onArtifactNext();
-      return true;
-    case "artifact_diff":
-      if (focused !== Panel.Artifact) return false;
-      actions.onArtifactDiffToggle();
-      return true;
-    case "artifact_diff_mode":
-      if (focused !== Panel.Artifact) return false;
-      actions.onArtifactDiffModeToggle();
-      return true;
-    case "approve":
-      if (focused !== Panel.Decisions) return false;
-      actions.onApproveQuestion();
-      return true;
-    case "deny":
-      if (focused !== Panel.Decisions) return false;
-      actions.onDenyQuestion();
-      return true;
-    case "cursor_down":
-      // When the Detail panel is focused AND showing a contribution, the row
-      // cursor becomes detail-section navigation. Specializing the cursor_down
-      // ACTION (rather than intercepting the raw key) keeps detail nav on the
-      // keymap path, so user keybinding overrides are respected: remap j away
-      // from cursor_down and j stops moving detail sections.
-      if (focused === Panel.Detail && actions.nav.isDetailView) {
-        actions.onDetailSectionNext();
-        return true;
-      }
-      actions.nav.cursorDown(Math.max(0, actions.rowCount - 1));
-      return true;
-    case "cursor_up":
-      if (focused === Panel.Detail && actions.nav.isDetailView) {
-        actions.onDetailSectionPrev();
-        return true;
-      }
-      actions.nav.cursorUp();
-      return true;
-    case "select":
-      if (!actions.nav.isDetailView && focused !== Panel.Claims && actions.rowCount > 0) {
-        actions.onSelect(actions.nav.state.cursor);
-      }
-      return true;
-    case "page_next": {
-      const hasFullPage = actions.rowCount >= actions.pageSize;
-      const totalItems = hasFullPage
-        ? actions.nav.state.pageOffset + actions.rowCount + 1
-        : actions.nav.state.pageOffset + actions.rowCount;
-      actions.nav.nextPage(actions.pageSize, totalItems);
-      return true;
-    }
-    case "page_prev":
-      actions.nav.prevPage(actions.pageSize);
-      return true;
-    case "vfs_navigate":
-      if (focused !== Panel.Vfs) return false;
-      actions.onVfsNavigate();
-      return true;
-    case "terminal_scroll_up":
-      if (focused !== Panel.Terminal) return false;
-      actions.onTerminalScrollUp();
-      return true;
-    case "terminal_scroll_down":
-      if (focused !== Panel.Terminal) return false;
-      actions.onTerminalScrollDown();
-      return true;
-    case "terminal_scroll_bottom":
-      if (focused !== Panel.Terminal) return false;
-      actions.onTerminalScrollBottom();
-      return true;
-    case "frontier_tab_next":
-      if (focused !== Panel.Frontier) return false;
-      actions.onFrontierTabNext();
-      return true;
-    case "frontier_tab_prev":
-      if (focused !== Panel.Frontier) return false;
-      actions.onFrontierTabPrev();
-      return true;
-    case "frontier_adopt":
-      if (focused === Panel.Frontier && !actions.compareMode) {
-        const entries = actions.frontierEntries();
-        const entry = entries[actions.nav.state.cursor];
-        if (entry !== undefined) actions.onFrontierAdopt(entry.cid, entry.summary);
-        return entry !== undefined;
-      }
-      return false;
-    case "compare_select":
-      if (focused === Panel.Frontier && actions.compareMode) {
-        const cid = actions.frontierCids()[actions.nav.state.cursor];
-        if (cid !== undefined) {
-          actions.onCompareSelect(cid);
-          return true;
-        }
-      }
-      return false;
-    case "compare_adopt_a":
-      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
-      actions.onCompareAdopt("a");
-      return true;
-    case "compare_adopt_b":
-      if (!(focused === Panel.Artifact && actions.compareMode)) return false;
-      actions.onCompareAdopt("b");
-      return true;
-  }
+/**
+ * Resolve a keymap binding to its registry action and run it.
+ *
+ * Returns true if the binding was handled. A binding is treated as UNHANDLED
+ * (returns false) when:
+ *   - no action is registered for its id,
+ *   - the action's `available` focus gate is not met (preserving the old
+ *     switch's focus-gate fall-through, e.g. artifact_next off the Artifact
+ *     panel), or
+ *   - the action is disabled.
+ * `byId` does NOT filter by `available`, so the gate is checked here explicitly.
+ */
+export function dispatchKeymapBinding(
+  binding: KeyBinding,
+  registry: ActionRegistry,
+  ctx: ActionContext,
+  onError: (message: string) => void,
+): boolean {
+  const id = bindingToActionId(binding);
+  const action = registry.byId(id, ctx);
+  if (action === undefined) return false;
+  if (action.available && !action.available(ctx)) return false; // focus gate not met → unhandled
+  if (!resolveEnabled(action, ctx).enabled) return false;
+  void Promise.resolve(action.run(ctx)).catch((e) =>
+    onError(e instanceof Error ? e.message : "Action failed"),
+  );
+  return true;
 }
 
 /**
@@ -432,6 +308,27 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Slash command-line mode (`:` prompt) — mirrors the GoalInput block.
+  if (mode === InputMode.SlashCommand) {
+    if (input === "return") {
+      actions.onSlashSubmit();
+      return true;
+    }
+    if (input === "backspace") {
+      actions.onSlashBackspace();
+      return true;
+    }
+    if (input === "space") {
+      actions.onSlashChar(" ");
+      return true;
+    }
+    if (input && input.length === 1 && !isCtrl) {
+      actions.onSlashChar(input);
+      return true;
+    }
+    return true;
+  }
+
   const resolvedKeymap = actions.resolvedKeymap;
   if (mode === InputMode.Normal && resolvedKeymap !== undefined) {
     const token = keyEventToToken(key);
@@ -446,7 +343,15 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
           return true;
         case "match":
           actions.onKeymapPrefixChange?.([]);
-          if (executeKeymapAction(result.binding, actions)) return true;
+          if (
+            dispatchKeymapBinding(
+              result.binding,
+              actions.registry,
+              actions.actionContext,
+              actions.onActionError,
+            )
+          )
+            return true;
           if (keymapPrefix.length > 0) return true;
           break;
         case "miss":
@@ -537,9 +442,26 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Slash command palette entry: `/` in Normal mode off the Search panel opens
+  // the palette pre-filtered to slash actions. Placed BEFORE the search-panel
+  // `/` so the search behavior is preserved when the Search panel is focused.
+  if (input === "/" && mode === InputMode.Normal && focused !== Panel.Search) {
+    actions.onSlashPaletteOpen();
+    return true;
+  }
+
   // Search input mode entry
   if (input === "/" && focused === Panel.Search) {
     actions.onSearchStart();
+    return true;
+  }
+
+  // Dedicated slash command-line entry: `:` in Normal mode opens the `:` prompt
+  // (vim-style). Submit prepends `/` and resolves via the slash index. `:` is
+  // not bound in the default keymap, so the keymap dispatch above returns a
+  // miss and falls through here.
+  if (input === ":" && mode === InputMode.Normal) {
+    actions.onSlashCommandOpen();
     return true;
   }
 
