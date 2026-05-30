@@ -28,6 +28,7 @@ export interface BreadcrumbBarProps {
 const PAGE_LABELS: Record<PageKind, string> = {
   "preset-select": "Preset Select",
   "goal-input": "Goal",
+  "config-review": "Config Review",
   "agent-detect": "Launch Preview",
   "launch-preview": "Launch Preview",
   spawning: "Spawning",
@@ -164,6 +165,7 @@ const SCREEN_LABELS: Record<Screen, string> = {
   "agent-detect": "Launch Preview",
   "launch-preview": "Launch Preview",
   "goal-input": "Goal",
+  "config-review": "Config Review",
   spawning: "Spawning",
   running: "Running",
   inspect: "Inspect",

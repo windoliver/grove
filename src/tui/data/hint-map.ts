@@ -11,6 +11,7 @@
  */
 
 import { COMPLETE_HINTS } from "../views/complete-hints.js";
+import { CONFIG_REVIEW_HINTS } from "../views/config-review-hints.js";
 import { GOAL_INPUT_HINTS } from "../views/goal-input-hints.js";
 import { INSPECT_HINTS } from "../views/inspect-hints.js";
 import { LAUNCH_PREVIEW_HINTS } from "../views/launch-preview-hints.js";
@@ -63,6 +64,7 @@ const STATIC: Readonly<Record<string, readonly KeyAction[]>> = Object.freeze({
   // Top-level page kinds
   "preset-select": PRESET_SELECT_HINTS,
   "goal-input": GOAL_INPUT_HINTS,
+  "config-review": CONFIG_REVIEW_HINTS,
   "agent-detect": LAUNCH_PREVIEW_HINTS,
   "launch-preview": LAUNCH_PREVIEW_HINTS,
   // Spawning is transient and has NO active keyboard handlers
