@@ -13,6 +13,7 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getPreset, presetToSessionConfig } from "../../cli/presets/index.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import {
   applySessionSkillOverrides,
@@ -47,6 +48,7 @@ import type { TuiPresetEntry } from "../tui-app.js";
 import { PulseView } from "../views/pulse-view.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
+import { ConfigReview } from "./config-review.js";
 import { GoalInput } from "./goal-input.js";
 import { PresetSelect } from "./preset-select.js";
 import { RunningView } from "./running-view.js";
@@ -62,6 +64,7 @@ export type Screen =
   | "preset-select"
   | "agent-detect"
   | "goal-input"
+  | "config-review"
   | "launch-preview"
   | "spawning"
   | "running"
@@ -75,6 +78,8 @@ export interface ScreenState {
   detectedAgents?: Map<string, boolean>;
   roleMapping?: Map<string, string>;
   goal?: string;
+  /** Operator-edited session config from the config-review screen (#201). */
+  editedConfig?: import("../../core/contract.js").GroveContract | undefined;
   sessionId?: string;
   /** Warning message when session record failed to save. */
   sessionWarning?: string;
@@ -285,6 +290,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         return initialTopology;
       },
       [initialTopology],
+    );
+
+    // Resolve the config a preset would produce, so config-review can show and
+    // edit it before the session exists. Falls back to the boot-time contract
+    // (GROVE.md or grove.json preset) when the picked preset isn't resolvable.
+    const resolveBaselineContract = useCallback(
+      (presetName: string) => {
+        const preset = getPreset(presetName);
+        if (preset) return presetToSessionConfig(preset, presetName);
+        return contract;
+      },
+      [contract],
     );
 
     // Capture the resume session ID for setSessionScope — written in the useState
@@ -596,23 +613,46 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       })();
     }, [provider, renderer, state.sessionId, spawnManager]);
 
-    // Screen 1 -> Screen 2: preset selected → resolve topology and go to goal input
+    // Screen 1 -> 1.5: preset selected → resolve topology + baseline config and
+    // go to config-review. When no config is resolvable (remote/nexus with no
+    // contract), skip straight to goal-input — there is nothing to edit.
     const handlePresetSelect = useCallback(
       (presetName: string) => {
-        // Resolve topology from preset, falling back to GROVE.md default
         const presetTopology = resolveBaselineTopology(presetName);
         if (presetTopology) {
           setTopology(presetTopology);
         }
-        setState((s) => ({
-          ...s,
-          screen: "goal-input",
-          selectedPreset: presetName,
-        }));
+        const baseline = resolveBaselineContract(presetName);
+        if (baseline) {
+          setState((s) => ({
+            ...s,
+            screen: "config-review",
+            selectedPreset: presetName,
+            editedConfig: baseline,
+          }));
+          pages.push({ kind: "config-review" });
+        } else {
+          setState((s) => ({ ...s, screen: "goal-input", selectedPreset: presetName }));
+          pages.push({ kind: "goal-input" });
+        }
+      },
+      [pages, resolveBaselineTopology, resolveBaselineContract],
+    );
+
+    // Screen 1.5 -> 2: config confirmed → store edits and go to goal input.
+    const handleConfigReviewConfirm = useCallback(
+      (updatedConfig: import("../../core/contract.js").GroveContract) => {
+        setState((s) => ({ ...s, screen: "goal-input", editedConfig: updatedConfig }));
         pages.push({ kind: "goal-input" });
       },
-      [pages, resolveBaselineTopology],
+      [pages],
     );
+
+    // Screen 1.5 -> 1: back to preset select.
+    const handleConfigReviewBack = useCallback(() => {
+      setState((s) => ({ ...s, screen: "preset-select" }));
+      pages.pop();
+    }, [pages]);
 
     // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
@@ -678,8 +718,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         if (isSessionProvider(provider)) {
           try {
             const sessionTopology = resolvedTopology;
+            const baseConfig = state.editedConfig ?? contract;
             const sessionConfig =
-              contract && sessionTopology ? { ...contract, topology: sessionTopology } : contract;
+              baseConfig && sessionTopology
+                ? { ...baseConfig, topology: sessionTopology }
+                : baseConfig;
             const session = await provider.createSession({
               goal,
               presetName: state.selectedPreset,
@@ -849,7 +892,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           pages.resetTo({ kind: "running" });
         }
       },
-      [provider, topology, contract, state.selectedPreset, spawnManager, appProps.groveDir, pages],
+      [
+        provider,
+        topology,
+        contract,
+        state.editedConfig,
+        state.selectedPreset,
+        spawnManager,
+        appProps.groveDir,
+        pages,
+      ],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
@@ -929,20 +981,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       pages.resetTo({ kind: "running" });
     }, [pages]);
 
-    // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
-    // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
+    // Screen 2 -> back: pop to the page beneath goal-input (config-review in the
+    // preset flow, else preset-select). Topology-first launches have goal-input
+    // as the only page, so Esc exits instead of dead-ending.
     const handleGoalBack = useCallback(() => {
       hasSpawnedRef.current = false; // Reset so fresh launch is allowed after going back
-      if (presets && presets.length > 0) {
+      if (pages.depth() > 1) {
+        pages.pop();
+        const top = pages.top();
+        setState((s) => ({ ...s, screen: (top?.kind as Screen) ?? "preset-select" }));
+      } else if (presets && presets.length > 0) {
         setState((s) => ({ ...s, screen: "preset-select" }));
-        // Pop goal-input off the stack so the router lands back on
-        // preset-select. resetTo guards against the case where goal-input
-        // was the only entry (topology-first init).
-        if (pages.depth() > 1) {
-          pages.pop();
-        } else {
-          pages.resetTo({ kind: "preset-select" });
-        }
+        pages.resetTo({ kind: "preset-select" });
       } else {
         handleQuit();
       }
@@ -1086,6 +1136,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           onBack={handleGoalBack}
         />
       );
+      const ConfigReviewPage = (): React.ReactNode => {
+        const cfg = state.editedConfig ?? contract;
+        if (!cfg) return <box />;
+        return (
+          <ConfigReview
+            config={cfg}
+            topology={topology}
+            onConfirm={handleConfigReviewConfirm}
+            onBack={handleConfigReviewBack}
+          />
+        );
+      };
       const LaunchPreviewPage = (): React.ReactNode => (
         <AgentDetect
           topology={topology}
@@ -1193,6 +1255,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       return {
         "preset-select": PresetSelectPage,
         "goal-input": GoalInputPage,
+        "config-review": ConfigReviewPage,
         "agent-detect": LaunchPreviewPage,
         "launch-preview": LaunchPreviewPage,
         spawning: SpawningPage,
@@ -1239,6 +1302,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       observeDoneContribution,
       getDuration,
       wrapWithPermissions,
+      state.editedConfig,
+      handleConfigReviewConfirm,
+      handleConfigReviewBack,
+      contract,
     ]);
 
     return (
