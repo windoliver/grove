@@ -58,13 +58,12 @@ export function createTaskControllerWiring(
       supervisor: runtime,
       taskStore: options.taskStore,
       onDead: async (slotId): Promise<void> => {
-        // TODO(#273): Claim↔task linkage not available — there is no Claim field
-        // that directly stores the AgentTask id / slotId. Lease release is
-        // deferred until the protocol establishes a stable binding (e.g. an
-        // ownerRef on the claim pointing to the task). The task-failure patch
-        // (phase=Failed) is applied by wireSupervisorToTasks; the stale lease
-        // will expire naturally via the claim reconciliation controller.
-        void slotId;
+        const active = await options.claimStore.listClaims({ status: "active" });
+        for (const claim of active) {
+          if (claim.context?.agentTaskId === slotId) {
+            await options.claimStore.release(claim.claimId);
+          }
+        }
       },
     });
   }
