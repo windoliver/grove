@@ -81,6 +81,13 @@ export interface McpDeps extends ServerDeps {
    * Typically the project root containing the .grove/ directory.
    */
   readonly workspaceBoundary: string;
+  /**
+   * AgentTask id that owns this MCP session, sourced from `GROVE_AGENT_TASK_ID`
+   * in the agent process environment. When set, every claim created through this
+   * MCP session stamps `context.agentTaskId` so the supervisor can release the
+   * lease when the task permanently dies (#273).
+   */
+  readonly agentTaskId?: string | undefined;
   /** Optional deadline watcher for proactive overdue detection. */
   readonly deadlineWatcher?: DeadlineWatcher | undefined;
   /**

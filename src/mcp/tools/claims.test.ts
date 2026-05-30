@@ -229,6 +229,74 @@ describe("grove_release", () => {
   });
 });
 
+describe("grove_claim agentTaskId stamping", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerClaimTools(server, { ...deps, agentTaskId: "task-abc-123" });
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("stamps agentTaskId into claim context when deps.agentTaskId is set", async () => {
+    const result = await callTool(server, "grove_claim", {
+      targetRef: "task-xyz",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Working on task",
+      leaseDurationMs: 300_000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text) as { claimId: string };
+    const stored = await testDeps.deps.claimStore.getClaim(data.claimId);
+    expect(stored?.context?.agentTaskId).toBe("task-abc-123");
+  });
+
+  test("agentTaskId is merged additively — does not clobber caller-supplied context", async () => {
+    const result = await callTool(server, "grove_claim", {
+      targetRef: "task-xyz",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Working on task",
+      leaseDurationMs: 300_000,
+      context: { priority: "high" },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text) as { claimId: string };
+    const stored = await testDeps.deps.claimStore.getClaim(data.claimId);
+    expect(stored?.context?.agentTaskId).toBe("task-abc-123");
+    expect(stored?.context?.priority).toBe("high");
+  });
+
+  test("omits agentTaskId from context when deps.agentTaskId is undefined", async () => {
+    const serverWithoutTaskId = new McpServer(
+      { name: "test2", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerClaimTools(serverWithoutTaskId, deps);
+
+    const result = await callTool(serverWithoutTaskId, "grove_claim", {
+      targetRef: "task-no-task-id",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Working on task",
+      leaseDurationMs: 300_000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text) as { claimId: string };
+    const stored = await testDeps.deps.claimStore.getClaim(data.claimId);
+    expect(stored?.context?.agentTaskId).toBeUndefined();
+    expect(stored?.context).toBeUndefined();
+  });
+});
+
 describe("grove_list_claims pagination", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;

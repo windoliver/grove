@@ -74,6 +74,7 @@ const listClaimsInputSchema = z.object({
 
 export function registerClaimTools(server: McpServer, deps: McpDeps): void {
   const opDeps = toOperationDeps(deps);
+  const { agentTaskId } = deps;
 
   // --- grove_claim --------------------------------------------------------
   server.registerTool(
@@ -106,14 +107,23 @@ export function registerClaimTools(server: McpServer, deps: McpDeps): void {
         return toMcpResult(result);
       }
 
+      // Merge caller-supplied context with the supervisor-linkage agentTaskId.
+      // agentTaskId is additive — it does not clobber caller context fields.
+      // Both are omitted entirely when neither is present (preserves wire compat).
+      const mergedContext: Readonly<Record<string, JsonValue>> | undefined =
+        agentTaskId !== undefined || args.context !== undefined
+          ? {
+              ...(args.context as Record<string, JsonValue> | undefined),
+              ...(agentTaskId !== undefined ? { agentTaskId } : {}),
+            }
+          : undefined;
+
       const result = await claimOperation(
         {
           targetRef: args.targetRef,
           intentSummary: args.intentSummary,
           ...(args.leaseDurationMs !== undefined ? { leaseDurationMs: args.leaseDurationMs } : {}),
-          ...(args.context !== undefined
-            ? { context: args.context as Readonly<Record<string, JsonValue>> }
-            : {}),
+          ...(mergedContext !== undefined ? { context: mergedContext } : {}),
           agent: args.agent as AgentOverrides,
         },
         opDeps,
