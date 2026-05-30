@@ -19,6 +19,7 @@
 
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import type { ContentStore } from "../../core/cas.js";
 import { EnforcingContributionStore } from "../../core/enforcing-store.js";
 import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import type { Score } from "../../core/models.js";
@@ -32,12 +33,14 @@ import {
   logOperation,
   reproduceOperation,
 } from "../../core/operations/index.js";
+import type { ClaimStore, ContributionStore } from "../../core/store.js";
 import { FsCas } from "../../local/fs-cas.js";
 import { createSqliteStores } from "../../local/sqlite-store.js";
 import { resolveAgent } from "../agent.js";
 import type { Writer } from "../context.js";
 import { outputJson, outputJsonError } from "../format.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
+import { openNexusStores, resolveNexusParams } from "../utils/nexus-stores.js";
 import { resolveContract } from "../utils/resolve-contract.js";
 
 export interface EvalOptions {
@@ -227,25 +230,47 @@ export async function runEval(
 export async function handleEval(args: readonly string[], groveOverride?: string): Promise<void> {
   const options = parseEvalArgs(args);
   const { dbPath, groveDir } = resolveGroveDir(groveOverride);
+  const groveRoot = join(groveDir, "..");
+  // Local stores are always opened — they back contract/goal resolution and
+  // are the fallback when the grove is not Nexus-managed.
   const stores = createSqliteStores(dbPath);
-  const cas = new FsCas(join(groveDir, "cas"));
-  const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
   try {
     const contract = await resolveContract({
       goalSessionStore: stores.goalSessionStore,
-      groveRoot: join(groveDir, ".."),
+      groveRoot,
       envSessionId: process.env.GROVE_SESSION_ID,
     });
 
+    // Prefer Nexus-backed stores so `--latest` / `--frontier` / `--submit` see
+    // live session contributions (which live in the Nexus VFS, not local
+    // SQLite). Fall back to local stores when the grove is not Nexus-managed.
+    const nexusParams = resolveNexusParams(groveDir, groveRoot);
+    let baseStore: ContributionStore;
+    let claimStore: ClaimStore;
+    let cas: ContentStore;
+    if (nexusParams) {
+      const nexus = await openNexusStores(nexusParams);
+      baseStore = nexus.contributionStore;
+      claimStore = nexus.claimStore;
+      cas = nexus.cas;
+      const scope = nexus.sessionId ? `session ${nexus.sessionId}` : "zone-wide";
+      process.stderr.write(`grove eval: using Nexus stores at ${nexusParams.url} (${scope})\n`);
+    } else {
+      baseStore = stores.contributionStore;
+      claimStore = stores.claimStore;
+      cas = new FsCas(join(groveDir, "cas"));
+    }
+
     const contributionStore = contract
-      ? new EnforcingContributionStore(stores.contributionStore, contract, { cas })
-      : stores.contributionStore;
+      ? new EnforcingContributionStore(baseStore, contract, { cas })
+      : baseStore;
+    const frontier = new DefaultFrontierCalculator(baseStore);
 
     const agent = resolveAgent();
     const deps: OperationDeps = {
       contributionStore,
-      claimStore: stores.claimStore,
+      claimStore,
       cas,
       frontier,
       ...(contract !== undefined ? { contract } : {}),
