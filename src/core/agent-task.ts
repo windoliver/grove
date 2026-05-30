@@ -24,6 +24,8 @@ export const AgentTaskConditionType = {
   Unschedulable: "Unschedulable",
   PermitRequired: "PermitRequired",
   DoneSignaled: "DoneSignaled",
+  Resuming: "Resuming",
+  SessionLost: "SessionLost",
 } as const;
 export type AgentTaskConditionType =
   (typeof AgentTaskConditionType)[keyof typeof AgentTaskConditionType];

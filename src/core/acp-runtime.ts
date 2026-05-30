@@ -25,7 +25,12 @@ import { sessionUpdateToMessage } from "../acp/session-update-mapper.js";
 import { AcpTurnImpl } from "../acp/turn-direct.js";
 import type { AcpxTurn, Message, Result } from "../acp/types.js";
 import { type AcpLaunch, resolveAcpLaunch } from "./acp-launch.js";
-import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import {
+  type AgentConfig,
+  AgentDisconnectedError,
+  type AgentRuntime,
+  type AgentSession,
+} from "./agent-runtime.js";
 import type { AgentSessionEntity } from "./entity.js";
 import { agentSessionToEntity } from "./entity.js";
 import { DENY_ALL_RESOLVER, type PermissionResolver } from "./permission-resolver.js";
@@ -34,6 +39,14 @@ import { buildSessionId } from "./session-id.js";
 export interface LaunchResult {
   readonly clientStream: Stream;
   readonly dispose: () => Promise<void>;
+  /**
+   * Register a listener fired when the underlying agent process exits.
+   * Real subprocesses wire this to the child's "exit" event; in-process test
+   * launchers expose a manual trigger. Optional for backward compatibility.
+   */
+  readonly onExit?: (
+    listener: (info: { exitCode?: number | null; signal?: NodeJS.Signals | null }) => void,
+  ) => void;
 }
 
 export type LaunchOverride = (
@@ -56,12 +69,14 @@ export type AcpRuntimeEvent =
       readonly sessionId: string;
       readonly turnId: string;
       readonly message: Message;
+      readonly seq?: number | undefined;
     }
   | {
       readonly kind: "result";
       readonly sessionId: string;
       readonly turnId: string;
       readonly result: Result;
+      readonly seq?: number | undefined;
     };
 
 export type AcpRuntimeEventSink = (event: AcpRuntimeEvent) => void;
@@ -82,6 +97,8 @@ interface AcpSessionEntry {
    */
   sendChainTail: Promise<void>;
   closed: boolean;
+  disconnectCallbacks: ((err: AgentDisconnectedError) => void)[];
+  rejectInFlight: ((err: AgentDisconnectedError) => void) | null;
 }
 
 interface TerminalEntry {
@@ -469,6 +486,13 @@ async function launchSubprocess(
     }
   });
 
+  const exitListeners: Array<
+    (info: { exitCode?: number | null; signal?: NodeJS.Signals | null }) => void
+  > = [];
+  child.once("exit", (code, signal) => {
+    for (const l of exitListeners) l({ exitCode: code, signal });
+  });
+
   const dispose = async () => {
     try {
       child.kill("SIGTERM");
@@ -498,7 +522,11 @@ async function launchSubprocess(
       }
     }
   };
-  return { clientStream, dispose };
+  return {
+    clientStream,
+    dispose,
+    onExit: (listener) => exitListeners.push(listener),
+  };
 }
 
 /**
@@ -798,8 +826,31 @@ export class AcpRuntime implements AgentRuntime {
       currentTurn: null,
       sendChainTail: Promise.resolve(),
       closed: false,
+      disconnectCallbacks: [],
+      rejectInFlight: null,
     });
     this.fireSessionWrite("ADDED", session);
+
+    launched.onExit?.((info) => {
+      const current = this.sessions.get(id);
+      if (!current || current.closed) return; // intentional close() sets closed=true first
+      const err = new AgentDisconnectedError({
+        sessionId: id,
+        role,
+        exitCode: info.exitCode,
+        signal: info.signal,
+      });
+      current.session = withSessionStatus(current.session, "crashed", err.message);
+      this.fireSessionWrite("MODIFIED", current.session);
+      current.rejectInFlight?.(err);
+      for (const cb of current.disconnectCallbacks) {
+        try {
+          cb(err);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
 
     const initialMessage = config.goal ?? config.prompt;
     if (!config.waitForPush && initialMessage && initialMessage.trim().length > 0) {
@@ -905,23 +956,30 @@ export class AcpRuntime implements AgentRuntime {
       entry.session = withSessionStatus(entry.session, "running");
       this.fireSessionWrite("MODIFIED", entry.session);
       entry.currentTurn = turn;
+      const disconnectRace = new Promise<never>((_, reject) => {
+        entry.rejectInFlight = (err) => reject(err);
+      });
       try {
-        const ok = await entry.connection.prompt({
-          sessionId: entry.wireSessionId,
-          prompt: [{ type: "text", text: message }],
-        });
+        const ok = await Promise.race([
+          entry.connection.prompt({
+            sessionId: entry.wireSessionId,
+            prompt: [{ type: "text", text: message }],
+          }),
+          disconnectRace,
+        ]);
         finishTurn({ turnId, stopReason: ok.stopReason });
       } catch (err) {
-        const message = acpErrorMessage(err);
+        const m = acpErrorMessage(err);
         finishTurn({
           turnId,
           stopReason: "error",
           error: {
             code: "prompt_rejected",
-            message,
+            message: m,
           },
         });
       } finally {
+        entry.rejectInFlight = null;
         if (entry.currentTurn === turn) entry.currentTurn = null;
         for (const cb of entry.idleCallbacks) {
           try {
@@ -986,6 +1044,12 @@ export class AcpRuntime implements AgentRuntime {
     const entry = this.sessions.get(session.id);
     if (!entry) return;
     entry.idleCallbacks.push(callback);
+  }
+
+  onDisconnect(session: AgentSession, callback: (err: AgentDisconnectedError) => void): void {
+    const entry = this.sessions.get(session.id);
+    if (!entry) return;
+    entry.disconnectCallbacks.push(callback);
   }
 
   async listSessions(): Promise<readonly AgentSession[]> {

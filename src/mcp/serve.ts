@@ -830,6 +830,9 @@ try {
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
     watchHub: new WatchHub(),
+    // Thread GROVE_AGENT_TASK_ID so the claim tool can stamp context.agentTaskId
+    // on every new claim, enabling the supervisor to release leases on task death (#273).
+    ...(process.env.GROVE_AGENT_TASK_ID ? { agentTaskId: process.env.GROVE_AGENT_TASK_ID } : {}),
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";

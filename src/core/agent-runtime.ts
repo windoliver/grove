@@ -88,6 +88,12 @@ export interface AgentRuntime {
   close(session: AgentSession): Promise<void>;
   /** Register a callback for when an agent becomes idle. */
   onIdle(session: AgentSession, callback: () => void): void;
+  /**
+   * Register a callback for unexpected agent death (subprocess exit / connection
+   * EOF that did not originate from close()). Optional: runtimes without
+   * subprocess lifecycles (MockRuntime) may omit it.
+   */
+  onDisconnect?(session: AgentSession, callback: (err: AgentDisconnectedError) => void): void;
   /** List all active sessions. */
   listSessions(): Promise<readonly AgentSession[]>;
   /**
@@ -97,4 +103,21 @@ export interface AgentRuntime {
   listSessionEntities(): Promise<readonly AgentSessionEntity[]>;
   /** Check if the runtime's dependencies are available. */
   isAvailable(): Promise<boolean>;
+}
+
+/** Thrown when an agent subprocess exits unexpectedly (not via close()). */
+export class AgentDisconnectedError extends Error {
+  readonly info: {
+    readonly sessionId: string;
+    readonly role: string;
+    readonly exitCode?: number | null | undefined;
+    readonly signal?: NodeJS.Signals | null | undefined;
+    readonly lastRequestId?: string | undefined;
+  };
+
+  constructor(info: AgentDisconnectedError["info"]) {
+    super(`agent ${info.role} (${info.sessionId}) disconnected`);
+    this.name = "AgentDisconnectedError";
+    this.info = info;
+  }
 }
