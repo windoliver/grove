@@ -759,6 +759,24 @@ describe("ScreenManager transition flow", () => {
     expect(renderedText(renderer)).toContain("2 agents will be configured");
   });
 
+  test("new-session config-review initial state resolves the preset baseline config (#201)", () => {
+    // The welcome new-session picker mounts ScreenManager with screen
+    // "config-review" so the operator reviews/edits config before goal input.
+    // ScreenManager must resolve the picked preset's baseline config so the
+    // screen can render (otherwise editedConfig is undefined and it falls back).
+    renderScreenManager({
+      presets: PRESETS,
+      initialState: {
+        screen: "config-review",
+        selectedPreset: "review-loop",
+      },
+    });
+
+    expect(captured.screen).toBe("config-review");
+    expect(requireConfigReview().config).toBeDefined();
+    expect(requireConfigReview().config.name).toBeDefined();
+  });
+
   test("goal-input -> launch-preview preserves the submitted goal", async () => {
     renderScreenManager({ topology: TEST_TOPOLOGY });
 

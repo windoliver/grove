@@ -310,7 +310,23 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(() => {
-      if (initialState) return initialState;
+      if (initialState) {
+        // #201: the welcome new-session picker enters at "config-review" so the
+        // operator can review/edit the resolved config before goal input.
+        // Resolve the picked preset's baseline config here (the state
+        // initializer can't call the resolveBaselineContract useCallback), and
+        // fall back to goal-input when no config is resolvable.
+        if (initialState.screen === "config-review" && initialState.selectedPreset) {
+          const preset = getPreset(initialState.selectedPreset);
+          const baseline = preset
+            ? presetToSessionConfig(preset, initialState.selectedPreset)
+            : contract;
+          return baseline
+            ? { ...initialState, screen: "config-review", editedConfig: baseline }
+            : { ...initialState, screen: "goal-input" };
+        }
+        return initialState;
+      }
       // On resume, populate sessionStartedAt from the most recent active session
       let resumeSessionStartedAt: string | undefined;
       let resumeSessionId: string | undefined;
@@ -648,10 +664,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [pages],
     );
 
-    // Screen 1.5 -> 1: back to preset select.
+    // Screen 1.5 -> 1: back to preset select. Depth-aware so Esc works whether
+    // config-review was pushed onto preset-select (pop) or is the entry screen
+    // from the welcome new-session pick (resetTo) — mirrors handleGoalBack.
     const handleConfigReviewBack = useCallback(() => {
       setState((s) => ({ ...s, screen: "preset-select" }));
-      pages.pop();
+      if (pages.depth() > 1) {
+        pages.pop();
+      } else {
+        pages.resetTo({ kind: "preset-select" });
+      }
     }, [pages]);
 
     // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
