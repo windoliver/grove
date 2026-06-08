@@ -17,7 +17,6 @@
 import type { Database, Statement } from "bun:sqlite";
 import { type CasMutationResult, type CasOpts, checkIfMatch } from "../core/cas.js";
 import type { GroveContract } from "../core/contract.js";
-import type { RecipeProvenance } from "../core/recipe.js";
 import type { DeletionAuditEvent, OwnerRef, SessionFinalizer } from "../core/lifecycle-metadata.js";
 import {
   appendDeletionAudit,
@@ -25,6 +24,7 @@ import {
   Finalizer,
 } from "../core/lifecycle-metadata.js";
 import type { Claim } from "../core/models.js";
+import type { RecipeProvenance } from "../core/recipe.js";
 import type {
   AppendSessionRoleSkillResult,
   CreateSessionInput,
