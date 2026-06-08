@@ -166,6 +166,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     goal,
     topology: resolution.topology,
     contract,
+    presetName,
     repos,
     onAgentsStarted: ({ sessionId, agents }) => {
       outputJson({

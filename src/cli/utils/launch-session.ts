@@ -45,6 +45,9 @@ export interface LaunchGoalSessionInput {
   readonly goal: string;
   readonly topology: AgentTopology;
   readonly contract?: GroveContract | undefined;
+  /** Preset name from `--preset`, recorded on the session and used as the
+   *  fallback contract name when no contract is supplied. Recipe runs omit it. */
+  readonly presetName?: string | undefined;
   readonly repos: readonly RepoRef[];
   readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
   readonly recipeProvenance?: RecipeProvenance | undefined;
@@ -157,7 +160,7 @@ export async function launchGoalSession(
   try {
     const session = await goalSessionStore.createSession({
       goal: input.goal,
-      presetName: input.contract?.name,
+      presetName: input.presetName ?? input.contract?.name,
       topology: input.topology,
       config: input.contract,
       recipeProvenance: input.recipeProvenance,
@@ -235,7 +238,7 @@ export async function launchGoalSession(
 
     orchestrator = new SessionOrchestrator({
       goal: input.goal,
-      contract: input.contract ?? { contractVersion: 3, name: "default" },
+      contract: input.contract ?? { contractVersion: 3, name: input.presetName ?? "default" },
       topology: input.topology,
       runtime,
       eventBus,
