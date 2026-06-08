@@ -52,11 +52,12 @@ export interface LaunchGoalSessionInput {
   readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
   readonly recipeProvenance?: RecipeProvenance | undefined;
   /**
-   * For testing only — bypass selectRuntime/isAvailable and use this runtime
-   * directly. When set, no real agent process is spawned.
-   * @internal
+   * Optional pre-built agent runtime. When omitted (the normal case), the
+   * runtime is selected via `selectRuntime()` with acpx/acp logging and the
+   * permission resolver wired up. Callers that already hold a runtime — or
+   * tests that need a deterministic one — may inject it here.
    */
-  readonly _testRuntime?: AgentRuntime | undefined;
+  readonly runtime?: AgentRuntime | undefined;
   readonly onAgentsStarted?:
     | ((info: {
         readonly sessionId: string;
@@ -106,8 +107,8 @@ export async function launchGoalSession(
     );
   }
   let runtime: AgentRuntime;
-  if (input._testRuntime !== undefined) {
-    runtime = input._testRuntime;
+  if (input.runtime !== undefined) {
+    runtime = input.runtime;
   } else {
     const picked = selectRuntime({
       acpx: { logDir: join(input.groveDir, "agent-logs") },

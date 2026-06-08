@@ -25,7 +25,7 @@ beforeAll(() => {
   savedEnv.GROVE_RUNTIME = process.env.GROVE_RUNTIME;
   // Clear Nexus so the session is NOT mirrored (avoids network calls)
   delete process.env.GROVE_NEXUS_URL;
-  // Clear GROVE_RUNTIME — we pass _testRuntime directly so this is a no-op,
+  // Clear GROVE_RUNTIME — we pass runtime directly so this is a no-op,
   // but clearing it prevents any future selectRuntime changes from interfering.
   delete process.env.GROVE_RUNTIME;
 });
@@ -149,7 +149,7 @@ describe("launchGoalSession", () => {
           // Inject a lightweight runtime that immediately marks agents idle,
           // so the orchestrator can terminate after the 30-second grace period
           // without spawning a real Claude Code process.
-          _testRuntime: new QuickIdleRuntime(),
+          runtime: new QuickIdleRuntime(),
           onAgentsStarted: ({ sessionId }) => {
             startedId = sessionId;
           },
