@@ -30,8 +30,16 @@ describe("normalizeBatchStrategy", () => {
     expect(() => normalizeBatchStrategy({ maxBatchSize: 4, initialBatchSize: 8 })).toThrow(
       RangeError,
     );
+    expect(() => normalizeBatchStrategy({ backoff: { baseMs: 0 } })).toThrow(RangeError);
+    expect(() => normalizeBatchStrategy({ backoff: { maxMs: 0 } })).toThrow(RangeError);
     expect(() => normalizeBatchStrategy({ backoff: { maxMs: 100, baseMs: 1000 } })).toThrow(
       RangeError,
     );
+  });
+
+  test("accepts multiplier=1 (fixed-size batches / constant backoff are valid configs)", () => {
+    const s = normalizeBatchStrategy({ multiplier: 1, backoff: { multiplier: 1 } });
+    expect(s.multiplier).toBe(1);
+    expect(s.backoff.multiplier).toBe(1);
   });
 });

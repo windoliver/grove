@@ -1,11 +1,19 @@
 export interface BackoffStrategy {
   readonly baseMs?: number;
+  /**
+   * Exponential growth factor applied to the delay after each requeue attempt.
+   * `1` is permitted and yields a constant (flat) retry interval.
+   */
   readonly multiplier?: number;
   readonly maxMs?: number;
 }
 
 export interface BatchStrategy {
   readonly initialBatchSize?: number;
+  /**
+   * Geometric growth factor applied to the batch size after each clean batch.
+   * `1` is permitted and yields fixed-size batches (a constant concurrency cap).
+   */
   readonly multiplier?: number;
   readonly maxBatchSize?: number;
   readonly backoff?: BackoffStrategy;
@@ -20,6 +28,7 @@ export interface NormalizedBatchStrategy {
 
 const DEFAULT_INITIAL_BATCH_SIZE = 1;
 const DEFAULT_MULTIPLIER = 2;
+const DEFAULT_MAX_BATCH_SIZE = Number.POSITIVE_INFINITY;
 const DEFAULT_BACKOFF_BASE_MS = 1000;
 const DEFAULT_BACKOFF_MULTIPLIER = 2;
 const DEFAULT_BACKOFF_MAX_MS = 30_000;
@@ -27,14 +36,14 @@ const DEFAULT_BACKOFF_MAX_MS = 30_000;
 export function normalizeBatchStrategy(input?: BatchStrategy): NormalizedBatchStrategy {
   const initialBatchSize = input?.initialBatchSize ?? DEFAULT_INITIAL_BATCH_SIZE;
   const multiplier = input?.multiplier ?? DEFAULT_MULTIPLIER;
-  const maxBatchSize = input?.maxBatchSize ?? Number.POSITIVE_INFINITY;
+  const maxBatchSize = input?.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
   const baseMs = input?.backoff?.baseMs ?? DEFAULT_BACKOFF_BASE_MS;
   const backoffMultiplier = input?.backoff?.multiplier ?? DEFAULT_BACKOFF_MULTIPLIER;
   const maxMs = input?.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS;
 
   requirePositiveInt(initialBatchSize, "initialBatchSize");
   requireFiniteMin(multiplier, 1, "multiplier");
-  if (maxBatchSize !== Number.POSITIVE_INFINITY) {
+  if (maxBatchSize !== DEFAULT_MAX_BATCH_SIZE) {
     requirePositiveInt(maxBatchSize, "maxBatchSize");
     if (maxBatchSize < initialBatchSize) {
       throw new RangeError(
