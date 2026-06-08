@@ -74,6 +74,7 @@ export interface HooksConfig {
   readonly afterCheckout?: string | undefined;
   readonly beforeContribute?: string | undefined;
   readonly afterContribute?: string | undefined;
+  readonly eval?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +270,7 @@ function renderHooks(hooks: HooksConfig | undefined): string {
   if (hooks.afterCheckout) lines.push(`  after_checkout: "${hooks.afterCheckout}"`);
   if (hooks.beforeContribute) lines.push(`  before_contribute: "${hooks.beforeContribute}"`);
   if (hooks.afterContribute) lines.push(`  after_contribute: "${hooks.afterContribute}"`);
+  if (hooks.eval) lines.push(`  eval: "${hooks.eval}"`);
   return lines.join("\n");
 }
 
@@ -366,6 +368,7 @@ export interface PresetMdInput {
   readonly concurrency?: ConcurrencyConfig | undefined;
   readonly execution?: ExecutionConfig | undefined;
   readonly topology?: AgentTopology | undefined;
+  readonly hooks?: HooksConfig | undefined;
   readonly presetDescription?: string | undefined;
 }
 
@@ -385,6 +388,7 @@ export function presetToGroveMdConfig(
     stopConditions: preset.stopConditions,
     concurrency: preset.concurrency,
     execution: preset.execution,
+    hooks: preset.hooks,
     body:
       `# ${context.name}\n\n${description}\n\n` +
       `> The topology above is the **default** for this grove. ` +

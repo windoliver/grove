@@ -29,6 +29,7 @@ const SHARED_OPERATIONS_MCP: ReadonlyArray<{
   { operation: "treeOperation", mcpTool: "grove_tree" },
   { operation: "threadOperation", mcpTool: "grove_thread" },
   { operation: "checkoutOperation", mcpTool: "grove_checkout" },
+  { operation: "evalOperation", mcpTool: "grove_eval" },
   { operation: "listClaimsOperation", mcpTool: "grove_list_claims" },
   { operation: "createBountyOperation", mcpTool: "grove_bounty_create" },
   { operation: "listBountiesOperation", mcpTool: "grove_bounty_list" },
@@ -62,6 +63,7 @@ const SHARED_OPERATIONS_CLI: ReadonlyArray<{
   { operation: "threadOperation", cliCommand: "thread" },
   { operation: "threadsOperation", cliCommand: "threads" },
   { operation: "checkoutOperation", cliCommand: "checkout" },
+  { operation: "evalOperation", cliCommand: "eval" },
   { operation: "listClaimsOperation", cliCommand: "claims" },
   { operation: "checkTrajectoryOperation", cliCommand: "check-trajectory" },
 ];
@@ -86,6 +88,7 @@ describe("parity matrix: operations layer exports", () => {
       "threadOperation",
       "threadsOperation",
       "checkoutOperation",
+      "evalOperation",
       "checkStopOperation",
       "createBountyOperation",
       "listBountiesOperation",

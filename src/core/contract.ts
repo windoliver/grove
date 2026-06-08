@@ -422,6 +422,14 @@ const HooksSchema = z
           .strict(),
       ])
       .optional(),
+    eval: z
+      .union([
+        z.string().min(1),
+        z
+          .object({ cmd: z.string().min(1), timeout: z.number().int().positive().optional() })
+          .strict(),
+      ])
+      .optional(),
   })
   .strict();
 

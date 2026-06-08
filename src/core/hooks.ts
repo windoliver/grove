@@ -6,6 +6,8 @@
  * - after_checkout: runs after artifacts are materialized
  * - before_contribute: validation before accepting a contribution
  * - after_contribute: cleanup after contribution is submitted
+ * - eval: benchmark harness run by `grove eval` / `grove_eval` (prints
+ *   GROVE_SCORE lines to stdout/stderr)
  *
  * Hook failure in `before_contribute` blocks the contribution.
  * GROVE.md is a trusted, repo-owned file (like GitHub Actions workflows).
@@ -40,6 +42,8 @@ export interface HooksConfig {
   readonly after_checkout?: HookEntry | undefined;
   readonly before_contribute?: HookEntry | undefined;
   readonly after_contribute?: HookEntry | undefined;
+  /** Benchmark harness for `grove eval` — prints GROVE_SCORE lines. */
+  readonly eval?: HookEntry | undefined;
 }
 
 /** Schema for the hooks section of GROVE.md. */
@@ -48,6 +52,7 @@ export const HooksConfigSchema: z.ZodType<HooksConfig> = z
     after_checkout: HookEntrySchema.optional(),
     before_contribute: HookEntrySchema.optional(),
     after_contribute: HookEntrySchema.optional(),
+    eval: HookEntrySchema.optional(),
   })
   .strict();
 

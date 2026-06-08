@@ -128,7 +128,7 @@ afterEach(async () => {
 // ============================================================================
 
 describe("Preset Registry", () => {
-  test("lists all 6 presets", () => {
+  test("lists all 7 presets", () => {
     const names = listPresetNames();
     expect(names).toContain("review-loop");
     expect(names).toContain("exploration");
@@ -136,7 +136,8 @@ describe("Preset Registry", () => {
     expect(names).toContain("research-loop");
     expect(names).toContain("pr-review");
     expect(names).toContain("federated-swarm");
-    expect(names).toHaveLength(6);
+    expect(names).toContain("eval-loop");
+    expect(names).toHaveLength(7);
   });
 
   test("each preset has required fields", () => {
@@ -980,6 +981,7 @@ describe("Cross-preset comparisons", () => {
       "research-loop": 0,
       "pr-review": 0,
       "federated-swarm": 0,
+      "eval-loop": 0,
     };
 
     const registry = getPresetRegistry();

@@ -21,6 +21,7 @@ and their classification. All `shared` capabilities use the operations layer in
 | contribute | Y | Y | Y | - | shared |
 | review | Y | Y | Y | - | shared |
 | reproduce | Y | Y | Y | - | shared |
+| eval | Y | Y | - | - | shared |
 | discuss | Y | Y | Y | - | shared |
 | claim | Y | Y | Y | Y | shared |
 | release/complete | Y | Y | Y | Y | shared |

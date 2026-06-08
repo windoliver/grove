@@ -12,10 +12,12 @@ import type {
   ConcurrencyConfig,
   ExecutionConfig,
   GateEntry,
+  HooksConfig,
   MetricEntry,
   StopConditionsConfig,
 } from "../grove-md-builder.js";
 import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
+import { evalLoopPreset } from "./eval-loop.js";
 import { explorationPreset } from "./exploration.js";
 import { federatedSwarmPreset } from "./federated-swarm.js";
 import { prReviewPreset } from "./pr-review.js";
@@ -55,6 +57,7 @@ export interface PresetConfig extends CorePresetConfig {
   readonly stopConditions?: StopConditionsConfig | undefined;
   readonly concurrency?: ConcurrencyConfig | undefined;
   readonly execution?: ExecutionConfig | undefined;
+  readonly hooks?: HooksConfig | undefined;
   readonly seedContributions?: readonly SeedContribution[] | undefined;
   readonly services: { readonly server: boolean; readonly mcp: boolean };
   /**
@@ -73,6 +76,7 @@ export interface PresetConfig extends CorePresetConfig {
 // ---------------------------------------------------------------------------
 
 export {
+  evalLoopPreset,
   explorationPreset,
   federatedSwarmPreset,
   prReviewPreset,
@@ -94,6 +98,7 @@ export function getPresetRegistry(): Readonly<Record<string, PresetConfig>> {
     "research-loop": researchLoopPreset,
     "pr-review": prReviewPreset,
     "federated-swarm": federatedSwarmPreset,
+    "eval-loop": evalLoopPreset,
   };
 
   return _registry;
