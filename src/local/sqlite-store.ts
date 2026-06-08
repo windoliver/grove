@@ -73,7 +73,7 @@ import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/e
 import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 const SQLITE_BIND_LIMIT = 900;
 const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
@@ -775,6 +775,24 @@ export function initSqliteDb(dbPath: string): Database {
           db.run("ALTER TABLE sessions ADD COLUMN deletion_audit_json TEXT NOT NULL DEFAULT '[]'");
         }
         db.exec(SESSIONS_DELETION_TIMESTAMP_INDEX_DDL);
+      }
+    }
+
+    // Migration → v17: persist recipe provenance on sessions launched via
+    // `grove recipe run`. Column-safe: only adds the column when absent.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("recipe_provenance_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN recipe_provenance_json TEXT");
+        }
       }
     }
 
