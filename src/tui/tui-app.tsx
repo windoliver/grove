@@ -562,8 +562,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     // Resumed groves start on RunningView (Screen 4); new groves start on
     // PresetSelect (Screen 1) — but for resumed groves that already went
     // through welcome, we skip directly to RunningView.
+    // #201: enter at config-review so the operator can review/edit the picked
+    // preset's config before goal input. ScreenManager resolves the baseline
+    // config and falls back to goal-input when none is resolvable.
     const initialState = appProps.newSessionPreset
-      ? { screen: "goal-input" as const, selectedPreset: appProps.newSessionPreset }
+      ? { screen: "config-review" as const, selectedPreset: appProps.newSessionPreset }
       : undefined;
     return (
       <SpawnManagerContext value={spawnManager}>
@@ -642,7 +645,9 @@ interface BoardroomShellProps {
   readonly presets?: readonly TuiPresetEntry[] | undefined;
   readonly sessions?: readonly SessionRecord[] | undefined;
   readonly startOnRunning?: boolean | undefined;
-  readonly initialState?: { screen: "goal-input"; selectedPreset: string } | undefined;
+  readonly initialState?:
+    | { screen: "config-review" | "goal-input"; selectedPreset: string }
+    | undefined;
   readonly resumeSessionId?: string | undefined;
 }
 

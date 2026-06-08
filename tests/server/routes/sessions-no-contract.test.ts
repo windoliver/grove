@@ -97,6 +97,31 @@ describe("POST /api/sessions without loaded contract", () => {
     expect(body.error.message).toContain("contract or preset required");
   });
 
+  test("client-supplied config overrides preset defaults and is persisted (#201)", async () => {
+    const resp = await app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...NC_TEST_AUTH_HEADERS },
+      body: JSON.stringify({
+        goal: "edited config",
+        preset: "review-loop",
+        config: {
+          contractVersion: 2,
+          name: "review-loop",
+          mode: "exploration",
+          concurrency: { maxActiveClaims: 9 },
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = await resp.json();
+    // The operator's edited values must survive — NOT the preset default (4).
+    expect(body.config.concurrency?.maxActiveClaims).toBe(9);
+    expect(body.config.mode).toBe("exploration");
+    // Topology is still resolved server-side from the preset and merged in.
+    expect(body.config.topology?.structure).toBe("graph");
+  });
+
   test("with unknown preset → 400", async () => {
     const resp = await app.request("/api/sessions", {
       method: "POST",

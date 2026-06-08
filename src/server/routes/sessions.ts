@@ -38,6 +38,11 @@ const createSessionSchema = z.object({
   // Topology accepted as opaque object — parsed in handler to support
   // both snake_case wire format (external) and camelCase (TUI/internal)
   topology: z.record(z.string(), z.unknown()).optional(),
+  // Operator-edited session config (TUI config-review screen, #201). Accepted
+  // opaquely as a camelCase GroveContract and cast in the handler, mirroring
+  // the topology handling. When present it takes precedence over the server's
+  // GROVE.md contract / preset defaults.
+  config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const addContributionSchema = z.object({
@@ -103,14 +108,23 @@ sessions.post("/", async (c) => {
   // Normalize: accept both "preset" and "presetName"
   const presetName = parsed.data.preset ?? parsed.data.presetName;
 
+  // A client-supplied config (the TUI config-review screen, #201) is the
+  // operator's edited session config and takes precedence over the server's
+  // GROVE.md contract and preset defaults. Accepted opaquely (camelCase
+  // GroveContract from the TUI) and cast, mirroring the topology handling
+  // below. Clients that omit `config` fall through to the prior behavior.
+  const clientConfig = parsed.data.config as GroveContract | undefined;
   // Resolve base config: frozen snapshot source for this session.
-  // - Prefer a server-loaded GROVE.md (runtime.contract) when present.
+  // - Prefer a client-supplied config (#201) when present.
+  // - Then prefer a server-loaded GROVE.md (runtime.contract) when present.
   // - Otherwise fall back to preset resolution; #198/#199 mean the
   //   session's frozen config is what drives enforcement, so callers
   //   who supply a preset don't need a contract on the server.
   // - Reject when neither is available so misconfiguration surfaces.
   let baseConfig: GroveContract | undefined;
-  if (contract) {
+  if (clientConfig) {
+    baseConfig = clientConfig;
+  } else if (contract) {
     baseConfig = contract;
   } else if (presetName) {
     const preset = getPreset(presetName);

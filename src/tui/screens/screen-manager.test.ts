@@ -41,6 +41,7 @@ const TEST_ENTITY_BUS: ConfirmAndMutateEntityBus = {
 
 import type { AgentDetectProps } from "./agent-detect.js";
 import type { CompleteViewProps } from "./complete-view.js";
+import type { ConfigReviewProps } from "./config-review.js";
 import type { PresetSelectProps } from "./preset-select.js";
 import type { RunningViewProps } from "./running-view.js";
 import type { ScreenManagerProps, ScreenState } from "./screen-manager.js";
@@ -61,8 +62,15 @@ interface KeyboardHandlerGlobal {
 }
 
 interface CapturedScreens {
-  screen?: "preset-select" | "launch-preview" | "spawning" | "running" | "complete";
+  screen?:
+    | "preset-select"
+    | "config-review"
+    | "launch-preview"
+    | "spawning"
+    | "running"
+    | "complete";
   presetSelect?: PresetSelectProps;
+  configReview?: ConfigReviewProps;
   launchPreview?: AgentDetectProps;
   spawnProgress?: SpawnProgressProps;
   runningView?: RunningViewProps;
@@ -203,6 +211,13 @@ mock.module("../hooks/use-permission-detection.js", () => ({
 mock.module("./preset-select.js", () => ({
   PresetSelect: (props: PresetSelectProps): React.ReactNode => {
     captured = { ...captured, screen: "preset-select", presetSelect: props };
+    return null;
+  },
+}));
+
+mock.module("./config-review.js", () => ({
+  ConfigReview: (props: ConfigReviewProps): React.ReactNode => {
+    captured = { ...captured, screen: "config-review", configReview: props };
     return null;
   },
 }));
@@ -633,6 +648,12 @@ function requirePresetSelect(): PresetSelectProps {
   return props;
 }
 
+function requireConfigReview(): ConfigReviewProps {
+  const props = captured.configReview;
+  if (!props) throw new Error("ConfigReview was not rendered");
+  return props;
+}
+
 function requireLaunchPreview(): AgentDetectProps {
   const props = captured.launchPreview;
   if (!props) throw new Error("Launch preview was not rendered");
@@ -658,15 +679,74 @@ function requireCompleteView(): CompleteViewProps {
 }
 
 describe("ScreenManager transition flow", () => {
-  test("preset-select -> goal-input stores the preset and resolves its topology", () => {
-    const { renderer } = renderScreenManager({ presets: PRESETS });
+  test("preset-select -> config-review resolves the preset's baseline config", () => {
+    renderScreenManager({ presets: PRESETS });
 
     act(() => {
       requirePresetSelect().onSelect("review-loop");
     });
 
+    expect(captured.screen).toBe("config-review");
+    expect(requireConfigReview().config).toBeDefined();
+    expect(requireConfigReview().config.name).toBeDefined();
+  });
+
+  test("config-review -> goal-input resolves the selected preset topology", () => {
+    const { renderer } = renderScreenManager({ presets: PRESETS });
+
+    act(() => {
+      requirePresetSelect().onSelect("review-loop");
+    });
+    act(() => {
+      requireConfigReview().onConfirm(requireConfigReview().config);
+    });
+
     expectGoalInput(renderer);
     expect(renderedText(renderer)).toContain("2 agents will be configured");
+  });
+
+  test("edited config from config-review is persisted into the created session", async () => {
+    const providerBundle = makeProvider();
+    renderScreenManager({ presets: PRESETS, provider: providerBundle.provider });
+
+    act(() => {
+      requirePresetSelect().onSelect("review-loop");
+    });
+
+    // Operator edits the resolved config, then confirms.
+    const baseline = requireConfigReview().config;
+    const edited = {
+      ...baseline,
+      mode: "exploration" as const,
+      concurrency: { ...baseline.concurrency, maxActiveClaims: 9 },
+    };
+    act(() => {
+      requireConfigReview().onConfirm(edited);
+    });
+
+    await submitGoal("Persist edited config");
+
+    await act(async () => {
+      requireLaunchPreview().onContinue(
+        new Map([["claude", true]]),
+        new Map([
+          ["coder", "claude"],
+          ["reviewer", "claude"],
+        ]),
+        new Map(),
+        new Map(),
+        new Map(),
+      );
+      await flushAsync();
+      await flushAsync();
+    });
+
+    const created = providerBundle.calls.createSession[0];
+    if (!created?.config) throw new Error("Expected createSession to receive a config");
+    expect(created.config.mode).toBe("exploration");
+    expect(created.config.concurrency?.maxActiveClaims).toBe(9);
+    // Topology is merged into the persisted config snapshot.
+    expect(created.config.topology).toBeDefined();
   });
 
   test("new-session initial state resolves the selected preset topology", () => {
@@ -679,6 +759,24 @@ describe("ScreenManager transition flow", () => {
 
     expectGoalInput(renderer);
     expect(renderedText(renderer)).toContain("2 agents will be configured");
+  });
+
+  test("new-session config-review initial state resolves the preset baseline config (#201)", () => {
+    // The welcome new-session picker mounts ScreenManager with screen
+    // "config-review" so the operator reviews/edits config before goal input.
+    // ScreenManager must resolve the picked preset's baseline config so the
+    // screen can render (otherwise editedConfig is undefined and it falls back).
+    renderScreenManager({
+      presets: PRESETS,
+      initialState: {
+        screen: "config-review",
+        selectedPreset: "review-loop",
+      },
+    });
+
+    expect(captured.screen).toBe("config-review");
+    expect(requireConfigReview().config).toBeDefined();
+    expect(requireConfigReview().config.name).toBeDefined();
   });
 
   test("goal-input -> launch-preview preserves the submitted goal", async () => {

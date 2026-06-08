@@ -15,6 +15,7 @@ import { debugLog } from "../debug-log.js";
 export type PageKind =
   | "preset-select"
   | "goal-input"
+  | "config-review"
   | "agent-detect"
   | "launch-preview"
   | "spawning"
