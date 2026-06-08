@@ -181,6 +181,8 @@ export async function runEval(
         writer(`eval exited ${evalResult.exitCode}; skipping --submit`);
       }
     } else {
+      // A zero-score but exit-0 eval still records a `confirmed` reproduction
+      // (scores omitted below) — the run succeeded; it just reported no metrics.
       const scores: Record<string, Score> = {};
       for (const s of evalResult.scores) {
         const direction = deps.contract?.metrics?.[s.metric]?.direction ?? ScoreDirection.Maximize;

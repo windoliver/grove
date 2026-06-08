@@ -62,14 +62,14 @@ export interface EvalInput {
   readonly targetCid: string;
   /**
    * Shell command to execute as the eval harness.
-   * Optional if the contract's evaluation config provides a default in a
-   * future protocol version. Currently required — returns VALIDATION_ERROR
-   * if omitted and no contract default is available.
+   * Optional — when omitted, the command is resolved from the contract's
+   * `hooks.eval` entry (string or `{ cmd, timeout }` form). Returns
+   * VALIDATION_ERROR if neither is available.
    */
   readonly evalCommand?: string | undefined;
   /**
    * Timeout in milliseconds before the subprocess is killed.
-   * Defaults to the contract's evaluation timeout if available, then
+   * Defaults to the contract's `hooks.eval` timeout if available, then
    * DEFAULT_TIMEOUT_MS (5 minutes).
    */
   readonly timeoutMs?: number | undefined;
@@ -136,9 +136,13 @@ async function runEvalSubprocess(
     /** Append to the rolling output tail, respecting the cap. */
     const appendOutput = (chunk: string): void => {
       if (outputSize >= MAX_OUTPUT_BYTES) return;
-      outputSize += chunk.length;
+      outputSize += Buffer.byteLength(chunk, "utf8");
       rawOutput += chunk;
     };
+
+    /** Build the diagnostic tail from the buffered output. */
+    const buildTail = (): string =>
+      rawOutput.length > TAIL_BYTES ? rawOutput.slice(-TAIL_BYTES) : rawOutput;
 
     /** Parse a single line for a GROVE_SCORE entry. */
     const parseLine = (line: string): void => {
@@ -180,9 +184,15 @@ async function runEvalSubprocess(
       stderrHandler.flush();
       clearTimeout(timer);
       const exitCode = code ?? (timedOut ? 124 : 1);
-      // Return last TAIL_BYTES for diagnostics.
-      const rawTail = rawOutput.length > TAIL_BYTES ? rawOutput.slice(-TAIL_BYTES) : rawOutput;
-      resolve({ scores, exitCode, timedOut, rawTail });
+      resolve({ scores, exitCode, timedOut, rawTail: buildTail() });
+    });
+
+    // spawn itself can fail (e.g. sh missing, EMFILE/ENOMEM) without ever
+    // emitting "close" — resolve with a command-not-found-style exit so the
+    // operation never hangs. resolve() is idempotent if "close" also fires.
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve({ scores, exitCode: 127, timedOut, rawTail: buildTail() });
     });
   });
 }
