@@ -135,6 +135,12 @@ export interface SessionConfig {
    * `grove recipe run`; empty for all other launch paths.
    */
   readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
+  /**
+   * Milliseconds an all-idle session waits with zero contributions before the
+   * orchestrator concludes nothing more is coming and stops. Defaults to 30000.
+   * Lower values speed up tests and short-lived/eval runs.
+   */
+  readonly idleGracePeriodMs?: number | undefined;
 }
 
 /** Status of a running session. */
@@ -919,7 +925,7 @@ export class SessionOrchestrator {
       // Agents go idle between tool calls (e.g., coder finishes editing, goes idle
       // briefly, then calls grove_submit_work). Stopping too early kills the session
       // before the handoff can complete.
-      const GRACE_PERIOD_MS = 30_000;
+      const GRACE_PERIOD_MS = this.config.idleGracePeriodMs ?? 30_000;
       const elapsed = Date.now() - this.startedAt;
       if (this.contributionCount === 0 && elapsed < GRACE_PERIOD_MS) {
         return; // Too early — wait for at least one contribution or grace period

@@ -50,6 +50,8 @@ export interface LaunchGoalSessionInput {
   readonly presetName?: string | undefined;
   readonly repos: readonly RepoRef[];
   readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
+  /** Override the orchestrator idle grace period (ms). Defaults to 30000. */
+  readonly idleGracePeriodMs?: number | undefined;
   readonly recipeProvenance?: RecipeProvenance | undefined;
   /**
    * Optional pre-built agent runtime. When omitted (the normal case), the
@@ -260,6 +262,7 @@ export async function launchGoalSession(
       sessionId: session.id,
       contributionStore,
       extraMcpServers: input.extraMcpServers,
+      idleGracePeriodMs: input.idleGracePeriodMs,
       onContributionAccepted: async (cid) => {
         const localLink = goalSessionStore.addContributionToSession(session.id, cid);
         if (addNexusContributionToSession === undefined) {

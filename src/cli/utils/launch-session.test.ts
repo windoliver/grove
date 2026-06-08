@@ -150,6 +150,8 @@ describe("launchGoalSession", () => {
           // so the orchestrator can terminate after the 30-second grace period
           // without spawning a real Claude Code process.
           runtime: new QuickIdleRuntime(),
+          // Skip the 30-second grace period so the test completes promptly.
+          idleGracePeriodMs: 0,
           onAgentsStarted: ({ sessionId }) => {
             startedId = sessionId;
           },
@@ -169,8 +171,7 @@ describe("launchGoalSession", () => {
         await rm(root, { recursive: true, force: true });
       }
     },
-    // The orchestrator applies a 30-second grace period before stopping idle
-    // agents; allow up to 60 seconds for the full session lifecycle.
-    60_000,
+    // idleGracePeriodMs: 0 bypasses the 30-second grace period; 20s is ample.
+    20_000,
   );
 });
