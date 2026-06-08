@@ -9,6 +9,7 @@ import type { CasMutationResult, CasOpts } from "./cas.js";
 import type { GroveContract } from "./contract.js";
 import type { DeletionAuditEvent, SessionFinalizer } from "./lifecycle-metadata.js";
 import type { LoopStopStatus } from "./loop-runner.js";
+import type { RecipeProvenance } from "./recipe.js";
 import type { AgentTopology } from "./topology.js";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,12 @@ export interface Session {
   /** Frozen contract snapshot at session creation time. */
   readonly config?: GroveContract | undefined;
   /**
+   * Provenance of the recipe this session was materialized from, when launched
+   * via `grove recipe run`. Absent for sessions started any other way.
+   * Records the recipe digest so re-runs are reproducible (#276).
+   */
+  readonly recipeProvenance?: RecipeProvenance | undefined;
+  /**
    * Resolved workspace base-branch per role.
    * Format: { "coder": "HEAD", "reviewer": "grove/<sessionId>/coder" }
    * Edges with `workspace: "branch_from_source"` make the target branch off the source.
@@ -81,6 +88,8 @@ export interface CreateSessionInput {
   readonly topology?: AgentTopology | undefined;
   /** Frozen contract snapshot to store with the session. */
   readonly config?: GroveContract | undefined;
+  /** Recipe provenance to record on the session, when created from a recipe. */
+  readonly recipeProvenance?: RecipeProvenance | undefined;
 }
 
 // ---------------------------------------------------------------------------
