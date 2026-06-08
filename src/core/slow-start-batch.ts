@@ -153,7 +153,7 @@ export async function slowStartBatch<T>(
   let succeeded = 0;
   let offset = 0;
   let batchIndex = 0;
-  let size = Math.min(strategy.initialBatchSize, items.length - offset);
+  let size = Math.min(strategy.initialBatchSize, items.length);
 
   while (size > 0) {
     const batch = items.slice(offset, offset + size);

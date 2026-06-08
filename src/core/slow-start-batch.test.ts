@@ -160,19 +160,58 @@ describe("slowStartBatch — success", () => {
     const sizes: number[] = [];
     await slowStartBatch(
       Array.from({ length: 15 }, (_, i) => i),
-      async () => {},
+      async () => {
+        /* no-op spawn */
+      },
       norm({ maxBatchSize: 3 }),
       { onSpawnBatch: (m) => sizes.push(m.batchSize) },
     );
     expect(sizes).toEqual([1, 2, 3, 3, 3, 3]);
   });
 
+  test("multiplier=1 yields fixed-size batches and still covers all items", async () => {
+    const sizes: number[] = [];
+    const calls: number[] = [];
+    const items = Array.from({ length: 7 }, (_, i) => i);
+    const result = await slowStartBatch(
+      items,
+      async (item) => {
+        calls.push(item);
+      },
+      norm({ initialBatchSize: 1, multiplier: 1 }),
+      { onSpawnBatch: (m) => sizes.push(m.batchSize) },
+    );
+    expect(sizes).toEqual([1, 1, 1, 1, 1, 1, 1]);
+    expect(result.outcome).toBe("completed");
+    expect(calls.sort((a, b) => a - b)).toEqual(items);
+  });
+
+  test("non-power-of-two growth clamps the final partial batch", async () => {
+    const sizes: number[] = [];
+    await slowStartBatch(
+      Array.from({ length: 15 }, (_, i) => i),
+      async () => {
+        /* no-op spawn */
+      },
+      norm({ initialBatchSize: 2, multiplier: 3 }),
+      { onSpawnBatch: (m) => sizes.push(m.batchSize) },
+    );
+    expect(sizes).toEqual([2, 6, 7]);
+  });
+
   test("metric reports succeeded/failed and forwards taskGroupId", async () => {
     const seen: SpawnBatchMetric[] = [];
-    await slowStartBatch([1, 2], async () => {}, norm({ initialBatchSize: 2 }), {
-      taskGroupId: "tg-1",
-      onSpawnBatch: (m) => seen.push(m),
-    });
+    await slowStartBatch(
+      [1, 2],
+      async () => {
+        /* no-op spawn */
+      },
+      norm({ initialBatchSize: 2 }),
+      {
+        taskGroupId: "tg-1",
+        onSpawnBatch: (m) => seen.push(m),
+      },
+    );
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({
       taskGroupId: "tg-1",
