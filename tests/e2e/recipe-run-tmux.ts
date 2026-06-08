@@ -67,6 +67,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { readNexusApiKey } from "../../src/cli/nexus-lifecycle.js";
 import type { Session } from "../../src/core/session.js";
 
 // ─── Paths / constants ──────────────────────────────────────────────────────
@@ -391,14 +392,15 @@ function resolveNexusUrl(): string | undefined {
   }
 }
 
-/** Project API key written to .grove/api-key by `grove init`. */
+/**
+ * Resolve the Nexus *server* API key the same way grove itself does:
+ * env → nexus-data/.state.json → nexus.yaml `api_key` (the `sk-…` key the
+ * Nexus HTTP server authenticates against). NOT `.grove/api-key`, which is a
+ * distinct `grv_…` project credential and is rejected by the server (HTTP 401).
+ * `nexus.yaml` lives at the project root (workDir), not inside `.grove`.
+ */
 function resolveNexusApiKey(): string | undefined {
-  if (process.env.NEXUS_API_KEY) return process.env.NEXUS_API_KEY;
-  try {
-    return readFileSync(join(groveDir, "api-key"), "utf-8").trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  return readNexusApiKey(workDir);
 }
 
 // ─── main ───────────────────────────────────────────────────────────────────
