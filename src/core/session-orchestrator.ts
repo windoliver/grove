@@ -129,6 +129,12 @@ export interface SessionConfig {
   readonly onContributionAccepted?: ((cid: string) => void | Promise<void>) | undefined;
   /** Optional agent profiles — overlay role defaults with per-agent runtime config. */
   readonly profiles?: readonly AgentProfile[] | undefined;
+  /**
+   * Extra MCP servers appended to every spawned agent's `mcpServers`, after the
+   * built-in `grove` server. Populated from recipe `extensions` by
+   * `grove recipe run`; empty for all other launch paths.
+   */
+  readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
 }
 
 /** Status of a running session. */
@@ -656,7 +662,7 @@ export class SessionOrchestrator {
       model: resolved.model,
       cwd,
       goal: fullGoal,
-      mcpServers: [this.groveMcpServer(role.name)],
+      mcpServers: [this.groveMcpServer(role.name), ...(this.config.extraMcpServers ?? [])],
       env: {
         GROVE_SESSION_ID: this.sessionId,
         GROVE_ROLE: role.name,
