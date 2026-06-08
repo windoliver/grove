@@ -863,6 +863,19 @@ export function initSqliteDb(dbPath: string): Database {
       ]);
     }
 
+    // Record schema version 17 (recipe_provenance_json on sessions). The v17
+    // column-safe ALTER above is idempotent and runs unconditionally, but the
+    // schema_migrations row must be recorded separately: the v16 block's
+    // version INSERT is gated on `< 16` (it guards CAS-clobbering resource-
+    // version column inits), so a DB already at v16 would otherwise never
+    // advance to 17 and `needsLegacyBackfill` would stay true on every restart.
+    if (currentVersion === null || currentVersion < 17) {
+      db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
+        CURRENT_SCHEMA_VERSION,
+        new Date().toISOString(),
+      ]);
+    }
+
     if (needsLegacyBackfill) {
       // Backfill junction tables for pre-existing contributions once while
       // upgrading legacy databases. INSERT OR IGNORE prevents duplicates.
