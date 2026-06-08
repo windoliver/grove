@@ -7,7 +7,7 @@
  * are thin callers that supply already-resolved inputs and decide output.
  */
 
-import type { AgentConfig } from "../../core/agent-runtime.js";
+import type { AgentConfig, AgentRuntime } from "../../core/agent-runtime.js";
 import { expectCasOk } from "../../core/cas.js";
 import type { GroveContract } from "../../core/contract.js";
 import { LocalEventBus } from "../../core/local-event-bus.js";
@@ -51,6 +51,12 @@ export interface LaunchGoalSessionInput {
   readonly repos: readonly RepoRef[];
   readonly extraMcpServers?: NonNullable<AgentConfig["mcpServers"]> | undefined;
   readonly recipeProvenance?: RecipeProvenance | undefined;
+  /**
+   * For testing only — bypass selectRuntime/isAvailable and use this runtime
+   * directly. When set, no real agent process is spawned.
+   * @internal
+   */
+  readonly _testRuntime?: AgentRuntime | undefined;
   readonly onAgentsStarted?:
     | ((info: {
         readonly sessionId: string;
@@ -99,11 +105,16 @@ export async function launchGoalSession(
         "Destructive tool calls are auto-approved.\n",
     );
   }
-  const picked = selectRuntime({
-    acpx: { logDir: join(input.groveDir, "agent-logs") },
-    acp: { logDir: join(input.groveDir, "agent-logs"), permissionResolver },
-  });
-  const runtime = (await picked.isAvailable()) ? picked : new MockRuntime();
+  let runtime: AgentRuntime;
+  if (input._testRuntime !== undefined) {
+    runtime = input._testRuntime;
+  } else {
+    const picked = selectRuntime({
+      acpx: { logDir: join(input.groveDir, "agent-logs") },
+      acp: { logDir: join(input.groveDir, "agent-logs"), permissionResolver },
+    });
+    runtime = (await picked.isAvailable()) ? picked : new MockRuntime();
+  }
   const eventBus = new LocalEventBus();
 
   // Open SQLite database and create session
