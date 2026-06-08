@@ -164,9 +164,9 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     throw new UsageError("recipe run requires the recipe to declare agent_topology with roles");
   }
 
-  const { resolveRecipeMcpServers } = await import("../../core/recipe-extensions.js");
-  const extraMcpServers = resolveRecipeMcpServers(recipe.extensions ?? []);
-
+  // Resolve the grove location before extension wiring so the friendlier,
+  // cheaper "not inside a grove" error wins over an extension-launchability
+  // failure when both apply. Neither persists nor launches anything.
   const { findGroveDir } = await import("../context.js");
   const groveDir = findGroveDir(deps.cwd);
   if (groveDir === undefined) {
@@ -174,8 +174,11 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
   }
   const groveRoot = resolve(groveDir, "..");
 
+  const { resolveRecipeMcpServers } = await import("../../core/recipe-extensions.js");
+  const extraMcpServers = resolveRecipeMcpServers(recipe.extensions ?? []);
+
   const { buildRepos } = await import("../utils/build-repos.js");
-  const repos = buildRepos({ rawRepo: [...command.repos], cwd: groveRoot });
+  const repos = buildRepos({ rawRepo: command.repos, cwd: groveRoot });
 
   const launch = deps.launch ?? (await import("../utils/launch-session.js")).launchGoalSession;
   const result = await launch({
