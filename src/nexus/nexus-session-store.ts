@@ -456,6 +456,7 @@ export class NexusSessionStore implements SessionStore, RuntimeSkillSessionStore
       deletionAudit: [],
       contributionCount: 0,
       config: input.config,
+      recipeProvenance: input.recipeProvenance,
       resourceVersion: 1,
     };
     await this.writeSessionRecord(session);
