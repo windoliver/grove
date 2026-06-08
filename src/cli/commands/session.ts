@@ -254,6 +254,7 @@ async function sessionStatus(): Promise<void> {
       stopReason: latest.stopReason,
       stopStatus: latest.stopStatus,
       contributionCount: latest.contributionCount,
+      ...(latest.recipeProvenance && { recipeDigest: latest.recipeProvenance.recipeDigest }),
     });
   } catch (err) {
     outputJsonError({
