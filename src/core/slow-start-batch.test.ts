@@ -223,3 +223,80 @@ describe("slowStartBatch — success", () => {
     });
   });
 });
+
+describe("slowStartBatch — failure handling", () => {
+  test("task failure in batch 1 halts; later batches never fire", async () => {
+    const spawned: number[] = [];
+    const result = await slowStartBatch(
+      Array.from({ length: 15 }, (_, i) => i),
+      async (item) => {
+        spawned.push(item);
+        if (item === 0) throw new Error("bad prompt");
+      },
+      norm(),
+    );
+    expect(result.outcome).toBe("halted");
+    expect(result.attempted).toBe(1);
+    expect(result.succeeded).toBe(0);
+    expect(spawned).toEqual([0]); // only batch 1 (size 1) ran
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toMatchObject({ index: 0, batchIndex: 0, class: "task" });
+  });
+
+  test("RuntimeUnavailable in batch 1 throttles with backoff; no batch 2", async () => {
+    const spawned: number[] = [];
+    const result = await slowStartBatch(
+      Array.from({ length: 15 }, (_, i) => i),
+      async (item) => {
+        spawned.push(item);
+        if (item === 0) throw new RuntimeUnavailableError("runtime down");
+      },
+      norm(),
+    );
+    expect(result.outcome).toBe("throttled");
+    expect(result.retryAfterMs).toBe(1000); // computeBackoffMs(0) === baseMs
+    expect(spawned).toEqual([0]);
+    expect(result.failures[0]).toMatchObject({ class: "backpressure" });
+  });
+
+  test("AdmissionReject halts and surfaces the actionable reason", async () => {
+    const result = await slowStartBatch(
+      [0],
+      async () => {
+        throw new AdmissionRejectError({
+          ruleName: "max-fanout",
+          ruleType: "shell",
+          reason: "capacity exhausted",
+        });
+      },
+      norm(),
+    );
+    expect(result.outcome).toBe("halted");
+    expect(result.failures[0]).toMatchObject({ class: "admission", reason: "capacity exhausted" });
+  });
+
+  test("terminal wins on a mixed batch (backpressure + task)", async () => {
+    const result = await slowStartBatch(
+      [0, 1],
+      async (item) => {
+        if (item === 0) throw new RuntimeUnavailableError("runtime down");
+        if (item === 1) throw new Error("bad prompt");
+      },
+      norm({ initialBatchSize: 2 }),
+    );
+    expect(result.outcome).toBe("halted"); // not throttled
+    expect(result.failures).toHaveLength(2);
+  });
+
+  test("custom classifier overrides the default", async () => {
+    const result = await slowStartBatch(
+      [0],
+      async () => {
+        throw new Error("treat-me-as-backpressure");
+      },
+      norm(),
+      { classify: () => "backpressure" },
+    );
+    expect(result.outcome).toBe("throttled");
+  });
+});
