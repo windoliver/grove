@@ -1,3 +1,6 @@
+import { AdmissionRejectError } from "./admission/errors.js";
+import { GroveError } from "./errors.js";
+
 export interface BackoffStrategy {
   readonly baseMs?: number;
   /**
@@ -83,3 +86,31 @@ function requireFiniteMin(value: number, min: number, name: string): void {
     throw new RangeError(`${name} must be a finite number >= ${min} (got ${value})`);
   }
 }
+
+export type FailureClass = "task" | "backpressure" | "admission";
+
+export class RuntimeUnavailableError extends GroveError {
+  readonly reason: string;
+
+  constructor(message: string, options?: { reason?: string }) {
+    super(message);
+    this.name = "RuntimeUnavailableError";
+    this.reason = options?.reason ?? message;
+  }
+}
+
+export interface ClassifiedFailure {
+  readonly index: number; // index into the input items array
+  readonly batchIndex: number; // 0-based batch the item was in
+  readonly class: FailureClass;
+  readonly reason: string;
+  readonly error: unknown;
+}
+
+export type FailureClassifier = (error: unknown) => FailureClass;
+
+export const defaultFailureClassifier: FailureClassifier = (error) => {
+  if (error instanceof AdmissionRejectError) return "admission";
+  if (error instanceof RuntimeUnavailableError) return "backpressure";
+  return "task";
+};

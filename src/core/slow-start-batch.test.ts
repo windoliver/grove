@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { computeBackoffMs, normalizeBatchStrategy } from "./slow-start-batch.js";
+import { AdmissionRejectError } from "./admission/errors.js";
+import {
+  computeBackoffMs,
+  defaultFailureClassifier,
+  normalizeBatchStrategy,
+  RuntimeUnavailableError,
+} from "./slow-start-batch.js";
 
 describe("normalizeBatchStrategy", () => {
   test("applies defaults for empty input", () => {
@@ -64,5 +70,33 @@ describe("computeBackoffMs", () => {
   test("guards non-positive / non-finite attempts to baseMs", () => {
     expect(computeBackoffMs(-5, backoff)).toBe(1000);
     expect(computeBackoffMs(Number.NaN, backoff)).toBe(1000);
+  });
+});
+
+describe("defaultFailureClassifier", () => {
+  test("classifies AdmissionRejectError as admission", () => {
+    const err = new AdmissionRejectError({
+      ruleName: "max-fanout",
+      ruleType: "shell",
+      reason: "capacity exhausted",
+    });
+    expect(defaultFailureClassifier(err)).toBe("admission");
+  });
+
+  test("classifies RuntimeUnavailableError as backpressure", () => {
+    expect(defaultFailureClassifier(new RuntimeUnavailableError("runtime down"))).toBe(
+      "backpressure",
+    );
+  });
+
+  test("classifies anything else as task", () => {
+    expect(defaultFailureClassifier(new Error("bad prompt"))).toBe("task");
+    expect(defaultFailureClassifier("oops")).toBe("task");
+  });
+
+  test("RuntimeUnavailableError carries a reason", () => {
+    const err = new RuntimeUnavailableError("runtime down", { reason: "provider-pressure" });
+    expect(err.reason).toBe("provider-pressure");
+    expect(err).toBeInstanceOf(Error);
   });
 });
