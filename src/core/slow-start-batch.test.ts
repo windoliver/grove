@@ -5,7 +5,11 @@ import {
   defaultFailureClassifier,
   normalizeBatchStrategy,
   RuntimeUnavailableError,
+  type SpawnBatchMetric,
+  slowStartBatch,
 } from "./slow-start-batch.js";
+
+const norm = normalizeBatchStrategy;
 
 describe("normalizeBatchStrategy", () => {
   test("applies defaults for empty input", () => {
@@ -98,5 +102,85 @@ describe("defaultFailureClassifier", () => {
     const err = new RuntimeUnavailableError("runtime down", { reason: "provider-pressure" });
     expect(err.reason).toBe("provider-pressure");
     expect(err).toBeInstanceOf(Error);
+  });
+});
+
+describe("slowStartBatch — success", () => {
+  test("doubling sequence 1,2,4,8 over 15 items", async () => {
+    const batches: number[][] = [];
+    let current: number[] = [];
+    const calls: number[] = [];
+    const items = Array.from({ length: 15 }, (_, i) => i);
+    const sizes: number[] = [];
+    const result = await slowStartBatch(
+      items,
+      async (item) => {
+        calls.push(item);
+        current.push(item);
+      },
+      norm(),
+      {
+        onSpawnBatch: (m: SpawnBatchMetric) => {
+          sizes.push(m.batchSize);
+          batches.push(current);
+          current = [];
+        },
+      },
+    );
+    expect(sizes).toEqual([1, 2, 4, 8]);
+    expect(result.outcome).toBe("completed");
+    expect(result.succeeded).toBe(15);
+    expect(result.attempted).toBe(15);
+    expect(result.failures).toEqual([]);
+    expect(calls.sort((a, b) => a - b)).toEqual(items);
+  });
+
+  test("empty input completes with no spawn/metric calls", async () => {
+    let spawned = 0;
+    let metrics = 0;
+    const result = await slowStartBatch(
+      [],
+      async () => {
+        spawned += 1;
+      },
+      norm(),
+      {
+        onSpawnBatch: () => {
+          metrics += 1;
+        },
+      },
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.attempted).toBe(0);
+    expect(spawned).toBe(0);
+    expect(metrics).toBe(0);
+  });
+
+  test("maxBatchSize caps growth: cap 3 over 15 items", async () => {
+    const sizes: number[] = [];
+    await slowStartBatch(
+      Array.from({ length: 15 }, (_, i) => i),
+      async () => {},
+      norm({ maxBatchSize: 3 }),
+      { onSpawnBatch: (m) => sizes.push(m.batchSize) },
+    );
+    expect(sizes).toEqual([1, 2, 3, 3, 3, 3]);
+  });
+
+  test("metric reports succeeded/failed and forwards taskGroupId", async () => {
+    const seen: SpawnBatchMetric[] = [];
+    await slowStartBatch([1, 2], async () => {}, norm({ initialBatchSize: 2 }), {
+      taskGroupId: "tg-1",
+      onSpawnBatch: (m) => seen.push(m),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      taskGroupId: "tg-1",
+      batchIndex: 0,
+      batchSize: 2,
+      attempted: 2,
+      succeeded: 2,
+      failed: 0,
+    });
   });
 });

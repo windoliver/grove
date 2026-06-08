@@ -114,3 +114,107 @@ export const defaultFailureClassifier: FailureClassifier = (error) => {
   if (error instanceof RuntimeUnavailableError) return "backpressure";
   return "task";
 };
+
+export interface SpawnBatchMetric {
+  readonly taskGroupId?: string | undefined;
+  readonly batchIndex: number;
+  readonly batchSize: number; // == grove_spawn_batch_size
+  readonly attempted: number; // items dispatched this batch (== batchSize)
+  readonly succeeded: number;
+  readonly failed: number;
+}
+
+export type SpawnBatchObserver = (metric: SpawnBatchMetric) => void;
+
+export interface SlowStartHooks {
+  readonly onSpawnBatch?: SpawnBatchObserver | undefined;
+  readonly classify?: FailureClassifier | undefined;
+  readonly taskGroupId?: string | undefined;
+}
+
+export type SlowStartOutcome = "completed" | "halted" | "throttled";
+
+export interface SlowStartResult {
+  readonly outcome: SlowStartOutcome;
+  readonly attempted: number;
+  readonly succeeded: number;
+  readonly failures: readonly ClassifiedFailure[];
+  readonly retryAfterMs?: number | undefined;
+}
+
+export async function slowStartBatch<T>(
+  items: readonly T[],
+  spawn: (item: T, batchIndex: number) => Promise<void>,
+  strategy: NormalizedBatchStrategy,
+  hooks?: SlowStartHooks,
+): Promise<SlowStartResult> {
+  const classify = hooks?.classify ?? defaultFailureClassifier;
+  let attempted = 0;
+  let succeeded = 0;
+  let offset = 0;
+  let batchIndex = 0;
+  let size = Math.min(strategy.initialBatchSize, items.length - offset);
+
+  while (size > 0) {
+    const batch = items.slice(offset, offset + size);
+    const settled = await Promise.allSettled(
+      // async wrapper converts a synchronous throw into a rejection
+      batch.map(async (item) => spawn(item, batchIndex)),
+    );
+    attempted += size;
+
+    const failures: ClassifiedFailure[] = [];
+    let batchSucceeded = 0;
+    settled.forEach((res, i) => {
+      if (res.status === "fulfilled") {
+        batchSucceeded += 1;
+      } else {
+        failures.push({
+          index: offset + i,
+          batchIndex,
+          class: classify(res.reason),
+          reason: failureReason(res.reason),
+          error: res.reason,
+        });
+      }
+    });
+    succeeded += batchSucceeded;
+
+    hooks?.onSpawnBatch?.({
+      taskGroupId: hooks.taskGroupId,
+      batchIndex,
+      batchSize: size,
+      attempted: size,
+      succeeded: batchSucceeded,
+      failed: failures.length,
+    });
+
+    if (failures.length > 0) {
+      const anyTerminal = failures.some((f) => f.class === "task" || f.class === "admission");
+      if (anyTerminal) {
+        return { outcome: "halted", attempted, succeeded, failures };
+      }
+      return {
+        outcome: "throttled",
+        attempted,
+        succeeded,
+        failures,
+        retryAfterMs: computeBackoffMs(0, strategy.backoff),
+      };
+    }
+
+    offset += size;
+    batchIndex += 1;
+    const remaining = items.length - offset;
+    size = Math.min(Math.floor(size * strategy.multiplier), strategy.maxBatchSize, remaining);
+  }
+
+  return { outcome: "completed", attempted, succeeded, failures: [] };
+}
+
+function failureReason(error: unknown): string {
+  if (error instanceof AdmissionRejectError) return error.reason;
+  if (error instanceof RuntimeUnavailableError) return error.reason;
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
