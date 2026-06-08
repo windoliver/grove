@@ -1,9 +1,11 @@
-export type OwnerKind = "session" | "claim";
+export type OwnerKind = "session" | "claim" | "taskGroup" | "agentTask";
 
 export interface OwnerRef {
   readonly kind: OwnerKind;
   readonly id: string;
   readonly uid: string;
+  /** k8s `controller: true` — the single managing owner. Metadata, not identity. */
+  readonly controller?: boolean | undefined;
 }
 
 export const Finalizer = {
@@ -19,6 +21,32 @@ export const DEFAULT_SESSION_FINALIZERS: readonly Finalizer[] = [
   Finalizer.DrainContribs,
   Finalizer.CloseRuntime,
 ];
+
+/**
+ * Per-kind finalizers (Epic D #306). Use the `grove.dev/` namespace, distinct
+ * from the legacy `grove.io/*` session finalizers above (not unified here).
+ */
+export const KindFinalizer = {
+  /** On AgentTask — blocks reap until review completes. */
+  PendingReview: "grove.dev/pending-review",
+  /** On MergeTask — blocks reap until the merge lands (defined now, applied in a follow-up). */
+  PendingMerge: "grove.dev/pending-merge",
+} as const;
+export type KindFinalizer = (typeof KindFinalizer)[keyof typeof KindFinalizer];
+
+/**
+ * Propagation finalizers placed on the OWNER at delete time to encode the
+ * cascade policy (mirrors k8s `foregroundDeletion`/`orphan`). Background uses
+ * no propagation finalizer. Reconstructable from store state after a restart.
+ */
+export const PropagationFinalizer = {
+  Foreground: "grove.dev/foreground-deletion",
+  Orphan: "grove.dev/orphan",
+} as const;
+export type PropagationFinalizer =
+  (typeof PropagationFinalizer)[keyof typeof PropagationFinalizer];
+
+export type CascadePolicy = "Foreground" | "Background" | "Orphan";
 
 export interface DeletionAuditEvent {
   readonly at: string;
