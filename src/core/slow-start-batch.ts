@@ -66,6 +66,12 @@ export function normalizeBatchStrategy(input?: BatchStrategy): NormalizedBatchSt
   };
 }
 
+export function computeBackoffMs(attempt: number, backoff: Required<BackoffStrategy>): number {
+  const n = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  const raw = backoff.baseMs * backoff.multiplier ** n;
+  return Math.min(raw, backoff.maxMs);
+}
+
 function requirePositiveInt(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new RangeError(`${name} must be an integer >= 1 (got ${value})`);
