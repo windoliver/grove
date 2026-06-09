@@ -103,4 +103,48 @@ describe("AgentTaskGcStore over real Sqlite", () => {
       stores.close();
     }
   });
+
+  test("Background cascade: delete TaskGroup reaps owner immediately and GC's its real AgentTask child", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      const tgStore = new InMemoryGcStore();
+      tgStore.put({
+        kind: "taskGroup",
+        id: "tg-bg",
+        uid: "u-tg-bg",
+        ownerRefs: [],
+        finalizers: [], // no propagation finalizer → Background policy
+        deletionTimestamp: "2026-06-08T00:00:00.000Z",
+      });
+      expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("at-bg", {
+            ownerRef: { kind: "taskGroup", id: "tg-bg", uid: "u-tg-bg", controller: true },
+          }),
+        ),
+      );
+
+      const composite = new CompositeGcStore(
+        new Map<GcRef["kind"], GcStore>([
+          ["taskGroup", tgStore],
+          ["agentTask", new AgentTaskGcStore(stores.agentTaskStore)],
+        ]),
+      );
+      const gc = new GarbageCollector({
+        store: composite,
+        now: () => Date.parse("2026-06-08T03:00:00.000Z"),
+      });
+
+      const tg: GcRef = { kind: "taskGroup", id: "tg-bg" };
+      const child: GcRef = { kind: "agentTask", id: "at-bg" };
+      await drain(gc, [tg, child], async () =>
+        (await composite.listPendingDeletion()).map((n) => ({ kind: n.kind, id: n.id })),
+      );
+
+      expect(tgStore.has(tg)).toBe(false); // owner reaped (Background = immediate)
+      expect(await stores.agentTaskStore.getAgentTask("at-bg")).toBeUndefined(); // child GC'd
+    } finally {
+      stores.close();
+    }
+  });
 });

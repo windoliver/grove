@@ -9,8 +9,16 @@ function taskToGcNode(view: AgentTaskView): GcNode {
   return {
     kind: "agentTask",
     id: view.spec.id,
-    // AgentTask has no separate uid column; its id is its stable identity.
+    // AgentTask has no separate uid column; its id is its stable, immutable primary
+    // key that is never reused — so it is safe to use as the GC identity and as the
+    // target of ownerRef.uid references.
     uid: view.spec.id,
+    // `spec.resourceVersion` is the persisted `resource_version` column, always set
+    // for rows created/touched after migration v16 — so it matches what the store's
+    // checkIfMatch compares (String(spec.resource_version)). The `generation`
+    // fallback only covers legacy pre-v16 rows, which the v16 migration initializes
+    // to MAX(generation,1), keeping the values aligned. So the GC's CAS ifMatch
+    // round-trip agrees in practice.
     resourceVersion: String(view.spec.resourceVersion ?? view.spec.generation),
     ownerRefs: view.spec.ownerRef === undefined ? [] : [view.spec.ownerRef],
     finalizers: view.spec.finalizers ?? [],
@@ -35,12 +43,14 @@ export class AgentTaskGcStore implements GcStore {
     }
   }
 
+  // Soft-return (not assertKind-throw) because the GC's ownerExists probe may getNode across kinds; CompositeGcStore.route() already gates wrong-kind mutators.
   async getNode(ref: GcRef): Promise<GcNode | undefined> {
     if (ref.kind !== "agentTask") return undefined;
     const view = await this.store.getAgentTask(ref.id);
     return view === undefined ? undefined : taskToGcNode(view);
   }
 
+  // TODO: these full-scan listAgentTasks() then filter in memory; push the filter into AgentTaskQuery (WHERE deletion_timestamp IS NOT NULL / owner uid) when the store query supports it, to avoid O(tasks) scans per resync.
   async listPendingDeletion(): Promise<readonly GcNode[]> {
     const all = await this.store.listAgentTasks();
     return all.filter((v) => v.spec.deletionTimestamp !== undefined).map(taskToGcNode);
