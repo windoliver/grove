@@ -27,7 +27,11 @@ export interface GcStore {
     opts?: CasOpts,
   ): Promise<CasMutationResult<GcNode>>;
   removeOwnerRef(ref: GcRef, ownerUid: string, opts?: CasOpts): Promise<CasMutationResult<GcNode>>;
-  removeFinalizer(ref: GcRef, finalizer: string, opts?: CasOpts): Promise<CasMutationResult<GcNode>>;
+  removeFinalizer(
+    ref: GcRef,
+    finalizer: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<GcNode>>;
   /** Hard-delete. MUST reject (throw) if the node still has finalizers. */
   reap(ref: GcRef, opts?: CasOpts): Promise<CasMutationResult<GcNode>>;
 }
@@ -93,7 +97,11 @@ export class GarbageCollector {
         `resyncIntervalMs must be a finite positive number no greater than ${MAX_RESYNC_INTERVAL_MS}`,
       );
     }
-    if (!Number.isInteger(this.workerCount) || this.workerCount < 1 || this.workerCount > MAX_WORKER_COUNT) {
+    if (
+      !Number.isInteger(this.workerCount) ||
+      this.workerCount < 1 ||
+      this.workerCount > MAX_WORKER_COUNT
+    ) {
       throw new RangeError(`workerCount must be an integer between 1 and ${MAX_WORKER_COUNT}`);
     }
     this.onError = options.onError;
@@ -105,6 +113,15 @@ export class GarbageCollector {
   }
 
   async resync(): Promise<number> {
+    // NOTE: resync only enqueues pending-deletion owners and their
+    // listOwnedBy children. A *pure dangling child* — controller owner UID
+    // vanished WITHOUT the child being marked for deletion — is not returned by
+    // listOwnedBy (its owner is gone) and GcStore has no list-all method, so
+    // planDanglingChild runs for such nodes only when an external caller
+    // explicitly enqueue()s them. In the normal cascade this is a non-issue:
+    // Background marks children (giving them a deletionTimestamp), so they show
+    // up in listPendingDeletion. A full dangling sweep (listAll /
+    // listDanglingCandidates) is intentionally deferred to a follow-up.
     const pending = await this.store.listPendingDeletion();
     for (const node of pending) {
       this.enqueue(refOf(node));
@@ -126,17 +143,42 @@ export class GarbageCollector {
       actions = planDanglingChild(node, await this.ownerExists(node));
     }
 
+    let actedOnChild = false;
+    let reapedSelf = false;
     for (const action of actions) {
       try {
         await this.execute(action);
         this.onAction?.(action);
-        // Promptly re-reconcile the touched node so multi-step convergence
-        // (mark → reap, orphan → remove-finalizer → reap) does not wait for
-        // the next resync.
+        // Re-drive the action's target so its own next step runs promptly.
         this.enqueue(action.ref);
+        if (action.ref.kind === ref.kind && action.ref.id === ref.id) {
+          if (action.type === "reap") reapedSelf = true;
+        } else {
+          actedOnChild = true;
+        }
       } catch (error) {
         if (error instanceof NodeVanished) continue;
         throw error;
+      }
+    }
+
+    // Cross-level convergence. The per-action re-enqueue above only re-drives the
+    // action's *target*, which is not enough for multi-level cascades:
+    //  (a) If this node (as owner) acted on a child, re-drive THIS node so it
+    //      re-evaluates once the child's state changes — e.g. Orphan: after a
+    //      child's controller ownerRef is stripped, the owner can drop its
+    //      orphan finalizer and reap. Without this, the owner would wait for the
+    //      next resync.
+    //  (b) If this node (as child) reaped itself, re-drive its controller owner
+    //      so the owner observes its shrunken child set (Foreground/Background)
+    //      and can advance to remove-finalizer / reap.
+    // Both terminate: a converged owner emits no actions (no re-enqueue), and a
+    // vanished owner is a benign no-op.
+    if (actedOnChild) this.enqueue(ref);
+    if (reapedSelf) {
+      const controller = node.ownerRefs.find((r) => r.controller === true);
+      if (controller !== undefined) {
+        this.enqueue({ kind: controller.kind, id: controller.id });
       }
     }
   }

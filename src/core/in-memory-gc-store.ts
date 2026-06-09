@@ -1,4 +1,4 @@
-import { type CasMismatchResult, type CasMutationResult, type CasOpts } from "./cas.js";
+import type { CasMismatchResult, CasMutationResult, CasOpts } from "./cas.js";
 import type { GcStore } from "./garbage-collector.js";
 import { gcKey } from "./garbage-collector.js";
 import type { GcNode, GcRef } from "./owner-graph.js";
@@ -95,9 +95,9 @@ export class InMemoryGcStore implements GcStore {
     const key = gcKey(ref);
     const n = this.nodes.get(key);
     if (n === undefined) {
-      // Already gone — surface as a benign mismatch so the loop's getNode
-      // probe (which throws NodeVanished) handles it; never reached in practice
-      // because the loop reads first.
+      // Unreachable via the GarbageCollector loop, which read-probes first and
+      // throws NodeVanished; the fabricated rv is only a fixture placeholder for
+      // direct callers.
       return { kind: "rv-mismatch", current: { resourceVersion: "0", generation: 0 } };
     }
     const mismatch = this.checkCas(n, opts);
@@ -117,6 +117,9 @@ export class InMemoryGcStore implements GcStore {
   ): CasMutationResult<GcNode> {
     const n = this.nodes.get(gcKey(ref));
     if (n === undefined) {
+      // Unreachable via the GarbageCollector loop, which read-probes first and
+      // throws NodeVanished; the fabricated rv is only a fixture placeholder for
+      // direct callers.
       return { kind: "rv-mismatch", current: { resourceVersion: "0", generation: 0 } };
     }
     const mismatch = this.checkCas(n, opts);

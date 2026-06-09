@@ -36,8 +36,20 @@ describe("cascade: delete TaskGroup", () => {
       finalizers: [PropagationFinalizer.Foreground],
       deletionTimestamp: "2026-06-08T00:00:00.000Z",
     });
-    store.put({ kind: "agentTask", id: "a", uid: "u-a", ownerRefs: controlledByTg("a"), finalizers: [] });
-    store.put({ kind: "agentTask", id: "b", uid: "u-b", ownerRefs: controlledByTg("b"), finalizers: [] });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
+    store.put({
+      kind: "agentTask",
+      id: "b",
+      uid: "u-b",
+      ownerRefs: controlledByTg("b"),
+      finalizers: [],
+    });
 
     const gc = new GarbageCollector({ store, now: () => Date.parse("2026-06-08T00:00:05.000Z") });
     await drain(gc, store, [TG, A, B]);
@@ -57,7 +69,13 @@ describe("cascade: delete TaskGroup", () => {
       finalizers: [],
       deletionTimestamp: "2026-06-08T00:00:00.000Z",
     });
-    store.put({ kind: "agentTask", id: "a", uid: "u-a", ownerRefs: controlledByTg("a"), finalizers: [] });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
 
     const gc = new GarbageCollector({ store, now: () => Date.parse("2026-06-08T00:00:05.000Z") });
     await drain(gc, store, [TG, A]);
@@ -76,7 +94,13 @@ describe("cascade: delete TaskGroup", () => {
       finalizers: [PropagationFinalizer.Orphan],
       deletionTimestamp: "2026-06-08T00:00:00.000Z",
     });
-    store.put({ kind: "agentTask", id: "a", uid: "u-a", ownerRefs: controlledByTg("a"), finalizers: [] });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
 
     const gc = new GarbageCollector({ store, now: () => Date.parse("2026-06-08T00:00:05.000Z") });
     await drain(gc, store, [TG, A]);
@@ -123,7 +147,13 @@ describe("crash recovery", () => {
       finalizers: [PropagationFinalizer.Foreground],
       deletionTimestamp: "2026-06-08T00:00:00.000Z",
     });
-    store.put({ kind: "agentTask", id: "a", uid: "u-a", ownerRefs: controlledByTg("a"), finalizers: [] });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
 
     // Simulate a crash after only marking the child: do ONE reconcile of TG.
     const gc1 = new GarbageCollector({ store, now: () => Date.parse("2026-06-08T00:00:05.000Z") });
@@ -152,5 +182,88 @@ describe("resync enqueues pending + children", () => {
     });
     const gc = new GarbageCollector({ store });
     expect(await gc.resync()).toBe(1);
+  });
+});
+
+async function waitUntil(pred: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+describe("real worker loop converges without relying on resync", () => {
+  test("Foreground cascade fully reaps owner + children", async () => {
+    const store = new InMemoryGcStore();
+    store.put({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      ownerRefs: [],
+      finalizers: [PropagationFinalizer.Foreground],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
+    store.put({
+      kind: "agentTask",
+      id: "b",
+      uid: "u-b",
+      ownerRefs: controlledByTg("b"),
+      finalizers: [],
+    });
+
+    // Huge resync interval = periodic resync never fires during the test, so
+    // convergence is driven purely by reconcileNode's re-enqueue logic.
+    const gc = new GarbageCollector({ store, resyncIntervalMs: 2_000_000_000 });
+    gc.start();
+    gc.enqueue(TG);
+    try {
+      await waitUntil(() => !store.has(TG) && !store.has(A) && !store.has(B));
+    } finally {
+      await gc.stop();
+    }
+    expect(store.has(TG)).toBe(false);
+    expect(store.has(A)).toBe(false);
+    expect(store.has(B)).toBe(false);
+  });
+
+  test("Orphan cascade reaps owner, preserves + detaches child", async () => {
+    const store = new InMemoryGcStore();
+    store.put({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      ownerRefs: [],
+      finalizers: [PropagationFinalizer.Orphan],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    store.put({
+      kind: "agentTask",
+      id: "a",
+      uid: "u-a",
+      ownerRefs: controlledByTg("a"),
+      finalizers: [],
+    });
+
+    const gc = new GarbageCollector({ store, resyncIntervalMs: 2_000_000_000 });
+    gc.start();
+    gc.enqueue(TG);
+    try {
+      await waitUntil(() => !store.has(TG));
+    } finally {
+      await gc.stop();
+    }
+    expect(store.has(TG)).toBe(false);
+    expect(store.has(A)).toBe(true);
+    const a = await store.getNode(A);
+    expect(a?.ownerRefs).toEqual([]);
+    expect(a?.deletionTimestamp).toBeUndefined();
   });
 });
