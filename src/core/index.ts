@@ -367,6 +367,26 @@ export type {
 } from "./session-orchestrator.js";
 export { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
 export type {
+  BackoffStrategy,
+  BatchStrategy,
+  ClassifiedFailure,
+  FailureClass,
+  FailureClassifier,
+  NormalizedBatchStrategy,
+  SlowStartHooks,
+  SlowStartOutcome,
+  SlowStartResult,
+  SpawnBatchMetric,
+  SpawnBatchObserver,
+} from "./slow-start-batch.js";
+export {
+  computeSlowStartBackoffMs,
+  defaultFailureClassifier,
+  normalizeBatchStrategy,
+  RuntimeUnavailableError,
+  slowStartBatch,
+} from "./slow-start-batch.js";
+export type {
   ActiveClaimFilter,
   AgentTaskQuery,
   AgentTaskStatusPatch,
