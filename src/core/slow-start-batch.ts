@@ -69,7 +69,10 @@ export function normalizeBatchStrategy(input?: BatchStrategy): NormalizedBatchSt
   };
 }
 
-export function computeBackoffMs(attempt: number, backoff: Required<BackoffStrategy>): number {
+export function computeSlowStartBackoffMs(
+  attempt: number,
+  backoff: Required<BackoffStrategy>,
+): number {
   const n = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
   const raw = backoff.baseMs * backoff.multiplier ** n;
   return Math.min(raw, backoff.maxMs);
@@ -199,7 +202,7 @@ export async function slowStartBatch<T>(
         attempted,
         succeeded,
         failures,
-        retryAfterMs: computeBackoffMs(0, strategy.backoff),
+        retryAfterMs: computeSlowStartBackoffMs(0, strategy.backoff),
       };
     }
 

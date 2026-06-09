@@ -380,7 +380,7 @@ export type {
   SpawnBatchObserver,
 } from "./slow-start-batch.js";
 export {
-  computeBackoffMs as computeSlowStartBackoffMs,
+  computeSlowStartBackoffMs,
   defaultFailureClassifier,
   normalizeBatchStrategy,
   RuntimeUnavailableError,

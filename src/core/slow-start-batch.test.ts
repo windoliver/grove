@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AdmissionRejectError } from "./admission/errors.js";
 import {
-  computeBackoffMs,
+  computeSlowStartBackoffMs,
   defaultFailureClassifier,
   normalizeBatchStrategy,
   RuntimeUnavailableError,
@@ -54,26 +54,26 @@ describe("normalizeBatchStrategy", () => {
   });
 });
 
-describe("computeBackoffMs", () => {
+describe("computeSlowStartBackoffMs", () => {
   const backoff = { baseMs: 1000, multiplier: 2, maxMs: 30_000 } as const;
 
   test("attempt 0 returns baseMs", () => {
-    expect(computeBackoffMs(0, backoff)).toBe(1000);
+    expect(computeSlowStartBackoffMs(0, backoff)).toBe(1000);
   });
 
   test("grows geometrically", () => {
-    expect(computeBackoffMs(1, backoff)).toBe(2000);
-    expect(computeBackoffMs(2, backoff)).toBe(4000);
-    expect(computeBackoffMs(3, backoff)).toBe(8000);
+    expect(computeSlowStartBackoffMs(1, backoff)).toBe(2000);
+    expect(computeSlowStartBackoffMs(2, backoff)).toBe(4000);
+    expect(computeSlowStartBackoffMs(3, backoff)).toBe(8000);
   });
 
   test("clamps to maxMs", () => {
-    expect(computeBackoffMs(10, backoff)).toBe(30_000);
+    expect(computeSlowStartBackoffMs(10, backoff)).toBe(30_000);
   });
 
   test("guards non-positive / non-finite attempts to baseMs", () => {
-    expect(computeBackoffMs(-5, backoff)).toBe(1000);
-    expect(computeBackoffMs(Number.NaN, backoff)).toBe(1000);
+    expect(computeSlowStartBackoffMs(-5, backoff)).toBe(1000);
+    expect(computeSlowStartBackoffMs(Number.NaN, backoff)).toBe(1000);
   });
 });
 
@@ -254,7 +254,7 @@ describe("slowStartBatch — failure handling", () => {
       norm(),
     );
     expect(result.outcome).toBe("throttled");
-    expect(result.retryAfterMs).toBe(1000); // computeBackoffMs(0) === baseMs
+    expect(result.retryAfterMs).toBe(1000); // computeSlowStartBackoffMs(0) === baseMs
     expect(spawned).toEqual([0]);
     expect(result.failures[0]).toMatchObject({ class: "backpressure" });
   });
