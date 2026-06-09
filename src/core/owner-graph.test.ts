@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { PropagationFinalizer } from "./lifecycle-metadata.js";
-import {
-  type GcNode,
-  planDanglingChild,
-  planOwnerDeletion,
-  policyOf,
-} from "./owner-graph.js";
+import { KindFinalizer, PropagationFinalizer } from "./lifecycle-metadata.js";
+import { type GcNode, planDanglingChild, planOwnerDeletion, policyOf } from "./owner-graph.js";
 
 function node(over: Partial<GcNode> & Pick<GcNode, "kind" | "id" | "uid">): GcNode {
   return {
@@ -30,10 +25,19 @@ describe("policyOf", () => {
   test("Foreground / Orphan / Background derived from owner finalizers", () => {
     expect(policyOf(node({ kind: "taskGroup", id: "tg", uid: "u" }))).toBe("Background");
     expect(
-      policyOf(node({ kind: "taskGroup", id: "tg", uid: "u", finalizers: [PropagationFinalizer.Foreground] })),
+      policyOf(
+        node({
+          kind: "taskGroup",
+          id: "tg",
+          uid: "u",
+          finalizers: [PropagationFinalizer.Foreground],
+        }),
+      ),
     ).toBe("Foreground");
     expect(
-      policyOf(node({ kind: "taskGroup", id: "tg", uid: "u", finalizers: [PropagationFinalizer.Orphan] })),
+      policyOf(
+        node({ kind: "taskGroup", id: "tg", uid: "u", finalizers: [PropagationFinalizer.Orphan] }),
+      ),
     ).toBe("Orphan");
   });
 });
@@ -183,5 +187,124 @@ describe("idempotency", () => {
     // After reap the node would be gone; re-running planDanglingChild on a
     // hypothetical leftover with empty finalizers is a single reap, not a loop.
     expect(planOwnerDeletion(reaped, [])).toEqual(first);
+  });
+});
+
+describe("planOwnerDeletion — multi-step convergence (pure snapshot simulation)", () => {
+  test("Foreground arc: mark child → terminating → remove-finalizer → reap", () => {
+    const owner = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [PropagationFinalizer.Foreground],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    // Pass 1: child unmarked → mark it.
+    expect(planOwnerDeletion(owner, [child("a", "u-tg")])).toEqual([
+      { type: "mark-deletion", ref: { kind: "agentTask", id: "a" } },
+    ]);
+    // Pass 2: child marked but still present → stay terminating.
+    const marked = child("a", "u-tg", { deletionTimestamp: "2026-06-08T00:00:01.000Z" });
+    expect(planOwnerDeletion(owner, [marked])).toEqual([]);
+    // Pass 3: child gone → remove foreground finalizer.
+    expect(planOwnerDeletion(owner, [])).toEqual([
+      {
+        type: "remove-finalizer",
+        ref: { kind: "taskGroup", id: "tg" },
+        finalizer: PropagationFinalizer.Foreground,
+      },
+    ]);
+    // Pass 4: finalizer cleared → reap.
+    const cleared = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    expect(planOwnerDeletion(cleared, [])).toEqual([
+      { type: "reap", ref: { kind: "taskGroup", id: "tg" } },
+    ]);
+  });
+
+  test("Orphan arc: orphan child → remove-finalizer → reap", () => {
+    const owner = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [PropagationFinalizer.Orphan],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    // Pass 1: controlled child → orphan it.
+    expect(planOwnerDeletion(owner, [child("a", "u-tg")])).toEqual([
+      { type: "orphan", ref: { kind: "agentTask", id: "a" }, ownerUid: "u-tg" },
+    ]);
+    // Pass 2: child's controller ownerRef stripped → no longer controlled → remove orphan finalizer.
+    const detached = node({ kind: "agentTask", id: "a", uid: "uid-a", ownerRefs: [] });
+    expect(planOwnerDeletion(owner, [detached])).toEqual([
+      {
+        type: "remove-finalizer",
+        ref: { kind: "taskGroup", id: "tg" },
+        finalizer: PropagationFinalizer.Orphan,
+      },
+    ]);
+    // Pass 3: finalizer cleared → reap (orphaned child preserved, not reaped).
+    const cleared = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    expect(planOwnerDeletion(cleared, [detached])).toEqual([
+      { type: "reap", ref: { kind: "taskGroup", id: "tg" } },
+    ]);
+  });
+});
+
+describe("kind finalizer gates reap under Foreground", () => {
+  test("owner with [Foreground, pending-review] and no children removes Foreground first, never reaps while pending-review remains", () => {
+    const owner = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [PropagationFinalizer.Foreground, KindFinalizer.PendingReview],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    // Foreground finalizer is removed first (NOT reap).
+    expect(planOwnerDeletion(owner, [])).toEqual([
+      {
+        type: "remove-finalizer",
+        ref: { kind: "taskGroup", id: "tg" },
+        finalizer: PropagationFinalizer.Foreground,
+      },
+    ]);
+    // After Foreground is stripped, the kind finalizer still blocks reap.
+    const afterStrip = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [KindFinalizer.PendingReview],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    expect(planOwnerDeletion(afterStrip, [])).toEqual([]);
+  });
+});
+
+describe("Orphan idempotency before write lands", () => {
+  test("re-running on the same controlled snapshot re-emits orphan (loop must no-op safely)", () => {
+    const owner = node({
+      kind: "taskGroup",
+      id: "tg",
+      uid: "u-tg",
+      finalizers: [PropagationFinalizer.Orphan],
+      deletionTimestamp: "2026-06-08T00:00:00.000Z",
+    });
+    const first = planOwnerDeletion(owner, [child("a", "u-tg")]);
+    const second = planOwnerDeletion(owner, [child("a", "u-tg")]);
+    expect(second).toEqual(first);
+    expect(first).toEqual([
+      { type: "orphan", ref: { kind: "agentTask", id: "a" }, ownerUid: "u-tg" },
+    ]);
   });
 });

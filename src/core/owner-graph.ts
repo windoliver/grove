@@ -35,10 +35,12 @@ export interface GcNode {
 /** One reconcile-step action. The loop stamps timestamps and threads CAS. */
 export type GcAction =
   | { readonly type: "mark-deletion"; readonly ref: GcRef }
+  // idempotent: loop must tolerate the ownerRef already being absent (no-op, not an error)
   | { readonly type: "orphan"; readonly ref: GcRef; readonly ownerUid: string }
   | { readonly type: "remove-finalizer"; readonly ref: GcRef; readonly finalizer: string }
   | { readonly type: "reap"; readonly ref: GcRef };
 
+/** Identity (kind+id) of a node, for building GcAction targets. */
 export function refOf(node: GcNode): GcRef {
   return { kind: node.kind, id: node.id };
 }
@@ -66,10 +68,7 @@ function reapIfReady(node: GcNode): readonly GcAction[] {
  * Cascades to its controlled children per policy, then reaps itself when ready.
  * Returns `[]` when the node is not being deleted or the world is converged.
  */
-export function planOwnerDeletion(
-  owner: GcNode,
-  children: readonly GcNode[],
-): readonly GcAction[] {
+export function planOwnerDeletion(owner: GcNode, children: readonly GcNode[]): readonly GcAction[] {
   if (owner.deletionTimestamp === undefined) return [];
   const controlled = children.filter((child) => controlledBy(child, owner.uid));
   const policy = policyOf(owner);
@@ -96,6 +95,9 @@ export function planOwnerDeletion(
       return blocking.map((child) => ({ type: "mark-deletion" as const, ref: refOf(child) }));
     }
     // Children are marked but still present — stay Terminating until they're gone.
+    // Children with their own kind finalizers (e.g. pending-review) stay in `controlled`
+    // until reaped, so the owner will not get `remove-finalizer` until every controlled
+    // child is gone from the store.
     if (controlled.length > 0) return [];
     if (owner.finalizers.includes(PropagationFinalizer.Foreground)) {
       return [
@@ -121,11 +123,10 @@ export function planOwnerDeletion(
  * GC backstop: a child whose controller owner UID no longer resolves.
  * `ownerExists` is true only when the controller owner is present AND its UID
  * still matches (a recreated owner with a new UID counts as gone).
+ * `ownerExists` must be resolved against the CONTROLLER owner ref (the one
+ * with `controller: true`), not just any ownerRef on the child.
  */
-export function planDanglingChild(
-  child: GcNode,
-  ownerExists: boolean,
-): readonly GcAction[] {
+export function planDanglingChild(child: GcNode, ownerExists: boolean): readonly GcAction[] {
   const hasController = child.ownerRefs.some((ref) => ref.controller === true);
   if (!hasController || ownerExists) return [];
   if (child.deletionTimestamp === undefined) {
