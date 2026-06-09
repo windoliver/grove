@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RecipeProvenance } from "../core/recipe.js";
-import { initSqliteDb } from "./sqlite-store.js";
 import { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
+import { initSqliteDb } from "./sqlite-store.js";
 
 describe("SqliteGoalSessionStore recipe provenance", () => {
   test("createSession persists recipeProvenance and getSession returns it", async () => {

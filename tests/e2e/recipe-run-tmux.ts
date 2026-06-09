@@ -55,14 +55,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -155,7 +148,9 @@ async function waitFor<T>(
   }
   throw new Error(
     `[${phase}] not satisfied within ${maxMs}ms` +
-      (lastErr ? ` (last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})` : ""),
+      (lastErr
+        ? ` (last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})`
+        : ""),
   );
 }
 
@@ -417,10 +412,13 @@ async function main(): Promise<void> {
 
   // 1. Fresh git repo + a couple of source files for the agents to work on.
   console.error("[setup] git init + source files");
-  execSync("git init -q && git config user.email e2e@grove.test && git config user.name 'Grove E2E'", {
-    cwd: workDir,
-    stdio: "inherit",
-  });
+  execSync(
+    "git init -q && git config user.email e2e@grove.test && git config user.name 'Grove E2E'",
+    {
+      cwd: workDir,
+      stdio: "inherit",
+    },
+  );
   const srcDir = join(workDir, "src");
   mkdirSync(srcDir, { recursive: true });
   // A deliberately buggy tiny module so the coder has a clear, small fix.
@@ -570,9 +568,7 @@ async function main(): Promise<void> {
     throw new Error(`run output recipeDigest is not blake3-prefixed: ${recipeDigest}`);
   }
   if (recipeDigest !== canonicalDigest) {
-    throw new Error(
-      `run output digest ${recipeDigest} != validate digest ${canonicalDigest}`,
-    );
+    throw new Error(`run output digest ${recipeDigest} != validate digest ${canonicalDigest}`);
   }
   console.error("[assert a] run digest matches validate digest");
 
@@ -596,9 +592,7 @@ async function main(): Promise<void> {
     "extension-launched-sentinel",
     Math.min(BUDGET_MS, 240000),
   );
-  console.error(
-    `[assert c] stdio extension '${EXT_NAME}' launched (sentinel: ${sentinelPath})`,
-  );
+  console.error(`[assert c] stdio extension '${EXT_NAME}' launched (sentinel: ${sentinelPath})`);
 
   // 5c. Wait for a terminal session state in Nexus AND at least one linked
   //     contribution (proves a real agent produced work / handoff).

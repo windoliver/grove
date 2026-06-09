@@ -15,9 +15,7 @@ describe("resolveRecipeMcpServers", () => {
 
   test("a stdio: extension with no args has an empty args array", () => {
     const ext: RecipeExtension[] = [{ type: "mcp", name: "gh", uri: "stdio:gh-mcp" }];
-    expect(resolveRecipeMcpServers(ext)).toEqual([
-      { name: "gh", command: "gh-mcp", args: [] },
-    ]);
+    expect(resolveRecipeMcpServers(ext)).toEqual([{ name: "gh", command: "gh-mcp", args: [] }]);
   });
 
   test("optional non-stdio extension is skipped, not thrown", () => {
