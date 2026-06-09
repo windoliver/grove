@@ -50,14 +50,19 @@ describe("lifecycle metadata", () => {
     expect(ownerRefsEqual(a, b)).toBe(true);
   });
 
-  test("new owner kinds are assignable", () => {
-    const refs: OwnerRef[] = [
+  test("ownerRefsEqual distinguishes owner kinds", () => {
+    const taskGroup: OwnerRef = { kind: "taskGroup", id: "x", uid: "u" };
+    const agentTask: OwnerRef = { kind: "agentTask", id: "x", uid: "u" };
+    // Same id/uid, different kind → not equal (real behavioral assertion).
+    expect(ownerRefsEqual(taskGroup, agentTask)).toBe(false);
+    // All four kinds remain assignable to OwnerRef.
+    const all: OwnerRef[] = [
       { kind: "session", id: "s", uid: "u" },
       { kind: "claim", id: "c", uid: "u" },
-      { kind: "taskGroup", id: "tg", uid: "u" },
-      { kind: "agentTask", id: "at", uid: "u" },
+      taskGroup,
+      agentTask,
     ];
-    expect(refs).toHaveLength(4);
+    expect(all).toHaveLength(4);
   });
 
   test("finalizer namespaces are stable", () => {
@@ -67,8 +72,11 @@ describe("lifecycle metadata", () => {
     expect(PropagationFinalizer.Orphan).toBe("grove.dev/orphan");
   });
 
-  test("cascade policy values", () => {
-    const policies: CascadePolicy[] = ["Foreground", "Background", "Orphan"];
-    expect(policies).toContain("Background");
+  test("cascade policy values are stable", () => {
+    const foreground: CascadePolicy = "Foreground";
+    const background: CascadePolicy = "Background";
+    const orphan: CascadePolicy = "Orphan";
+    // Pin all three exact values as a regression guard.
+    expect([foreground, background, orphan]).toEqual(["Foreground", "Background", "Orphan"]);
   });
 });
