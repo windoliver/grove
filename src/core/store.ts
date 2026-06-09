@@ -490,9 +490,11 @@ export interface AgentTaskStore {
   listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]>;
 
   /**
-   * Set `deletionTimestamp` (and optionally seed propagation/kind finalizers)
-   * on the spec row. Idempotent: a second call with deletion already set is a
-   * no-op write that still bumps RV. CAS-aware via `opts.ifMatch` (spec RV).
+   * Set `deletionTimestamp` on the spec row to begin termination. Idempotent:
+   * when deletion is already set this is a TRUE no-op — no resource_version bump
+   * and no write event — so the GC's `withIfMatch` loop doesn't churn on
+   * repeated calls. Does NOT seed finalizers (callers set those at create time).
+   * CAS-aware via `opts.ifMatch` (compared against the spec resource_version).
    */
   setAgentTaskDeletion(
     taskId: string,

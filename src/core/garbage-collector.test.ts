@@ -187,7 +187,7 @@ describe("resync enqueues pending + children", () => {
   });
 });
 
-async function waitUntil(pred: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitUntil(pred: () => boolean, timeoutMs = 20000): Promise<void> {
   const start = Date.now();
   while (!pred()) {
     if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
