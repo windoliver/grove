@@ -30,6 +30,20 @@ describe("recipe command", () => {
     expect(() => parseRecipeArgs(["run", "recipes/review.yaml", "extra.yaml"])).toThrow(UsageError);
   });
 
+  test("parseRecipeArgs parses run with goal and repo flags", () => {
+    expect(
+      parseRecipeArgs(["run", "r.yaml", "--goal", "do it", "--repo", "./a", "--param", "x=1"]),
+    ).toEqual({
+      command: "run",
+      path: "r.yaml",
+      params: { x: "1" },
+      goal: "do it",
+      repos: ["./a"],
+      dryRun: false,
+      json: false,
+    });
+  });
+
   test("validate reports a valid recipe", async () => {
     const dir = await mkdtemp(join(tmpdir(), "grove-recipe-cli-"));
     try {
@@ -200,8 +214,8 @@ describe("recipe command", () => {
     }
   });
 
-  test("run without --dry-run is rejected in the first implementation slice", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-required-dry-"));
+  test("run without a goal or instructions is rejected", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "grove-recipe-run-required-goal-"));
     try {
       const recipePath = join(dir, "review.yaml");
       await writeFile(
@@ -210,7 +224,7 @@ describe("recipe command", () => {
       );
       await expect(
         runRecipe(parseRecipeArgs(["run", recipePath]), { cwd: dir, writer: () => undefined }),
-      ).rejects.toThrow(/requires --dry-run/);
+      ).rejects.toThrow(/goal/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -24,6 +24,7 @@ import {
   Finalizer,
 } from "../core/lifecycle-metadata.js";
 import type { Claim } from "../core/models.js";
+import type { RecipeProvenance } from "../core/recipe.js";
 import type {
   AppendSessionRoleSkillResult,
   CreateSessionInput,
@@ -287,6 +288,7 @@ export const GOAL_SESSION_DDL = `
     topology_json TEXT,
     config_json TEXT NOT NULL DEFAULT '{}',
     worktree_strategy_json TEXT,
+    recipe_provenance_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
     finalizers_json TEXT NOT NULL DEFAULT '[]',
@@ -362,6 +364,7 @@ interface SessionRow {
   topology_json: string | null;
   config_json: string | null;
   worktree_strategy_json: string | null;
+  recipe_provenance_json: string | null;
   status: string;
   started_at: string;
   finalizers_json: string;
@@ -394,6 +397,7 @@ interface SessionListRow {
   stop_reason: string | null;
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   contribution_count: number;
+  recipe_provenance_json: string | null;
   /** C6 (#304): optimistic-concurrency resource version, added by v16 migration. */
   resource_version: number;
 }
@@ -547,6 +551,9 @@ function rowToSession(row: SessionRow): Session {
     worktreeStrategies: row.worktree_strategy_json
       ? (JSON.parse(row.worktree_strategy_json) as Record<string, string>)
       : undefined,
+    recipeProvenance: row.recipe_provenance_json
+      ? (JSON.parse(row.recipe_provenance_json) as RecipeProvenance)
+      : undefined,
     resourceVersion: row.resource_version,
   };
 }
@@ -569,6 +576,9 @@ function listRowToSession(row: SessionListRow): Session {
     topology: undefined,
     contributionCount: row.contribution_count,
     // config intentionally omitted from list results for performance
+    recipeProvenance: row.recipe_provenance_json
+      ? (JSON.parse(row.recipe_provenance_json) as RecipeProvenance)
+      : undefined,
     resourceVersion: row.resource_version,
   };
 }
@@ -786,7 +796,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
       SELECT s.session_id, s.uid, s.goal, s.preset_name, s.status, s.started_at,
              s.finalizers_json, s.deletion_timestamp, s.deletion_audit_json,
              s.ended_at, s.stop_reason, s.stop_status, s.contribution_count,
-             s.resource_version
+             s.recipe_provenance_json, s.resource_version
       FROM sessions s
     `;
 
@@ -823,8 +833,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
   createSession = async (input: CreateSessionInput): Promise<Session> => {
     this.stmtInsertSession ??= this.db.prepare(`
       INSERT INTO sessions (session_id, uid, goal, preset_name, topology_json, config_json,
-        worktree_strategy_json, status, started_at, finalizers_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        worktree_strategy_json, recipe_provenance_json, status, started_at, finalizers_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     `);
 
     const sessionId = crypto.randomUUID();
@@ -838,6 +848,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
       ? Object.fromEntries(resolveRoleWorkspaceStrategies(input.topology, sessionId))
       : null;
     const worktreeStrategyJson = worktreeStrategies ? JSON.stringify(worktreeStrategies) : null;
+    const recipeProvenanceJson = input.recipeProvenance
+      ? JSON.stringify(input.recipeProvenance)
+      : null;
 
     this.stmtInsertSession.run(
       sessionId,
@@ -847,6 +860,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
       topologyJson,
       configJson,
       worktreeStrategyJson,
+      recipeProvenanceJson,
       startedAt,
       JSON.stringify(DEFAULT_SESSION_FINALIZERS),
     );
@@ -865,6 +879,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
       contributionCount: 0,
       config: input.config,
       worktreeStrategies: worktreeStrategies ?? undefined,
+      recipeProvenance: input.recipeProvenance,
       // C6 (#304): the v16 migration adds `resource_version INTEGER NOT NULL
       // DEFAULT 1` to the sessions row. The INSERT above doesn't set the
       // column, so SQLite applies the DDL default. Mirror that here so the

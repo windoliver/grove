@@ -73,7 +73,7 @@ import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/e
 import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 const SQLITE_BIND_LIMIT = 900;
 const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
@@ -778,6 +778,24 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v17: persist recipe provenance on sessions launched via
+    // `grove recipe run`. Column-safe: only adds the column when absent.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("recipe_provenance_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN recipe_provenance_json TEXT");
+        }
+      }
+    }
+
     {
       const scCols = db.prepare("PRAGMA table_info(session_contributions)").all() as readonly {
         name: string;
@@ -839,6 +857,19 @@ export function initSqliteDb(dbPath: string): Database {
       addResourceVersionColumn(db, "handoffs", { initFrom: "literal", literal: 1 });
       addResourceVersionColumn(db, "outcomes", { initFrom: "literal", literal: 1 });
 
+      db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
+        CURRENT_SCHEMA_VERSION,
+        new Date().toISOString(),
+      ]);
+    }
+
+    // Record schema version 17 (recipe_provenance_json on sessions). The v17
+    // column-safe ALTER above is idempotent and runs unconditionally, but the
+    // schema_migrations row must be recorded separately: the v16 block's
+    // version INSERT is gated on `< 16` (it guards CAS-clobbering resource-
+    // version column inits), so a DB already at v16 would otherwise never
+    // advance to 17 and `needsLegacyBackfill` would stay true on every restart.
+    if (currentVersion === null || currentVersion < 17) {
       db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
         CURRENT_SCHEMA_VERSION,
         new Date().toISOString(),

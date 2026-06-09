@@ -96,6 +96,17 @@ emit:
 - required extensions
 - a `GroveContract`-compatible session contract
 
-The first implementation does not start agents. Real execution, persistent
-session creation, and integration with agent launchers are follow-up work after
-the dry-run contract is stable.
+## Live Run
+
+`grove recipe run <path> [--param k=v] [--goal "..."] [--repo <ref>]` materializes the
+recipe and launches a persistent session:
+
+- The rendered `instructions` becomes the session goal (overridable with `--goal`).
+- `agent_topology` roles are spawned via the shared launcher used by `grove session start`.
+- Declared `stdio:` MCP `extensions` are wired into every agent (after the built-in `grove`
+  server). Non-`stdio` extensions are skipped when optional and error when `required`.
+- `run_policy` maps to the session contract's stop conditions.
+- The session record stores the recipe digest and bound-parameter digest
+  (`recipeProvenance`) so re-runs are reproducible.
+
+Sub-recipe spawning and non-`stdio` extension wiring remain follow-up work.

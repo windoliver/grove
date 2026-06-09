@@ -22,11 +22,14 @@ type RecipeCommand =
       readonly params: Readonly<Record<string, string>>;
       readonly dryRun: boolean;
       readonly json: boolean;
+      readonly goal?: string | undefined;
+      readonly repos: readonly string[];
     };
 
 interface RecipeDeps {
   readonly cwd: string;
   readonly writer: (line: string) => void;
+  readonly launch?: typeof import("../utils/launch-session.js").launchGoalSession | undefined;
 }
 
 export function parseRecipeArgs(argv: readonly string[]): RecipeCommand {
@@ -60,6 +63,8 @@ export function parseRecipeArgs(argv: readonly string[]): RecipeCommand {
         param: { type: "string", multiple: true },
         "dry-run": { type: "boolean", default: false },
         json: { type: "boolean", default: false },
+        repo: { type: "string", multiple: true },
+        goal: { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -73,6 +78,8 @@ export function parseRecipeArgs(argv: readonly string[]): RecipeCommand {
       params: parseParamFlags(parsed.values.param ?? []),
       dryRun: parsed.values["dry-run"] ?? false,
       json: parsed.values.json ?? false,
+      ...(parsed.values.goal !== undefined && { goal: parsed.values.goal }),
+      repos: parsed.values.repo ?? [],
     };
   }
   throw new UsageError("recipe requires subcommand: validate, list, or run");
@@ -123,26 +130,87 @@ export async function runRecipe(command: RecipeCommand, deps: RecipeDeps): Promi
     );
     return;
   }
-  if (!command.dryRun) {
-    throw new UsageError("recipe run currently requires --dry-run");
-  }
   const content = await readFile(resolveRecipePath(command.path, deps.cwd), "utf-8");
   const recipe = parseGroveRecipe(content);
   const bound = bindRecipeParameters(recipe, command.params);
   const materialized = materializeRecipeContract(bound);
-  const payload = {
-    recipe: { name: recipe.name, version: recipe.version },
-    recipeDigest: bound.recipeDigest,
-    boundParameterDigest: computeBoundRecipeDigest(bound),
-    parameters: bound.parameters,
-    renderedInstructions: materialized.renderedInstructions,
-    extensions: materialized.extensions,
-    subRecipes: materialized.subRecipes,
-    runPolicy: materialized.runPolicy,
+
+  if (command.dryRun) {
+    const payload = {
+      recipe: { name: recipe.name, version: recipe.version },
+      recipeDigest: bound.recipeDigest,
+      boundParameterDigest: computeBoundRecipeDigest(bound),
+      parameters: bound.parameters,
+      renderedInstructions: materialized.renderedInstructions,
+      extensions: materialized.extensions,
+      subRecipes: materialized.subRecipes,
+      runPolicy: materialized.runPolicy,
+      contract: materialized.contract,
+      provenance: materialized.provenance,
+    };
+    deps.writer(command.json ? JSON.stringify(payload, null, 2) : formatDryRun(payload));
+    return;
+  }
+
+  // Live run.
+  const goal = command.goal?.trim() || materialized.renderedInstructions.trim();
+  if (goal === "") {
+    throw new UsageError(
+      "recipe run needs a goal: provide --goal or a non-empty recipe `instructions`",
+    );
+  }
+  const topology = materialized.contract.topology;
+  if (topology === undefined) {
+    throw new UsageError("recipe run requires the recipe to declare agent_topology with roles");
+  }
+
+  // Resolve the grove location before extension wiring so the friendlier,
+  // cheaper "not inside a grove" error wins over an extension-launchability
+  // failure when both apply. Neither persists nor launches anything.
+  const { findGroveDir } = await import("../context.js");
+  const groveDir = findGroveDir(deps.cwd);
+  if (groveDir === undefined) {
+    throw new UsageError("Not inside a grove. Run 'grove init' first.");
+  }
+  const groveRoot = resolve(groveDir, "..");
+
+  const { resolveRecipeMcpServers } = await import("../../core/recipe-extensions.js");
+  const extraMcpServers = resolveRecipeMcpServers(recipe.extensions ?? []);
+
+  const { buildRepos } = await import("../utils/build-repos.js");
+  const repos = buildRepos({ rawRepo: command.repos, cwd: groveRoot });
+
+  const launch = deps.launch ?? (await import("../utils/launch-session.js")).launchGoalSession;
+  const result = await launch({
+    groveDir,
+    groveRoot,
+    goal,
+    topology,
     contract: materialized.contract,
-    provenance: materialized.provenance,
-  };
-  deps.writer(command.json ? JSON.stringify(payload, null, 2) : formatDryRun(payload));
+    repos,
+    ...(extraMcpServers.length > 0 && { extraMcpServers: [...extraMcpServers] }),
+    recipeProvenance: materialized.provenance,
+    onAgentsStarted: ({ sessionId, agents }) => {
+      deps.writer(
+        command.json
+          ? JSON.stringify(
+              {
+                sessionId,
+                recipe: { name: recipe.name, version: recipe.version },
+                recipeDigest: bound.recipeDigest,
+                agents: agents.map((a) => ({ role: a.role, status: a.session.status })),
+              },
+              null,
+              2,
+            )
+          : `Recipe session started: ${recipe.name}@${recipe.version} (${sessionId}) ` +
+              `with ${agents.length} agents`,
+      );
+    },
+  });
+  if (!command.json) {
+    deps.writer(`Recipe session ${result.sessionId} ended: ${result.stopReason}`);
+  }
 }
 
 function resolveRecipePath(path: string, cwd: string): string {

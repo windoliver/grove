@@ -35,6 +35,7 @@ export class InMemorySessionStore implements SessionStore, RuntimeSkillSessionSt
       presetName: input.presetName,
       topology: input.topology,
       config: input.config,
+      recipeProvenance: input.recipeProvenance,
       status: "pending",
       createdAt: new Date().toISOString(),
       finalizers: DEFAULT_SESSION_FINALIZERS,
