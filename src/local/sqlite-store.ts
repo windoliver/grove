@@ -70,7 +70,12 @@ import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
 import { claimViewToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
-import type { Finalizer, OwnerRef } from "../core/lifecycle-metadata.js";
+import type {
+  Finalizer,
+  KindFinalizer,
+  OwnerRef,
+  PropagationFinalizer,
+} from "../core/lifecycle-metadata.js";
 import { toUtcIso } from "../core/time.js";
 
 export const CURRENT_SCHEMA_VERSION = 16;
@@ -1371,7 +1376,11 @@ function rowToAgentTaskSpec(row: AgentTaskSpecRow): AgentTaskSpecRecord {
     ...(row.owner_ref_json === null
       ? {}
       : { ownerRef: JSON.parse(row.owner_ref_json) as OwnerRef }),
-    finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
+    finalizers: JSON.parse(row.finalizers_json) as readonly (
+      | Finalizer
+      | KindFinalizer
+      | PropagationFinalizer
+    )[],
     ...(row.deletion_timestamp === null ? {} : { deletionTimestamp: row.deletion_timestamp }),
     createdAt: row.created_at,
     resourceVersion: row.resource_version,
@@ -2240,14 +2249,15 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     opts?: CasOpts,
   ): Promise<CasMutationResult<AgentTaskView>> =>
     this.mutateSpec(taskId, opts, (existing) => {
-      const next = existing.deletionTimestamp ?? deletionTimestamp;
+      if (existing.deletionTimestamp !== undefined) return false; // already terminating — no-op
       this.db
         .prepare(
           `UPDATE agent_task_spec
              SET deletion_timestamp = ?, generation = generation + 1, resource_version = resource_version + 1
            WHERE id = ?`,
         )
-        .run(next, taskId);
+        .run(deletionTimestamp, taskId);
+      return true;
     });
 
   removeAgentTaskFinalizer = async (
@@ -2256,7 +2266,10 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     opts?: CasOpts,
   ): Promise<CasMutationResult<AgentTaskView>> =>
     this.mutateSpec(taskId, opts, (existing) => {
-      const remaining = (existing.finalizers ?? []).filter((f) => f !== finalizer);
+      const current = existing.finalizers ?? [];
+      if (!current.includes(finalizer as Finalizer | KindFinalizer | PropagationFinalizer))
+        return false; // not present — no-op
+      const remaining = current.filter((f) => f !== finalizer);
       this.db
         .prepare(
           `UPDATE agent_task_spec
@@ -2264,6 +2277,7 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
            WHERE id = ?`,
         )
         .run(JSON.stringify(remaining), taskId);
+      return true;
     });
 
   removeAgentTaskOwnerRef = async (
@@ -2272,14 +2286,15 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     opts?: CasOpts,
   ): Promise<CasMutationResult<AgentTaskView>> =>
     this.mutateSpec(taskId, opts, (existing) => {
-      const cleared = existing.ownerRef !== undefined && existing.ownerRef.uid === ownerUid;
+      if (existing.ownerRef === undefined || existing.ownerRef.uid !== ownerUid) return false; // no matching owner — no-op
       this.db
         .prepare(
           `UPDATE agent_task_spec
-             SET owner_ref_json = ?, generation = generation + 1, resource_version = resource_version + 1
+             SET owner_ref_json = NULL, generation = generation + 1, resource_version = resource_version + 1
            WHERE id = ?`,
         )
-        .run(cleared ? null : JSON.stringify(existing.ownerRef ?? null), taskId);
+        .run(taskId);
+      return true;
     });
 
   reapAgentTask = async (
@@ -2321,13 +2336,21 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     return { kind: "ok", view: deleted };
   };
 
-  /** Shared CAS wrapper for spec-row lifecycle edits. */
+  /**
+   * Shared CAS wrapper for spec-row lifecycle edits. `apply` runs the `UPDATE`
+   * (which bumps generation + resource_version) only when it changes the row,
+   * and returns whether it did. A `false` return is a true no-op: no RV bump,
+   * no MODIFIED event — so idempotent re-calls (e.g. the GC re-emitting an
+   * orphan/finalizer action) don't churn the `withIfMatch` retry loop or
+   * corrupt the row.
+   */
   private mutateSpec(
     taskId: string,
     opts: CasOpts | undefined,
-    apply: (existing: AgentTaskSpecRecord) => void,
+    apply: (existing: AgentTaskSpecRecord) => boolean,
   ): CasMutationResult<AgentTaskView> {
     let mismatch: CasMutationResult<AgentTaskView> | null = null;
+    let changed = false;
     const tx = this.db.transaction(() => {
       const existing = this.readAgentTask(taskId);
       if (existing === null) {
@@ -2346,13 +2369,13 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
         mismatch = cas;
         return;
       }
-      apply(existing.spec);
+      changed = apply(existing.spec);
     });
     tx.immediate();
     if (mismatch !== null) return mismatch;
     const view = this.readAgentTask(taskId);
     if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
-    this.emitAgentTaskWrite("MODIFIED", view);
+    if (changed) this.emitAgentTaskWrite("MODIFIED", view);
     return { kind: "ok", view };
   }
 

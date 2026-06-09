@@ -1286,4 +1286,48 @@ describe("SqliteAgentTaskStore lifecycle mutators (#306)", () => {
       stores.close();
     }
   });
+
+  test("spec mutators honor ifMatch CAS — stale RV is rejected", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      const created = expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t4", { ownerRef: { kind: "taskGroup", id: "tg", uid: "u-tg", controller: true } }),
+        ),
+      );
+      const staleRv = String(created.spec.resourceVersion ?? created.spec.generation);
+      // A real change bumps the spec resource_version.
+      expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t4", "u-tg"));
+      // The stale ifMatch must now be rejected.
+      const result = await stores.agentTaskStore.setAgentTaskDeletion(
+        "t4",
+        "2026-06-08T01:00:00.000Z",
+        { ifMatch: staleRv },
+      );
+      expect(result.kind).toBe("rv-mismatch");
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("removeAgentTaskOwnerRef is a true no-op on re-call (no RV churn, ownerRef stays absent)", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t5", { ownerRef: { kind: "taskGroup", id: "tg", uid: "u-tg", controller: true } }),
+        ),
+      );
+      const stripped = expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t5", "u-tg"));
+      expect(stripped.spec.ownerRef).toBeUndefined();
+      const rvAfterStrip = stripped.spec.resourceVersion;
+      // Idempotent re-call: no matching owner → no-op. RV unchanged; ownerRef stays
+      // ABSENT (must not be corrupted into a null literal in owner_ref_json).
+      const again = expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t5", "u-tg"));
+      expect(again.spec.ownerRef).toBeUndefined();
+      expect(again.spec.resourceVersion).toBe(rvAfterStrip);
+    } finally {
+      stores.close();
+    }
+  });
 });

@@ -117,16 +117,16 @@ function fakeTaskStore() {
         return [] as never;
       },
       async setAgentTaskDeletion() {
-        return undefined as never;
+        throw new Error("not implemented in fakeTaskStore");
       },
       async removeAgentTaskFinalizer() {
-        return undefined as never;
+        throw new Error("not implemented in fakeTaskStore");
       },
       async removeAgentTaskOwnerRef() {
-        return undefined as never;
+        throw new Error("not implemented in fakeTaskStore");
       },
       async reapAgentTask() {
-        return undefined as never;
+        throw new Error("not implemented in fakeTaskStore");
       },
       close() {
         // no-op stub
