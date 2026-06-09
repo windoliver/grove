@@ -17,4 +17,15 @@ describe("garbage-collector-wiring", () => {
     const wiring = createGarbageCollectorWiring({ store: new InMemoryGcStore(), workerCount: 2 });
     expect(wiring.collector).toBeInstanceOf(GarbageCollector);
   });
+
+  test("accepts and forwards onAction to the GarbageCollector without throwing", () => {
+    const onAction = () => {
+      /* spy placeholder */
+    };
+    const wiring = createGarbageCollectorWiring({
+      store: new InMemoryGcStore(),
+      onAction,
+    });
+    expect(wiring.collector).toBeInstanceOf(GarbageCollector);
+  });
 });
