@@ -202,6 +202,9 @@ export async function slowStartBatch<T>(
         attempted,
         succeeded,
         failures,
+        // attempt 0 here: this runner is single-shot. The requeuing controller
+        // owns the live attempt counter and re-derives an escalating delay via
+        // computeSlowStartBackoffMs(liveAttempt, strategy.backoff).
         retryAfterMs: computeSlowStartBackoffMs(0, strategy.backoff),
       };
     }
