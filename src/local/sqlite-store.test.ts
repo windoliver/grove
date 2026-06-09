@@ -13,9 +13,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTaskSpecRecord } from "../core/agent-task.js";
 import { expectOk } from "../core/cas.js";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
+import { KindFinalizer } from "../core/lifecycle-metadata.js";
 import type { Claim } from "../core/models.js";
 import { ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
@@ -1216,5 +1218,116 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     expect(events.length).toBe(2);
     expect(events[0]?.op).toBe("ADDED");
     expect(events[1]?.op).toBe("MODIFIED");
+  });
+});
+
+describe("SqliteAgentTaskStore lifecycle mutators (#306)", () => {
+  function spec(id: string, over: Partial<AgentTaskSpecRecord> = {}): AgentTaskSpecRecord {
+    return {
+      id,
+      worktree: "/wt",
+      runtime: "claude",
+      role: "coder",
+      prompt: "go",
+      dependsOn: [],
+      generation: 1,
+      createdAt: "2026-06-08T00:00:00.000Z",
+      ...over,
+    };
+  }
+
+  test("setAgentTaskDeletion stamps the spec row", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      expectOk(await stores.agentTaskStore.putAgentTaskSpec(spec("t1")));
+      const r = expectOk(
+        await stores.agentTaskStore.setAgentTaskDeletion("t1", "2026-06-08T01:00:00.000Z"),
+      );
+      expect(r.spec.deletionTimestamp).toBe("2026-06-08T01:00:00.000Z");
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("reapAgentTask refuses while finalizers remain, succeeds once cleared", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t2", { finalizers: [KindFinalizer.PendingReview] }),
+        ),
+      );
+      expectOk(await stores.agentTaskStore.setAgentTaskDeletion("t2", "2026-06-08T01:00:00.000Z"));
+
+      await expect(stores.agentTaskStore.reapAgentTask("t2")).rejects.toThrow(/finalizer/i);
+
+      expectOk(
+        await stores.agentTaskStore.removeAgentTaskFinalizer("t2", KindFinalizer.PendingReview),
+      );
+      expectOk(await stores.agentTaskStore.reapAgentTask("t2"));
+
+      expect(await stores.agentTaskStore.getAgentTask("t2")).toBeUndefined();
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("removeAgentTaskOwnerRef strips matching refs (orphan)", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t3", { ownerRef: { kind: "taskGroup", id: "tg", uid: "u-tg", controller: true } }),
+        ),
+      );
+      const r = expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t3", "u-tg"));
+      expect(r.spec.ownerRef).toBeUndefined();
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("spec mutators honor ifMatch CAS — stale RV is rejected", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      const created = expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t4", { ownerRef: { kind: "taskGroup", id: "tg", uid: "u-tg", controller: true } }),
+        ),
+      );
+      const staleRv = String(created.spec.resourceVersion ?? created.spec.generation);
+      // A real change bumps the spec resource_version.
+      expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t4", "u-tg"));
+      // The stale ifMatch must now be rejected.
+      const result = await stores.agentTaskStore.setAgentTaskDeletion(
+        "t4",
+        "2026-06-08T01:00:00.000Z",
+        { ifMatch: staleRv },
+      );
+      expect(result.kind).toBe("rv-mismatch");
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("removeAgentTaskOwnerRef is a true no-op on re-call (no RV churn, ownerRef stays absent)", async () => {
+    const stores = createSqliteStores(":memory:");
+    try {
+      expectOk(
+        await stores.agentTaskStore.putAgentTaskSpec(
+          spec("t5", { ownerRef: { kind: "taskGroup", id: "tg", uid: "u-tg", controller: true } }),
+        ),
+      );
+      const stripped = expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t5", "u-tg"));
+      expect(stripped.spec.ownerRef).toBeUndefined();
+      const rvAfterStrip = stripped.spec.resourceVersion;
+      // Idempotent re-call: no matching owner → no-op. RV unchanged; ownerRef stays
+      // ABSENT (must not be corrupted into a null literal in owner_ref_json).
+      const again = expectOk(await stores.agentTaskStore.removeAgentTaskOwnerRef("t5", "u-tg"));
+      expect(again.spec.ownerRef).toBeUndefined();
+      expect(again.spec.resourceVersion).toBe(rvAfterStrip);
+    } finally {
+      stores.close();
+    }
   });
 });

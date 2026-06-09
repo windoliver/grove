@@ -116,6 +116,18 @@ function fakeTaskStore() {
       async listAgentTaskEntities() {
         return [] as never;
       },
+      async setAgentTaskDeletion() {
+        throw new Error("not implemented in fakeTaskStore");
+      },
+      async removeAgentTaskFinalizer() {
+        throw new Error("not implemented in fakeTaskStore");
+      },
+      async removeAgentTaskOwnerRef() {
+        throw new Error("not implemented in fakeTaskStore");
+      },
+      async reapAgentTask() {
+        throw new Error("not implemented in fakeTaskStore");
+      },
       close() {
         // no-op stub
       },

@@ -1,5 +1,10 @@
 import type { Condition, Entity } from "./entity.js";
-import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
+import type {
+  Finalizer,
+  KindFinalizer,
+  OwnerRef,
+  PropagationFinalizer,
+} from "./lifecycle-metadata.js";
 import type { JsonValue } from "./models.js";
 
 export const AgentTaskPhase = {
@@ -41,7 +46,7 @@ export interface AgentTaskSpecRecord {
   readonly budget?: Readonly<Record<string, JsonValue>> | undefined;
   readonly generation: number;
   readonly ownerRef?: OwnerRef | undefined;
-  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly finalizers?: readonly (Finalizer | KindFinalizer | PropagationFinalizer)[] | undefined;
   readonly deletionTimestamp?: string | undefined;
   readonly createdAt: string;
   /**

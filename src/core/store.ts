@@ -489,5 +489,39 @@ export interface AgentTaskStore {
   /** Return AgentTasks wrapped in the Entity envelope. */
   listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]>;
 
+  /**
+   * Set `deletionTimestamp` on the spec row to begin termination. Idempotent:
+   * when deletion is already set this is a TRUE no-op — no resource_version bump
+   * and no write event — so the GC's `withIfMatch` loop doesn't churn on
+   * repeated calls. Does NOT seed finalizers (callers set those at create time).
+   * CAS-aware via `opts.ifMatch` (compared against the spec resource_version).
+   */
+  setAgentTaskDeletion(
+    taskId: string,
+    deletionTimestamp: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
+
+  /** Remove a single finalizer from the spec row. CAS-aware (spec RV). */
+  removeAgentTaskFinalizer(
+    taskId: string,
+    finalizer: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
+
+  /** Remove every ownerRef whose uid === ownerUid from the spec row (orphan). */
+  removeAgentTaskOwnerRef(
+    taskId: string,
+    ownerUid: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>>;
+
+  /**
+   * Hard-delete the spec row (status drops via the FK ON DELETE CASCADE).
+   * MUST throw if the row still has finalizers. CAS-aware (spec RV). Returns
+   * the pre-delete view on success.
+   */
+  reapAgentTask(taskId: string, opts?: CasOpts): Promise<CasMutationResult<AgentTaskView>>;
+
   close(): void;
 }

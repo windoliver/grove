@@ -15,6 +15,7 @@ export {
   agentTaskViewToEntity,
   isAgentTaskSpecStale,
 } from "./agent-task.js";
+export { AgentTaskGcStore, CompositeGcStore } from "./agent-task-gc-store.js";
 export {
   extractChoices,
   extractQuestion,
@@ -185,6 +186,8 @@ export {
   FrontierRewardService,
   type FrontierRewardServiceOptions,
 } from "./frontier-reward-service.js";
+export type { GarbageCollectorOptions, GcStore } from "./garbage-collector.js";
+export { GarbageCollector, gcKey, parseGcKey } from "./garbage-collector.js";
 export type {
   Handoff,
   HandoffInput,
@@ -226,6 +229,7 @@ export {
 } from "./hooks.js";
 export type { FailureConfig } from "./in-memory-credits.js";
 export { InMemoryCreditsService } from "./in-memory-credits.js";
+export { InMemoryGcStore } from "./in-memory-gc-store.js";
 export { InMemorySessionStore } from "./in-memory-session-store.js";
 export type { StopConditionResult, StopEvaluationResult } from "./lifecycle.js";
 export {
@@ -234,7 +238,12 @@ export {
   evaluateStopConditions,
   LifecycleState,
 } from "./lifecycle.js";
-export type { OwnerRef, SessionFinalizer } from "./lifecycle-metadata.js";
+export type {
+  CascadePolicy,
+  OwnerRef,
+  SessionFinalizer,
+} from "./lifecycle-metadata.js";
+export { KindFinalizer, PropagationFinalizer } from "./lifecycle-metadata.js";
 export { LocalEventBus } from "./local-event-bus.js";
 export type {
   GroveLoopRunnerOptions,
@@ -292,6 +301,8 @@ export {
   type Score,
   ScoreDirection,
 } from "./models.js";
+export type { GcAction, GcNode, GcRef } from "./owner-graph.js";
+export { planDanglingChild, planOwnerDeletion, policyOf, refOf } from "./owner-graph.js";
 export {
   ArtifactNameError,
   assertWithinBoundary,
