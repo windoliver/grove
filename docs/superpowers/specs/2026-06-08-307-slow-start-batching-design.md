@@ -33,7 +33,7 @@ cascade GC, `#358` plan/shard/merge, `#336` runtime preflight admission gate,
 ### In scope
 - `slowStartBatch` — the geometric-batch runner with halt-on-first-failure.
 - `BatchStrategy` config type (canonical home for `spec.batchStrategy`) +
-  `normalizeBatchStrategy` validation + `computeBackoffMs` bounded-backoff helper.
+  `normalizeBatchStrategy` validation + `computeSlowStartBackoffMs` bounded-backoff helper.
 - Failure classification: `task` | `backpressure` | `admission` with an
   injectable classifier and a sensible default.
 - `grove_spawn_batch_size` metric surfaced via an `onSpawnBatch` observer
@@ -85,8 +85,8 @@ export interface NormalizedBatchStrategy {
 export function normalizeBatchStrategy(input?: BatchStrategy): NormalizedBatchStrategy;
 
 // Bounded exponential backoff for the Nth requeue attempt (attempt >= 0).
-// computeBackoffMs(0) === baseMs; grows × multiplier, clamped to maxMs.
-export function computeBackoffMs(attempt: number, backoff: Required<BackoffStrategy>): number;
+// computeSlowStartBackoffMs(0) === baseMs; grows × multiplier, clamped to maxMs.
+export function computeSlowStartBackoffMs(attempt: number, backoff: Required<BackoffStrategy>): number;
 
 // ---- failure classification ----
 export type FailureClass = "task" | "backpressure" | "admission";
@@ -171,7 +171,7 @@ while size > 0:
             return { outcome: "halted", failures, attempted, succeeded }
         else:                                         # all backpressure
             return { outcome: "throttled", failures, attempted, succeeded,
-                     retryAfterMs: computeBackoffMs(0, backoff) }
+                     retryAfterMs: computeSlowStartBackoffMs(0, backoff) }
     remaining -= batch
     batchIndex += 1
     size = min(size * multiplier, maxBatchSize, remaining.length)
@@ -184,7 +184,7 @@ Notes:
 - `attempted`/`succeeded` accumulate only over batches that actually ran; batches
   after a halt/throttle never dispatch (acceptance #1).
 - `retryAfterMs` uses `attempt = 0` here because the primitive is single-shot.
-  The requeuing controller owns the attempt counter and calls `computeBackoffMs`
+  The requeuing controller owns the attempt counter and calls `computeSlowStartBackoffMs`
   with the live attempt number on each requeue to get the escalating delay.
 - `spawn` rejections are the only failure signal; the runner never throws for a
   spawn failure (it classifies and returns). It *does* propagate a programming
@@ -235,7 +235,7 @@ codebase or that this module introduces:
   for `initialBatchSize < 1`, non-integer sizes, `multiplier < 1`,
   `maxBatchSize < initialBatchSize`, negative backoff fields.
 - **`maxBatchSize` cap**: growth clamped (e.g. cap 3 over 15 items → `[1,2,3,3,3,3]`).
-- **`computeBackoffMs`**: `attempt 0 === baseMs`; geometric growth; clamped to
+- **`computeSlowStartBackoffMs`**: `attempt 0 === baseMs`; geometric growth; clamped to
   `maxMs`; `attempt` guarded against negatives.
 - **Empty input**: `items: []` → `outcome: "completed"`, no `spawn`/metric calls.
 
@@ -246,4 +246,10 @@ codebase or that this module introduces:
   callback shape is chosen so `#337` can map it directly.
 - **Backoff statefulness**: bounded exponential backoff across requeues requires
   an attempt counter the primitive cannot hold (it is single-shot). Resolved by
-  exposing `computeBackoffMs(attempt, …)` for the controller to drive.
+  exposing `computeSlowStartBackoffMs(attempt, …)` for the controller to drive.
+- **Backoff vs `src/core/backoff.ts`**: a `computeBackoffMs` already exists there,
+  but it is *full-jitter / randomized* with a hardcoded ×2 factor (claim-retry,
+  thundering-herd prevention). Slow-start deliberately needs a *deterministic*,
+  configurable-multiplier delay so requeues are predictable and unit-testable, so
+  ours is a separate `computeSlowStartBackoffMs`. If a future controller wants
+  jitter on the requeue, it can layer `backoff.ts` on top of this value.
