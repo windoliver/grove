@@ -43,8 +43,7 @@ export const PropagationFinalizer = {
   Foreground: "grove.dev/foreground-deletion",
   Orphan: "grove.dev/orphan",
 } as const;
-export type PropagationFinalizer =
-  (typeof PropagationFinalizer)[keyof typeof PropagationFinalizer];
+export type PropagationFinalizer = (typeof PropagationFinalizer)[keyof typeof PropagationFinalizer];
 
 export type CascadePolicy = "Foreground" | "Background" | "Orphan";
 

@@ -8,7 +8,9 @@ const TG: GcRef = { kind: "taskGroup", id: "tg" };
 const A: GcRef = { kind: "agentTask", id: "a" };
 const B: GcRef = { kind: "agentTask", id: "b" };
 
-function controlledByTg(id: string) {
+// The arg labels which child the ownerRef belongs to at the call site; the ref
+// itself always points at the single TaskGroup owner, so the value is unused.
+function controlledByTg(_child: string) {
   return [{ kind: "taskGroup" as const, id: "tg", uid: "u-tg", controller: true }];
 }
 
