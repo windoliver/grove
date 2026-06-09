@@ -2234,6 +2234,128 @@ export class SqliteAgentTaskStore implements AgentTaskStore {
     return { kind: "ok", view };
   };
 
+  setAgentTaskDeletion = async (
+    taskId: string,
+    deletionTimestamp: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> =>
+    this.mutateSpec(taskId, opts, (existing) => {
+      const next = existing.deletionTimestamp ?? deletionTimestamp;
+      this.db
+        .prepare(
+          `UPDATE agent_task_spec
+             SET deletion_timestamp = ?, generation = generation + 1, resource_version = resource_version + 1
+           WHERE id = ?`,
+        )
+        .run(next, taskId);
+    });
+
+  removeAgentTaskFinalizer = async (
+    taskId: string,
+    finalizer: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> =>
+    this.mutateSpec(taskId, opts, (existing) => {
+      const remaining = (existing.finalizers ?? []).filter((f) => f !== finalizer);
+      this.db
+        .prepare(
+          `UPDATE agent_task_spec
+             SET finalizers_json = ?, generation = generation + 1, resource_version = resource_version + 1
+           WHERE id = ?`,
+        )
+        .run(JSON.stringify(remaining), taskId);
+    });
+
+  removeAgentTaskOwnerRef = async (
+    taskId: string,
+    ownerUid: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> =>
+    this.mutateSpec(taskId, opts, (existing) => {
+      const cleared = existing.ownerRef !== undefined && existing.ownerRef.uid === ownerUid;
+      this.db
+        .prepare(
+          `UPDATE agent_task_spec
+             SET owner_ref_json = ?, generation = generation + 1, resource_version = resource_version + 1
+           WHERE id = ?`,
+        )
+        .run(cleared ? null : JSON.stringify(existing.ownerRef ?? null), taskId);
+    });
+
+  reapAgentTask = async (
+    taskId: string,
+    opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> => {
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
+    let deleted: AgentTaskView | null = null;
+    const tx = this.db.transaction(() => {
+      const existing = this.readAgentTask(taskId);
+      if (existing === null) {
+        throw new NotFoundError({
+          resource: "AgentTask",
+          identifier: taskId,
+          message: `AgentTask '${taskId}' not found`,
+        });
+      }
+      const cas = checkIfMatch(
+        existing.spec.resourceVersion,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return;
+      }
+      if ((existing.spec.finalizers ?? []).length > 0) {
+        throw new Error(
+          `reapAgentTask refused: '${taskId}' still has finalizers [${(existing.spec.finalizers ?? []).join(", ")}]`,
+        );
+      }
+      deleted = existing;
+      // agent_task_status drops via FK ON DELETE CASCADE.
+      this.db.prepare("DELETE FROM agent_task_spec WHERE id = ?").run(taskId);
+    });
+    tx.immediate();
+    if (mismatch !== null) return mismatch;
+    if (deleted === null) throw new Error(`reapAgentTask('${taskId}') produced no view`);
+    return { kind: "ok", view: deleted };
+  };
+
+  /** Shared CAS wrapper for spec-row lifecycle edits. */
+  private mutateSpec(
+    taskId: string,
+    opts: CasOpts | undefined,
+    apply: (existing: AgentTaskSpecRecord) => void,
+  ): CasMutationResult<AgentTaskView> {
+    let mismatch: CasMutationResult<AgentTaskView> | null = null;
+    const tx = this.db.transaction(() => {
+      const existing = this.readAgentTask(taskId);
+      if (existing === null) {
+        throw new NotFoundError({
+          resource: "AgentTask",
+          identifier: taskId,
+          message: `AgentTask '${taskId}' not found`,
+        });
+      }
+      const cas = checkIfMatch(
+        existing.spec.resourceVersion,
+        opts?.ifMatch,
+        existing.spec.generation,
+      );
+      if (cas !== null) {
+        mismatch = cas;
+        return;
+      }
+      apply(existing.spec);
+    });
+    tx.immediate();
+    if (mismatch !== null) return mismatch;
+    const view = this.readAgentTask(taskId);
+    if (view === null) throw new Error(`Failed to read back agent task '${taskId}'`);
+    this.emitAgentTaskWrite("MODIFIED", view);
+    return { kind: "ok", view };
+  }
+
   async listAgentTaskEntities(query?: AgentTaskQuery): Promise<readonly AgentTaskEntity[]> {
     const namespace = readStoreNamespace(this.db);
     const views = await this.listAgentTasks(query);

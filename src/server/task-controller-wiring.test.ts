@@ -116,6 +116,18 @@ function fakeTaskStore() {
       async listAgentTaskEntities() {
         return [] as never;
       },
+      async setAgentTaskDeletion() {
+        return undefined as never;
+      },
+      async removeAgentTaskFinalizer() {
+        return undefined as never;
+      },
+      async removeAgentTaskOwnerRef() {
+        return undefined as never;
+      },
+      async reapAgentTask() {
+        return undefined as never;
+      },
       close() {
         // no-op stub
       },

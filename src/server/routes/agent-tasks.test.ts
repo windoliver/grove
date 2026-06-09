@@ -129,6 +129,34 @@ class TestAgentTaskStore implements AgentTaskStore {
     return views.map((v) => agentTaskViewToEntity(v));
   }
 
+  async setAgentTaskDeletion(
+    _taskId: string,
+    _deletionTimestamp: string,
+    _opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> {
+    throw new Error("not implemented in test store");
+  }
+
+  async removeAgentTaskFinalizer(
+    _taskId: string,
+    _finalizer: string,
+    _opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> {
+    throw new Error("not implemented in test store");
+  }
+
+  async removeAgentTaskOwnerRef(
+    _taskId: string,
+    _ownerUid: string,
+    _opts?: CasOpts,
+  ): Promise<CasMutationResult<AgentTaskView>> {
+    throw new Error("not implemented in test store");
+  }
+
+  async reapAgentTask(_taskId: string, _opts?: CasOpts): Promise<CasMutationResult<AgentTaskView>> {
+    throw new Error("not implemented in test store");
+  }
+
   close(): void {
     /* test store */
   }

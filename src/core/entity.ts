@@ -8,7 +8,12 @@
 
 import type { AgentSession } from "./agent-runtime.js";
 import { rvComposite } from "./cas.js";
-import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
+import type {
+  Finalizer,
+  KindFinalizer,
+  OwnerRef,
+  PropagationFinalizer,
+} from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
   Claim,
@@ -50,7 +55,7 @@ export interface EntityMetadata {
   readonly creationTimestamp?: string | undefined;
   readonly labels?: Readonly<Record<string, string>> | undefined;
   readonly ownerRefs?: readonly OwnerRef[] | undefined;
-  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly finalizers?: readonly (Finalizer | KindFinalizer | PropagationFinalizer)[] | undefined;
   readonly deletionTimestamp?: string | undefined;
 }
 
