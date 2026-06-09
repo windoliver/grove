@@ -397,6 +397,7 @@ interface SessionListRow {
   stop_reason: string | null;
   stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   contribution_count: number;
+  recipe_provenance_json: string | null;
   /** C6 (#304): optimistic-concurrency resource version, added by v16 migration. */
   resource_version: number;
 }
@@ -575,6 +576,9 @@ function listRowToSession(row: SessionListRow): Session {
     topology: undefined,
     contributionCount: row.contribution_count,
     // config intentionally omitted from list results for performance
+    recipeProvenance: row.recipe_provenance_json
+      ? (JSON.parse(row.recipe_provenance_json) as RecipeProvenance)
+      : undefined,
     resourceVersion: row.resource_version,
   };
 }
@@ -792,7 +796,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore, RuntimeSkillSes
       SELECT s.session_id, s.uid, s.goal, s.preset_name, s.status, s.started_at,
              s.finalizers_json, s.deletion_timestamp, s.deletion_audit_json,
              s.ended_at, s.stop_reason, s.stop_status, s.contribution_count,
-             s.resource_version
+             s.recipe_provenance_json, s.resource_version
       FROM sessions s
     `;
 
